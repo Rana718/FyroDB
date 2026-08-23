@@ -169,7 +169,46 @@ fn dispatch_raw(conn: &mut Conn, raw: &[(*const u8, usize)]) {
     }
 
     if conn.store.cluster.enabled {
-        let args: Vec<&[u8]> = raw[1..].iter().map(|&part| unsafe { part_bytes(part) }).collect();
+        // Most Redis commands have a small argument count. Keep routing on the
+        // stack in that common case so cluster mode does not add a heap
+        // allocation to every request. A bounded heap fallback handles large
+        // multi-key commands without changing their behavior.
+        const STACK_ARGS: usize = 32;
+        let mut stack_args = [&[][..]; STACK_ARGS];
+        let args: &[&[u8]] = if raw.len().saturating_sub(1) <= STACK_ARGS {
+            for (index, part) in raw[1..].iter().enumerate() {
+                stack_args[index] = unsafe { part_bytes(*part) };
+            }
+            &stack_args[..raw.len() - 1]
+        } else {
+            let args: Vec<&[u8]> = raw[1..]
+                .iter()
+                .map(|&part| unsafe { part_bytes(part) })
+                .collect();
+            // The fallback must live through routing; route_command only
+            // borrows the slice, so perform the decision before dropping it.
+            let decision = crate::cluster::route_command(&conn.store.cluster, cmd, &args);
+            match decision {
+                crate::cluster::RouteDecision::Local => {}
+                crate::cluster::RouteDecision::Moved { slot, address } => {
+                    conn.parser.wbuf.extend_from_slice(b"-MOVED ");
+                    crate::utils::resp::write_usize(&mut conn.parser.wbuf, slot.value() as usize);
+                    conn.parser.wbuf.push(b' ');
+                    conn.parser.wbuf.extend_from_slice(address.as_bytes());
+                    conn.parser.wbuf.extend_from_slice(b"\r\n");
+                    return;
+                }
+                crate::cluster::RouteDecision::CrossSlot => {
+                    conn.parser.wbuf.extend_from_slice(b"-CROSSSLOT Keys in request don't hash to the same slot\r\n");
+                    return;
+                }
+                crate::cluster::RouteDecision::Unassigned(_) => {
+                    conn.parser.wbuf.extend_from_slice(b"-CLUSTERDOWN Hash slot not served\r\n");
+                    return;
+                }
+            }
+            &[]
+        };
         match crate::cluster::route_command(&conn.store.cluster, cmd, &args) {
             crate::cluster::RouteDecision::Local => {}
             crate::cluster::RouteDecision::Moved { slot, address } => {

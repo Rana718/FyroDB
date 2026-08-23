@@ -35,7 +35,10 @@ impl Topology {
     }
 
     pub fn is_complete(&self) -> bool {
-        let mut covered = vec![false; HASH_SLOTS as usize];
+        // One bit per Redis hash slot: 16,384 bits = 2 KiB on the stack.
+        // Cluster INFO can call this frequently, so avoid a heap allocation.
+        let mut covered = [0u64; HASH_SLOTS as usize / 64];
+        let mut count = 0usize;
         for node in self
             .nodes
             .iter()
@@ -43,15 +46,18 @@ impl Topology {
         {
             for range in &node.slots {
                 for slot in range.start.0..=range.end.0 {
-                    let cell = &mut covered[slot as usize];
-                    if *cell {
+                    let index = slot as usize;
+                    let word = index / 64;
+                    let bit = 1u64 << (index % 64);
+                    if covered[word] & bit != 0 {
                         return false;
                     }
-                    *cell = true;
+                    covered[word] |= bit;
+                    count += 1;
                 }
             }
         }
-        covered.into_iter().all(|value| value)
+        count == HASH_SLOTS as usize
     }
 }
 

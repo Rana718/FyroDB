@@ -83,13 +83,18 @@ impl Store {
                 .map(|range| usize::from(range.end.value() - range.start.value()) + 1)
                 .sum();
             let log_len = self.replication.as_ref().map_or(0, |log| log.len());
+            let log_bytes = self.replication.as_ref().map_or(0, |log| log.retained_bytes());
+            let log_byte_limit = self
+                .replication
+                .as_ref()
+                .map_or(0, |log| log.retained_byte_limit());
             let next_offset = self.replication.as_ref().map_or(0, |log| log.next_offset());
             let appended = self
                 .replication
                 .as_ref()
                 .map_or(0, |log| log.appended_count());
             format!(
-                "# Cluster\r\ncluster_enabled:1\r\ncluster_state:{}\r\ncluster_my_id:{}\r\ncluster_current_epoch:{}\r\ncluster_known_nodes:{}\r\ncluster_size:{}\r\ncluster_slots_assigned:{}\r\ncluster_replication_log_len:{}\r\ncluster_replication_next_offset:{}\r\ncluster_replication_appended:{}\r\ncluster_peer_health:unknown\r\n\r\n",
+                "# Cluster\r\ncluster_enabled:1\r\ncluster_state:{}\r\ncluster_my_id:{}\r\ncluster_current_epoch:{}\r\ncluster_known_nodes:{}\r\ncluster_size:{}\r\ncluster_slots_assigned:{}\r\ncluster_replication_log_len:{}\r\ncluster_replication_log_bytes:{}\r\ncluster_replication_log_byte_limit:{}\r\ncluster_replication_next_offset:{}\r\ncluster_replication_appended:{}\r\ncluster_peer_health:unknown\r\n\r\n",
                 if self.cluster.topology.is_complete() {
                     "ok"
                 } else {
@@ -101,6 +106,8 @@ impl Store {
                 primaries,
                 assigned,
                 log_len,
+                log_bytes,
+                log_byte_limit,
                 next_offset,
                 appended
             )

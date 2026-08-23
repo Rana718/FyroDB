@@ -147,6 +147,10 @@ impl Default for ReplicationStream {
 }
 
 const MAX_FIELD: usize = 16 * 1024 * 1024;
+/// Hard upper bound for retained encoded mutation payloads per node.
+/// This prevents a record-count-only log from consuming unbounded RSS when
+/// values are large. The bound is deliberately independent of Store capacity.
+const MAX_LOG_BYTES: usize = 64 * 1024 * 1024;
 
 pub fn encode_replication_message(
     message: &ReplicationMessage,
@@ -247,6 +251,7 @@ impl ReplicaApplier {
 pub struct MutationLog {
     next_offset: u64,
     capacity: usize,
+    bytes: usize,
     records: VecDeque<MutationRecord>,
 }
 
@@ -300,6 +305,12 @@ impl ReplicationCoordinator {
     pub fn retained_capacity(&self) -> usize {
         self.log.lock().expect("replication log poisoned").capacity
     }
+    pub fn retained_bytes(&self) -> usize {
+        self.log.lock().expect("replication log poisoned").bytes()
+    }
+    pub fn retained_byte_limit(&self) -> usize {
+        MAX_LOG_BYTES
+    }
 }
 
 impl MutationLog {
@@ -308,7 +319,12 @@ impl MutationLog {
         Self {
             next_offset: 1,
             capacity,
-            records: VecDeque::with_capacity(capacity),
+            bytes: 0,
+            // Do not reserve the configured maximum up front. A production
+            // capacity of 100k records would otherwise reserve several MiB on
+            // every cluster node before the first write. VecDeque grows only
+            // with retained replication data and remains bounded below.
+            records: VecDeque::new(),
         }
     }
     pub fn append(&mut self, mut record: MutationRecord) -> Result<u64, LogError> {
@@ -317,10 +333,15 @@ impl MutationLog {
         }
         record.offset = self.next_offset;
         self.next_offset = self.next_offset.saturating_add(1);
-        if self.records.len() == self.capacity {
-            self.records.pop_front();
-        }
+        self.bytes = self.bytes.saturating_add(record_memory_bytes(&record));
         self.records.push_back(record);
+        while self.records.len() > self.capacity || self.bytes > MAX_LOG_BYTES {
+            if let Some(old) = self.records.pop_front() {
+                self.bytes = self.bytes.saturating_sub(record_memory_bytes(&old));
+            } else {
+                break;
+            }
+        }
         Ok(self.next_offset - 1)
     }
     pub fn replay_from(&self, offset: u64) -> Result<Vec<MutationRecord>, LogError> {
@@ -344,9 +365,21 @@ impl MutationLog {
     pub fn len(&self) -> usize {
         self.records.len()
     }
+    pub fn bytes(&self) -> usize {
+        self.bytes
+    }
     pub fn is_empty(&self) -> bool {
         self.records.is_empty()
     }
+}
+
+#[inline]
+fn record_memory_bytes(record: &MutationRecord) -> usize {
+    record
+        .key
+        .len()
+        .saturating_add(record.value.len())
+        .saturating_add(std::mem::size_of::<MutationRecord>())
 }
 
 pub fn encode_mutation(record: &MutationRecord) -> Result<Vec<u8>, ReplicationCodecError> {
@@ -442,6 +475,24 @@ mod tests {
         assert_eq!(log.append(record()).unwrap(), 3);
         assert_eq!(log.replay_from(2).unwrap().len(), 2);
         assert_eq!(log.replay_from(1), Err(LogError::OffsetGap));
+    }
+
+    #[test]
+    fn log_has_a_byte_bound_for_large_values() {
+        let mut log = MutationLog::new(100);
+        let record = MutationRecord {
+            offset: 0,
+            slot: Slot(1),
+            kind: MutationKind::Set,
+            key: b"k".to_vec(),
+            value: vec![b'x'; 16 * 1024 * 1024],
+            expire_at_ms: None,
+        };
+        for _ in 0..8 {
+            log.append(record.clone()).unwrap();
+        }
+        assert!(log.len() < 8);
+        assert!(log.replay_from(1).is_err());
     }
 
     #[test]
