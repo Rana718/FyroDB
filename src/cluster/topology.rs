@@ -12,6 +12,7 @@ pub struct NodeInfo {
     pub address: String,
     pub cluster_address: String,
     pub role: NodeRole,
+    pub replica_of: Option<String>,
     pub epoch: u64,
     pub slots: Vec<SlotRange>,
 }
@@ -59,6 +60,18 @@ impl Topology {
         }
         count == HASH_SLOTS as usize
     }
+
+    pub fn is_valid(&self) -> bool {
+        self.nodes.iter().all(|node| {
+            node.id.len() <= 256
+                && node.address.len() <= 512
+                && node.cluster_address.len() <= 512
+                && node.slots.iter().all(|range| range.start <= range.end)
+        }) && {
+            let mut seen = std::collections::HashSet::new();
+            self.nodes.iter().all(|node| seen.insert(node.id.as_str()))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -72,6 +85,7 @@ mod tests {
             address: format!("{id}:8000"),
             cluster_address: format!("{id}:18000"),
             role: NodeRole::Primary,
+            replica_of: None,
             epoch: 1,
             slots: vec![SlotRange::new(Slot(start), Slot(end)).unwrap()],
         };

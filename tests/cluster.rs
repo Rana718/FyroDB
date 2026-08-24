@@ -19,6 +19,7 @@ fn config() -> ClusterConfig {
                     address: "127.0.0.1:8000".into(),
                     cluster_address: "127.0.0.1:18000".into(),
                     role: NodeRole::Primary,
+                    replica_of: None,
                     epoch: 1,
                     slots: vec![SlotRange::new(Slot(0), Slot(8191)).unwrap()],
                 },
@@ -27,6 +28,7 @@ fn config() -> ClusterConfig {
                     address: "127.0.0.1:8001".into(),
                     cluster_address: "127.0.0.1:18001".into(),
                     role: NodeRole::Primary,
+                    replica_of: None,
                     epoch: 1,
                     slots: vec![SlotRange::new(Slot(8192), Slot(16383)).unwrap()],
                 },
@@ -45,7 +47,10 @@ fn config() -> ClusterConfig {
 #[test]
 fn routes_local_remote_cross_slot_and_no_key_commands() {
     let cluster = config();
-    let remote = (0u32..10000).map(|n| n.to_string()).find(|key| hash_slot(key.as_bytes()).value() >= 8192).unwrap();
+    let remote = (0u32..10000)
+        .map(|n| n.to_string())
+        .find(|key| hash_slot(key.as_bytes()).value() >= 8192)
+        .unwrap();
     assert_eq!(route_command(&cluster, b"PING", &[]), RouteDecision::Local);
     assert!(matches!(
         route_command(&cluster, b"GET", &[remote.as_bytes()]),
@@ -90,6 +95,7 @@ fn replication_log_and_stream_are_strict_and_idempotent() {
         .apply(&fyro_db::cluster::ReplicationMessage::Begin {
             epoch: 1,
             from_offset: 1,
+            identity: [7; 16],
         })
         .unwrap();
     assert!(stream.apply(&message).is_ok());

@@ -1,9 +1,10 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, SyncSender, TrySendError};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::health::PeerHealth;
 use super::{
@@ -11,11 +12,17 @@ use super::{
     RequestRegistry, decode_topology,
 };
 use crate::cluster::server::stable_id;
-use crate::cluster::{ClusterConfig, ClusterState, NodeInfo, decode_failure_report};
+use crate::cluster::{
+    ClusterConfig, ClusterState, NodeInfo, ReplicationCoordinator, ReplicationMessage,
+    decode_failure_report, decode_replication_message, encode_replication_message,
+};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const MIN_BACKOFF: Duration = Duration::from_millis(100);
 const MAX_BACKOFF: Duration = Duration::from_secs(5);
+const SNAPSHOT_START: u16 = 1;
+const SNAPSHOT_END: u16 = 2;
+const SNAPSHOT_CHUNK: usize = 1024 * 1024;
 
 /// Owns exactly one bounded outbound queue and connection worker per peer.
 /// Dropping the manager closes the queues and lets the workers exit.
@@ -24,12 +31,15 @@ pub struct PeerManager {
     next_request_id: AtomicU64,
     _workers: Vec<thread::JoinHandle<()>>,
     state: ClusterState,
+    queue_full_count: AtomicU64,
+    reconnect_count: Arc<AtomicU64>,
 }
 
 struct PeerHandle {
     sender: SyncSender<Frame>,
     requests: RequestRegistry,
     health: PeerHealth,
+    replication_lag: Arc<AtomicU64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,7 +72,10 @@ impl PeerManager {
             .ok_or(PeerSendError::UnknownPeer)?
             .sender;
         sender.try_send(frame).map_err(|error| match error {
-            TrySendError::Full(_) => PeerSendError::QueueFull,
+            TrySendError::Full(_) => {
+                self.queue_full_count.fetch_add(1, Ordering::Relaxed);
+                PeerSendError::QueueFull
+            }
             TrySendError::Disconnected(_) => PeerSendError::Disconnected,
         })
     }
@@ -97,7 +110,10 @@ impl PeerManager {
         if let Err(error) = peer.sender.try_send(frame) {
             let _ = peer.requests.cancel(request_id);
             return Err(match error {
-                TrySendError::Full(_) => PeerRequestError::QueueFull,
+                TrySendError::Full(_) => {
+                    self.queue_full_count.fetch_add(1, Ordering::Relaxed);
+                    PeerRequestError::QueueFull
+                }
                 TrySendError::Disconnected(_) => PeerRequestError::Disconnected,
             });
         }
@@ -108,6 +124,10 @@ impl PeerManager {
 
     pub fn peer_count(&self) -> usize {
         self.peers.len()
+    }
+
+    pub fn peer_ids(&self) -> Vec<String> {
+        self.peers.keys().cloned().collect()
     }
 
     pub fn health(&self, peer_id: &str) -> Option<PeerHealthSnapshot> {
@@ -125,11 +145,111 @@ impl PeerManager {
             .map(|(id, _)| id.clone())
             .collect()
     }
+
+    pub fn transport_counters(&self) -> (u64, u64) {
+        (
+            self.queue_full_count.load(Ordering::Relaxed),
+            self.reconnect_count.load(Ordering::Relaxed),
+        )
+    }
+
+    pub fn replication_lag_totals(&self) -> (u64, u64) {
+        self.peers.values().fold((0, 0), |(total, max), peer| {
+            let lag = peer.replication_lag.load(Ordering::Relaxed);
+            (total.saturating_add(lag), max.max(lag))
+        })
+    }
+
+    pub fn migrate_slot(
+        &self,
+        store: &crate::storage::store::Store,
+        slot: crate::cluster::Slot,
+        target_id: &str,
+        timeout: Duration,
+    ) -> Result<usize, PeerRequestError> {
+        let state = store.cluster_state();
+        if !state.begin_slot_migration(slot, target_id.to_owned()) {
+            return Err(PeerRequestError::UnknownPeer);
+        }
+        let epoch = state.topology().epoch;
+        let frame = |message_type, payload| Frame {
+            message_type,
+            flags: 0,
+            request_id: 0,
+            source_id: stable_id(&store.cluster.local_id),
+            target_id: stable_id(target_id),
+            epoch,
+            payload,
+        };
+        self.request(
+            target_id,
+            frame(
+                MessageType::MigrateBegin,
+                slot.value().to_be_bytes().to_vec(),
+            ),
+            timeout,
+        )?;
+        let _guard = store.cluster_write_guard();
+        let mut sent = 0usize;
+        let mut failed = None;
+        store.for_each_slot_record(slot, |record| {
+            if failed.is_some() {
+                return;
+            }
+            let Ok(payload) = crate::cluster::encode_mutation(&record) else {
+                return;
+            };
+            match self.request(
+                target_id,
+                frame(MessageType::MigrateChunk, payload),
+                timeout,
+            ) {
+                Ok(_) => sent += 1,
+                Err(error) => failed = Some(error),
+            }
+        });
+        if let Some(error) = failed {
+            return Err(error);
+        }
+        self.request(
+            target_id,
+            frame(
+                MessageType::MigrateFinish,
+                slot.value().to_be_bytes().to_vec(),
+            ),
+            timeout,
+        )?;
+        // Only remove the source copy after every key and the finish marker
+        // have been acknowledged. A failed partial transfer leaves the source
+        // authoritative and can be retried without data loss.
+        store.remove_slot_values(slot);
+        if let Some(topology) = state.commit_slot_migration(slot) {
+            let _ = store.install_cluster_topology(topology.clone());
+            if let Ok(payload) = super::encode_topology(&topology) {
+                for peer_id in self.peer_ids() {
+                    let _ = self.try_send(
+                        &peer_id,
+                        Frame {
+                            message_type: MessageType::Topology,
+                            flags: 0,
+                            request_id: 0,
+                            source_id: stable_id(&store.cluster.local_id),
+                            target_id: stable_id(&peer_id),
+                            epoch: topology.epoch,
+                            payload: payload.clone(),
+                        },
+                    );
+                }
+            }
+        }
+        Ok(sent)
+    }
 }
 
 pub fn start_peer_manager(config: &ClusterConfig, state: ClusterState) -> PeerManager {
     let mut peers = HashMap::new();
     let mut workers = Vec::new();
+    let reconnect_count = Arc::new(AtomicU64::new(0));
     for node in config
         .topology
         .nodes
@@ -139,18 +259,21 @@ pub fn start_peer_manager(config: &ClusterConfig, state: ClusterState) -> PeerMa
         let (sender, receiver) = mpsc::sync_channel(config.peer_queue_capacity);
         let requests = RequestRegistry::new(config.peer_queue_capacity);
         let health = PeerHealth::new();
+        let replication_lag = Arc::new(AtomicU64::new(0));
         peers.insert(
             node.id.clone(),
             PeerHandle {
                 sender,
                 requests: requests.clone(),
                 health: health.clone(),
+                replication_lag,
             },
         );
         let local_id = config.local_id.clone();
         let local_epoch = config.topology.epoch;
         let heartbeat_interval = config.heartbeat_interval;
         let auth_token = config.auth_token.clone();
+        let worker_reconnect_count = Arc::clone(&reconnect_count);
         let node = node.clone();
         if let Ok(worker) = thread::Builder::new()
             .name(format!("fyrodb-cluster-out-{}", node.id))
@@ -165,6 +288,7 @@ pub fn start_peer_manager(config: &ClusterConfig, state: ClusterState) -> PeerMa
                     &node,
                     heartbeat_interval,
                     auth_token.as_deref(),
+                    worker_reconnect_count,
                 )
             })
         {
@@ -176,7 +300,313 @@ pub fn start_peer_manager(config: &ClusterConfig, state: ClusterState) -> PeerMa
         next_request_id: AtomicU64::new(1),
         _workers: workers,
         state,
+        queue_full_count: AtomicU64::new(0),
+        reconnect_count,
     }
+}
+
+/// Start one bounded, ACK-driven replication stream for every replica of the
+/// local primary. Only one mutation is held outside the retained log per
+/// stream, keeping memory independent of replication lag.
+pub fn start_replication_streams(
+    config: &ClusterConfig,
+    manager: Arc<PeerManager>,
+    store: Arc<crate::storage::store::Store>,
+    log: ReplicationCoordinator,
+) {
+    let local_id = config.local_id.clone();
+    let epoch = config.topology.epoch;
+    let timeout = config.suspect_timeout;
+    for replica in config.topology.nodes.iter().filter(|node| {
+        node.role == crate::cluster::NodeRole::Replica
+            && node.replica_of.as_deref() == Some(local_id.as_str())
+    }) {
+        let replica_id = replica.id.clone();
+        let manager = Arc::clone(&manager);
+        let log = log.clone();
+        let store = Arc::clone(&store);
+        let local_id = local_id.clone();
+        let _ = thread::Builder::new()
+            .name(format!("fyrodb-repl-{replica_id}"))
+            .stack_size(64 * 1024)
+            .spawn(move || {
+                let mut next_offset = 0u64;
+                let identity = log.identity().unwrap_or([0; 16]);
+                loop {
+                    if next_offset == 0 {
+                        let mut begin = Vec::with_capacity(33);
+                        begin.push(1);
+                        begin.extend_from_slice(&epoch.to_be_bytes());
+                        begin.extend_from_slice(&store.replica_applied_offset().to_be_bytes());
+                        begin.extend_from_slice(&identity);
+                        let resumed = manager.request(&replica_id, Frame { message_type: MessageType::ReplicationBegin, flags: 0, request_id: 0, source_id: stable_id(&local_id), target_id: stable_id(&replica_id), epoch, payload: begin }, timeout)
+                            .ok()
+                            .and_then(|frame| {
+                                if frame.payload.len() != 24 || frame.payload[..16] != identity { return None; }
+                                Some(u64::from_be_bytes(frame.payload[16..24].try_into().unwrap()))
+                            })
+                            .filter(|offset| *offset == 0 || log.record_at(offset.saturating_add(1)).is_ok())
+                            .map(|offset| offset.saturating_add(1));
+                        if let Some(offset) = resumed {
+                            next_offset = offset.max(1);
+                        } else if let Some(snapshot_offset) = send_snapshot(&manager, &replica_id, &local_id, epoch, timeout, &store, &log) {
+                            next_offset = snapshot_offset.saturating_add(1);
+                        } else {
+                            thread::sleep(Duration::from_millis(100));
+                        }
+                        continue;
+                    }
+                    let record = match log.record_at(next_offset) {
+                        Ok(Some(record)) => record,
+                        Ok(None) => {
+                            thread::sleep(Duration::from_millis(10));
+                            continue;
+                        }
+                        Err(_) => {
+                            // Retention passed the requested offset. The
+                            // snapshot protocol is not optional: pause the
+                            // stream and make the condition observable rather
+                            // than skipping data and creating silent loss.
+                            eprintln!(
+                                "[cluster] replica {replica_id} requires snapshot catch-up (requested {}, retained from {})",
+                                next_offset,
+                                log.first_retained_offset()
+                            );
+                            if let Some(snapshot_offset) = send_snapshot(
+                                &manager,
+                                &replica_id,
+                                &local_id,
+                                epoch,
+                                timeout,
+                                &store,
+                                &log,
+                            ) {
+                                next_offset = snapshot_offset.saturating_add(1);
+                            }
+                            thread::sleep(Duration::from_millis(100));
+                            continue;
+                        }
+                    };
+                    let Ok(payload) =
+                        encode_replication_message(&ReplicationMessage::Entry(record.clone()))
+                    else {
+                        thread::sleep(Duration::from_millis(100));
+                        continue;
+                    };
+                    let response = manager.request(
+                        &replica_id,
+                        Frame {
+                            message_type: MessageType::ReplicationEntry,
+                            flags: 0,
+                            request_id: 0,
+                            source_id: stable_id(&local_id),
+                            target_id: stable_id(&replica_id),
+                            epoch,
+                            payload,
+                        },
+                        timeout,
+                    );
+                    let Ok(response) = response else {
+                        thread::sleep(Duration::from_millis(100));
+                        continue;
+                    };
+                    let Ok(ReplicationMessage::Ack { applied_offset }) =
+                        decode_replication_message(&response.payload)
+                    else {
+                        continue;
+                    };
+                    if applied_offset >= record.offset {
+                        if let Some(peer) = manager.peers.get(&replica_id) {
+                            peer.replication_lag.store(
+                                log.next_offset().saturating_sub(applied_offset.saturating_add(1)),
+                                Ordering::Relaxed,
+                            );
+                        }
+                        next_offset = applied_offset.saturating_add(1);
+                    }
+                }
+            });
+    }
+}
+
+fn send_snapshot(
+    manager: &PeerManager,
+    replica_id: &str,
+    local_id: &str,
+    epoch: u64,
+    timeout: Duration,
+    store: &crate::storage::store::Store,
+    log: &ReplicationCoordinator,
+) -> Option<u64> {
+    store.record_snapshot_attempt();
+    let path = std::env::temp_dir().join(format!("fyrodb-repl-{local_id}-{replica_id}.rdb"));
+    let write_guard = store.cluster_write_guard();
+    if crate::storage::rdb::save(store, path.to_str().unwrap_or("")).is_err() {
+        return None;
+    }
+    let snapshot_offset = log.next_offset().saturating_sub(1);
+    drop(write_guard);
+    let Ok(mut file) = std::fs::File::open(&path) else {
+        return None;
+    };
+    let Ok(file_len) = file.metadata().map(|meta| meta.len()) else {
+        return None;
+    };
+    let mut chunk = vec![0u8; SNAPSHOT_CHUNK];
+    let mut first = true;
+    let mut sent = 0u64;
+    loop {
+        let Ok(read) = std::io::Read::read(&mut file, &mut chunk) else {
+            return None;
+        };
+        if read == 0 {
+            break;
+        }
+        sent = sent.saturating_add(read as u64);
+        let end = sent == file_len;
+        let Ok(payload) = encode_replication_message(&ReplicationMessage::Snapshot {
+            epoch,
+            offset: snapshot_offset,
+            payload: chunk[..read].to_vec(),
+        }) else {
+            return None;
+        };
+        let response = manager.request(
+            replica_id,
+            Frame {
+                message_type: MessageType::ReplicationSnapshot,
+                flags: (if first { SNAPSHOT_START } else { 0 })
+                    | (if end { SNAPSHOT_END } else { 0 }),
+                request_id: 0,
+                source_id: stable_id(local_id),
+                target_id: stable_id(replica_id),
+                epoch,
+                payload,
+            },
+            timeout,
+        );
+        let Ok(response) = response else { return None };
+        let Ok(ReplicationMessage::Ack { applied_offset }) =
+            decode_replication_message(&response.payload)
+        else {
+            return None;
+        };
+        if end && applied_offset != snapshot_offset {
+            return None;
+        }
+        first = false;
+        if end {
+            break;
+        }
+    }
+    let _ = std::fs::remove_file(path);
+    Some(snapshot_offset)
+}
+
+pub fn start_health_monitor(
+    config: ClusterConfig,
+    manager: Arc<PeerManager>,
+    store: Arc<crate::storage::store::Store>,
+    state: ClusterState,
+) {
+    let _ = thread::Builder::new()
+        .name("fyrodb-cluster-health".into())
+        .stack_size(64 * 1024)
+        .spawn(move || {
+            let mut reported = HashMap::<String, Instant>::new();
+            loop {
+                let total = manager.peer_count();
+                let mut healthy = 0usize;
+                let mut suspect = 0usize;
+                for node in config
+                    .topology
+                    .nodes
+                    .iter()
+                    .filter(|node| node.id != config.local_id)
+                {
+                    let is_suspect = manager.health(&node.id).is_none_or(|health| {
+                        health.state == super::health::PeerState::Disconnected
+                    });
+                    if is_suspect {
+                        suspect += 1;
+                        let due = reported
+                            .get(&node.id)
+                            .is_none_or(|last| last.elapsed() >= config.suspect_timeout);
+                        if due {
+                            let report = crate::cluster::FailureReport {
+                                target_id: node.id.clone(),
+                                reporter_id: config.local_id.clone(),
+                                epoch: config.topology.epoch,
+                            };
+                            // Count this node's own observation before forwarding
+                            // evidence. Without this, every voter only sees one
+                            // remote report and quorum can never be reached.
+                            let confirmed = state.record_failure(report.clone());
+                            let promoted = if confirmed {
+                                state.promote_replica(&report.target_id, report.epoch)
+                            } else {
+                                None
+                            };
+                            let payload =
+                                crate::cluster::encode_failure_report(&report).unwrap_or_default();
+                            // Reports must reach the other voters. Sending to
+                            // the failed target itself can never establish a
+                            // quorum when that target is disconnected.
+                            for voter_id in manager
+                                .peer_ids()
+                                .into_iter()
+                                .filter(|voter_id| voter_id != &node.id)
+                            {
+                                let _ = manager.try_send(
+                                    &voter_id,
+                                    Frame {
+                                        message_type: MessageType::FailureReport,
+                                        flags: 0,
+                                        request_id: 0,
+                                        source_id: stable_id(&config.local_id),
+                                        target_id: stable_id(&voter_id),
+                                        epoch: config.topology.epoch,
+                                        payload: payload.clone(),
+                                    },
+                                );
+                            }
+                            if let Some(topology) = promoted
+                                && let Ok(topology_payload) = super::encode_topology(&topology)
+                            {
+                                let _ = store.install_cluster_topology(topology.clone());
+                                for peer_id in manager.peer_ids() {
+                                    let _ = manager.try_send(
+                                        &peer_id,
+                                        Frame {
+                                            message_type: MessageType::Topology,
+                                            flags: 0,
+                                            request_id: 0,
+                                            source_id: stable_id(&config.local_id),
+                                            target_id: stable_id(&peer_id),
+                                            epoch: topology.epoch,
+                                            payload: topology_payload.clone(),
+                                        },
+                                    );
+                                }
+                            }
+                            reported.insert(node.id.clone(), Instant::now());
+                        }
+                    } else if manager
+                        .health(&node.id)
+                        .is_some_and(|health| health.state == super::health::PeerState::Healthy)
+                    {
+                        healthy += 1;
+                        reported.remove(&node.id);
+                    }
+                }
+                store.update_cluster_health(total, healthy, suspect);
+                let (queue_full, reconnects) = manager.transport_counters();
+                store.update_cluster_transport_metrics(queue_full, reconnects);
+                let (lag_total, lag_max) = manager.replication_lag_totals();
+                store.update_cluster_replication_lag(lag_total, lag_max);
+                thread::sleep(config.heartbeat_interval);
+            }
+        });
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -189,6 +619,7 @@ fn run_peer_worker(
     node: &NodeInfo,
     heartbeat_interval: Duration,
     auth_token: Option<&str>,
+    reconnect_count: Arc<AtomicU64>,
 ) {
     let Ok(address) = node.cluster_address.parse::<SocketAddr>() else {
         return;
@@ -196,6 +627,7 @@ fn run_peer_worker(
     let mut peer = None;
     let mut backoff = MIN_BACKOFF;
     let mut request_id = 1u64;
+    let mut connected_once = false;
     loop {
         let frame = match receiver.recv_timeout(heartbeat_interval) {
             Ok(frame) => frame,
@@ -219,6 +651,10 @@ fn run_peer_worker(
                 health.connecting();
                 match connect_and_handshake(address, local_id, node, epoch, auth_token) {
                     Ok(connection) => {
+                        if connected_once {
+                            reconnect_count.fetch_add(1, Ordering::Relaxed);
+                        }
+                        connected_once = true;
                         let generation = health.connected();
                         if let Ok(reader) = connection.try_clone() {
                             let pending = requests.clone();
@@ -270,7 +706,7 @@ fn read_replies(
         }
         if matches!(
             frame.message_type,
-            MessageType::CommandReply | MessageType::Pong
+            MessageType::CommandReply | MessageType::Pong | MessageType::ReplicationAck
         ) {
             let _ = requests.complete(frame);
         }
@@ -323,6 +759,7 @@ mod tests {
             address: format!("127.0.0.1:{port}"),
             cluster_address: format!("127.0.0.1:{}", port + 10_000),
             role: NodeRole::Primary,
+            replica_of: None,
             epoch: 1,
             slots: vec![SlotRange::new(Slot(0), Slot(1)).unwrap()],
         };

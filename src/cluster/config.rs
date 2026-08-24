@@ -89,6 +89,7 @@ impl ClusterConfig {
                     address: format!("{advertised}:{client_port}"),
                     cluster_address: format!("{advertised}:{cluster_port}"),
                     role: NodeRole::Primary,
+                    replica_of: None,
                     epoch: 1,
                     slots,
                 }],
@@ -176,8 +177,8 @@ fn parse_slot_ranges(value: &str) -> Result<Vec<SlotRange>, ClusterConfigError> 
     Ok(ranges)
 }
 
-/// Parse `id|client_addr|cluster_addr|slots` records separated by semicolons.
-/// Example: `a|10.0.0.1:8000|10.0.0.1:18000|0-8191;b|10.0.0.2:8000|10.0.0.2:18000|8192-16383`.
+/// Parse `id|client_addr|cluster_addr|slots[|role]` records separated by semicolons.
+/// Role is `primary` (default) or `replica:<primary-id>`. Replicas use `-` for slots.
 fn parse_nodes(value: &str) -> Result<Topology, ClusterConfigError> {
     let mut nodes = Vec::new();
     for raw in value
@@ -186,7 +187,9 @@ fn parse_nodes(value: &str) -> Result<Topology, ClusterConfigError> {
         .filter(|record| !record.is_empty())
     {
         let fields: Vec<_> = raw.split('|').collect();
-        if fields.len() != 4 || fields.iter().any(|field| field.trim().is_empty()) {
+        if !(4..=5).contains(&fields.len())
+            || fields[..3].iter().any(|field| field.trim().is_empty())
+        {
             return Err(ClusterConfigError(format!(
                 "invalid cluster node record: {raw}"
             )));
@@ -197,17 +200,45 @@ fn parse_nodes(value: &str) -> Result<Topology, ClusterConfigError> {
                 fields[0]
             )));
         }
+        let (role, replica_of, slots) = match fields.get(4).copied().unwrap_or("primary") {
+            role if role.eq_ignore_ascii_case("primary") => {
+                (NodeRole::Primary, None, parse_slot_ranges(fields[3])?)
+            }
+            role if role.to_ascii_lowercase().starts_with("replica:") => {
+                let primary = role.split_once(':').map(|(_, id)| id.trim()).unwrap_or("");
+                if primary.is_empty() || fields[3].trim() != "-" {
+                    return Err(ClusterConfigError(format!(
+                        "replica must reference a primary and use '-' slots: {raw}"
+                    )));
+                }
+                (NodeRole::Replica, Some(primary.to_owned()), Vec::new())
+            }
+            _ => return Err(ClusterConfigError(format!("invalid node role: {raw}"))),
+        };
         nodes.push(NodeInfo {
             id: fields[0].into(),
             address: fields[1].into(),
             cluster_address: fields[2].into(),
-            role: NodeRole::Primary,
+            role,
+            replica_of,
             epoch: 1,
-            slots: parse_slot_ranges(fields[3])?,
+            slots,
         });
     }
     if nodes.is_empty() {
         return Err(ClusterConfigError("FYRODB_CLUSTER_NODES is empty".into()));
+    }
+    for node in nodes.iter().filter(|node| node.role == NodeRole::Replica) {
+        let primary = node.replica_of.as_deref().unwrap();
+        if !nodes
+            .iter()
+            .any(|candidate| candidate.id == primary && candidate.role == NodeRole::Primary)
+        {
+            return Err(ClusterConfigError(format!(
+                "replica {} references unknown primary {primary}",
+                node.id
+            )));
+        }
     }
     Ok(Topology::new(1, nodes))
 }
@@ -262,5 +293,22 @@ mod tests {
     fn rejects_overlapping_ranges() {
         let topology = parse_nodes("a|a:8000|a:18000|0-9000;b|b:8000|b:18000|9000-16383").unwrap();
         assert!(validate_primary_ranges(&topology).is_err());
+    }
+
+    #[test]
+    fn parses_and_validates_replica_roles() {
+        let topology =
+            parse_nodes("a|a:8000|a:18000|0-16383|primary;r|r:8000|r:18000|-|replica:a").unwrap();
+        let replica = topology.nodes.iter().find(|node| node.id == "r").unwrap();
+        assert_eq!(replica.role, NodeRole::Replica);
+        assert_eq!(replica.replica_of.as_deref(), Some("a"));
+        assert!(replica.slots.is_empty());
+        assert!(topology.is_complete());
+    }
+
+    #[test]
+    fn rejects_replica_with_unknown_primary_or_slots() {
+        assert!(parse_nodes("r|r:8000|r:18000|-|replica:missing").is_err());
+        assert!(parse_nodes("a|a:8000|a:18000|0-16383;r|r:8000|r:18000|0-1|replica:a").is_err());
     }
 }

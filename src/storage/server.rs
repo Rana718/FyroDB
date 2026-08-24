@@ -66,16 +66,13 @@ impl Store {
         };
 
         let cluster_info = if self.cluster.enabled {
-            let primaries = self
-                .cluster
-                .topology
+            let topology = self.cluster_topology();
+            let primaries = topology
                 .nodes
                 .iter()
                 .filter(|node| node.role == crate::cluster::NodeRole::Primary)
                 .count();
-            let assigned: usize = self
-                .cluster
-                .topology
+            let assigned: usize = topology
                 .nodes
                 .iter()
                 .filter(|node| node.role == crate::cluster::NodeRole::Primary)
@@ -83,7 +80,10 @@ impl Store {
                 .map(|range| usize::from(range.end.value() - range.start.value()) + 1)
                 .sum();
             let log_len = self.replication.as_ref().map_or(0, |log| log.len());
-            let log_bytes = self.replication.as_ref().map_or(0, |log| log.retained_bytes());
+            let log_bytes = self
+                .replication
+                .as_ref()
+                .map_or(0, |log| log.retained_bytes());
             let log_byte_limit = self
                 .replication
                 .as_ref()
@@ -93,23 +93,32 @@ impl Store {
                 .replication
                 .as_ref()
                 .map_or(0, |log| log.appended_count());
+            let (peer_total, peer_healthy, peer_suspect) = self.cluster_health_counts();
+            let (queue_full, reconnects) = self.cluster_transport_metrics();
+            let snapshots = self.cluster_snapshot_attempts();
+            let (lag_total, lag_max) = self.cluster_replication_lag();
             format!(
-                "# Cluster\r\ncluster_enabled:1\r\ncluster_state:{}\r\ncluster_my_id:{}\r\ncluster_current_epoch:{}\r\ncluster_known_nodes:{}\r\ncluster_size:{}\r\ncluster_slots_assigned:{}\r\ncluster_replication_log_len:{}\r\ncluster_replication_log_bytes:{}\r\ncluster_replication_log_byte_limit:{}\r\ncluster_replication_next_offset:{}\r\ncluster_replication_appended:{}\r\ncluster_peer_health:unknown\r\n\r\n",
-                if self.cluster.topology.is_complete() {
-                    "ok"
-                } else {
-                    "fail"
-                },
+                "# Cluster\r\ncluster_enabled:1\r\ncluster_state:{}\r\ncluster_my_id:{}\r\ncluster_current_epoch:{}\r\ncluster_known_nodes:{}\r\ncluster_size:{}\r\ncluster_slots_assigned:{}\r\ncluster_replication_log_len:{}\r\ncluster_replication_log_bytes:{}\r\ncluster_replication_log_byte_limit:{}\r\ncluster_replication_next_offset:{}\r\ncluster_replication_appended:{}\r\ncluster_peer_total:{}\r\ncluster_peer_healthy:{}\r\ncluster_peer_suspect:{}\r\ncluster_peer_queue_full_total:{}\r\ncluster_peer_reconnect_total:{}\r\ncluster_snapshot_attempts:{}\r\ncluster_replication_lag_total:{}\r\ncluster_replication_lag_max:{}\r\ncluster_replica_applied_offset:{}\r\n\r\n",
+                if topology.is_complete() { "ok" } else { "fail" },
                 self.cluster.local_id,
-                self.cluster.topology.epoch,
-                self.cluster.topology.nodes.len(),
+                topology.epoch,
+                topology.nodes.len(),
                 primaries,
                 assigned,
                 log_len,
                 log_bytes,
                 log_byte_limit,
                 next_offset,
-                appended
+                appended,
+                peer_total,
+                peer_healthy,
+                peer_suspect,
+                queue_full,
+                reconnects,
+                snapshots,
+                lag_total,
+                lag_max,
+                self.replica_applied_offset()
             )
         } else {
             String::new()

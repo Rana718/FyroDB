@@ -56,16 +56,32 @@ fn hashtag(key: &[u8]) -> &[u8] {
 fn crc16(bytes: &[u8]) -> u16 {
     let mut crc = 0u16;
     for &byte in bytes {
-        crc ^= (byte as u16) << 8;
-        for _ in 0..8 {
+        let index = ((crc >> 8) as u8 ^ byte) as usize;
+        crc = (crc << 8) ^ CRC16_TABLE[index];
+    }
+    crc
+}
+
+const CRC16_TABLE: [u16; 256] = build_crc16_table();
+
+const fn build_crc16_table() -> [u16; 256] {
+    let mut table = [0u16; 256];
+    let mut index = 0;
+    while index < table.len() {
+        let mut crc = (index as u16) << 8;
+        let mut bit = 0;
+        while bit < 8 {
             crc = if crc & 0x8000 != 0 {
                 (crc << 1) ^ 0x1021
             } else {
                 crc << 1
             };
+            bit += 1;
         }
+        table[index] = crc;
+        index += 1;
     }
-    crc
+    table
 }
 
 #[cfg(test)]

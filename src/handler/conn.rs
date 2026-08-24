@@ -33,6 +33,7 @@ pub struct Conn {
     pub notifier: Arc<WorkerNotifier>,
     pub auth_required: Option<Arc<String>>,
     pub authenticated: bool,
+    pub asking: bool,
 }
 
 impl Conn {
@@ -57,6 +58,7 @@ impl Conn {
             notifier,
             auth_required: auth,
             authenticated,
+            asking: false,
         }
     }
 
@@ -168,7 +170,33 @@ fn dispatch_raw(conn: &mut Conn, raw: &[(*const u8, usize)]) {
         return;
     }
 
+    let write_store = Arc::clone(&conn.store);
+    let _cluster_write_guard =
+        if write_store.cluster.enabled && crate::cluster::is_write_command(cmd) {
+            Some(write_store.cluster_write_guard())
+        } else {
+            None
+        };
+
     if conn.store.cluster.enabled {
+        if conn.store.replica_installing() {
+            conn.parser
+                .wbuf
+                .extend_from_slice(b"-CLUSTERDOWN Replica snapshot is installing\r\n");
+            return;
+        }
+        if conn
+            .store
+            .cluster
+            .local_node()
+            .is_some_and(|node| node.role == crate::cluster::NodeRole::Replica)
+            && crate::cluster::is_write_command(cmd)
+        {
+            conn.parser
+                .wbuf
+                .extend_from_slice(b"-READONLY You can't write against a read only replica.\r\n");
+            return;
+        }
         // Most Redis commands have a small argument count. Keep routing on the
         // stack in that common case so cluster mode does not add a heap
         // allocation to every request. A bounded heap fallback handles large
@@ -187,7 +215,13 @@ fn dispatch_raw(conn: &mut Conn, raw: &[(*const u8, usize)]) {
                 .collect();
             // The fallback must live through routing; route_command only
             // borrows the slice, so perform the decision before dropping it.
-            let decision = crate::cluster::route_command(&conn.store.cluster, cmd, &args);
+            let decision = crate::cluster::route_command_with_state_import(
+                &conn.store.cluster,
+                &conn.store.cluster_state(),
+                cmd,
+                &args,
+                std::mem::take(&mut conn.asking),
+            );
             match decision {
                 crate::cluster::RouteDecision::Local => {}
                 crate::cluster::RouteDecision::Moved { slot, address } => {
@@ -198,18 +232,44 @@ fn dispatch_raw(conn: &mut Conn, raw: &[(*const u8, usize)]) {
                     conn.parser.wbuf.extend_from_slice(b"\r\n");
                     return;
                 }
+                crate::cluster::RouteDecision::MovedOwned { slot, address } => {
+                    conn.parser.wbuf.extend_from_slice(b"-MOVED ");
+                    crate::utils::resp::write_usize(&mut conn.parser.wbuf, slot.value() as usize);
+                    conn.parser.wbuf.push(b' ');
+                    conn.parser.wbuf.extend_from_slice(address.as_bytes());
+                    conn.parser.wbuf.extend_from_slice(b"\r\n");
+                    return;
+                }
+                crate::cluster::RouteDecision::Ask { slot, address } => {
+                    conn.parser.wbuf.extend_from_slice(b"-ASK ");
+                    crate::utils::resp::write_usize(&mut conn.parser.wbuf, slot.value() as usize);
+                    conn.parser.wbuf.push(b' ');
+                    conn.parser.wbuf.extend_from_slice(address.as_bytes());
+                    conn.parser.wbuf.extend_from_slice(b"\r\n");
+                    return;
+                }
                 crate::cluster::RouteDecision::CrossSlot => {
-                    conn.parser.wbuf.extend_from_slice(b"-CROSSSLOT Keys in request don't hash to the same slot\r\n");
+                    conn.parser.wbuf.extend_from_slice(
+                        b"-CROSSSLOT Keys in request don't hash to the same slot\r\n",
+                    );
                     return;
                 }
                 crate::cluster::RouteDecision::Unassigned(_) => {
-                    conn.parser.wbuf.extend_from_slice(b"-CLUSTERDOWN Hash slot not served\r\n");
+                    conn.parser
+                        .wbuf
+                        .extend_from_slice(b"-CLUSTERDOWN Hash slot not served\r\n");
                     return;
                 }
             }
             &[]
         };
-        match crate::cluster::route_command(&conn.store.cluster, cmd, &args) {
+        match crate::cluster::route_command_with_state_import(
+            &conn.store.cluster,
+            &conn.store.cluster_state(),
+            cmd,
+            &args,
+            std::mem::take(&mut conn.asking),
+        ) {
             crate::cluster::RouteDecision::Local => {}
             crate::cluster::RouteDecision::Moved { slot, address } => {
                 conn.parser.wbuf.extend_from_slice(b"-MOVED ");
@@ -219,12 +279,32 @@ fn dispatch_raw(conn: &mut Conn, raw: &[(*const u8, usize)]) {
                 conn.parser.wbuf.extend_from_slice(b"\r\n");
                 return;
             }
+            crate::cluster::RouteDecision::MovedOwned { slot, address } => {
+                conn.parser.wbuf.extend_from_slice(b"-MOVED ");
+                crate::utils::resp::write_usize(&mut conn.parser.wbuf, slot.value() as usize);
+                conn.parser.wbuf.push(b' ');
+                conn.parser.wbuf.extend_from_slice(address.as_bytes());
+                conn.parser.wbuf.extend_from_slice(b"\r\n");
+                return;
+            }
+            crate::cluster::RouteDecision::Ask { slot, address } => {
+                conn.parser.wbuf.extend_from_slice(b"-ASK ");
+                crate::utils::resp::write_usize(&mut conn.parser.wbuf, slot.value() as usize);
+                conn.parser.wbuf.push(b' ');
+                conn.parser.wbuf.extend_from_slice(address.as_bytes());
+                conn.parser.wbuf.extend_from_slice(b"\r\n");
+                return;
+            }
             crate::cluster::RouteDecision::CrossSlot => {
-                conn.parser.wbuf.extend_from_slice(b"-CROSSSLOT Keys in request don't hash to the same slot\r\n");
+                conn.parser.wbuf.extend_from_slice(
+                    b"-CROSSSLOT Keys in request don't hash to the same slot\r\n",
+                );
                 return;
             }
             crate::cluster::RouteDecision::Unassigned(_) => {
-                conn.parser.wbuf.extend_from_slice(b"-CLUSTERDOWN Hash slot not served\r\n");
+                conn.parser
+                    .wbuf
+                    .extend_from_slice(b"-CLUSTERDOWN Hash slot not served\r\n");
                 return;
             }
         }
@@ -241,6 +321,7 @@ fn dispatch_raw(conn: &mut Conn, raw: &[(*const u8, usize)]) {
             };
             if raw.len() == 3 {
                 conn.store.set_string(key, value, 0);
+                conn.store.record_current_value(key);
                 conn.parser.wbuf.extend_from_slice(b"+OK\r\n");
                 return;
             }
@@ -272,7 +353,10 @@ fn dispatch_raw(conn: &mut Conn, raw: &[(*const u8, usize)]) {
                 return;
             };
             match conn.store.incr(key) {
-                Ok(n) => crate::utils::resp::write_integer(&mut conn.parser.wbuf, n),
+                Ok(n) => {
+                    conn.store.record_current_value(key);
+                    crate::utils::resp::write_integer(&mut conn.parser.wbuf, n)
+                }
                 Err(e) => crate::utils::resp::write_err(&mut conn.parser.wbuf, e),
             }
             return;
@@ -283,6 +367,7 @@ fn dispatch_raw(conn: &mut Conn, raw: &[(*const u8, usize)]) {
             };
             match conn.store.rpop(key, 1) {
                 Ok(items) if !items.is_empty() => {
+                    conn.store.record_current_value(key);
                     crate::utils::resp::write_bulk(&mut conn.parser.wbuf, &items[0]);
                 }
                 _ => conn.parser.wbuf.extend_from_slice(b"$-1\r\n"),
@@ -298,7 +383,10 @@ fn dispatch_raw(conn: &mut Conn, raw: &[(*const u8, usize)]) {
                     return;
                 };
                 match conn.store.sadd(key, &[member]) {
-                    Ok(n) => crate::utils::resp::write_integer(&mut conn.parser.wbuf, n as i64),
+                    Ok(n) => {
+                        conn.store.record_current_value(key);
+                        crate::utils::resp::write_integer(&mut conn.parser.wbuf, n as i64)
+                    }
                     Err(_) => crate::utils::resp::write_wrong_type(&mut conn.parser.wbuf),
                 }
                 return;
@@ -313,7 +401,10 @@ fn dispatch_raw(conn: &mut Conn, raw: &[(*const u8, usize)]) {
             return;
         };
         match conn.store.lpush(key, &[value]) {
-            Ok(n) => crate::utils::resp::write_integer(&mut conn.parser.wbuf, n as i64),
+            Ok(n) => {
+                conn.store.record_current_value(key);
+                crate::utils::resp::write_integer(&mut conn.parser.wbuf, n as i64)
+            }
             Err(_) => crate::utils::resp::write_wrong_type(&mut conn.parser.wbuf),
         }
         return;

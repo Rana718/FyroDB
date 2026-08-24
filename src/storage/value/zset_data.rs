@@ -73,7 +73,14 @@ impl ZSetData {
     }
 
     fn bloom_rebuild(&mut self) {
-        let words = (self.entries.len().saturating_mul(8).next_power_of_two().max(64) / 64).max(1);
+        let words = (self
+            .entries
+            .len()
+            .saturating_mul(8)
+            .next_power_of_two()
+            .max(64)
+            / 64)
+            .max(1);
         self.bloom.clear();
         self.bloom.resize(words, 0);
         for i in 0..self.entries.len() {
@@ -97,16 +104,32 @@ impl ZSetData {
                 if (last.score - score).abs() > f64::EPSILON {
                     self.entries.pop();
                     let insert_pos = self.find_insert_pos(score, member);
-                    self.entries.insert(insert_pos, ZEntry { score, member: SmallStr::new(member) });
+                    self.entries.insert(
+                        insert_pos,
+                        ZEntry {
+                            score,
+                            member: SmallStr::new(member),
+                        },
+                    );
                 }
                 return false;
             }
-            if let Some(pos) = self.entries.iter().position(|e| e.member.as_str() == member) {
+            if let Some(pos) = self
+                .entries
+                .iter()
+                .position(|e| e.member.as_str() == member)
+            {
                 let old_score = self.entries[pos].score;
                 if (old_score - score).abs() > f64::EPSILON {
                     self.entries.remove(pos);
                     let insert_pos = self.find_insert_pos(score, member);
-                    self.entries.insert(insert_pos, ZEntry { score, member: SmallStr::new(member) });
+                    self.entries.insert(
+                        insert_pos,
+                        ZEntry {
+                            score,
+                            member: SmallStr::new(member),
+                        },
+                    );
                 }
                 return false;
             }
@@ -114,10 +137,19 @@ impl ZSetData {
         if self.entries.last().is_none_or(|last| {
             last.score < score || (last.score == score && last.member.as_str() <= member)
         }) {
-            self.entries.push(ZEntry { score, member: SmallStr::new(member) });
+            self.entries.push(ZEntry {
+                score,
+                member: SmallStr::new(member),
+            });
         } else {
             let insert_pos = self.find_insert_pos(score, member);
-            self.entries.insert(insert_pos, ZEntry { score, member: SmallStr::new(member) });
+            self.entries.insert(
+                insert_pos,
+                ZEntry {
+                    score,
+                    member: SmallStr::new(member),
+                },
+            );
         }
         self.bloom_set(h);
         self.bloom_grow_if_needed();
@@ -125,7 +157,10 @@ impl ZSetData {
     }
 
     pub fn remove(&mut self, member: &str) -> Option<f64> {
-        let pos = self.entries.iter().position(|e| e.member.as_str() == member)?;
+        let pos = self
+            .entries
+            .iter()
+            .position(|e| e.member.as_str() == member)?;
         let score = self.entries[pos].score;
         self.entries.remove(pos);
         self.reclaim_capacity();
@@ -333,7 +368,11 @@ impl ZSetData {
     }
 
     pub fn incr(&mut self, member: &str, increment: f64) -> f64 {
-        if let Some(pos) = self.entries.iter().position(|e| e.member.as_str() == member) {
+        if let Some(pos) = self
+            .entries
+            .iter()
+            .position(|e| e.member.as_str() == member)
+        {
             let new_score = self.entries[pos].score + increment;
             let stays = (pos == 0
                 || self.entries[pos - 1].score < new_score
@@ -348,7 +387,13 @@ impl ZSetData {
             } else {
                 self.entries.remove(pos);
                 let insert_pos = self.find_insert_pos(new_score, member);
-                self.entries.insert(insert_pos, ZEntry { score: new_score, member: SmallStr::new(member) });
+                self.entries.insert(
+                    insert_pos,
+                    ZEntry {
+                        score: new_score,
+                        member: SmallStr::new(member),
+                    },
+                );
             }
             new_score
         } else {

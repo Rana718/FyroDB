@@ -31,21 +31,37 @@ fn main() {
 
     set_max_clients(config.max_clients);
 
-    let _peer_manager = if store.cluster.enabled {
-        let cluster_state = fyro_db::cluster::ClusterState::new(
-            store.cluster.failure_quorum,
-            Duration::from_secs(30),
-        );
-        match fyro_db::cluster::start_listener(store.cluster.clone(), cluster_state.clone()) {
+    if let Err(e) = rdb::load(&store, &config.rdb_path) {
+        eprintln!("fyrodb: failed to load snapshot: {e}");
+    }
+    store.load_replication_metadata(&config.rdb_path);
+    store.load_cluster_metadata(&config.rdb_path);
+
+    let peer_manager = if store.cluster.enabled {
+        let cluster_state = store.cluster_state();
+        match fyro_db::cluster::start_listener(
+            store.cluster.clone(),
+            cluster_state.clone(),
+            Arc::clone(&store),
+        ) {
             Ok(_) => {
                 println!(
                     "  cluster=enabled node_id={} listen={}",
                     store.cluster.local_id, store.cluster.listen_address
                 );
-                Some(fyro_db::cluster::start_peer_manager(
+                let manager = Arc::new(fyro_db::cluster::start_peer_manager(
                     &store.cluster,
+                    cluster_state.clone(),
+                ));
+                // The monitor owns the same bounded failure evidence state as
+                // peer handlers so local and remote observations share quorum.
+                fyro_db::cluster::start_health_monitor(
+                    store.cluster.clone(),
+                    Arc::clone(&manager),
+                    Arc::clone(&store),
                     cluster_state,
-                ))
+                );
+                Some(manager)
             }
             Err(error) => {
                 eprintln!("fyrodb: failed to start cluster listener: {error}");
@@ -56,8 +72,15 @@ fn main() {
         None
     };
 
-    if let Err(e) = rdb::load(&store, &config.rdb_path) {
-        eprintln!("fyrodb: failed to load snapshot: {e}");
+    if let (Some(manager), Some(log)) = (peer_manager.as_ref(), store.replication_coordinator()) {
+        fyro_db::cluster::start_replication_streams(
+            &store.cluster,
+            Arc::clone(manager),
+            Arc::clone(&store),
+            log,
+        );
+        // Health monitoring is started with the peer manager above so it can
+        // share failure evidence; replication setup remains independent.
     }
 
     println!(

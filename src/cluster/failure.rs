@@ -50,6 +50,10 @@ impl FailureTracker {
             .map_or(0, |value| value.reporters.len())
     }
 
+    pub fn quorum(&self) -> usize {
+        self.quorum
+    }
+
     pub fn expire(&mut self) {
         let retention = self.retention;
         self.evidence

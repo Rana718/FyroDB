@@ -25,6 +25,7 @@ pub fn encode_topology(topology: &Topology) -> Result<Vec<u8>, TopologyCodecErro
             NodeRole::Primary => 0,
             NodeRole::Replica => 1,
         });
+        put_string(&mut out, node.replica_of.as_deref().unwrap_or(""))?;
         out.extend_from_slice(&node.epoch.to_be_bytes());
         if node.slots.len() > u16::MAX as usize {
             return Err(TopologyCodecError::TooLarge);
@@ -55,6 +56,10 @@ pub fn decode_topology(bytes: &[u8]) -> Result<Topology, TopologyCodecError> {
             1 => NodeRole::Replica,
             _ => return Err(TopologyCodecError::Invalid),
         };
+        let replica_of = match take_string(&mut input)? {
+            value if value.is_empty() => None,
+            value => Some(value),
+        };
         let node_epoch = take_u64(&mut input)?;
         let range_count = take_u16(&mut input)? as usize;
         let mut slots = Vec::with_capacity(range_count);
@@ -68,6 +73,7 @@ pub fn decode_topology(bytes: &[u8]) -> Result<Topology, TopologyCodecError> {
             address,
             cluster_address,
             role,
+            replica_of,
             epoch: node_epoch,
             slots,
         });
@@ -122,6 +128,7 @@ mod tests {
                 address: "10.0.0.1:8000".into(),
                 cluster_address: "10.0.0.1:18000".into(),
                 role: NodeRole::Primary,
+                replica_of: None,
                 epoch: 8,
                 slots: vec![SlotRange::new(Slot(0), Slot(100)).unwrap()],
             }],

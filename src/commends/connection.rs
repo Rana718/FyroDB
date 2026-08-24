@@ -126,39 +126,75 @@ pub fn cluster_cmd(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     match parts {
         [_, sub] if sub.eq_ignore_ascii_case("MYID") => resp::write_bulk(out, &cluster.local_id),
         [_, sub] if sub.eq_ignore_ascii_case("INFO") => {
-            let assigned: usize = cluster.topology.nodes.iter()
+            let assigned: usize = cluster
+                .topology
+                .nodes
+                .iter()
                 .filter(|node| node.role == crate::cluster::NodeRole::Primary)
                 .flat_map(|node| node.slots.iter())
                 .map(|range| usize::from(range.end.value() - range.start.value()) + 1)
                 .sum();
-            let state = if cluster.topology.is_complete() { "ok" } else { "fail" };
-            resp::write_bulk(out, &format!(
-                "cluster_state:{state}\r\ncluster_slots_assigned:{assigned}\r\ncluster_slots_ok:{assigned}\r\ncluster_slots_pfail:0\r\ncluster_slots_fail:0\r\ncluster_known_nodes:{}\r\ncluster_size:{}\r\ncluster_current_epoch:{}\r\ncluster_my_epoch:{}\r\n",
-                cluster.topology.nodes.len(),
-                cluster.topology.nodes.iter().filter(|node| node.role == crate::cluster::NodeRole::Primary).count(),
-                cluster.topology.epoch,
-                cluster.local_node().map_or(0, |node| node.epoch),
-            ));
+            let state = if cluster.topology.is_complete() {
+                "ok"
+            } else {
+                "fail"
+            };
+            resp::write_bulk(
+                out,
+                &format!(
+                    "cluster_state:{state}\r\ncluster_slots_assigned:{assigned}\r\ncluster_slots_ok:{assigned}\r\ncluster_slots_pfail:0\r\ncluster_slots_fail:0\r\ncluster_known_nodes:{}\r\ncluster_size:{}\r\ncluster_current_epoch:{}\r\ncluster_my_epoch:{}\r\n",
+                    cluster.topology.nodes.len(),
+                    cluster
+                        .topology
+                        .nodes
+                        .iter()
+                        .filter(|node| node.role == crate::cluster::NodeRole::Primary)
+                        .count(),
+                    cluster.topology.epoch,
+                    cluster.local_node().map_or(0, |node| node.epoch),
+                ),
+            );
         }
         [_, sub] if sub.eq_ignore_ascii_case("NODES") => {
             let mut text = String::new();
             for node in &cluster.topology.nodes {
-                let flags = if node.id == cluster.local_id { "myself,master" } else { "master" };
-                let slots = node.slots.iter().map(|range| {
-                    if range.start == range.end { range.start.value().to_string() }
-                    else { format!("{}-{}", range.start.value(), range.end.value()) }
-                }).collect::<Vec<_>>().join(" ");
-                text.push_str(&format!("{} {}@{} {} - 0 0 {} connected {}\n", node.id, node.address, node.cluster_address, flags, node.epoch, slots));
+                let flags = if node.id == cluster.local_id {
+                    "myself,master"
+                } else {
+                    "master"
+                };
+                let slots = node
+                    .slots
+                    .iter()
+                    .map(|range| {
+                        if range.start == range.end {
+                            range.start.value().to_string()
+                        } else {
+                            format!("{}-{}", range.start.value(), range.end.value())
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                text.push_str(&format!(
+                    "{} {}@{} {} - 0 0 {} connected {}\n",
+                    node.id, node.address, node.cluster_address, flags, node.epoch, slots
+                ));
             }
             resp::write_bulk(out, &text);
         }
         [_, sub] if sub.eq_ignore_ascii_case("SLOTS") => write_cluster_slots(cluster, out),
-        _ => resp::write_err(out, "Unknown CLUSTER subcommand or wrong number of arguments"),
+        _ => resp::write_err(
+            out,
+            "Unknown CLUSTER subcommand or wrong number of arguments",
+        ),
     }
 }
 
 fn write_cluster_slots(cluster: &crate::cluster::ClusterConfig, out: &mut Vec<u8>) {
-    let ranges: Vec<_> = cluster.topology.nodes.iter()
+    let ranges: Vec<_> = cluster
+        .topology
+        .nodes
+        .iter()
         .filter(|node| node.role == crate::cluster::NodeRole::Primary)
         .flat_map(|node| node.slots.iter().map(move |range| (node, range)))
         .collect();
@@ -176,7 +212,9 @@ fn write_cluster_slots(cluster: &crate::cluster::ClusterConfig, out: &mut Vec<u8
 }
 
 fn split_advertised_address(address: &str) -> (&str, u16) {
-    address.rsplit_once(':').and_then(|(host, port)| port.parse().ok().map(|port| (host, port)))
+    address
+        .rsplit_once(':')
+        .and_then(|(host, port)| port.parse().ok().map(|port| (host, port)))
         .unwrap_or((address, 0))
 }
 

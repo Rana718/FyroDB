@@ -1,8 +1,8 @@
 use std::sync::atomic::Ordering;
 
+use super::CustomMap;
 use super::ebr;
 use super::shard::*;
-use super::CustomMap;
 
 impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
     pub fn for_each(&self, mut f: impl FnMut(&str, &V)) {

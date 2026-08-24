@@ -10,11 +10,12 @@ services:
       FYRODB_CLUSTER_AUTH: change-this-long-random-secret
       FYRODB_REPLICATION_LOG_CAPACITY: 100000
       FYRODB_WORKERS: "1"
+      FYRODB_MAX_KEYS: "1000000"
       # Client addresses are host-reachable because these ports are published.
       # The cluster bus addresses remain container-local service names.
       FYRODB_CLUSTER_NODES: node-a|localhost:8000|fyrodb-a:18000|0-5460;node-b|localhost:8001|fyrodb-b:18000|5461-10922;node-c|localhost:8002|fyrodb-c:18000|10923-16383
       FYRODB_RDB_PATH: /data/fyrodb.rdb
-    ports: ["8000:8000", "18000:18000"]
+    ports: ["8000:8000"]
     volumes: ["fyrodb-a:/data"]
     networks: [fyrodb]
     healthcheck:
@@ -35,9 +36,10 @@ services:
       FYRODB_CLUSTER_AUTH: change-this-long-random-secret
       FYRODB_REPLICATION_LOG_CAPACITY: 100000
       FYRODB_WORKERS: "1"
+      FYRODB_MAX_KEYS: "1000000"
       FYRODB_CLUSTER_NODES: node-a|localhost:8000|fyrodb-a:18000|0-5460;node-b|localhost:8001|fyrodb-b:18000|5461-10922;node-c|localhost:8002|fyrodb-c:18000|10923-16383
       FYRODB_RDB_PATH: /data/fyrodb.rdb
-    ports: ["8001:8000", "18001:18000"]
+    ports: ["8001:8000"]
     volumes: ["fyrodb-b:/data"]
     networks: [fyrodb]
     healthcheck:
@@ -58,9 +60,10 @@ services:
       FYRODB_CLUSTER_AUTH: change-this-long-random-secret
       FYRODB_REPLICATION_LOG_CAPACITY: 100000
       FYRODB_WORKERS: "1"
+      FYRODB_MAX_KEYS: "1000000"
       FYRODB_CLUSTER_NODES: node-a|localhost:8000|fyrodb-a:18000|0-5460;node-b|localhost:8001|fyrodb-b:18000|5461-10922;node-c|localhost:8002|fyrodb-c:18000|10923-16383
       FYRODB_RDB_PATH: /data/fyrodb.rdb
-    ports: ["8002:8000", "18002:18000"]
+    ports: ["8002:8000"]
     volumes: ["fyrodb-c:/data"]
     networks: [fyrodb]
     healthcheck:

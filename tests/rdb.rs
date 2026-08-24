@@ -89,6 +89,25 @@ fn rdb_ttl_preserved() {
     assert_eq!(s2.get("k"), Some("v".into()));
     let ttl = s2.ttl("k").unwrap();
     assert!(ttl.as_secs() > 90 && ttl.as_secs() <= 100);
+    assert!(s2.has_ttl_keys());
+
+    cleanup(&path);
+}
+
+#[test]
+fn strict_rdb_load_rejects_truncated_snapshot() {
+    let path = tmp_path("strict_truncated");
+    cleanup(&path);
+
+    let s = store();
+    set_str(&s, "key", "value");
+    rdb::save(&s, &path).unwrap();
+    let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+    let length = file.metadata().unwrap().len();
+    file.set_len(length.saturating_sub(1)).unwrap();
+
+    let target = store();
+    assert!(rdb::load_strict(&target, &path).is_err());
 
     cleanup(&path);
 }

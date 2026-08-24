@@ -7,14 +7,14 @@ impl Store {
     pub fn del(&self, key: &str) -> bool {
         let removed = self.data.remove_no_clone(key);
         if removed && let Some(log) = &self.replication {
-                let _ = log.append(crate::cluster::MutationRecord {
-                    offset: 0,
-                    slot: crate::cluster::hash_slot(key.as_bytes()),
-                    kind: crate::cluster::MutationKind::Delete,
-                    key: key.as_bytes().to_vec(),
-                    value: Vec::new(),
-                    expire_at_ms: None,
-                });
+            let _ = log.append(crate::cluster::MutationRecord {
+                offset: 0,
+                slot: crate::cluster::hash_slot(key.as_bytes()),
+                kind: crate::cluster::MutationKind::Delete,
+                key: key.as_bytes().to_vec(),
+                value: Vec::new(),
+                expire_at_ms: None,
+            });
         }
         removed
     }

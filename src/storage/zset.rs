@@ -434,7 +434,10 @@ impl Store {
                 return Ok(0);
             }
             Some(e) => match e.value.as_zset() {
-                Some(z) => z.iter().map(|entry| (entry.member.clone(), entry.score)).collect(),
+                Some(z) => z
+                    .iter()
+                    .map(|entry| (entry.member.clone(), entry.score))
+                    .collect(),
                 None => return Err("WRONGTYPE"),
             },
         };
@@ -460,7 +463,10 @@ impl Store {
                     return Ok(0);
                 }
                 Some(e) => match e.value.as_zset() {
-                    Some(z) => z.iter().map(|entry| (entry.member.clone(), entry.score)).collect(),
+                    Some(z) => z
+                        .iter()
+                        .map(|entry| (entry.member.clone(), entry.score))
+                        .collect(),
                     None => return Err("WRONGTYPE"),
                 },
             };

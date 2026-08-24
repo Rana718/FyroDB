@@ -1,5 +1,6 @@
 use super::Slot;
 use std::collections::VecDeque;
+use std::io::{Read, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -8,6 +9,7 @@ pub enum MutationKind {
     Set = 1,
     Delete = 2,
     Expire = 3,
+    Replace = 4,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18,6 +20,19 @@ pub struct MutationRecord {
     pub key: Vec<u8>,
     pub value: Vec<u8>,
     pub expire_at_ms: Option<u64>,
+}
+
+impl MutationRecord {
+    pub fn replace(slot: Slot, key: Vec<u8>, value: Vec<u8>, expire_at_ms: Option<u64>) -> Self {
+        Self {
+            offset: 0,
+            slot,
+            kind: MutationKind::Replace,
+            key,
+            value,
+            expire_at_ms,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,6 +51,9 @@ pub enum LogError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApplyError {
     OffsetGap,
+    InvalidKey,
+    InvalidValue,
+    WrongSlot,
 }
 
 pub struct ReplicaApplier {
@@ -47,6 +65,7 @@ pub enum ReplicationMessage {
     Begin {
         epoch: u64,
         from_offset: u64,
+        identity: [u8; 16],
     },
     Entry(MutationRecord),
     Ack {
@@ -122,7 +141,9 @@ impl ReplicationStream {
     }
     pub fn apply(&mut self, message: &ReplicationMessage) -> Result<(), StreamError> {
         match message {
-            ReplicationMessage::Begin { epoch, from_offset } => self.begin(*epoch, *from_offset),
+            ReplicationMessage::Begin {
+                epoch, from_offset, ..
+            } => self.begin(*epoch, *from_offset),
             ReplicationMessage::Entry(record) => self.entry(record),
             ReplicationMessage::Ack { applied_offset } => self.ack(*applied_offset),
             ReplicationMessage::Finish { offset } => self.finish(*offset),
@@ -157,10 +178,15 @@ pub fn encode_replication_message(
 ) -> Result<Vec<u8>, ReplicationCodecError> {
     let mut out = Vec::new();
     match message {
-        ReplicationMessage::Begin { epoch, from_offset } => {
+        ReplicationMessage::Begin {
+            epoch,
+            from_offset,
+            identity,
+        } => {
             out.push(1);
             out.extend_from_slice(&epoch.to_be_bytes());
             out.extend_from_slice(&from_offset.to_be_bytes());
+            out.extend_from_slice(identity);
         }
         ReplicationMessage::Entry(record) => {
             out.push(2);
@@ -199,9 +225,10 @@ pub fn decode_replication_message(
         return Err(ReplicationCodecError::Truncated);
     }
     match input[0] {
-        1 if input.len() == 17 => Ok(ReplicationMessage::Begin {
+        1 if input.len() == 33 => Ok(ReplicationMessage::Begin {
             epoch: u64::from_be_bytes(input[1..9].try_into().unwrap()),
             from_offset: u64::from_be_bytes(input[9..17].try_into().unwrap()),
+            identity: input[17..33].try_into().unwrap(),
         }),
         2 => Ok(ReplicationMessage::Entry(decode_mutation(&input[1..])?)),
         3 if input.len() == 9 => Ok(ReplicationMessage::Ack {
@@ -232,9 +259,26 @@ impl ReplicaApplier {
     pub fn applied_offset(&self) -> u64 {
         self.applied_offset
     }
+    pub fn reset(&mut self, offset: u64) {
+        self.applied_offset = offset;
+    }
     pub fn apply<F>(&mut self, record: &MutationRecord, mut apply: F) -> Result<bool, ApplyError>
     where
         F: FnMut(&MutationRecord),
+    {
+        self.try_apply(record, |record| {
+            apply(record);
+            Ok(())
+        })
+    }
+
+    pub fn try_apply<F>(
+        &mut self,
+        record: &MutationRecord,
+        mut apply: F,
+    ) -> Result<bool, ApplyError>
+    where
+        F: FnMut(&MutationRecord) -> Result<(), ApplyError>,
     {
         if record.offset <= self.applied_offset {
             return Ok(false);
@@ -242,7 +286,7 @@ impl ReplicaApplier {
         if record.offset != self.applied_offset.saturating_add(1) {
             return Err(ApplyError::OffsetGap);
         }
-        apply(record);
+        apply(record)?;
         self.applied_offset = record.offset;
         Ok(true)
     }
@@ -260,6 +304,12 @@ pub struct ReplicationCoordinator {
     log: Arc<Mutex<MutationLog>>,
     next_offset: Arc<AtomicU64>,
     appended: Arc<AtomicU64>,
+    journal: Arc<Mutex<Option<ReplicationJournal>>>,
+}
+
+struct ReplicationJournal {
+    file: std::fs::File,
+    identity: [u8; 16],
 }
 
 impl ReplicationCoordinator {
@@ -268,6 +318,7 @@ impl ReplicationCoordinator {
             log: Arc::new(Mutex::new(MutationLog::new(capacity))),
             next_offset: Arc::new(AtomicU64::new(1)),
             appended: Arc::new(AtomicU64::new(0)),
+            journal: Arc::new(Mutex::new(None)),
         }
     }
     pub fn append(&self, record: MutationRecord) -> Result<u64, LogError> {
@@ -281,6 +332,23 @@ impl ReplicationCoordinator {
             .append(record);
         if result.is_ok() {
             self.appended.fetch_add(1, Ordering::Relaxed);
+            if let Some(journal) = self.journal.lock().unwrap().as_mut()
+                && let Ok(payload) = encode_mutation(
+                    &self
+                        .log
+                        .lock()
+                        .expect("replication log poisoned")
+                        .records
+                        .back()
+                        .unwrap(),
+                )
+            {
+                let _ = journal
+                    .file
+                    .write_all(&(payload.len() as u32).to_le_bytes());
+                let _ = journal.file.write_all(&payload);
+                let _ = journal.file.flush();
+            }
         }
         result
     }
@@ -289,6 +357,21 @@ impl ReplicationCoordinator {
             .lock()
             .expect("replication log poisoned")
             .replay_from(offset)
+    }
+    pub fn record_at(&self, offset: u64) -> Result<Option<MutationRecord>, LogError> {
+        self.log
+            .lock()
+            .expect("replication log poisoned")
+            .record_at(offset)
+    }
+    /// Returns the first retained offset, or the next offset when the log is empty.
+    pub fn first_retained_offset(&self) -> u64 {
+        self.log
+            .lock()
+            .expect("replication log poisoned")
+            .records
+            .front()
+            .map_or_else(|| self.next_offset(), |record| record.offset)
     }
     pub fn next_offset(&self) -> u64 {
         self.next_offset.load(Ordering::Relaxed)
@@ -310,6 +393,85 @@ impl ReplicationCoordinator {
     }
     pub fn retained_byte_limit(&self) -> usize {
         MAX_LOG_BYTES
+    }
+
+    pub fn identity(&self) -> Option<[u8; 16]> {
+        self.journal
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|journal| journal.identity)
+    }
+
+    pub fn open_journal(&self, path: &str, identity: [u8; 16]) -> std::io::Result<()> {
+        const MAGIC: &[u8; 4] = b"FLRJ";
+        let mut restored = Vec::new();
+        if std::path::Path::new(path).exists() {
+            let mut file = std::fs::File::open(path)?;
+            let mut header = [0u8; 21];
+            file.read_exact(&mut header)?;
+            if &header[..4] != MAGIC || header[4] != 1 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "replication journal identity mismatch",
+                ));
+            }
+            let existing: [u8; 16] = header[5..21].try_into().unwrap();
+            let existing_identity = if identity == [0; 16] {
+                existing
+            } else if existing != identity {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "replication journal identity mismatch",
+                ));
+            } else {
+                identity
+            };
+            let _ = existing_identity;
+            loop {
+                let mut length = [0u8; 4];
+                match file.read_exact(&mut length) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => break,
+                    Err(error) => return Err(error),
+                }
+                let length = u32::from_le_bytes(length) as usize;
+                if length > MAX_FIELD {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "oversized replication journal record",
+                    ));
+                }
+                let mut payload = vec![0u8; length];
+                file.read_exact(&mut payload)?;
+                restored.push(decode_mutation(&payload).map_err(|_| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "invalid replication journal record",
+                    )
+                })?);
+            }
+        }
+        if !restored.is_empty() {
+            let mut log = self.log.lock().unwrap();
+            for record in restored {
+                let _ = log.append(record);
+            }
+            self.next_offset.store(log.next_offset(), Ordering::Relaxed);
+        }
+        let exists = std::path::Path::new(path).exists();
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)?;
+        if !exists {
+            file.write_all(MAGIC)?;
+            file.write_all(&[1])?;
+            file.write_all(&identity)?;
+            file.flush()?;
+        }
+        *self.journal.lock().unwrap() = Some(ReplicationJournal { file, identity });
+        Ok(())
     }
 }
 
@@ -359,6 +521,20 @@ impl MutationLog {
             .cloned()
             .collect())
     }
+    pub fn record_at(&self, offset: u64) -> Result<Option<MutationRecord>, LogError> {
+        let first = self
+            .records
+            .front()
+            .map_or(self.next_offset, |record| record.offset);
+        if offset != 0 && offset < first {
+            return Err(LogError::OffsetGap);
+        }
+        Ok(self
+            .records
+            .iter()
+            .find(|record| record.offset == offset.max(1))
+            .cloned())
+    }
     pub fn next_offset(&self) -> u64 {
         self.next_offset
     }
@@ -406,6 +582,7 @@ pub fn decode_mutation(mut input: &[u8]) -> Result<MutationRecord, ReplicationCo
         1 => MutationKind::Set,
         2 => MutationKind::Delete,
         3 => MutationKind::Expire,
+        4 => MutationKind::Replace,
         _ => return Err(ReplicationCodecError::Invalid),
     };
     let key_len = u32::from_be_bytes(take(&mut input, 4)?.try_into().unwrap()) as usize;
@@ -416,7 +593,10 @@ pub fn decode_mutation(mut input: &[u8]) -> Result<MutationRecord, ReplicationCo
     }
     let key = take(&mut input, key_len)?.to_vec();
     let value = take(&mut input, value_len)?.to_vec();
-    if !input.is_empty() || key.is_empty() || (kind != MutationKind::Set && !value.is_empty()) {
+    if !input.is_empty()
+        || key.is_empty()
+        || (matches!(kind, MutationKind::Delete | MutationKind::Expire) && !value.is_empty())
+    {
         return Err(ReplicationCodecError::Invalid);
     }
     Ok(MutationRecord {
