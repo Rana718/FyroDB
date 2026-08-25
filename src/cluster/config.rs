@@ -16,6 +16,8 @@ pub struct ClusterConfig {
     pub replication_log_capacity: usize,
     /// Cached at startup — avoids a linear node scan on every write command.
     pub is_replica: bool,
+    /// Path where cluster topology is auto-saved (nodes.conf style).
+    pub nodes_config_file: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,6 +46,7 @@ impl ClusterConfig {
             auth_token: None,
             replication_log_capacity: 100_000,
             is_replica: false,
+            nodes_config_file: "fyrodb-nodes.conf".to_string(),
         }
     }
 
@@ -78,13 +81,15 @@ impl ClusterConfig {
                 "FYRODB_CLUSTER_SUSPECT_MS must exceed FYRODB_CLUSTER_HEARTBEAT_MS".into(),
             ));
         }
-        let topology = if let Ok(spec) = std::env::var("FYRODB_CLUSTER_NODES") {
-            parse_nodes(&spec)?
+        let nodes_config_file = std::env::var("FYRODB_CLUSTER_CONFIG_FILE")
+            .unwrap_or_else(|_| "fyrodb-nodes.conf".to_string());
+
+        // Load topology from nodes.conf if it exists, otherwise start as
+        // a single unconfigured node — use CLUSTER MEET + CLUSTER ADDSLOTS
+        // (or redis-cli --cluster create) to wire the cluster together.
+        let topology = if let Some(t) = load_nodes_conf(&nodes_config_file, &local_id) {
+            t
         } else {
-            let slots = match std::env::var("FYRODB_CLUSTER_SLOTS") {
-                Ok(value) => parse_slot_ranges(&value)?,
-                Err(_) => vec![SlotRange::new(Slot(0), Slot(HASH_SLOTS - 1)).unwrap()],
-            };
             Topology::new(
                 1,
                 vec![NodeInfo {
@@ -94,15 +99,10 @@ impl ClusterConfig {
                     role: NodeRole::Primary,
                     replica_of: None,
                     epoch: 1,
-                    slots,
+                    slots: Vec::new(),
                 }],
             )
         };
-        if !topology.nodes.iter().any(|node| node.id == local_id) {
-            return Err(ClusterConfigError(format!(
-                "FYRODB_NODE_ID {local_id} is not present in FYRODB_CLUSTER_NODES"
-            )));
-        }
         validate_primary_ranges(&topology)?;
         let is_replica = topology
             .nodes
@@ -121,6 +121,7 @@ impl ClusterConfig {
             auth_token,
             replication_log_capacity,
             is_replica,
+            nodes_config_file,
         })
     }
 
@@ -156,101 +157,6 @@ fn env_duration(name: &str, default_ms: u64) -> Result<Duration, ClusterConfigEr
     ))
 }
 
-fn parse_slot_ranges(value: &str) -> Result<Vec<SlotRange>, ClusterConfigError> {
-    let mut ranges = Vec::new();
-    for raw in value
-        .split(',')
-        .map(str::trim)
-        .filter(|part| !part.is_empty())
-    {
-        let (start, end) = raw.split_once('-').unwrap_or((raw, raw));
-        let start: u16 = start
-            .parse()
-            .map_err(|_| ClusterConfigError(format!("invalid slot range: {raw}")))?;
-        let end: u16 = end
-            .parse()
-            .map_err(|_| ClusterConfigError(format!("invalid slot range: {raw}")))?;
-        let start = Slot::new(start)
-            .ok_or_else(|| ClusterConfigError(format!("slot out of range: {raw}")))?;
-        let end = Slot::new(end)
-            .ok_or_else(|| ClusterConfigError(format!("slot out of range: {raw}")))?;
-        ranges.push(
-            SlotRange::new(start, end)
-                .ok_or_else(|| ClusterConfigError(format!("reversed slot range: {raw}")))?,
-        );
-    }
-    if ranges.is_empty() {
-        return Err(ClusterConfigError("FYRODB_CLUSTER_SLOTS is empty".into()));
-    }
-    Ok(ranges)
-}
-
-/// Parse `id|client_addr|cluster_addr|slots[|role]` records separated by semicolons.
-/// Role is `primary` (default) or `replica:<primary-id>`. Replicas use `-` for slots.
-fn parse_nodes(value: &str) -> Result<Topology, ClusterConfigError> {
-    let mut nodes = Vec::new();
-    for raw in value
-        .split(';')
-        .map(str::trim)
-        .filter(|record| !record.is_empty())
-    {
-        let fields: Vec<_> = raw.split('|').collect();
-        if !(4..=5).contains(&fields.len())
-            || fields[..3].iter().any(|field| field.trim().is_empty())
-        {
-            return Err(ClusterConfigError(format!(
-                "invalid cluster node record: {raw}"
-            )));
-        }
-        if nodes.iter().any(|node: &NodeInfo| node.id == fields[0]) {
-            return Err(ClusterConfigError(format!(
-                "duplicate cluster node id: {}",
-                fields[0]
-            )));
-        }
-        let (role, replica_of, slots) = match fields.get(4).copied().unwrap_or("primary") {
-            role if role.eq_ignore_ascii_case("primary") => {
-                (NodeRole::Primary, None, parse_slot_ranges(fields[3])?)
-            }
-            role if role.to_ascii_lowercase().starts_with("replica:") => {
-                let primary = role.split_once(':').map(|(_, id)| id.trim()).unwrap_or("");
-                if primary.is_empty() || fields[3].trim() != "-" {
-                    return Err(ClusterConfigError(format!(
-                        "replica must reference a primary and use '-' slots: {raw}"
-                    )));
-                }
-                (NodeRole::Replica, Some(primary.to_owned()), Vec::new())
-            }
-            _ => return Err(ClusterConfigError(format!("invalid node role: {raw}"))),
-        };
-        nodes.push(NodeInfo {
-            id: fields[0].into(),
-            address: fields[1].into(),
-            cluster_address: fields[2].into(),
-            role,
-            replica_of,
-            epoch: 1,
-            slots,
-        });
-    }
-    if nodes.is_empty() {
-        return Err(ClusterConfigError("FYRODB_CLUSTER_NODES is empty".into()));
-    }
-    for node in nodes.iter().filter(|node| node.role == NodeRole::Replica) {
-        let primary = node.replica_of.as_deref().unwrap();
-        if !nodes
-            .iter()
-            .any(|candidate| candidate.id == primary && candidate.role == NodeRole::Primary)
-        {
-            return Err(ClusterConfigError(format!(
-                "replica {} references unknown primary {primary}",
-                node.id
-            )));
-        }
-    }
-    Ok(Topology::new(1, nodes))
-}
-
 fn validate_primary_ranges(topology: &Topology) -> Result<(), ClusterConfigError> {
     let mut owners = vec![None::<&str>; HASH_SLOTS as usize];
     for node in topology
@@ -282,41 +188,186 @@ fn default_node_id() -> String {
     format!("{nanos:040x}")
 }
 
+/// Load topology from a nodes.conf file (Redis-style auto-save format).
+/// Each line: `<id> <addr>@<cluster_addr> <flags> <master> <epoch> connected <slots...>`
+/// Returns None if the file doesn't exist or is unparseable.
+pub fn load_nodes_conf(path: &str, local_id: &str) -> Option<Topology> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let mut nodes = Vec::new();
+    let mut epoch = 1u64;
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() < 7 {
+            continue;
+        }
+        let id = parts[0];
+        let addrs = parts[1];
+        let flags = parts[2];
+        let master_field = parts[3];
+        let node_epoch: u64 = parts[4].parse().unwrap_or(1);
+        epoch = epoch.max(node_epoch);
+        let (address, cluster_address) = addrs
+            .split_once('@')
+            .map(|(a, b)| (a.to_owned(), b.to_owned()))
+            .unwrap_or_else(|| (addrs.to_owned(), addrs.to_owned()));
+        let is_replica = flags.contains("slave") || flags.contains("replica");
+        let replica_of = if is_replica && master_field != "-" {
+            Some(master_field.to_owned())
+        } else {
+            None
+        };
+        let role = if is_replica {
+            NodeRole::Replica
+        } else {
+            NodeRole::Primary
+        };
+        let slots = if !is_replica {
+            parts[7..]
+                .iter()
+                .filter_map(|s| {
+                    if let Some((start, end)) = s.split_once('-') {
+                        let s: u16 = start.parse().ok()?;
+                        let e: u16 = end.parse().ok()?;
+                        SlotRange::new(Slot::new(s)?, Slot::new(e)?)
+                    } else {
+                        let n: u16 = s.parse().ok()?;
+                        let slot = Slot::new(n)?;
+                        SlotRange::new(slot, slot)
+                    }
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        nodes.push(NodeInfo {
+            id: id.to_owned(),
+            address,
+            cluster_address,
+            role,
+            replica_of,
+            epoch: node_epoch,
+            slots,
+        });
+    }
+    if nodes.is_empty() || !nodes.iter().any(|n| n.id == local_id) {
+        return None;
+    }
+    Some(Topology::new(epoch, nodes))
+}
+
+/// Save topology to nodes.conf in Redis-compatible format.
+pub fn save_nodes_conf(path: &str, topology: &Topology, local_id: &str) -> std::io::Result<()> {
+    use std::fmt::Write as FmtWrite;
+    let mut content = String::new();
+    for node in &topology.nodes {
+        let flags = if node.id == local_id {
+            if node.role == NodeRole::Replica {
+                "myself,slave"
+            } else {
+                "myself,master"
+            }
+        } else if node.role == NodeRole::Replica {
+            "slave"
+        } else {
+            "master"
+        };
+        let master = node.replica_of.as_deref().unwrap_or("-");
+        let slots: Vec<String> = node
+            .slots
+            .iter()
+            .map(|r| {
+                if r.start == r.end {
+                    r.start.value().to_string()
+                } else {
+                    format!("{}-{}", r.start.value(), r.end.value())
+                }
+            })
+            .collect();
+        let _ = writeln!(
+            content,
+            "{} {}@{} {} {} {} 0 connected {}",
+            node.id,
+            node.address,
+            node.cluster_address,
+            flags,
+            master,
+            node.epoch,
+            slots.join(" ")
+        );
+    }
+    let tmp = format!("{path}.tmp");
+    std::fs::write(&tmp, &content)?;
+    std::fs::rename(tmp, path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn parses_static_multi_node_topology() {
-        let topology = parse_nodes(
-            "a|10.0.0.1:8000|10.0.0.1:18000|0-8191;b|10.0.0.2:8000|10.0.0.2:18000|8192-16383",
-        )
-        .unwrap();
-        assert_eq!(topology.nodes.len(), 2);
-        assert!(topology.is_complete());
-        validate_primary_ranges(&topology).unwrap();
+    fn nodes_conf_round_trip() {
+        let topology = Topology::new(
+            3,
+            vec![
+                NodeInfo {
+                    id: "node-a".into(),
+                    address: "10.0.0.1:8000".into(),
+                    cluster_address: "10.0.0.1:18000".into(),
+                    role: NodeRole::Primary,
+                    replica_of: None,
+                    epoch: 3,
+                    slots: vec![SlotRange::new(Slot(0), Slot(8191)).unwrap()],
+                },
+                NodeInfo {
+                    id: "node-b".into(),
+                    address: "10.0.0.2:8000".into(),
+                    cluster_address: "10.0.0.2:18000".into(),
+                    role: NodeRole::Primary,
+                    replica_of: None,
+                    epoch: 3,
+                    slots: vec![SlotRange::new(Slot(8192), Slot(16383)).unwrap()],
+                },
+            ],
+        );
+        let path = std::env::temp_dir()
+            .join(format!("fyrodb-test-nodes-{}.conf", std::process::id()));
+        let path = path.to_str().unwrap();
+        save_nodes_conf(path, &topology, "node-a").unwrap();
+        let loaded = load_nodes_conf(path, "node-a").unwrap();
+        assert_eq!(loaded.nodes.len(), 2);
+        assert!(loaded.is_complete());
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]
-    fn rejects_overlapping_ranges() {
-        let topology = parse_nodes("a|a:8000|a:18000|0-9000;b|b:8000|b:18000|9000-16383").unwrap();
+    fn validate_primary_ranges_rejects_overlaps() {
+        let topology = Topology::new(
+            1,
+            vec![
+                NodeInfo {
+                    id: "a".into(),
+                    address: "a:8000".into(),
+                    cluster_address: "a:18000".into(),
+                    role: NodeRole::Primary,
+                    replica_of: None,
+                    epoch: 1,
+                    slots: vec![SlotRange::new(Slot(0), Slot(9000)).unwrap()],
+                },
+                NodeInfo {
+                    id: "b".into(),
+                    address: "b:8000".into(),
+                    cluster_address: "b:18000".into(),
+                    role: NodeRole::Primary,
+                    replica_of: None,
+                    epoch: 1,
+                    slots: vec![SlotRange::new(Slot(9000), Slot(16383)).unwrap()],
+                },
+            ],
+        );
         assert!(validate_primary_ranges(&topology).is_err());
-    }
-
-    #[test]
-    fn parses_and_validates_replica_roles() {
-        let topology =
-            parse_nodes("a|a:8000|a:18000|0-16383|primary;r|r:8000|r:18000|-|replica:a").unwrap();
-        let replica = topology.nodes.iter().find(|node| node.id == "r").unwrap();
-        assert_eq!(replica.role, NodeRole::Replica);
-        assert_eq!(replica.replica_of.as_deref(), Some("a"));
-        assert!(replica.slots.is_empty());
-        assert!(topology.is_complete());
-    }
-
-    #[test]
-    fn rejects_replica_with_unknown_primary_or_slots() {
-        assert!(parse_nodes("r|r:8000|r:18000|-|replica:missing").is_err());
-        assert!(parse_nodes("a|a:8000|a:18000|0-16383;r|r:8000|r:18000|0-1|replica:a").is_err());
     }
 }

@@ -1,83 +1,59 @@
 services:
-  fyrodb-a:
-    build: .
+  node-1:
+    image: rana718/fyrodb:latest
     environment:
       FYRODB_CLUSTER_ENABLED: "true"
-      FYRODB_NODE_ID: node-a
-      FYRODB_BIND: 0.0.0.0
-      FYRODB_PORT: 8000
-      FYRODB_CLUSTER_PORT: 18000
-      FYRODB_CLUSTER_AUTH: change-this-long-random-secret
-      FYRODB_REPLICATION_LOG_CAPACITY: 100000
-      FYRODB_WORKERS: "1"
+      FYRODB_BIND: "0.0.0.0"
+      FYRODB_PORT: "8000"
+      FYRODB_CLUSTER_PORT: "18000"
+      FYRODB_ADVERTISE_ADDR: "127.0.0.1"
+      FYRODB_CLUSTER_CONFIG_FILE: "/data/fyrodb-nodes.conf"
+      FYRODB_RDB_PATH: "/data/fyrodb.rdb"
       FYRODB_MAX_KEYS: "1000000"
-      # Client addresses are host-reachable because these ports are published.
-      # The cluster bus addresses remain container-local service names.
-      FYRODB_CLUSTER_NODES: node-a|localhost:8000|fyrodb-a:18000|0-5460;node-b|localhost:8001|fyrodb-b:18000|5461-10922;node-c|localhost:8002|fyrodb-c:18000|10923-16383
-      FYRODB_RDB_PATH: /data/fyrodb.rdb
-    ports: ["8000:8000"]
-    volumes: ["fyrodb-a:/data"]
-    networks: [fyrodb]
-    healthcheck:
-      test: ["CMD", "nc", "-z", "127.0.0.1", "8000"]
-      interval: 10s
-      timeout: 3s
-      retries: 5
-      start_period: 5s
+      FYRODB_WORKERS: "2"
+    ports:
+      - "8000:8000"
+      - "18000:18000"
+    volumes:
+      - node-1-data:/data
 
-  fyrodb-b:
-    build: .
+  node-2:
+    image: rana718/fyrodb:latest
     environment:
       FYRODB_CLUSTER_ENABLED: "true"
-      FYRODB_NODE_ID: node-b
-      FYRODB_BIND: 0.0.0.0
-      FYRODB_PORT: 8000
-      FYRODB_CLUSTER_PORT: 18000
-      FYRODB_CLUSTER_AUTH: change-this-long-random-secret
-      FYRODB_REPLICATION_LOG_CAPACITY: 100000
-      FYRODB_WORKERS: "1"
+      FYRODB_BIND: "0.0.0.0"
+      FYRODB_PORT: "8000"
+      FYRODB_CLUSTER_PORT: "18000"
+      FYRODB_ADVERTISE_ADDR: "127.0.0.1"
+      FYRODB_CLUSTER_CONFIG_FILE: "/data/fyrodb-nodes.conf"
+      FYRODB_RDB_PATH: "/data/fyrodb.rdb"
       FYRODB_MAX_KEYS: "1000000"
-      FYRODB_CLUSTER_NODES: node-a|localhost:8000|fyrodb-a:18000|0-5460;node-b|localhost:8001|fyrodb-b:18000|5461-10922;node-c|localhost:8002|fyrodb-c:18000|10923-16383
-      FYRODB_RDB_PATH: /data/fyrodb.rdb
-    ports: ["8001:8000"]
-    volumes: ["fyrodb-b:/data"]
-    networks: [fyrodb]
-    healthcheck:
-      test: ["CMD", "nc", "-z", "127.0.0.1", "8000"]
-      interval: 10s
-      timeout: 3s
-      retries: 5
-      start_period: 5s
+      FYRODB_WORKERS: "2"
+    ports:
+      - "8001:8000"
+      - "18001:18000"
+    volumes:
+      - node-2-data:/data
 
-  fyrodb-c:
-    build: .
+  node-3:
+    image: rana718/fyrodb:latest
     environment:
       FYRODB_CLUSTER_ENABLED: "true"
-      FYRODB_NODE_ID: node-c
-      FYRODB_BIND: 0.0.0.0
-      FYRODB_PORT: 8000
-      FYRODB_CLUSTER_PORT: 18000
-      FYRODB_CLUSTER_AUTH: change-this-long-random-secret
-      FYRODB_REPLICATION_LOG_CAPACITY: 100000
-      FYRODB_WORKERS: "1"
+      FYRODB_BIND: "0.0.0.0"
+      FYRODB_PORT: "8000"
+      FYRODB_CLUSTER_PORT: "18000"
+      FYRODB_ADVERTISE_ADDR: "127.0.0.1"
+      FYRODB_CLUSTER_CONFIG_FILE: "/data/fyrodb-nodes.conf"
+      FYRODB_RDB_PATH: "/data/fyrodb.rdb"
       FYRODB_MAX_KEYS: "1000000"
-      FYRODB_CLUSTER_NODES: node-a|localhost:8000|fyrodb-a:18000|0-5460;node-b|localhost:8001|fyrodb-b:18000|5461-10922;node-c|localhost:8002|fyrodb-c:18000|10923-16383
-      FYRODB_RDB_PATH: /data/fyrodb.rdb
-    ports: ["8002:8000"]
-    volumes: ["fyrodb-c:/data"]
-    networks: [fyrodb]
-    healthcheck:
-      test: ["CMD", "nc", "-z", "127.0.0.1", "8000"]
-      interval: 10s
-      timeout: 3s
-      retries: 5
-      start_period: 5s
+      FYRODB_WORKERS: "2"
+    ports:
+      - "8002:8000"
+      - "18002:18000"
+    volumes:
+      - node-3-data:/data
 
 volumes:
-  fyrodb-a:
-  fyrodb-b:
-  fyrodb-c:
-
-networks:
-  fyrodb:
-    driver: bridge
+  node-1-data:
+  node-2-data:
+  node-3-data:

@@ -236,6 +236,87 @@ impl ClusterState {
     pub fn failure_report_count(&self, target_id: &str, epoch: u64) -> usize {
         self.failures.lock().unwrap().report_count(target_id, epoch)
     }
+
+    /// Add a new node to the topology (CLUSTER MEET).
+    /// Returns the updated topology on success, None if node already exists.
+    pub fn meet_node(&self, node: super::NodeInfo) -> Option<super::Topology> {
+        let mut topology = self.topology.write().unwrap().as_ref().clone();
+        if topology.nodes.iter().any(|n| n.id == node.id) {
+            return None;
+        }
+        topology.epoch = topology.epoch.saturating_add(1);
+        topology.nodes.push(node);
+        let new_topo = Arc::new(topology.clone());
+        *self.topology.write().unwrap() = new_topo;
+        Some(topology)
+    }
+
+    /// Assign slots to a node (CLUSTER ADDSLOTS).
+    /// Returns updated topology, or None if node not found or slots already owned.
+    pub fn add_slots(
+        &self,
+        node_id: &str,
+        slots: &[super::Slot],
+    ) -> Option<super::Topology> {
+        let mut topology = self.topology.write().unwrap().as_ref().clone();
+        let idx = topology.nodes.iter().position(|n| n.id == node_id)?;
+        for &slot in slots {
+            if topology
+                .nodes
+                .iter()
+                .any(|n| n.slots.iter().any(|r| r.contains(slot)))
+            {
+                return None;
+            }
+            topology.nodes[idx]
+                .slots
+                .push(super::SlotRange::new(slot, slot).unwrap());
+        }
+        topology.nodes[idx].slots.sort_by_key(|r| r.start.value());
+        compact_ranges(&mut topology.nodes[idx].slots);
+        topology.epoch = topology.epoch.saturating_add(1);
+        topology.nodes[idx].epoch = topology.epoch;
+        *self.topology.write().unwrap() = Arc::new(topology.clone());
+        Some(topology)
+    }
+
+    /// Remove slots from a node (CLUSTER DELSLOTS).
+    pub fn del_slots(
+        &self,
+        node_id: &str,
+        slots: &[super::Slot],
+    ) -> Option<super::Topology> {
+        let mut topology = self.topology.write().unwrap().as_ref().clone();
+        let idx = topology.nodes.iter().position(|n| n.id == node_id)?;
+        for &slot in slots {
+            remove_slot(&mut topology.nodes[idx].slots, slot);
+        }
+        topology.epoch = topology.epoch.saturating_add(1);
+        topology.nodes[idx].epoch = topology.epoch;
+        *self.topology.write().unwrap() = Arc::new(topology.clone());
+        Some(topology)
+    }
+
+    /// Remove a node from the topology (CLUSTER FORGET).
+    pub fn forget_node(&self, node_id: &str) -> Option<super::Topology> {
+        let mut topology = self.topology.write().unwrap().as_ref().clone();
+        let idx = topology.nodes.iter().position(|n| n.id == node_id)?;
+        topology.nodes.remove(idx);
+        topology.epoch = topology.epoch.saturating_add(1);
+        *self.topology.write().unwrap() = Arc::new(topology.clone());
+        Some(topology)
+    }
+
+    /// Reset this node's slot assignments (CLUSTER RESET HARD/SOFT).
+    pub fn reset_slots(&self, node_id: &str) -> super::Topology {
+        let mut topology = self.topology.write().unwrap().as_ref().clone();
+        if let Some(node) = topology.nodes.iter_mut().find(|n| n.id == node_id) {
+            node.slots.clear();
+        }
+        topology.epoch = topology.epoch.saturating_add(1);
+        *self.topology.write().unwrap() = Arc::new(topology.clone());
+        topology
+    }
 }
 
 fn remove_slot(ranges: &mut Vec<super::SlotRange>, slot: super::Slot) {
@@ -255,4 +336,20 @@ fn remove_slot(ranges: &mut Vec<super::SlotRange>, slot: super::Slot) {
         }
     }
     *ranges = replacement;
+}
+
+fn compact_ranges(ranges: &mut Vec<super::SlotRange>) {
+    if ranges.len() < 2 {
+        return;
+    }
+    let mut out: Vec<super::SlotRange> = Vec::with_capacity(ranges.len());
+    for r in ranges.drain(..) {
+        if let Some(last) = out.last_mut()
+            && last.end.value() + 1 == r.start.value() {
+                last.end = r.end;
+                continue;
+            }
+        out.push(r);
+    }
+    *ranges = out;
 }

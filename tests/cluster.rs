@@ -42,6 +42,7 @@ fn config() -> ClusterConfig {
         auth_token: None,
         replication_log_capacity: 16,
         is_replica: false,
+        nodes_config_file: String::new(),
     }
 }
 

@@ -10,7 +10,7 @@ mod state;
 mod topology;
 mod transport;
 
-pub use config::{ClusterConfig, ClusterConfigError};
+pub use config::{ClusterConfig, ClusterConfigError, load_nodes_conf, save_nodes_conf};
 pub use failure::{FailureReport, FailureTracker, decode_failure_report, encode_failure_report};
 pub use hash::{HASH_SLOTS, Slot, SlotRange, hash_slot};
 pub use replication::{

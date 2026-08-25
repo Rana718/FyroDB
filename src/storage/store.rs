@@ -192,10 +192,15 @@ impl Store {
     }
 
     pub fn install_cluster_topology(&self, topology: crate::cluster::Topology) -> bool {
-        if !self.cluster_state.replace_topology(topology) {
+        if !self.cluster_state.replace_topology(topology.clone()) {
             return false;
         }
         let _ = self.persist_cluster_metadata();
+        let _ = crate::cluster::save_nodes_conf(
+            &self.cluster.nodes_config_file,
+            &topology,
+            &self.cluster.local_id,
+        );
         true
     }
 
@@ -422,6 +427,29 @@ impl Store {
         removed
     }
 
+    pub fn count_keys_in_slot(&self, slot: crate::cluster::Slot) -> usize {
+        let mut count = 0usize;
+        self.data.for_each(|key, value| {
+            if !value.is_expired() && crate::cluster::hash_slot(key.as_bytes()) == slot {
+                count += 1;
+            }
+        });
+        count
+    }
+
+    pub fn keys_in_slot(&self, slot: crate::cluster::Slot, limit: usize) -> Vec<String> {
+        let mut keys = Vec::new();
+        self.data.for_each(|key, value| {
+            if keys.len() >= limit {
+                return;
+            }
+            if !value.is_expired() && crate::cluster::hash_slot(key.as_bytes()) == slot {
+                keys.push(key.to_owned());
+            }
+        });
+        keys
+    }
+
     pub fn set_replica_applied_offset(&self, offset: u64) {
         self.replica_applied_offset.store(offset, Ordering::Release);
         if let Some(path) = self.replica_meta_path.lock().unwrap().as_deref() {
@@ -468,7 +496,9 @@ impl Store {
     }
 
     pub fn record_snapshot_attempt(&self) {
-        self.metrics.snapshot_attempts.fetch_add(1, Ordering::Relaxed);
+        self.metrics
+            .snapshot_attempts
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn cluster_snapshot_attempts(&self) -> u64 {
@@ -476,8 +506,12 @@ impl Store {
     }
 
     pub fn update_cluster_replication_lag(&self, total: u64, max: u64) {
-        self.metrics.replication_lag_total.store(total, Ordering::Relaxed);
-        self.metrics.replication_lag_max.store(max, Ordering::Relaxed);
+        self.metrics
+            .replication_lag_total
+            .store(total, Ordering::Relaxed);
+        self.metrics
+            .replication_lag_max
+            .store(max, Ordering::Relaxed);
     }
 
     pub fn cluster_replication_lag(&self) -> (u64, u64) {
@@ -693,8 +727,6 @@ mod tests {
 }
 
 pub fn rss_bytes() -> usize {
-    // mimalloc eagerly decommits pages (MADV_DONTNEED) so VmRSS accurately
-    // reflects actual memory usage without transient inflation.
     proc_status_kb("VmRSS:").saturating_mul(1024)
 }
 
@@ -702,7 +734,6 @@ pub fn data_memory_bytes() -> usize {
     rss_bytes()
 }
 
-/// Bytes currently allocated by the allocator.
 pub fn allocated_bytes() -> usize {
     rust_zmalloc::used_memory()
 }
@@ -711,9 +742,6 @@ pub fn peak_rss_bytes() -> usize {
     proc_status_kb("VmHWM:").saturating_mul(1024)
 }
 
-/// Ask the allocator to release unused pages back to the OS.
-/// mimalloc eagerly decommits by default, so this is mostly a hint
-/// after bulk-free operations like FLUSHALL.
 pub fn purge_allocator() {
     rust_zmalloc::purge();
 }
