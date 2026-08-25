@@ -117,3 +117,15 @@ fn frame_codec_round_trips_cluster_ping() {
     codec.write_frame(&mut bytes, &frame).unwrap();
     assert_eq!(codec.read_frame(&mut bytes.as_slice()).unwrap(), frame);
 }
+
+#[test]
+fn replication_begin_identity_codec_is_strict() {
+    let message = fyro_db::cluster::ReplicationMessage::Begin {
+        epoch: 4,
+        from_offset: 9,
+        identity: [3; 16],
+    };
+    let encoded = encode_replication_message(&message).unwrap();
+    assert_eq!(decode_replication_message(&encoded).unwrap(), message);
+    assert!(decode_replication_message(&encoded[..encoded.len() - 1]).is_err());
+}

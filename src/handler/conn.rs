@@ -267,7 +267,7 @@ fn dispatch_raw(conn: &mut Conn, raw: &[(*const u8, usize)]) {
             &conn.store.cluster,
             &conn.store.cluster_state(),
             cmd,
-            &args,
+            args,
             std::mem::take(&mut conn.asking),
         ) {
             crate::cluster::RouteDecision::Local => {}

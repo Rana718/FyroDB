@@ -69,6 +69,25 @@ mod tests {
         state.finish_slot_migration(Slot(42));
         assert!(state.migrating_target(Slot(42)).is_none());
     }
+
+    #[test]
+    fn stale_topology_is_rejected() {
+        let state = ClusterState::with_topology(2, Duration::from_secs(30), topology());
+        assert!(!state.replace_topology(topology()));
+        let mut newer = topology();
+        newer.epoch = 2;
+        assert!(state.replace_topology(newer));
+        assert!(!state.replace_topology(topology()));
+    }
+
+    #[test]
+    fn migration_commit_moves_only_one_slot() {
+        let state = ClusterState::with_topology(2, Duration::from_secs(30), topology());
+        assert!(state.begin_slot_migration(Slot(42), "r".into()));
+        let committed = state.commit_slot_migration(Slot(42)).unwrap();
+        assert_eq!(committed.owner(Slot(42)).unwrap().id, "r");
+        assert_eq!(committed.owner(Slot(41)).unwrap().id, "p");
+    }
 }
 
 impl ClusterState {
@@ -153,6 +172,10 @@ impl ClusterState {
 
     pub fn is_importing(&self, slot: super::Slot) -> bool {
         self.imports.lock().unwrap().contains_key(&slot.value())
+    }
+
+    pub fn import_source(&self, slot: super::Slot) -> Option<String> {
+        self.imports.lock().unwrap().get(&slot.value()).cloned()
     }
 
     pub fn replace_topology(&self, topology: super::Topology) -> bool {

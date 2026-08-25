@@ -334,7 +334,7 @@ impl ReplicationCoordinator {
             self.appended.fetch_add(1, Ordering::Relaxed);
             if let Some(journal) = self.journal.lock().unwrap().as_mut()
                 && let Ok(payload) = encode_mutation(
-                    &self
+                    self
                         .log
                         .lock()
                         .expect("replication log poisoned")

@@ -195,13 +195,12 @@ fn handle_peer(
                         .any(|node| node.id == report.target_id);
                     if known_reporter && known_target && report.target_id != local_id {
                         let confirmed = state.record_failure(report.clone());
-                        if confirmed {
-                            if let Some(topology) =
+                        if confirmed
+                            && let Some(topology) =
                                 state.promote_replica(&report.target_id, report.epoch)
                             {
                                 let _ = store.install_cluster_topology(topology);
                             }
-                        }
                     }
                 }
             }
@@ -220,8 +219,8 @@ fn handle_peer(
                         .find(|node| node.id == local_id)
                         .and_then(|node| node.replica_of.as_deref())
                         == Some(remote_id);
-                    if source_allowed {
-                        if replica_applier
+                    if source_allowed
+                        && replica_applier
                             .try_apply(&record, |record| store.apply_replica_mutation(record))
                             .is_ok()
                         {
@@ -242,7 +241,6 @@ fn handle_peer(
                                 });
                             }
                         }
-                    }
                 }
             }
             MessageType::MigrateBegin => {
@@ -269,7 +267,10 @@ fn handle_peer(
             }
             MessageType::MigrateChunk => {
                 if let Ok(record) = super::decode_mutation(&frame.payload) {
-                    if store.apply_replica_mutation(&record).is_ok() {
+                    let source_ok = state
+                        .import_source(record.slot)
+                        .is_some_and(|source| stable_id(&source) == frame.source_id);
+                    if source_ok && store.apply_replica_mutation(&record).is_ok() {
                         let _ = peer.send(&Frame {
                             message_type: MessageType::ReplicationAck,
                             flags: 0,
