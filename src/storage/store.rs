@@ -3,29 +3,48 @@ use customhash::CustomMap;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
+struct ClusterMetrics {
+    peers_total: AtomicUsize,
+    peers_healthy: AtomicUsize,
+    peers_suspect: AtomicUsize,
+    queue_full: AtomicU64,
+    reconnects: AtomicU64,
+    snapshot_attempts: AtomicU64,
+    replication_lag_total: AtomicU64,
+    replication_lag_max: AtomicU64,
+}
+
+impl ClusterMetrics {
+    fn new() -> Self {
+        Self {
+            peers_total: AtomicUsize::new(0),
+            peers_healthy: AtomicUsize::new(0),
+            peers_suspect: AtomicUsize::new(0),
+            queue_full: AtomicU64::new(0),
+            reconnects: AtomicU64::new(0),
+            snapshot_attempts: AtomicU64::new(0),
+            replication_lag_total: AtomicU64::new(0),
+            replication_lag_max: AtomicU64::new(0),
+        }
+    }
+}
+
 pub struct Store {
     pub(crate) data: CustomMap<StoreValue>,
-    pub cluster: crate::cluster::ClusterConfig,
     pub(crate) replication: Option<crate::cluster::ReplicationCoordinator>,
-    pub(crate) connected_clients: AtomicUsize,
     pub(crate) ttl_count: AtomicUsize,
     ttl_generation: AtomicU64,
+    replica_installing: std::sync::atomic::AtomicBool,
+    cluster_write_gate: Mutex<()>,
+    pub(crate) int_create_lock: Mutex<()>,
+    pub(crate) cluster_state: crate::cluster::ClusterState,
+    pub cluster: Box<crate::cluster::ClusterConfig>,
+    pub(crate) connected_clients: AtomicUsize,
     replica_applied_offset: AtomicU64,
     replica_meta_path: Mutex<Option<String>>,
     replica_identity: Mutex<Option<[u8; 16]>>,
     cluster_meta_path: Mutex<Option<String>>,
-    cluster_peers_total: AtomicUsize,
-    cluster_peers_healthy: AtomicUsize,
-    cluster_peers_suspect: AtomicUsize,
-    cluster_queue_full: AtomicU64,
-    cluster_reconnects: AtomicU64,
-    cluster_snapshot_attempts: AtomicU64,
-    cluster_replication_lag_total: AtomicU64,
-    cluster_replication_lag_max: AtomicU64,
-    pub(crate) int_create_lock: Mutex<()>,
-    pub(crate) cluster_state: crate::cluster::ClusterState,
-    replica_installing: std::sync::atomic::AtomicBool,
-    cluster_write_gate: Mutex<()>,
+    metrics: Box<ClusterMetrics>,
 }
 
 impl Default for Store {
@@ -56,7 +75,7 @@ impl Store {
         let failure_quorum = cluster.failure_quorum;
         Self {
             data: CustomMap::with_capacity(shards, max_keys),
-            cluster,
+            cluster: Box::new(cluster),
             replication: if replication_enabled {
                 Some(crate::cluster::ReplicationCoordinator::new(
                     replication_log_capacity,
@@ -71,14 +90,6 @@ impl Store {
             replica_meta_path: Mutex::new(None),
             replica_identity: Mutex::new(None),
             cluster_meta_path: Mutex::new(None),
-            cluster_peers_total: AtomicUsize::new(0),
-            cluster_peers_healthy: AtomicUsize::new(0),
-            cluster_peers_suspect: AtomicUsize::new(0),
-            cluster_queue_full: AtomicU64::new(0),
-            cluster_reconnects: AtomicU64::new(0),
-            cluster_snapshot_attempts: AtomicU64::new(0),
-            cluster_replication_lag_total: AtomicU64::new(0),
-            cluster_replication_lag_max: AtomicU64::new(0),
             int_create_lock: Mutex::new(()),
             cluster_state: crate::cluster::ClusterState::with_topology(
                 failure_quorum,
@@ -87,11 +98,58 @@ impl Store {
             ),
             replica_installing: std::sync::atomic::AtomicBool::new(false),
             cluster_write_gate: Mutex::new(()),
+            metrics: Box::new(ClusterMetrics::new()),
         }
     }
 
     pub fn cluster_state(&self) -> crate::cluster::ClusterState {
         self.cluster_state.clone()
+    }
+
+    #[inline(always)]
+    pub fn cluster_state_ref(&self) -> &crate::cluster::ClusterState {
+        &self.cluster_state
+    }
+
+    #[inline(always)]
+    pub fn has_replication(&self) -> bool {
+        self.replication.is_some()
+    }
+
+    #[inline(always)]
+    pub fn record_current_value(&self, key: &str) {
+        let Some(log) = &self.replication else { return };
+        let Some(value) = self.data.get_ref(key) else {
+            let _ = log.append(crate::cluster::MutationRecord {
+                offset: 0,
+                slot: crate::cluster::hash_slot(key.as_bytes()),
+                kind: crate::cluster::MutationKind::Delete,
+                key: key.as_bytes().to_vec(),
+                value: Vec::new(),
+                expire_at_ms: None,
+            });
+            return;
+        };
+        if value.is_expired() {
+            let _ = log.append(crate::cluster::MutationRecord {
+                offset: 0,
+                slot: crate::cluster::hash_slot(key.as_bytes()),
+                kind: crate::cluster::MutationKind::Delete,
+                key: key.as_bytes().to_vec(),
+                value: Vec::new(),
+                expire_at_ms: None,
+            });
+            return;
+        }
+        let Ok(encoded) = crate::storage::rdb::encode_single_value(&value) else {
+            return;
+        };
+        let _ = log.append(crate::cluster::MutationRecord::replace(
+            crate::cluster::hash_slot(key.as_bytes()),
+            key.as_bytes().to_vec(),
+            encoded,
+            Some(value.expires_ms).filter(|expiry| *expiry != 0),
+        ));
     }
 
     pub fn cluster_topology(&self) -> crate::cluster::Topology {
@@ -323,41 +381,6 @@ impl Store {
         *self.replica_identity.lock().unwrap()
     }
 
-    pub fn record_current_value(&self, key: &str) {
-        let Some(log) = &self.replication else { return };
-        let Some(value) = self.data.get_ref(key) else {
-            let _ = log.append(crate::cluster::MutationRecord {
-                offset: 0,
-                slot: crate::cluster::hash_slot(key.as_bytes()),
-                kind: crate::cluster::MutationKind::Delete,
-                key: key.as_bytes().to_vec(),
-                value: Vec::new(),
-                expire_at_ms: None,
-            });
-            return;
-        };
-        if value.is_expired() {
-            let _ = log.append(crate::cluster::MutationRecord {
-                offset: 0,
-                slot: crate::cluster::hash_slot(key.as_bytes()),
-                kind: crate::cluster::MutationKind::Delete,
-                key: key.as_bytes().to_vec(),
-                value: Vec::new(),
-                expire_at_ms: None,
-            });
-            return;
-        }
-        let Ok(encoded) = crate::storage::rdb::encode_single_value(&value) else {
-            return;
-        };
-        let _ = log.append(crate::cluster::MutationRecord::replace(
-            crate::cluster::hash_slot(key.as_bytes()),
-            key.as_bytes().to_vec(),
-            encoded,
-            Some(value.expires_ms).filter(|expiry| *expiry != 0),
-        ));
-    }
-
     /// Visit live values in one hash slot. The callback receives an owned
     /// mutation record, keeping migration payloads bounded to one key.
     pub fn for_each_slot_record(
@@ -426,51 +449,48 @@ impl Store {
     }
 
     pub fn update_cluster_health(&self, total: usize, healthy: usize, suspect: usize) {
-        self.cluster_peers_total.store(total, Ordering::Relaxed);
-        self.cluster_peers_healthy.store(healthy, Ordering::Relaxed);
-        self.cluster_peers_suspect.store(suspect, Ordering::Relaxed);
+        self.metrics.peers_total.store(total, Ordering::Relaxed);
+        self.metrics.peers_healthy.store(healthy, Ordering::Relaxed);
+        self.metrics.peers_suspect.store(suspect, Ordering::Relaxed);
     }
 
     pub fn cluster_health_counts(&self) -> (usize, usize, usize) {
         (
-            self.cluster_peers_total.load(Ordering::Relaxed),
-            self.cluster_peers_healthy.load(Ordering::Relaxed),
-            self.cluster_peers_suspect.load(Ordering::Relaxed),
+            self.metrics.peers_total.load(Ordering::Relaxed),
+            self.metrics.peers_healthy.load(Ordering::Relaxed),
+            self.metrics.peers_suspect.load(Ordering::Relaxed),
         )
     }
 
     pub fn update_cluster_transport_metrics(&self, queue_full: u64, reconnects: u64) {
-        self.cluster_queue_full.store(queue_full, Ordering::Relaxed);
-        self.cluster_reconnects.store(reconnects, Ordering::Relaxed);
+        self.metrics.queue_full.store(queue_full, Ordering::Relaxed);
+        self.metrics.reconnects.store(reconnects, Ordering::Relaxed);
     }
 
     pub fn record_snapshot_attempt(&self) {
-        self.cluster_snapshot_attempts
-            .fetch_add(1, Ordering::Relaxed);
+        self.metrics.snapshot_attempts.fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn cluster_snapshot_attempts(&self) -> u64 {
-        self.cluster_snapshot_attempts.load(Ordering::Relaxed)
+        self.metrics.snapshot_attempts.load(Ordering::Relaxed)
     }
 
     pub fn update_cluster_replication_lag(&self, total: u64, max: u64) {
-        self.cluster_replication_lag_total
-            .store(total, Ordering::Relaxed);
-        self.cluster_replication_lag_max
-            .store(max, Ordering::Relaxed);
+        self.metrics.replication_lag_total.store(total, Ordering::Relaxed);
+        self.metrics.replication_lag_max.store(max, Ordering::Relaxed);
     }
 
     pub fn cluster_replication_lag(&self) -> (u64, u64) {
         (
-            self.cluster_replication_lag_total.load(Ordering::Relaxed),
-            self.cluster_replication_lag_max.load(Ordering::Relaxed),
+            self.metrics.replication_lag_total.load(Ordering::Relaxed),
+            self.metrics.replication_lag_max.load(Ordering::Relaxed),
         )
     }
 
     pub fn cluster_transport_metrics(&self) -> (u64, u64) {
         (
-            self.cluster_queue_full.load(Ordering::Relaxed),
-            self.cluster_reconnects.load(Ordering::Relaxed),
+            self.metrics.queue_full.load(Ordering::Relaxed),
+            self.metrics.reconnects.load(Ordering::Relaxed),
         )
     }
 

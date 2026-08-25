@@ -40,7 +40,7 @@ fn main() {
     let peer_manager = if store.cluster.enabled {
         let cluster_state = store.cluster_state();
         match fyro_db::cluster::start_listener(
-            store.cluster.clone(),
+            (*store.cluster).clone(),
             cluster_state.clone(),
             Arc::clone(&store),
         ) {
@@ -56,7 +56,7 @@ fn main() {
                 // The monitor owns the same bounded failure evidence state as
                 // peer handlers so local and remote observations share quorum.
                 fyro_db::cluster::start_health_monitor(
-                    store.cluster.clone(),
+                    (*store.cluster).clone(),
                     Arc::clone(&manager),
                     Arc::clone(&store),
                     cluster_state,

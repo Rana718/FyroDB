@@ -325,29 +325,28 @@ impl ReplicationCoordinator {
         let offset = self.next_offset.fetch_add(1, Ordering::Relaxed);
         let mut record = record;
         record.offset = offset;
+
+        let journal_payload = if self.journal.lock().unwrap().is_some() {
+            encode_mutation(&record).ok()
+        } else {
+            None
+        };
+
         let result = self
             .log
             .lock()
             .expect("replication log poisoned")
             .append(record);
+
         if result.is_ok() {
             self.appended.fetch_add(1, Ordering::Relaxed);
-            if let Some(journal) = self.journal.lock().unwrap().as_mut()
-                && let Ok(payload) = encode_mutation(
-                    self
-                        .log
-                        .lock()
-                        .expect("replication log poisoned")
-                        .records
-                        .back()
-                        .unwrap(),
-                )
+            if let Some(payload) = journal_payload
+                && let Some(journal) = self.journal.lock().unwrap().as_mut()
             {
                 let _ = journal
                     .file
                     .write_all(&(payload.len() as u32).to_le_bytes());
                 let _ = journal.file.write_all(&payload);
-                let _ = journal.file.flush();
             }
         }
         result
@@ -393,6 +392,14 @@ impl ReplicationCoordinator {
     }
     pub fn retained_byte_limit(&self) -> usize {
         MAX_LOG_BYTES
+    }
+
+    pub fn flush_journal(&self) {
+        use std::os::unix::io::AsRawFd;
+        if let Some(journal) = self.journal.lock().unwrap().as_mut() {
+            let _ = journal.file.flush();
+            unsafe { libc::fsync(journal.file.as_raw_fd()) };
+        }
     }
 
     pub fn identity(&self) -> Option<[u8; 16]> {

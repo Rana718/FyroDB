@@ -14,6 +14,8 @@ pub struct ClusterConfig {
     pub max_inbound_peers: usize,
     pub auth_token: Option<String>,
     pub replication_log_capacity: usize,
+    /// Cached at startup — avoids a linear node scan on every write command.
+    pub is_replica: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,6 +43,7 @@ impl ClusterConfig {
             max_inbound_peers: 1024,
             auth_token: None,
             replication_log_capacity: 100_000,
+            is_replica: false,
         }
     }
 
@@ -101,6 +104,10 @@ impl ClusterConfig {
             )));
         }
         validate_primary_ranges(&topology)?;
+        let is_replica = topology
+            .nodes
+            .iter()
+            .any(|node| node.id == local_id && node.role == NodeRole::Replica);
         Ok(Self {
             enabled: true,
             local_id,
@@ -113,6 +120,7 @@ impl ClusterConfig {
             max_inbound_peers,
             auth_token,
             replication_log_capacity,
+            is_replica,
         })
     }
 

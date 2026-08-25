@@ -661,6 +661,9 @@ pub fn start_background_save(store: Arc<Store>, path: String, interval: Duration
                     Ok(()) => {}
                     Err(e) => eprintln!("[rdb] background save error: {e}"),
                 }
+                if let Some(log) = store.replication_coordinator() {
+                    log.flush_journal();
+                }
             }
         })
         .expect("failed to spawn RDB saver thread");

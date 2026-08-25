@@ -172,15 +172,116 @@ pub fn dispatch(conn: &mut Conn, parts: &[&str]) {
 
 #[inline]
 fn capture_if_success(conn: &mut Conn, parts: &[&str], response_start: usize) {
+    if !conn.store.has_replication() {
+        return;
+    }
     let response = &conn.parser.wbuf[response_start..];
     if !response.starts_with(b"-") && response != b"$-1\r\n" {
         capture_command_mutation(conn, parts);
     }
 }
 
+/// Returns the key index to capture for replication, or `None` if this
+/// command does not need capture. Using match on (len, first_byte) gives the
+/// compiler a jump table instead of the previous O(N) slice scan.
+#[inline]
+fn mutation_key_index(command: &[u8]) -> Option<usize> {
+    let first = command.first().map(|b| b.to_ascii_uppercase())?;
+    match (command.len(), first) {
+        (4, b'M') if command.eq_ignore_ascii_case(b"MSET") => return None,
+        (7, b'M') if command.eq_ignore_ascii_case(b"MSETNX") => return None,
+        (6, b'R') if command.eq_ignore_ascii_case(b"RENAME") => return None,
+        (8, b'R') if command.eq_ignore_ascii_case(b"RENAMENX") => return None,
+        (5, b'S') if command.eq_ignore_ascii_case(b"SMOVE") => return None,
+        (5, b'L') if command.eq_ignore_ascii_case(b"LMOVE") => return None,
+        (9, b'R') if command.eq_ignore_ascii_case(b"RPOPLPUSH") => return None,
+        (4, b'C') if command.eq_ignore_ascii_case(b"COPY") => return None,
+        (5, b'B') if command.eq_ignore_ascii_case(b"BITOP") => return None,
+        (12, b'S') if command.eq_ignore_ascii_case(b"SUNIONSTORE") => return Some(1),
+        (12, b'S') if command.eq_ignore_ascii_case(b"SINTERSTORE") => return Some(1),
+        (10, b'S') if command.eq_ignore_ascii_case(b"SDIFFSTORE") => return Some(1),
+        (12, b'Z') if command.eq_ignore_ascii_case(b"ZUNIONSTORE") => return Some(1),
+        (12, b'Z') if command.eq_ignore_ascii_case(b"ZINTERSTORE") => return Some(1),
+        (10, b'Z') if command.eq_ignore_ascii_case(b"ZDIFFSTORE") => return Some(1),
+        (7, b'P') if command.eq_ignore_ascii_case(b"PFMERGE") => return Some(1),
+        (14, b'G') if command.eq_ignore_ascii_case(b"GEOSEARCHSTORE") => return Some(1),
+        _ => {}
+    }
+    let is_mutation = match first {
+        b'S' => matches!(
+            command.len(),
+            3 if command.eq_ignore_ascii_case(b"SET")
+        ) || command.eq_ignore_ascii_case(b"SETNX")
+            || command.eq_ignore_ascii_case(b"SETEX")
+            || command.eq_ignore_ascii_case(b"PSETEX")
+            || command.eq_ignore_ascii_case(b"SETRANGE")
+            || command.eq_ignore_ascii_case(b"SETBIT")
+            || command.eq_ignore_ascii_case(b"SADD")
+            || command.eq_ignore_ascii_case(b"SREM")
+            || command.eq_ignore_ascii_case(b"SPOP"),
+        b'G' => command.eq_ignore_ascii_case(b"GETDEL")
+            || command.eq_ignore_ascii_case(b"GETSET")
+            || command.eq_ignore_ascii_case(b"GETEX")
+            || command.eq_ignore_ascii_case(b"GEOADD"),
+        b'I' => command.eq_ignore_ascii_case(b"INCR")
+            || command.eq_ignore_ascii_case(b"INCRBY")
+            || command.eq_ignore_ascii_case(b"INCRBYFLOAT"),
+        b'D' => command.eq_ignore_ascii_case(b"DECR")
+            || command.eq_ignore_ascii_case(b"DECRBY"),
+        b'A' => command.eq_ignore_ascii_case(b"APPEND"),
+        b'P' => command.eq_ignore_ascii_case(b"PERSIST")
+            || command.eq_ignore_ascii_case(b"PFADD"),
+        b'H' => command.eq_ignore_ascii_case(b"HSET")
+            || command.eq_ignore_ascii_case(b"HSETNX")
+            || command.eq_ignore_ascii_case(b"HMSET")
+            || command.eq_ignore_ascii_case(b"HDEL")
+            || command.eq_ignore_ascii_case(b"HINCRBY")
+            || command.eq_ignore_ascii_case(b"HINCRBYFLOAT"),
+        b'L' => command.eq_ignore_ascii_case(b"LPUSH")
+            || command.eq_ignore_ascii_case(b"LPOP")
+            || command.eq_ignore_ascii_case(b"LSET")
+            || command.eq_ignore_ascii_case(b"LTRIM")
+            || command.eq_ignore_ascii_case(b"LREM")
+            || command.eq_ignore_ascii_case(b"LINSERT"),
+        b'R' => command.eq_ignore_ascii_case(b"RPUSH")
+            || command.eq_ignore_ascii_case(b"RPOP"),
+        b'Z' => command.eq_ignore_ascii_case(b"ZADD")
+            || command.eq_ignore_ascii_case(b"ZREM")
+            || command.eq_ignore_ascii_case(b"ZINCRBY")
+            || command.eq_ignore_ascii_case(b"ZPOPMIN")
+            || command.eq_ignore_ascii_case(b"ZPOPMAX"),
+        b'J' => command.eq_ignore_ascii_case(b"JSON.SET")
+            || command.eq_ignore_ascii_case(b"JSON.DEL")
+            || command.eq_ignore_ascii_case(b"JSON.NUMINCRBY")
+            || command.eq_ignore_ascii_case(b"JSON.NUMMULTBY")
+            || command.eq_ignore_ascii_case(b"JSON.STRAPPEND")
+            || command.eq_ignore_ascii_case(b"JSON.ARRAPPEND")
+            || command.eq_ignore_ascii_case(b"JSON.ARRINSERT")
+            || command.eq_ignore_ascii_case(b"JSON.ARRPOP")
+            || command.eq_ignore_ascii_case(b"JSON.ARRTRIM")
+            || command.eq_ignore_ascii_case(b"JSON.TOGGLE")
+            || command.eq_ignore_ascii_case(b"JSON.CLEAR"),
+        b'X' => command.eq_ignore_ascii_case(b"XADD")
+            || command.eq_ignore_ascii_case(b"XTRIM")
+            || command.eq_ignore_ascii_case(b"XDEL")
+            || command.eq_ignore_ascii_case(b"XGROUP")
+            || command.eq_ignore_ascii_case(b"XACK"),
+        _ => false,
+    };
+    if is_mutation { Some(1) } else { None }
+}
+
 fn capture_command_mutation(conn: &mut Conn, parts: &[&str]) {
     let Some(command) = parts.first() else { return };
     let command = command.as_bytes();
+
+    if let Some(key_index) = mutation_key_index(command) {
+        if let Some(key) = parts.get(key_index) {
+            conn.store.record_current_value(key);
+        }
+        return;
+    }
+
     let capture = |conn: &Conn, index: usize| {
         if let Some(key) = parts.get(index) {
             conn.store.record_current_value(key);
@@ -191,9 +292,7 @@ fn capture_command_mutation(conn: &mut Conn, parts: &[&str]) {
         for index in (1..parts.len()).step_by(2) {
             capture(conn, index);
         }
-        return;
-    }
-    if command.eq_ignore_ascii_case(b"RENAME")
+    } else if command.eq_ignore_ascii_case(b"RENAME")
         || command.eq_ignore_ascii_case(b"RENAMENX")
         || command.eq_ignore_ascii_case(b"SMOVE")
         || command.eq_ignore_ascii_case(b"LMOVE")
@@ -201,92 +300,8 @@ fn capture_command_mutation(conn: &mut Conn, parts: &[&str]) {
     {
         capture(conn, 1);
         capture(conn, 2);
-        return;
-    }
-    if command.eq_ignore_ascii_case(b"COPY") {
+    } else if command.eq_ignore_ascii_case(b"COPY") || command.eq_ignore_ascii_case(b"BITOP") {
         capture(conn, 2);
-        return;
-    }
-    if command.eq_ignore_ascii_case(b"BITOP") {
-        capture(conn, 2);
-        return;
-    }
-    if command.eq_ignore_ascii_case(b"SUNIONSTORE")
-        || command.eq_ignore_ascii_case(b"SINTERSTORE")
-        || command.eq_ignore_ascii_case(b"SDIFFSTORE")
-        || command.eq_ignore_ascii_case(b"ZUNIONSTORE")
-        || command.eq_ignore_ascii_case(b"ZINTERSTORE")
-        || command.eq_ignore_ascii_case(b"ZDIFFSTORE")
-        || command.eq_ignore_ascii_case(b"PFMERGE")
-        || command.eq_ignore_ascii_case(b"GEOSEARCHSTORE")
-    {
-        capture(conn, 1);
-        return;
-    }
-
-    const FIRST_KEY_MUTATIONS: &[&[u8]] = &[
-        b"SET",
-        b"SETNX",
-        b"SETEX",
-        b"PSETEX",
-        b"GETDEL",
-        b"GETSET",
-        b"GETEX",
-        b"INCR",
-        b"DECR",
-        b"INCRBY",
-        b"DECRBY",
-        b"INCRBYFLOAT",
-        b"APPEND",
-        b"SETRANGE",
-        b"PERSIST",
-        b"HSET",
-        b"HSETNX",
-        b"HMSET",
-        b"HDEL",
-        b"HINCRBY",
-        b"HINCRBYFLOAT",
-        b"LPUSH",
-        b"RPUSH",
-        b"LPOP",
-        b"RPOP",
-        b"LSET",
-        b"LTRIM",
-        b"LREM",
-        b"LINSERT",
-        b"SADD",
-        b"SREM",
-        b"SPOP",
-        b"ZADD",
-        b"ZREM",
-        b"ZINCRBY",
-        b"ZPOPMIN",
-        b"ZPOPMAX",
-        b"SETBIT",
-        b"PFADD",
-        b"JSON.SET",
-        b"JSON.DEL",
-        b"JSON.NUMINCRBY",
-        b"JSON.NUMMULTBY",
-        b"JSON.STRAPPEND",
-        b"JSON.ARRAPPEND",
-        b"JSON.ARRINSERT",
-        b"JSON.ARRPOP",
-        b"JSON.ARRTRIM",
-        b"JSON.TOGGLE",
-        b"JSON.CLEAR",
-        b"XADD",
-        b"XTRIM",
-        b"XDEL",
-        b"XGROUP",
-        b"XACK",
-        b"GEOADD",
-    ];
-    if FIRST_KEY_MUTATIONS
-        .iter()
-        .any(|known| command.eq_ignore_ascii_case(known))
-    {
-        capture(conn, 1);
     }
 }
 

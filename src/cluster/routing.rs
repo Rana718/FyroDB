@@ -374,6 +374,7 @@ mod tests {
             max_inbound_peers: 16,
             auth_token: None,
             replication_log_capacity: 16,
+            is_replica: false,
             topology: Topology::new(
                 1,
                 vec![
