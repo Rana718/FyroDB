@@ -66,17 +66,10 @@ pub fn run_worker(
             return;
         }
 
-        let has_pending = sub_dirty.iter().any(|&id| {
-            conns
-                .get(id)
-                .and_then(|s| s.as_ref())
-                .is_some_and(|c| c.has_pending_write())
-        });
-
-        let timeout = if has_pending {
-            Some(std::time::Duration::from_micros(50))
-        } else {
+        let timeout = if sub_dirty.is_empty() {
             None
+        } else {
+            Some(std::time::Duration::from_micros(50))
         };
 
         match poll.poll(&mut events, timeout) {

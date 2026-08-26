@@ -40,7 +40,6 @@ pub struct Store {
     pub(crate) int_create_lock: Mutex<()>,
     replica_installing: std::sync::atomic::AtomicBool,
 
-    // Boxed or placed last so they do not evict hot fields from L1/L2.
     pub cluster: Box<crate::cluster::ClusterConfig>,
     pub(crate) cluster_state: crate::cluster::ClusterState,
     cluster_write_gate: Mutex<()>,

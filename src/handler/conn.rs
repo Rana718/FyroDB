@@ -171,10 +171,10 @@ fn dispatch_raw(conn: &mut Conn, raw: &[(*const u8, usize)]) {
     }
 
     // Only pay for the write gate when cluster is actually enabled and the
-    // command is a write. No Arc::clone — borrow directly from conn.store.
-    let _cluster_write_guard = if conn.store.cluster.enabled
-        && crate::cluster::is_write_command(cmd)
-    {
+    // command is a write.
+    let cluster_is_write = conn.store.cluster.enabled && crate::cluster::is_write_command(cmd);
+
+    let _cluster_write_guard = if cluster_is_write {
         let store_ptr: *const Store = &*conn.store;
         Some(unsafe { &*store_ptr }.cluster_write_guard())
     } else {
@@ -188,7 +188,7 @@ fn dispatch_raw(conn: &mut Conn, raw: &[(*const u8, usize)]) {
                 .extend_from_slice(b"-CLUSTERDOWN Replica snapshot is installing\r\n");
             return;
         }
-        if conn.store.cluster.is_replica && crate::cluster::is_write_command(cmd) {
+        if conn.store.cluster.is_replica && cluster_is_write {
             conn.parser
                 .wbuf
                 .extend_from_slice(b"-READONLY You can't write against a read only replica.\r\n");

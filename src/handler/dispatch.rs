@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use crate::commends;
 use crate::pubsub::encode_sub_reply;
 use crate::utils::resp;
@@ -125,8 +123,7 @@ pub fn dispatch(conn: &mut Conn, parts: &[&str]) {
                     _ => resp::write_wrong_args(&mut conn.parser.wbuf, "publish"),
                 }
             } else if cmd_eq(cmd, b"PUBSUB") {
-                let pubsub = Arc::clone(&conn.pubsub);
-                pubsub_info(parts, &pubsub, &mut conn.parser.wbuf);
+                pubsub_info(parts, &conn.pubsub, &mut conn.parser.wbuf);
             } else {
                 let response_start = conn.parser.wbuf.len();
                 commends::execute(parts, &conn.store, &mut conn.parser.wbuf);

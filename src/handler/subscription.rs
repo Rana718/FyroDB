@@ -30,13 +30,13 @@ pub fn handle_subscribe(conn: &mut Conn, parts: &[&str]) {
 }
 
 pub fn handle_unsubscribe(conn: &mut Conn, parts: &[&str]) {
-    let (slot, ch_ptr, pat_ptr) = match &mut conn.mode {
+    let (slot_ptr, ch_ptr, pat_ptr) = match &mut conn.mode {
         ConnMode::Subscribed {
             slot,
             channels,
             patterns,
         } => (
-            Arc::clone(slot),
+            slot as *const Arc<SubSlot>,
             channels as *mut HashSet<String>,
             patterns as *mut HashSet<String>,
         ),
@@ -47,6 +47,7 @@ pub fn handle_unsubscribe(conn: &mut Conn, parts: &[&str]) {
             return;
         }
     };
+    let slot = unsafe { &*slot_ptr };
     let channels = unsafe { &mut *ch_ptr };
     let patterns = unsafe { &mut *pat_ptr };
 
@@ -103,13 +104,13 @@ pub fn handle_psubscribe(conn: &mut Conn, parts: &[&str]) {
 }
 
 pub fn handle_punsubscribe(conn: &mut Conn, parts: &[&str]) {
-    let (slot, ch_ptr, pat_ptr) = match &mut conn.mode {
+    let (slot_ptr, ch_ptr, pat_ptr) = match &mut conn.mode {
         ConnMode::Subscribed {
             slot,
             channels,
             patterns,
         } => (
-            Arc::clone(slot),
+            slot as *const Arc<SubSlot>,
             channels as *mut HashSet<String>,
             patterns as *mut HashSet<String>,
         ),
@@ -120,6 +121,7 @@ pub fn handle_punsubscribe(conn: &mut Conn, parts: &[&str]) {
             return;
         }
     };
+    let slot = unsafe { &*slot_ptr };
     let channels = unsafe { &mut *ch_ptr };
     let patterns = unsafe { &mut *pat_ptr };
 

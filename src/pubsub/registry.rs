@@ -43,10 +43,6 @@ impl ChannelShard {
     /// Load the current Arc snapshot.
     #[inline(always)]
     fn load_snapshot(&self) -> Snapshot {
-        // The pointer owns an Arc box that writers replace and immediately
-        // reclaim. Serialize the load+clone with replacement so a publisher
-        // can never clone from a freed box. The lock is held only for the
-        // atomic pointer read and Arc increment; iteration happens lock-free.
         let _lock = self.mu.lock().unwrap_or_else(|e| e.into_inner());
         self.load_snapshot_locked()
     }
@@ -55,6 +51,13 @@ impl ChannelShard {
     fn load_snapshot_locked(&self) -> Snapshot {
         let ptr = self.snapshot.load(Ordering::Acquire);
         Arc::clone(unsafe { &*ptr })
+    }
+
+    #[inline(always)]
+    fn store_snapshot_locked(&self, new_snap: Snapshot) {
+        let new_ptr = Box::into_raw(Box::new(new_snap));
+        let old_ptr = self.snapshot.swap(new_ptr, Ordering::AcqRel);
+        unsafe { drop(Box::from_raw(old_ptr)) };
     }
 
     #[inline(always)]
@@ -101,10 +104,7 @@ impl ChannelShard {
             });
         }
 
-        let new_snap: Snapshot = Arc::new(new_vec);
-        let new_ptr = Box::into_raw(Box::new(new_snap));
-        let old_ptr = self.snapshot.swap(new_ptr, Ordering::AcqRel);
-        unsafe { drop(Box::from_raw(old_ptr)) };
+        self.store_snapshot_locked(Arc::new(new_vec));
     }
 
     fn unsubscribe(&self, channel: &str, slot: &Arc<SubSlot>) {
@@ -134,10 +134,7 @@ impl ChannelShard {
             }
         }
 
-        let new_snap: Snapshot = Arc::new(new_vec);
-        let new_ptr = Box::into_raw(Box::new(new_snap));
-        let old_ptr = self.snapshot.swap(new_ptr, Ordering::AcqRel);
-        unsafe { drop(Box::from_raw(old_ptr)) };
+        self.store_snapshot_locked(Arc::new(new_vec));
     }
 
     fn count_for(&self, channel: &str) -> usize {

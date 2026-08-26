@@ -65,10 +65,11 @@ pub fn route_command_with_state_import<'a>(
     allow_import: bool,
 ) -> RouteDecision<'a> {
     let topology = state.topology_arc();
+    let pattern = key_pattern(command);
     let decision = route_command_with_topology(cluster, topology.as_ref(), command, args);
     if allow_import
-        && let Some(pattern) = key_pattern(command)
-        && let Some(index) = pattern.indices(args.len()).next()
+        && let Some(pat) = pattern
+        && let Some(index) = pat.indices(args.len()).next()
         && state.is_importing(hash_slot(args[index]))
     {
         return RouteDecision::Local;
@@ -88,10 +89,10 @@ pub fn route_command_with_state_import<'a>(
         }
         RouteDecision::Local => {}
     }
-    let Some(pattern) = key_pattern(command) else {
+    let Some(pat) = pattern else {
         return RouteDecision::Local;
     };
-    let Some(index) = pattern.indices(args.len()).next() else {
+    let Some(index) = pat.indices(args.len()).next() else {
         return RouteDecision::Local;
     };
     let slot = hash_slot(args[index]);

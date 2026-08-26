@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
@@ -9,6 +10,8 @@ pub struct ClusterState {
     topology: Arc<RwLock<Arc<super::Topology>>>,
     migrations: Arc<Mutex<std::collections::HashMap<u16, String>>>,
     imports: Arc<Mutex<std::collections::HashMap<u16, String>>>,
+    has_imports: Arc<AtomicBool>,
+    has_migrations: Arc<AtomicBool>,
 }
 
 #[cfg(test)]
@@ -97,6 +100,8 @@ impl ClusterState {
             topology: Arc::new(RwLock::new(Arc::new(super::Topology::default()))),
             migrations: Arc::new(Mutex::new(std::collections::HashMap::new())),
             imports: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            has_imports: Arc::new(AtomicBool::new(false)),
+            has_migrations: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -106,6 +111,8 @@ impl ClusterState {
             topology: Arc::new(RwLock::new(Arc::new(topology))),
             migrations: Arc::new(Mutex::new(std::collections::HashMap::new())),
             imports: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            has_imports: Arc::new(AtomicBool::new(false)),
+            has_migrations: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -126,15 +133,27 @@ impl ClusterState {
             return false;
         }
         self.migrations.lock().unwrap().insert(slot.value(), target);
+        self.has_migrations.store(true, Ordering::Release);
         true
     }
 
     pub fn finish_slot_migration(&self, slot: super::Slot) {
-        self.migrations.lock().unwrap().remove(&slot.value());
+        let mut guard = self.migrations.lock().unwrap();
+        guard.remove(&slot.value());
+        if guard.is_empty() {
+            self.has_migrations.store(false, Ordering::Release);
+        }
     }
 
     pub fn commit_slot_migration(&self, slot: super::Slot) -> Option<super::Topology> {
-        let target = self.migrations.lock().unwrap().remove(&slot.value())?;
+        let target = {
+            let mut guard = self.migrations.lock().unwrap();
+            let t = guard.remove(&slot.value())?;
+            if guard.is_empty() {
+                self.has_migrations.store(false, Ordering::Release);
+            }
+            t
+        };
         let mut topology = self.topology.write().unwrap().as_ref().clone();
         let source_index = topology.nodes.iter().position(|node| {
             node.role == super::NodeRole::Primary
@@ -155,6 +174,9 @@ impl ClusterState {
     }
 
     pub fn migrating_target(&self, slot: super::Slot) -> Option<String> {
+        if !self.has_migrations.load(Ordering::Acquire) {
+            return None;
+        }
         self.migrations.lock().unwrap().get(&slot.value()).cloned()
     }
 
@@ -163,18 +185,29 @@ impl ClusterState {
             return false;
         }
         self.imports.lock().unwrap().insert(slot.value(), source);
+        self.has_imports.store(true, Ordering::Release);
         true
     }
 
     pub fn finish_slot_import(&self, slot: super::Slot) {
-        self.imports.lock().unwrap().remove(&slot.value());
+        let mut guard = self.imports.lock().unwrap();
+        guard.remove(&slot.value());
+        if guard.is_empty() {
+            self.has_imports.store(false, Ordering::Release);
+        }
     }
 
     pub fn is_importing(&self, slot: super::Slot) -> bool {
+        if !self.has_imports.load(Ordering::Acquire) {
+            return false;
+        }
         self.imports.lock().unwrap().contains_key(&slot.value())
     }
 
     pub fn import_source(&self, slot: super::Slot) -> Option<String> {
+        if !self.has_imports.load(Ordering::Acquire) {
+            return None;
+        }
         self.imports.lock().unwrap().get(&slot.value()).cloned()
     }
 
