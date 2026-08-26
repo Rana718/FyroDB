@@ -157,202 +157,310 @@ fn key_pattern(command: &[u8]) -> Option<KeyPattern> {
     None
 }
 
-/// Commands that can change the replicated keyspace. This stays byte based so
-/// the connection hot path does not allocate or require UTF-8 conversion.
+/// Uses a (len, first_byte) match so the compiler emits a jump table
 pub fn is_write_command(command: &[u8]) -> bool {
-    const COMMANDS: &[&[u8]] = &[
-        b"FLUSH",
-        b"FLUSHALL",
-        b"FLUSHDB",
-        b"SORT",
-        b"SET",
-        b"SETNX",
-        b"SETEX",
-        b"PSETEX",
-        b"GETDEL",
-        b"GETSET",
-        b"GETEX",
-        b"MSET",
-        b"MSETNX",
-        b"INCR",
-        b"DECR",
-        b"INCRBY",
-        b"DECRBY",
-        b"INCRBYFLOAT",
-        b"APPEND",
-        b"SETRANGE",
-        b"DEL",
-        b"UNLINK",
-        b"EXPIRE",
-        b"PEXPIRE",
-        b"EXPIREAT",
-        b"PERSIST",
-        b"RENAME",
-        b"RENAMENX",
-        b"COPY",
-        b"HSET",
-        b"HSETNX",
-        b"HMSET",
-        b"HDEL",
-        b"HINCRBY",
-        b"HINCRBYFLOAT",
-        b"LPUSH",
-        b"RPUSH",
-        b"LPOP",
-        b"RPOP",
-        b"LSET",
-        b"LTRIM",
-        b"LREM",
-        b"LINSERT",
-        b"LMOVE",
-        b"RPOPLPUSH",
-        b"BLPOP",
-        b"BRPOP",
-        b"BLMOVE",
-        b"SADD",
-        b"SREM",
-        b"SPOP",
-        b"SMOVE",
-        b"SUNIONSTORE",
-        b"SINTERSTORE",
-        b"SDIFFSTORE",
-        b"ZADD",
-        b"ZREM",
-        b"ZINCRBY",
-        b"ZRANGESTORE",
-        b"ZPOPMIN",
-        b"ZPOPMAX",
-        b"BZPOPMIN",
-        b"BZPOPMAX",
-        b"ZUNIONSTORE",
-        b"ZINTERSTORE",
-        b"ZDIFFSTORE",
-        b"SETBIT",
-        b"BITOP",
-        b"BITFIELD",
-        b"PFADD",
-        b"PFMERGE",
-        b"JSON.SET",
-        b"JSON.DEL",
-        b"JSON.FORGET",
-        b"JSON.NUMINCRBY",
-        b"JSON.NUMMULTBY",
-        b"JSON.STRAPPEND",
-        b"JSON.ARRAPPEND",
-        b"JSON.ARRINSERT",
-        b"JSON.ARRPOP",
-        b"JSON.ARRTRIM",
-        b"JSON.TOGGLE",
-        b"JSON.CLEAR",
-        b"GEOADD",
-        b"GEOSEARCHSTORE",
-        b"XADD",
-        b"XTRIM",
-        b"XDEL",
-        b"XGROUP",
-        b"XACK",
-    ];
-    COMMANDS
-        .iter()
-        .any(|known| command.eq_ignore_ascii_case(known))
+    let Some(&first) = command.first() else {
+        return false;
+    };
+    match (command.len(), first.to_ascii_uppercase()) {
+        // len=3
+        (3, b'S') => command.eq_ignore_ascii_case(b"SET"),
+        (3, b'D') => command.eq_ignore_ascii_case(b"DEL"),
+        // len=4
+        (4, b'I') => command.eq_ignore_ascii_case(b"INCR"),
+        (4, b'D') => command.eq_ignore_ascii_case(b"DECR"),
+        (4, b'C') => command.eq_ignore_ascii_case(b"COPY"),
+        (4, b'M') => command.eq_ignore_ascii_case(b"MSET"),
+        (4, b'H') => command.eq_ignore_ascii_case(b"HSET") || command.eq_ignore_ascii_case(b"HDEL"),
+        (4, b'L') => {
+            command.eq_ignore_ascii_case(b"LPOP")
+                || command.eq_ignore_ascii_case(b"LSET")
+                || command.eq_ignore_ascii_case(b"LREM")
+        }
+        (4, b'R') => {
+            command.eq_ignore_ascii_case(b"RPOP") || command.eq_ignore_ascii_case(b"RPUSH")
+        }
+        (4, b'S') => {
+            command.eq_ignore_ascii_case(b"SADD")
+                || command.eq_ignore_ascii_case(b"SREM")
+                || command.eq_ignore_ascii_case(b"SPOP")
+                || command.eq_ignore_ascii_case(b"SORT")
+        }
+        (4, b'Z') => command.eq_ignore_ascii_case(b"ZADD") || command.eq_ignore_ascii_case(b"ZREM"),
+        (4, b'X') => {
+            command.eq_ignore_ascii_case(b"XADD")
+                || command.eq_ignore_ascii_case(b"XDEL")
+                || command.eq_ignore_ascii_case(b"XACK")
+        }
+        (4, b'P') => command.eq_ignore_ascii_case(b"PFADD"),
+        // len=5
+        (5, b'S') => {
+            command.eq_ignore_ascii_case(b"SETNX")
+                || command.eq_ignore_ascii_case(b"SETEX")
+                || command.eq_ignore_ascii_case(b"SMOVE")
+        }
+        (5, b'L') => {
+            command.eq_ignore_ascii_case(b"LPUSH")
+                || command.eq_ignore_ascii_case(b"LMOVE")
+                || command.eq_ignore_ascii_case(b"LTRIM")
+        }
+        (5, b'R') => command.eq_ignore_ascii_case(b"RPUSH"),
+        (5, b'M') => command.eq_ignore_ascii_case(b"MSETNX"),
+        (5, b'X') => command.eq_ignore_ascii_case(b"XTRIM"),
+        (5, b'B') => command.eq_ignore_ascii_case(b"BITOP"),
+        (5, b'Z') => command.eq_ignore_ascii_case(b"ZINCRBY"),
+        // len=6
+        (6, b'A') => command.eq_ignore_ascii_case(b"APPEND"),
+        (6, b'U') => command.eq_ignore_ascii_case(b"UNLINK"),
+        (6, b'G') => {
+            command.eq_ignore_ascii_case(b"GETDEL")
+                || command.eq_ignore_ascii_case(b"GETSET")
+                || command.eq_ignore_ascii_case(b"GETEX")
+                || command.eq_ignore_ascii_case(b"GEOADD")
+        }
+        (6, b'P') => {
+            command.eq_ignore_ascii_case(b"PSETEX")
+                || command.eq_ignore_ascii_case(b"PERSIST")
+                || command.eq_ignore_ascii_case(b"PFADD")
+        }
+        (6, b'H') => {
+            command.eq_ignore_ascii_case(b"HSETNX") || command.eq_ignore_ascii_case(b"HMSET")
+        }
+        (6, b'S') => command.eq_ignore_ascii_case(b"SETBIT"),
+        (6, b'Z') => command.eq_ignore_ascii_case(b"ZINCRBY"),
+        (6, b'X') => command.eq_ignore_ascii_case(b"XGROUP"),
+        // len=7
+        (7, b'E') => command.eq_ignore_ascii_case(b"EXPIRE"),
+        (7, b'R') => command.eq_ignore_ascii_case(b"RENAME"),
+        (7, b'P') => {
+            command.eq_ignore_ascii_case(b"PEXPIRE") || command.eq_ignore_ascii_case(b"PFMERGE")
+        }
+        (7, b'S') => command.eq_ignore_ascii_case(b"SETRANGE"),
+        (7, b'H') => command.eq_ignore_ascii_case(b"HINCRBY"),
+        (7, b'L') => command.eq_ignore_ascii_case(b"LINSERT"),
+        (7, b'B') => {
+            command.eq_ignore_ascii_case(b"BLPOP")
+                || command.eq_ignore_ascii_case(b"BRPOP")
+                || command.eq_ignore_ascii_case(b"BITFIELD")
+        }
+        (7, b'Z') => {
+            command.eq_ignore_ascii_case(b"ZPOPMIN") || command.eq_ignore_ascii_case(b"ZPOPMAX")
+        }
+        (7, b'F') => {
+            command.eq_ignore_ascii_case(b"FLUSHDB") || command.eq_ignore_ascii_case(b"FLUSHALL")
+        }
+        (7, b'I') => command.eq_ignore_ascii_case(b"INCRBY"),
+        (7, b'D') => command.eq_ignore_ascii_case(b"DECRBY"),
+        (7, b'X') => command.eq_ignore_ascii_case(b"XGROUP"),
+        // len=8
+        (8, b'E') => command.eq_ignore_ascii_case(b"EXPIREAT"),
+        (8, b'R') => command.eq_ignore_ascii_case(b"RENAMENX"),
+        (8, b'P') => command.eq_ignore_ascii_case(b"PEXPIREAT"),
+        (8, b'B') => command.eq_ignore_ascii_case(b"BITFIELD"),
+        (8, b'F') => command.eq_ignore_ascii_case(b"FLUSHALL"),
+        (8, b'I') => command.eq_ignore_ascii_case(b"INCRBYFLOAT"),
+        // len=9+
+        (9, b'R') => command.eq_ignore_ascii_case(b"RPOPLPUSH"),
+        (9, b'Z') => {
+            command.eq_ignore_ascii_case(b"ZPOPMIN")
+                || command.eq_ignore_ascii_case(b"ZPOPMAX")
+                || command.eq_ignore_ascii_case(b"ZINCRBY")
+                || command.eq_ignore_ascii_case(b"ZRANGESTORE")
+        }
+        (9, b'B') => {
+            command.eq_ignore_ascii_case(b"BZPOPMIN")
+                || command.eq_ignore_ascii_case(b"BZPOPMAX")
+                || command.eq_ignore_ascii_case(b"BLMOVE")
+        }
+        (9, b'H') => command.eq_ignore_ascii_case(b"HINCRBYFLOAT"),
+        (10, b'S') => {
+            command.eq_ignore_ascii_case(b"SDIFFSTORE")
+                || command.eq_ignore_ascii_case(b"ZDIFFSTORE")
+        }
+        (11, b'Z') => {
+            command.eq_ignore_ascii_case(b"ZUNIONSTORE")
+                || command.eq_ignore_ascii_case(b"ZINTERSTORE")
+        }
+        (11, b'S') => {
+            command.eq_ignore_ascii_case(b"SUNIONSTORE")
+                || command.eq_ignore_ascii_case(b"SINTERSTORE")
+        }
+        (14, b'G') => command.eq_ignore_ascii_case(b"GEOSEARCHSTORE"),
+        // JSON commands
+        (8, b'J') => {
+            command.eq_ignore_ascii_case(b"JSON.SET") || command.eq_ignore_ascii_case(b"JSON.DEL")
+        }
+        (10, b'J') => command.eq_ignore_ascii_case(b"JSON.CLEAR"),
+        (11, b'J') => {
+            command.eq_ignore_ascii_case(b"JSON.ARRTRIM")
+                || command.eq_ignore_ascii_case(b"JSON.FORGET")
+                || command.eq_ignore_ascii_case(b"JSON.TOGGLE")
+                || command.eq_ignore_ascii_case(b"JSON.ARRPOP")
+        }
+        (12, b'J') => command.eq_ignore_ascii_case(b"JSON.ARRTRIM"),
+        (14, b'J') => {
+            command.eq_ignore_ascii_case(b"JSON.NUMINCRBY")
+                || command.eq_ignore_ascii_case(b"JSON.NUMMULTBY")
+                || command.eq_ignore_ascii_case(b"JSON.STRAPPEND")
+                || command.eq_ignore_ascii_case(b"JSON.ARRAPPEND")
+                || command.eq_ignore_ascii_case(b"JSON.ARRINSERT")
+        }
+        _ => false,
+    }
 }
 
 fn is_single_key(command: &[u8]) -> bool {
-    const COMMANDS: &[&[u8]] = &[
-        b"GET",
-        b"SET",
-        b"SETNX",
-        b"SETEX",
-        b"PSETEX",
-        b"GETDEL",
-        b"GETSET",
-        b"GETEX",
-        b"INCR",
-        b"DECR",
-        b"INCRBY",
-        b"DECRBY",
-        b"INCRBYFLOAT",
-        b"APPEND",
-        b"STRLEN",
-        b"GETRANGE",
-        b"SETRANGE",
-        b"TYPE",
-        b"TTL",
-        b"PTTL",
-        b"EXPIRE",
-        b"PEXPIRE",
-        b"EXPIREAT",
-        b"PERSIST",
-        b"HSET",
-        b"HGET",
-        b"HMGET",
-        b"HMSET",
-        b"HGETALL",
-        b"HDEL",
-        b"HEXISTS",
-        b"HLEN",
-        b"HKEYS",
-        b"HVALS",
-        b"HINCRBY",
-        b"HINCRBYFLOAT",
-        b"LPUSH",
-        b"RPUSH",
-        b"LPOP",
-        b"RPOP",
-        b"LLEN",
-        b"LINDEX",
-        b"LSET",
-        b"LRANGE",
-        b"LTRIM",
-        b"LREM",
-        b"LINSERT",
-        b"LPOS",
-        b"SADD",
-        b"SREM",
-        b"SISMEMBER",
-        b"SMISMEMBER",
-        b"SMEMBERS",
-        b"SCARD",
-        b"SPOP",
-        b"SRANDMEMBER",
-        b"ZADD",
-        b"ZREM",
-        b"ZSCORE",
-        b"ZMSCORE",
-        b"ZRANK",
-        b"ZREVRANK",
-        b"ZCARD",
-        b"ZCOUNT",
-        b"ZINCRBY",
-        b"ZRANGE",
-        b"ZREVRANGE",
-        b"ZRANGEBYSCORE",
-        b"ZPOPMIN",
-        b"ZPOPMAX",
-        b"SETBIT",
-        b"GETBIT",
-        b"BITCOUNT",
-        b"BITPOS",
-        b"PFADD",
-        b"PFCOUNT",
-        b"JSON.SET",
-        b"JSON.GET",
-        b"JSON.DEL",
-        b"JSON.TYPE",
-        b"XADD",
-        b"XLEN",
-        b"XRANGE",
-        b"XREVRANGE",
-        b"XDEL",
-        b"GEOADD",
-        b"GEOPOS",
-        b"GEODIST",
-        b"GEOHASH",
-        b"GEOSEARCH",
-    ];
-    COMMANDS
-        .iter()
-        .any(|known| command.eq_ignore_ascii_case(known))
+    let Some(&first) = command.first() else {
+        return false;
+    };
+    match (command.len(), first.to_ascii_uppercase()) {
+        // len=3
+        (3, b'G') => command.eq_ignore_ascii_case(b"GET"),
+        (3, b'S') => command.eq_ignore_ascii_case(b"SET"),
+        (3, b'T') => command.eq_ignore_ascii_case(b"TTL"),
+        (3, b'D') => command.eq_ignore_ascii_case(b"DEL"),
+        // len=4
+        (4, b'I') => command.eq_ignore_ascii_case(b"INCR"),
+        (4, b'D') => command.eq_ignore_ascii_case(b"DECR"),
+        (4, b'T') => command.eq_ignore_ascii_case(b"TYPE"),
+        (4, b'P') => command.eq_ignore_ascii_case(b"PTTL"),
+        (4, b'H') => {
+            command.eq_ignore_ascii_case(b"HSET")
+                || command.eq_ignore_ascii_case(b"HGET")
+                || command.eq_ignore_ascii_case(b"HDEL")
+                || command.eq_ignore_ascii_case(b"HLEN")
+        }
+        (4, b'L') => {
+            command.eq_ignore_ascii_case(b"LPOP")
+                || command.eq_ignore_ascii_case(b"LLEN")
+                || command.eq_ignore_ascii_case(b"LSET")
+                || command.eq_ignore_ascii_case(b"LREM")
+        }
+        (4, b'R') => {
+            command.eq_ignore_ascii_case(b"RPOP") || command.eq_ignore_ascii_case(b"RPUSH")
+        }
+        (4, b'S') => {
+            command.eq_ignore_ascii_case(b"SADD")
+                || command.eq_ignore_ascii_case(b"SREM")
+                || command.eq_ignore_ascii_case(b"SPOP")
+                || command.eq_ignore_ascii_case(b"SCARD")
+        }
+        (4, b'Z') => {
+            command.eq_ignore_ascii_case(b"ZADD")
+                || command.eq_ignore_ascii_case(b"ZREM")
+                || command.eq_ignore_ascii_case(b"ZCARD")
+        }
+        (4, b'X') => {
+            command.eq_ignore_ascii_case(b"XADD")
+                || command.eq_ignore_ascii_case(b"XLEN")
+                || command.eq_ignore_ascii_case(b"XDEL")
+        }
+        // len=5
+        (5, b'S') => {
+            command.eq_ignore_ascii_case(b"SETNX") || command.eq_ignore_ascii_case(b"SETEX")
+        }
+        (5, b'L') => {
+            command.eq_ignore_ascii_case(b"LPUSH") || command.eq_ignore_ascii_case(b"LPOS")
+        }
+        (5, b'R') => command.eq_ignore_ascii_case(b"RPUSH"),
+        (5, b'Z') => {
+            command.eq_ignore_ascii_case(b"ZSCORE")
+                || command.eq_ignore_ascii_case(b"ZRANK")
+                || command.eq_ignore_ascii_case(b"ZCOUNT")
+                || command.eq_ignore_ascii_case(b"ZRANGE")
+        }
+        (5, b'P') => command.eq_ignore_ascii_case(b"PFADD"),
+        // len=6
+        (6, b'A') => command.eq_ignore_ascii_case(b"APPEND"),
+        (6, b'G') => {
+            command.eq_ignore_ascii_case(b"GETSET")
+                || command.eq_ignore_ascii_case(b"GETEX")
+                || command.eq_ignore_ascii_case(b"GETBIT")
+                || command.eq_ignore_ascii_case(b"GEOPOS")
+        }
+        (6, b'P') => {
+            command.eq_ignore_ascii_case(b"PSETEX") || command.eq_ignore_ascii_case(b"PERSIST")
+        }
+        (6, b'S') => {
+            command.eq_ignore_ascii_case(b"STRLEN") || command.eq_ignore_ascii_case(b"SETBIT")
+        }
+        (6, b'H') => {
+            command.eq_ignore_ascii_case(b"HMGET")
+                || command.eq_ignore_ascii_case(b"HMSET")
+                || command.eq_ignore_ascii_case(b"HKEYS")
+                || command.eq_ignore_ascii_case(b"HVALS")
+                || command.eq_ignore_ascii_case(b"HEXISTS")
+        }
+        (6, b'L') => {
+            command.eq_ignore_ascii_case(b"LINDEX")
+                || command.eq_ignore_ascii_case(b"LRANGE")
+                || command.eq_ignore_ascii_case(b"LTRIM")
+        }
+        (6, b'Z') => {
+            command.eq_ignore_ascii_case(b"ZSCORE")
+                || command.eq_ignore_ascii_case(b"ZRANGE")
+                || command.eq_ignore_ascii_case(b"ZCOUNT")
+                || command.eq_ignore_ascii_case(b"ZRANK")
+        }
+        (6, b'X') => command.eq_ignore_ascii_case(b"XRANGE"),
+        // len=7
+        (7, b'E') => command.eq_ignore_ascii_case(b"EXPIRE"),
+        (7, b'G') => {
+            command.eq_ignore_ascii_case(b"GEODIST") || command.eq_ignore_ascii_case(b"GEOHASH")
+        }
+        (7, b'P') => {
+            command.eq_ignore_ascii_case(b"PEXPIRE") || command.eq_ignore_ascii_case(b"PFCOUNT")
+        }
+        // len=8
+        (8, b'E') => command.eq_ignore_ascii_case(b"EXPIREAT"),
+        (8, b'G') => {
+            command.eq_ignore_ascii_case(b"GETRANGE")
+                || command.eq_ignore_ascii_case(b"GETDEL")
+                || command.eq_ignore_ascii_case(b"GEOADD")
+        }
+        (8, b'S') => {
+            command.eq_ignore_ascii_case(b"SETRANGE") || command.eq_ignore_ascii_case(b"SMEMBERS")
+        }
+        (8, b'P') => command.eq_ignore_ascii_case(b"PEXPIREAT"),
+        (8, b'Z') => {
+            command.eq_ignore_ascii_case(b"ZPOPMIN")
+                || command.eq_ignore_ascii_case(b"ZPOPMAX")
+                || command.eq_ignore_ascii_case(b"ZREVRANK")
+        }
+        (8, b'B') => {
+            command.eq_ignore_ascii_case(b"BITCOUNT") || command.eq_ignore_ascii_case(b"BITPOS")
+        }
+        (8, b'J') => {
+            command.eq_ignore_ascii_case(b"JSON.SET")
+                || command.eq_ignore_ascii_case(b"JSON.GET")
+                || command.eq_ignore_ascii_case(b"JSON.DEL")
+        }
+        (8, b'X') => command.eq_ignore_ascii_case(b"XREVRANGE"),
+        // len=9
+        (9, b'S') => {
+            command.eq_ignore_ascii_case(b"SISMEMBER")
+                || command.eq_ignore_ascii_case(b"SRANDMEMBER")
+        }
+        (9, b'Z') => {
+            command.eq_ignore_ascii_case(b"ZINCRBY") || command.eq_ignore_ascii_case(b"ZREVRANGE")
+        }
+        (9, b'G') => {
+            command.eq_ignore_ascii_case(b"GEOSEARCH") || command.eq_ignore_ascii_case(b"GEOHASH")
+        }
+        (9, b'J') => command.eq_ignore_ascii_case(b"JSON.TYPE"),
+        (9, b'X') => command.eq_ignore_ascii_case(b"XREVRANGE"),
+        // len=10
+        (10, b'S') => command.eq_ignore_ascii_case(b"SMISMEMBER"),
+        (10, b'P') => command.eq_ignore_ascii_case(b"PFCOUNT"),
+        // len=11
+        (11, b'S') => command.eq_ignore_ascii_case(b"SRANDMEMBER"),
+        (11, b'I') => command.eq_ignore_ascii_case(b"INCRBYFLOAT"),
+        // len=12
+        (12, b'H') => command.eq_ignore_ascii_case(b"HINCRBYFLOAT"),
+        // len=13
+        (13, b'Z') => command.eq_ignore_ascii_case(b"ZRANGEBYSCORE"),
+        _ => false,
+    }
 }
 
 #[cfg(test)]

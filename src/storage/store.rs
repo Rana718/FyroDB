@@ -32,15 +32,18 @@ impl ClusterMetrics {
 pub struct Store {
     pub(crate) data: CustomMap<StoreValue>,
     pub(crate) replication: Option<crate::cluster::ReplicationCoordinator>,
+
+    pub(crate) connected_clients: AtomicUsize,
     pub(crate) ttl_count: AtomicUsize,
     ttl_generation: AtomicU64,
-    replica_installing: std::sync::atomic::AtomicBool,
-    cluster_write_gate: Mutex<()>,
-    pub(crate) int_create_lock: Mutex<()>,
-    pub(crate) cluster_state: crate::cluster::ClusterState,
-    pub cluster: Box<crate::cluster::ClusterConfig>,
-    pub(crate) connected_clients: AtomicUsize,
     replica_applied_offset: AtomicU64,
+    pub(crate) int_create_lock: Mutex<()>,
+    replica_installing: std::sync::atomic::AtomicBool,
+
+    // Boxed or placed last so they do not evict hot fields from L1/L2.
+    pub cluster: Box<crate::cluster::ClusterConfig>,
+    pub(crate) cluster_state: crate::cluster::ClusterState,
+    cluster_write_gate: Mutex<()>,
     replica_meta_path: Mutex<Option<String>>,
     replica_identity: Mutex<Option<[u8; 16]>>,
     cluster_meta_path: Mutex<Option<String>>,
