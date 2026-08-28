@@ -478,8 +478,16 @@ pub fn cluster_cmd(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
                     &cluster.local_id,
                 );
                 let _ = store.install_cluster_topology(topology);
-            } else {
-                let _ = store.cluster_state_ref().add_slots(target, &[slot]);
+            } else if let Some(topology) = store.cluster_state_ref().assign_slot(slot, target) {
+                // Reached on every node that is not the migration source. It
+                // still has to record the new owner, or it will keep
+                // redirecting the slot to the previous one.
+                let _ = crate::cluster::save_nodes_conf(
+                    &cluster.nodes_config_file,
+                    &topology,
+                    &cluster.local_id,
+                );
+                let _ = store.install_cluster_topology(topology);
             }
         }
         return resp::write_ok(out);

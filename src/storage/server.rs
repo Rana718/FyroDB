@@ -1,6 +1,16 @@
 use crate::storage::store::{Store, cgroup_memory_bytes, peak_rss_bytes, rss_bytes};
 use crate::storage::value::{now_ms, tick_clock};
 
+/// High-water mark of `used_memory`, sampled whenever `INFO` is served.
+///
+/// Redis reports `used_memory_peak` as the peak of *requested* bytes, which is
+/// not the same curve as peak RSS.
+fn record_peak_allocated(current: usize) -> usize {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static PEAK: AtomicUsize = AtomicUsize::new(0);
+    PEAK.fetch_max(current, Ordering::Relaxed).max(current)
+}
+
 impl Store {
     pub fn cleanup_expired(&self) {
         tick_clock();
@@ -56,6 +66,7 @@ impl Store {
         let connected = self.connected_clients();
         let allocated = rust_zmalloc::used_memory();
         let rss = rss_bytes();
+        let peak_allocated = record_peak_allocated(allocated);
         let peak_rss = peak_rss_bytes();
         let cgroup = cgroup_memory_bytes();
         let rss_human = format_bytes(rss);
@@ -138,11 +149,14 @@ impl Store {
              used_memory_human:{allocated_human}\r\n\
              used_memory_rss:{rss}\r\n\
              used_memory_rss_human:{rss_human}\r\n\
-             used_memory_peak:{peak_rss}\r\n\
-             used_memory_peak_human:{peak_human}\r\n\
+             used_memory_peak:{peak_allocated}\r\n\
+             used_memory_peak_human:{peak_allocated_human}\r\n\
+             used_memory_rss_peak:{peak_rss}\r\n\
+             used_memory_rss_peak_human:{peak_human}\r\n\
              used_memory_cgroup:{cgroup}\r\n\
              used_memory_cgroup_human:{cgroup_human}\r\n\
              mem_fragmentation_ratio:{frag_ratio:.2}\r\n\
+             mem_allocator:mimalloc\r\n\
              \r\n\
              # Stats\r\n\
              total_keys:{total_keys}\r\n\
@@ -153,6 +167,7 @@ impl Store {
             peak_human = format_bytes(peak_rss),
             allocated = allocated,
             allocated_human = format_bytes(allocated),
+            peak_allocated_human = format_bytes(peak_allocated),
             cgroup_human = format_bytes(cgroup),
             cluster_info = cluster_info,
         )

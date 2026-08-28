@@ -102,15 +102,22 @@ impl RespParser {
             self.pos += len + 2;
         }
 
-        // Shrink oversized read buffer after full drain
+        ParseResult::Complete
+    }
+
+    /// Return an oversized read buffer to its idle size.
+    ///
+    /// `parts_raw` holds raw pointers into `rbuf`, so this must only run once
+    /// the caller is done dispatching the parsed command — shrinking here
+    /// reallocates and would leave those pointers covering freed memory.
+    pub fn release_read_buffer(&mut self) {
         if self.pos == self.filled && self.rbuf.len() > 16 * 1024 {
+            self.parts_raw.clear();
             self.rbuf.truncate(2 * 1024);
             self.rbuf.shrink_to(2 * 1024);
             self.filled = 0;
             self.pos = 0;
         }
-
-        ParseResult::Complete
     }
 
     #[inline(always)]
@@ -153,4 +160,63 @@ fn parse_usize(s: &[u8], max: usize) -> Option<usize> {
         }
     }
     Some(n)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ParseResult, RespParser};
+
+    fn feed(parser: &mut RespParser, bytes: &[u8]) {
+        let mut offset = 0;
+        while offset < bytes.len() {
+            let buf = parser.read_buf();
+            let n = buf.len().min(bytes.len() - offset);
+            buf[..n].copy_from_slice(&bytes[offset..offset + n]);
+            parser.did_fill(n);
+            offset += n;
+        }
+    }
+
+    /// `parse_one` used to shrink `rbuf` before returning `Complete`, leaving
+    /// every pointer in `parts_raw` covering freed memory. A single command
+    /// large enough to grow `rbuf` past 16KiB reproduced it.
+    #[test]
+    fn large_command_parts_stay_inside_the_live_read_buffer() {
+        let mut parser = RespParser::new();
+        let value = "x".repeat(20_000);
+        let command = format!("*3\r\n$3\r\nSET\r\n$1\r\nk\r\n${}\r\n{value}\r\n", value.len());
+        feed(&mut parser, command.as_bytes());
+
+        assert!(matches!(parser.parse_one(), ParseResult::Complete));
+
+        let base = parser.rbuf.as_ptr() as usize;
+        let live = parser.rbuf.capacity();
+        assert_eq!(parser.parts_raw.len(), 3);
+        for &(ptr, len) in &parser.parts_raw {
+            let offset = ptr as usize - base;
+            assert!(
+                offset + len <= live,
+                "part at offset {offset} len {len} escapes the {live} byte buffer"
+            );
+        }
+        let (ptr, len) = parser.parts_raw[2];
+        let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
+        assert_eq!(bytes, value.as_bytes());
+    }
+
+    #[test]
+    fn releasing_the_read_buffer_reclaims_it_after_a_large_command() {
+        let mut parser = RespParser::new();
+        let value = "y".repeat(20_000);
+        let command = format!("*2\r\n$3\r\nGET\r\n${}\r\n{value}\r\n", value.len());
+        feed(&mut parser, command.as_bytes());
+        assert!(matches!(parser.parse_one(), ParseResult::Complete));
+        assert!(parser.rbuf.len() > 16 * 1024);
+
+        parser.release_read_buffer();
+        assert_eq!(parser.rbuf.len(), 2 * 1024);
+        assert!(parser.parts_raw.is_empty());
+        assert_eq!(parser.pos, 0);
+        assert_eq!(parser.filled, 0);
+    }
 }

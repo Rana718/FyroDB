@@ -74,6 +74,11 @@ tasks:
       cmds:
          - cd bench && go run . -cluster 127.0.0.1:7001,127.0.0.1:7002,127.0.0.1:7003,127.0.0.1:7004,127.0.0.1:7005,127.0.0.1:7006
 
+   bench-fyro-cluster:
+      desc: benchmark FyroDB cluster (3 masters x 2 workers — fair 6-core vs 6-core)
+      cmds:
+         - cd bench && go run . -cluster 127.0.0.1:8000,127.0.0.1:8001,127.0.0.1:8002
+
    redis-up:
       desc: Start Redis Cluster
       cmds:
@@ -88,7 +93,7 @@ tasks:
    fyro-up:
      desc: Start Fyro Cluster
      cmds:
-       - docker compose -f docker-compose.cluster.yml up -d
+       - docker compose -f docker-compose.cluster.yml up -d --build
 
    fyro-down:
      desc: Stop Fyro Cluster
@@ -110,4 +115,10 @@ tasks:
       desc: Flush all data from every Redis Cluster master node
       cmds:
          - for: ["7001", "7002", "7003", "7004", "7005", "7006"]
+           cmd: redis-cli -p {{.ITEM}} FLUSHALL
+
+   fyro-clean:
+      desc: Flush all data from every Fyro Cluster master node
+      cmds:
+         - for: ["8000", "8001", "8002"]
            cmd: redis-cli -p {{.ITEM}} FLUSHALL

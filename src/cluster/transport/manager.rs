@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::net::SocketAddr;
+use std::net::{SocketAddr, ToSocketAddrs};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, SyncSender, TrySendError};
@@ -621,9 +621,6 @@ fn run_peer_worker(
     auth_token: Option<&str>,
     reconnect_count: Arc<AtomicU64>,
 ) {
-    let Ok(address) = node.cluster_address.parse::<SocketAddr>() else {
-        return;
-    };
     let mut peer = None;
     let mut backoff = MIN_BACKOFF;
     let mut request_id = 1u64;
@@ -649,8 +646,24 @@ fn run_peer_worker(
         loop {
             if peer.is_none() {
                 health.connecting();
-                match connect_and_handshake(address, local_id, node, epoch, auth_token) {
-                    Ok(connection) => {
+                // Resolved per attempt, not once at startup: a peer's address
+                // may be a hostname whose DNS record changes when that node
+                // restarts (container orchestration reassigns IPs).
+                let candidates = resolve_peer_address(&node.cluster_address, &node.id);
+                if candidates.is_empty() {
+                    health.disconnected(None);
+                    thread::sleep(backoff);
+                    backoff = backoff.saturating_mul(2).min(MAX_BACKOFF);
+                    continue;
+                }
+                // Every candidate gets a try, not just the first. `localhost`
+                // and dual-stack service names commonly resolve to an IPv6
+                // address ahead of the IPv4 one the peer is actually bound to.
+                let attempt = candidates.iter().find_map(|&address| {
+                    connect_and_handshake(address, local_id, node, epoch, auth_token).ok()
+                });
+                match attempt {
+                    Some(connection) => {
                         if connected_once {
                             reconnect_count.fetch_add(1, Ordering::Relaxed);
                         }
@@ -670,7 +683,7 @@ fn run_peer_worker(
                         peer = Some(connection);
                         backoff = MIN_BACKOFF;
                     }
-                    Err(_) => {
+                    None => {
                         health.disconnected(None);
                         thread::sleep(backoff);
                         backoff = backoff.saturating_mul(2).min(MAX_BACKOFF);
@@ -713,6 +726,41 @@ fn read_replies(
     }
     health.disconnected(Some(generation));
     requests.fail_pending();
+}
+
+/// Resolve a cluster-bus address into every candidate socket address.
+///
+/// Hostnames are the norm once nodes run under an orchestrator — Docker Compose
+/// service names, Kubernetes service DNS — and a bare `parse::<SocketAddr>()`
+/// rejects them. It used to, silently: the peer worker returned before its first
+/// connect, so a hostname-addressed cluster came up with no heartbeats, no
+/// failure detection and no replication, while still answering reads because
+/// every node had the static slot map from nodes.conf.
+///
+/// All candidates are returned because resolution order is not connectability
+/// order: `localhost` and dual-stack service names usually yield the IPv6
+/// address first, while a node bound to `127.0.0.1` only accepts IPv4.
+fn resolve_peer_address(address: &str, node_id: &str) -> Vec<SocketAddr> {
+    if let Ok(parsed) = address.parse::<SocketAddr>() {
+        return vec![parsed];
+    }
+    match address.to_socket_addrs() {
+        Ok(resolved) => {
+            let candidates: Vec<SocketAddr> = resolved.collect();
+            if candidates.is_empty() {
+                eprintln!(
+                    "fyrodb: cluster address {address} for node {node_id} resolved to nothing"
+                );
+            }
+            candidates
+        }
+        Err(error) => {
+            eprintln!(
+                "fyrodb: cannot resolve cluster address {address} for node {node_id}: {error}"
+            );
+            Vec::new()
+        }
+    }
 }
 
 fn connect_and_handshake(
@@ -797,5 +845,58 @@ mod tests {
             manager.try_send("missing", frame),
             Err(PeerSendError::UnknownPeer)
         );
+    }
+
+    /// A cluster-bus address of `host:port` used to be rejected by
+    /// `parse::<SocketAddr>()`, and the peer worker returned before its first
+    /// connect — so a Compose/Kubernetes cluster ran with no bus at all.
+    #[test]
+    fn hostname_cluster_addresses_resolve() {
+        let candidates = super::resolve_peer_address("localhost:19301", "node-1");
+        assert!(
+            !candidates.is_empty(),
+            "a hostname must resolve to at least one candidate"
+        );
+        assert!(candidates.iter().all(|addr| addr.port() == 19301));
+        assert!(
+            "localhost:19301".parse::<std::net::SocketAddr>().is_err(),
+            "this is the parse that used to silently disable the bus"
+        );
+    }
+
+    /// Resolution order is not connectability order: `localhost` yields the
+    /// IPv6 address first on a dual-stack host while a node bound to
+    /// `127.0.0.1` only accepts IPv4, so every candidate has to be offered.
+    #[test]
+    fn every_resolved_candidate_is_returned() {
+        let candidates = super::resolve_peer_address("localhost:19301", "node-1");
+        let has_v4 = candidates.iter().any(|addr| addr.is_ipv4());
+        let has_v6 = candidates.iter().any(|addr| addr.is_ipv6());
+        assert!(
+            has_v4 || has_v6,
+            "expected at least one address family for localhost"
+        );
+        if candidates.len() > 1 {
+            assert!(
+                has_v4 && has_v6,
+                "a multi-candidate localhost should expose both families"
+            );
+        }
+    }
+
+    #[test]
+    fn numeric_addresses_skip_resolution() {
+        assert_eq!(
+            super::resolve_peer_address("10.0.0.7:18000", "node-1"),
+            vec!["10.0.0.7:18000".parse::<std::net::SocketAddr>().unwrap()]
+        );
+    }
+
+    #[test]
+    fn unresolvable_addresses_yield_no_candidates() {
+        assert!(
+            super::resolve_peer_address("no-such-host.invalid:18000", "node-1").is_empty()
+        );
+        assert!(super::resolve_peer_address("garbage", "node-1").is_empty());
     }
 }

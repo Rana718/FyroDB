@@ -26,7 +26,11 @@ fn main() {
     }
 
     let workers = config.workers;
-    let store = Arc::new(Store::with_config(config.shards, config.max_keys));
+    let store = Arc::new(Store::with_config_workers(
+        config.shards,
+        config.max_keys,
+        config.workers,
+    ));
     let pubsub = Arc::new(PubSub::new());
 
     set_max_clients(config.max_clients);
@@ -89,7 +93,11 @@ fn main() {
     );
     println!(
         "  max_keys={} shards={} max_clients={} rdb_path={} rdb_interval={}s",
-        config.max_keys,
+        if config.max_keys == usize::MAX {
+            "unlimited".to_owned()
+        } else {
+            config.max_keys.to_string()
+        },
         config.shards,
         config.max_clients,
         config.rdb_path,
@@ -109,7 +117,7 @@ fn main() {
 
     let mut handles = Vec::with_capacity(workers);
     let auth: Option<Arc<String>> = config.auth.map(Arc::new);
-    for _ in 0..workers {
+    for worker_index in 0..workers {
         let store = Arc::clone(&store);
         let pubsub = Arc::clone(&pubsub);
         let port = config.port;
@@ -121,7 +129,7 @@ fn main() {
                 // The event loop does not use deep recursion; keep idle RSS
                 // low while leaving parser/output buffers heap-backed.
                 .stack_size(128 * 1024)
-                .spawn(move || run_worker(store, pubsub, port, bind, auth))
+                .spawn(move || run_worker(store, pubsub, port, bind, auth, worker_index))
                 .expect("failed to spawn worker"),
         );
     }
@@ -156,11 +164,18 @@ impl Config {
         } else {
             shards.next_power_of_two()
         };
+        // Unlimited unless explicitly capped, matching Redis's `maxmemory 0`
+        // default. A small default silently turned ordinary workloads into OOM
+        // errors on some commands and not others.
+        let max_keys = match env_usize("FYRODB_MAX_KEYS", 0) {
+            0 => usize::MAX,
+            configured => configured,
+        };
         Config {
             port: env_u16("FYRODB_PORT", 8000),
             workers,
             shards,
-            max_keys: env_usize("FYRODB_MAX_KEYS", 1_000),
+            max_keys,
             max_clients: env_usize("FYRODB_MAX_CLIENTS", 10_000),
             rdb_path: env::var("FYRODB_RDB_PATH").unwrap_or_else(|_| "fyrodb.rdb".to_string()),
             rdb_interval: Duration::from_secs(env_u64("FYRODB_RDB_INTERVAL", 300)),
@@ -193,6 +208,9 @@ fn env_u64(key: &str, default: u64) -> u64 {
 
 fn spawn_expiry_thread(store: Arc<Store>) {
     const SCAN_SLOTS_PER_TICK: usize = 262_144;
+    /// Values rebuilt per defrag tick. Bounded so a large keyspace is covered
+    /// over successive ticks instead of in one stop-the-shard pass.
+    const DEFRAG_BUDGET: usize = 512;
 
     std::thread::Builder::new()
         .name("fyrodb-expiry".into())
@@ -208,6 +226,8 @@ fn spawn_expiry_thread(store: Arc<Store>) {
             let mut collect_tick = 0u8;
             let mut purge_tick = 0u8;
             let mut compact_tick = 0u16;
+            let mut defrag_shard = 0usize;
+            let mut defrag_slot = 0usize;
             let mut last_key_count = store.dbsize();
             loop {
                 std::thread::sleep(Duration::from_secs(1));
@@ -218,7 +238,6 @@ fn spawn_expiry_thread(store: Arc<Store>) {
                     collect_tick = 0;
                     customhash::force_collect();
                     rust_zmalloc::purge();
-                    rust_zmalloc::refresh_used_memory();
                 }
                 // Reclaim allocator pages on an existing maintenance cadence;
                 // this is deliberately infrequent and does not affect hot
@@ -232,8 +251,19 @@ fn spawn_expiry_thread(store: Arc<Store>) {
                     {
                         // Active defrag cycle. Values are rebuilt under their
                         // existing entry lock so lock-free readers never
-                        // observe a relocated entry address.
-                        store.defragment_values(512);
+                        // observe a relocated entry address. The cursor keeps
+                        // each pass bounded regardless of keyspace size.
+                        let (next_slot, capacity, rebuilt) =
+                            store.defragment_shard_range(defrag_shard, defrag_slot, DEFRAG_BUDGET);
+                        if next_slot >= capacity {
+                            defrag_slot = 0;
+                            defrag_shard = (defrag_shard + 1) % shards;
+                        } else {
+                            defrag_slot = next_slot;
+                        }
+                        if rebuilt != 0 {
+                            customhash::force_collect_quiescent();
+                        }
                     }
                     store::purge_allocator_if_fragmented();
                 }

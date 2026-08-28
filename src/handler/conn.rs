@@ -34,6 +34,15 @@ pub struct Conn {
     pub auth_required: Option<Arc<String>>,
     pub authenticated: bool,
     pub asking: bool,
+    /// Mirrors whether the poll registration currently includes `WRITABLE`, so
+    /// the common fully-drained case costs no `reregister` syscall.
+    pub writable_registered: bool,
+    /// Index of the worker owning this connection. Selects the write-fence
+    /// counter, which must not be shared between workers.
+    pub worker: usize,
+    /// Cached cluster topology, revalidated against
+    /// `ClusterState::topology_version` instead of re-locking per command.
+    topology_cache: Option<(u64, Arc<crate::cluster::Topology>)>,
 }
 
 impl Conn {
@@ -44,6 +53,7 @@ impl Conn {
         token: usize,
         notifier: Arc<WorkerNotifier>,
         auth: Option<Arc<String>>,
+        worker: usize,
     ) -> Self {
         store.client_connected();
         let authenticated = auth.is_none();
@@ -59,7 +69,36 @@ impl Conn {
             auth_required: auth,
             authenticated,
             asking: false,
+            writable_registered: false,
+            worker,
+            topology_cache: None,
         }
+    }
+
+    /// Bring the cached topology up to date. One `Acquire` load in the steady
+    /// state; only a version change pays for the lock and `Arc` clone.
+    #[inline]
+    fn refresh_topology(&mut self) {
+        let state = self.store.cluster_state_ref();
+        match self.topology_cache.as_ref().map(|(version, _)| *version) {
+            Some(version) => {
+                if let Some(fresh) = state.topology_if_newer(version) {
+                    self.topology_cache = Some(fresh);
+                }
+            }
+            None => {
+                let version = state.topology_version();
+                self.topology_cache = Some((version, state.topology_arc()));
+            }
+        }
+    }
+
+    #[inline]
+    fn cached_topology(&self) -> &crate::cluster::Topology {
+        self.topology_cache
+            .as_ref()
+            .map(|(_, topology)| topology.as_ref())
+            .expect("refresh_topology must run first")
     }
 
     pub fn do_read(&mut self) -> bool {
@@ -85,6 +124,10 @@ impl Conn {
                 ParseResult::Error => return false,
             }
         }
+
+        // Safe only here: no dispatch is in flight, so no `parts_raw` pointer
+        // into the read buffer is still being read.
+        self.parser.release_read_buffer();
 
         true
     }
@@ -174,9 +217,22 @@ fn dispatch_raw(conn: &mut Conn, raw: &[(*const u8, usize)]) {
     // command is a write.
     let cluster_is_write = conn.store.cluster.enabled && crate::cluster::is_write_command(cmd);
 
+    // One admission check for every command that can grow the keyspace, so a
+    // configured ceiling applies uniformly instead of only to the handful of
+    // paths that happened to route through a `try_*` store helper.
+    if conn.store.at_key_capacity() && crate::storage::capacity::is_denyoom_command(cmd) {
+        conn.parser
+            .wbuf
+            .extend_from_slice(crate::storage::capacity::OOM_REPLY);
+        return;
+    }
+
     let _cluster_write_guard = if cluster_is_write {
+        // `conn.store` is an `Arc` this connection owns for its whole life and
+        // never reassigns, so the ticket's borrow outlives every `&mut conn` use
+        // below. The borrow checker cannot see that through the `Arc`.
         let store_ptr: *const Store = &*conn.store;
-        Some(unsafe { &*store_ptr }.cluster_write_guard())
+        Some(unsafe { &*store_ptr }.begin_write(conn.worker))
     } else {
         None
     };
@@ -195,44 +251,30 @@ fn dispatch_raw(conn: &mut Conn, raw: &[(*const u8, usize)]) {
             return;
         }
 
+        conn.refresh_topology();
+        let asking = std::mem::take(&mut conn.asking);
+
         const STACK_ARGS: usize = 32;
         let mut stack_args = [&[][..]; STACK_ARGS];
 
-        if raw.len().saturating_sub(1) > STACK_ARGS {
+        let decision = if raw.len().saturating_sub(1) > STACK_ARGS {
             let args: Vec<&[u8]> = raw[1..]
                 .iter()
                 .map(|&part| unsafe { part_bytes(part) })
                 .collect();
-            match crate::cluster::route_command_with_state_import(
-                &conn.store.cluster,
-                conn.store.cluster_state_ref(),
-                cmd,
-                &args,
-                std::mem::take(&mut conn.asking),
-            ) {
-                crate::cluster::RouteDecision::Local => {}
-                other => {
-                    write_route_decision(&mut conn.parser.wbuf, other);
-                    return;
-                }
-            }
+            route_cached(conn, cmd, &args, asking)
         } else {
             for (index, part) in raw[1..].iter().enumerate() {
                 stack_args[index] = unsafe { part_bytes(*part) };
             }
             let args = &stack_args[..raw.len() - 1];
-            match crate::cluster::route_command_with_state_import(
-                &conn.store.cluster,
-                conn.store.cluster_state_ref(),
-                cmd,
-                args,
-                std::mem::take(&mut conn.asking),
-            ) {
-                crate::cluster::RouteDecision::Local => {}
-                other => {
-                    write_route_decision(&mut conn.parser.wbuf, other);
-                    return;
-                }
+            route_cached(conn, cmd, args, asking)
+        };
+        match decision {
+            crate::cluster::RouteDecision::Local => {}
+            other => {
+                write_route_decision(&mut conn.parser.wbuf, other);
+                return;
             }
         }
     }
@@ -367,6 +409,24 @@ fn dispatch_raw(conn: &mut Conn, raw: &[(*const u8, usize)]) {
         }
         dispatch(conn, &parts);
     }
+}
+
+/// Route one command against this connection's cached topology snapshot.
+#[inline(always)]
+fn route_cached(
+    conn: &Conn,
+    cmd: &[u8],
+    args: &[&[u8]],
+    asking: bool,
+) -> crate::cluster::RouteDecision<'static> {
+    crate::cluster::route_command_with_snapshot(
+        &conn.store.cluster,
+        conn.store.cluster_state_ref(),
+        conn.cached_topology(),
+        cmd,
+        args,
+        asking,
+    )
 }
 
 /// Write a non-Local routing decision into the output buffer.

@@ -1,7 +1,8 @@
 use super::value::StoreValue;
+use crossbeam_utils::CachePadded;
 use customhash::CustomMap;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 struct ClusterMetrics {
     peers_total: AtomicUsize,
@@ -29,6 +30,62 @@ impl ClusterMetrics {
     }
 }
 
+/// Fence coordinating bulk cluster operations against in-flight writes.
+///
+/// Slot migration and replica snapshot bootstrap need "no writes in flight",
+/// not mutual exclusion between writers — but the previous implementation gave
+/// them a single process-wide `Mutex` that every write command had to acquire,
+/// which serialized cluster writes across all workers. Writers now touch only
+/// their own counter, and a fence holder asks them to fall back to the mutex
+/// while it drains.
+struct WriteFence {
+    /// In-flight write count per worker. Uncontended: one worker owns each.
+    in_flight: Box<[CachePadded<AtomicUsize>]>,
+    /// Set while a fence holder is draining or holding the barrier.
+    engaged: AtomicBool,
+    gate: Mutex<()>,
+}
+
+impl WriteFence {
+    fn new(workers: usize) -> Self {
+        Self {
+            in_flight: (0..workers.max(1))
+                .map(|_| CachePadded::new(AtomicUsize::new(0)))
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+            engaged: AtomicBool::new(false),
+            gate: Mutex::new(()),
+        }
+    }
+}
+
+/// Held for the duration of one write command.
+pub struct WriteTicket<'a> {
+    slot: Option<&'a AtomicUsize>,
+    _gate: Option<std::sync::MutexGuard<'a, ()>>,
+}
+
+impl Drop for WriteTicket<'_> {
+    #[inline(always)]
+    fn drop(&mut self) {
+        if let Some(slot) = self.slot {
+            slot.fetch_sub(1, Ordering::Release);
+        }
+    }
+}
+
+/// Held while a bulk cluster operation needs a stable view of the keyspace.
+pub struct WriteFenceGuard<'a> {
+    fence: &'a WriteFence,
+    _gate: std::sync::MutexGuard<'a, ()>,
+}
+
+impl Drop for WriteFenceGuard<'_> {
+    fn drop(&mut self) {
+        self.fence.engaged.store(false, Ordering::Release);
+    }
+}
+
 pub struct Store {
     pub(crate) data: CustomMap<StoreValue>,
     pub(crate) replication: Option<crate::cluster::ReplicationCoordinator>,
@@ -42,7 +99,7 @@ pub struct Store {
 
     pub cluster: Box<crate::cluster::ClusterConfig>,
     pub(crate) cluster_state: crate::cluster::ClusterState,
-    cluster_write_gate: Mutex<()>,
+    cluster_write_fence: WriteFence,
     replica_meta_path: Mutex<Option<String>>,
     replica_identity: Mutex<Option<[u8; 16]>>,
     cluster_meta_path: Mutex<Option<String>>,
@@ -61,6 +118,12 @@ impl Store {
     }
 
     pub fn with_config(shards: usize, max_keys: usize) -> Self {
+        Self::with_config_workers(shards, max_keys, num_cpus::get())
+    }
+
+    /// `workers` sizes the per-worker write-fence counters, so it must be at
+    /// least the number of workers that will call `begin_write`.
+    pub fn with_config_workers(shards: usize, max_keys: usize, workers: usize) -> Self {
         let cluster = crate::cluster::ClusterConfig::from_env()
             .unwrap_or_else(|error| panic!("invalid cluster configuration: {error}"));
         // An all-primary topology has no replication destination. Avoid
@@ -99,7 +162,7 @@ impl Store {
                 initial_topology,
             ),
             replica_installing: std::sync::atomic::AtomicBool::new(false),
-            cluster_write_gate: Mutex::new(()),
+            cluster_write_fence: WriteFence::new(workers),
             metrics: Box::new(ClusterMetrics::new()),
         }
     }
@@ -233,6 +296,15 @@ impl Store {
         self.data.shard_count()
     }
 
+    /// Whether the configured key ceiling has been reached.
+    ///
+    /// A single relaxed load, and constant-false when no limit is configured,
+    /// so the command dispatcher can consult it on every write.
+    #[inline(always)]
+    pub fn at_key_capacity(&self) -> bool {
+        self.data.is_full()
+    }
+
     pub fn map_shard_slot_count(&self, shard: usize) -> usize {
         self.data.shard_slot_count(shard)
     }
@@ -250,12 +322,22 @@ impl Store {
         customhash::force_collect_quiescent();
     }
 
-    pub fn defragment_values(&self, budget: usize) -> usize {
-        let rebuilt = self
-            .data
-            .defragment_values(budget, |value| value.compact_allocations());
-        customhash::force_collect_quiescent();
-        rebuilt
+    /// Rebuild fragmented child allocations for up to `budget` values in one
+    /// shard, resuming at `start_slot`.
+    ///
+    /// Returns `(next_slot, capacity, rebuilt)`. `next_slot == capacity` means
+    /// the shard is done and the caller should advance to the next one.
+    pub fn defragment_shard_range(
+        &self,
+        shard: usize,
+        start_slot: usize,
+        budget: usize,
+    ) -> (usize, usize, usize) {
+        self.data
+            .defragment_shard_range(shard, start_slot, budget, |value| {
+                value.compact_allocations()
+            })
+            .unwrap_or_default()
     }
 
     pub fn map_shard_layout_matches(&self, capacities: &[usize]) -> bool {
@@ -538,10 +620,57 @@ impl Store {
         self.replica_installing.store(installing, Ordering::Release);
     }
 
-    pub fn cluster_write_guard(&self) -> std::sync::MutexGuard<'_, ()> {
-        self.cluster_write_gate
-            .lock()
-            .expect("cluster write gate poisoned")
+    /// Mark this worker as executing a write command.
+    ///
+    /// Steady state is one uncontended increment on the worker's own cache line
+    /// plus a sequentially-consistent read of the fence flag. Both that read and
+    /// the fence holder's flag write are `SeqCst`, and so are the increment and
+    /// the holder's drain scan, so the single total order guarantees at least
+    /// one side observes the other — a writer can never slip past a fence that
+    /// has already started draining.
+    #[inline]
+    pub fn begin_write(&self, worker: usize) -> WriteTicket<'_> {
+        let fence = &self.cluster_write_fence;
+        let slot = match fence.in_flight.get(worker) {
+            Some(slot) => &**slot,
+            // Out-of-range worker index: fall back to the barrier rather than
+            // executing unfenced.
+            None => {
+                return WriteTicket {
+                    slot: None,
+                    _gate: Some(fence.gate.lock().unwrap_or_else(|e| e.into_inner())),
+                };
+            }
+        };
+
+        slot.fetch_add(1, Ordering::SeqCst);
+        if !fence.engaged.load(Ordering::SeqCst) {
+            return WriteTicket {
+                slot: Some(slot),
+                _gate: None,
+            };
+        }
+        slot.fetch_sub(1, Ordering::Release);
+        WriteTicket {
+            slot: None,
+            _gate: Some(fence.gate.lock().unwrap_or_else(|e| e.into_inner())),
+        }
+    }
+
+    /// Block new writes and wait for in-flight ones to finish.
+    ///
+    /// Used by slot migration and replica snapshot bootstrap, which need a
+    /// stable keyspace rather than exclusion between writers.
+    pub fn cluster_write_guard(&self) -> WriteFenceGuard<'_> {
+        let fence = &self.cluster_write_fence;
+        fence.engaged.store(true, Ordering::SeqCst);
+        let gate = fence.gate.lock().unwrap_or_else(|e| e.into_inner());
+        for slot in fence.in_flight.iter() {
+            while slot.load(Ordering::SeqCst) != 0 {
+                std::hint::spin_loop();
+            }
+        }
+        WriteFenceGuard { fence, _gate: gate }
     }
 
     #[inline]
@@ -726,14 +855,83 @@ mod tests {
         assert_eq!(store.getex_ms("key", 0), Some("value".to_owned()));
         assert!(!store.has_ttl_keys());
     }
+
+    /// The fence replaced a process-wide mutex that every cluster write had to
+    /// acquire. It still has to give slot migration and snapshot bootstrap what
+    /// they actually needed: no write sections running while the guard is held.
+    #[test]
+    fn write_fence_excludes_in_flight_writes() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, AtomicU64};
+
+        const WORKERS: usize = 4;
+        let store = Arc::new(Store::with_config_workers(1, usize::MAX, WORKERS));
+        let writes = Arc::new(AtomicU64::new(0));
+        let stop = Arc::new(AtomicBool::new(false));
+
+        let mut handles = Vec::new();
+        for worker in 0..WORKERS {
+            let store = Arc::clone(&store);
+            let writes = Arc::clone(&writes);
+            let stop = Arc::clone(&stop);
+            handles.push(std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    let _ticket = store.begin_write(worker);
+                    writes.fetch_add(1, Ordering::Relaxed);
+                }
+            }));
+        }
+
+        for _ in 0..50 {
+            let guard = store.cluster_write_guard();
+            let before = writes.load(Ordering::Relaxed);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            let after = writes.load(Ordering::Relaxed);
+            drop(guard);
+            assert_eq!(
+                before, after,
+                "a write section ran while the fence was engaged"
+            );
+            std::thread::yield_now();
+        }
+
+        stop.store(true, Ordering::Relaxed);
+        for handle in handles {
+            handle.join().unwrap();
+        }
+        assert!(
+            writes.load(Ordering::Relaxed) > 0,
+            "writers never made progress, so the fence proved nothing"
+        );
+    }
+
+    /// An out-of-range worker index must fall back to the barrier rather than
+    /// silently executing outside the fence.
+    #[test]
+    fn unknown_worker_index_still_gets_fenced() {
+        let store = Store::with_config_workers(1, usize::MAX, 2);
+        let ticket = store.begin_write(99);
+        // The fence holder must not be able to proceed while this is alive.
+        let fenced = std::thread::scope(|scope| {
+            let handle = scope.spawn(|| {
+                let _guard = store.cluster_write_guard();
+            });
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            let still_blocked = !handle.is_finished();
+            drop(ticket);
+            handle.join().unwrap();
+            still_blocked
+        });
+        assert!(fenced, "fence holder ran while an unfenced write was open");
+    }
 }
 
 pub fn rss_bytes() -> usize {
-    proc_status_kb("VmRSS:").saturating_mul(1024)
+    rust_zmalloc::resident_memory()
 }
 
 pub fn data_memory_bytes() -> usize {
-    rss_bytes()
+    rust_zmalloc::used_memory()
 }
 
 pub fn allocated_bytes() -> usize {
@@ -749,9 +947,13 @@ pub fn purge_allocator() {
 }
 
 /// Purge only when fragmentation is material.
+///
+/// `used_memory` is live requested bytes and `rss` is what the process holds
+/// from the OS, so the gap between them is real allocator/page fragmentation.
+/// This comparison was previously rss-vs-rss and could never fire.
 pub fn purge_allocator_if_fragmented() {
     let used = rust_zmalloc::used_memory();
-    let rss = rss_bytes();
+    let rss = rust_zmalloc::resident_memory();
     // If RSS is more than 20% above used memory, trigger a purge
     if rss > used.saturating_add(used / 5) && rss.saturating_sub(used) >= 10 * 1024 * 1024 {
         rust_zmalloc::purge();

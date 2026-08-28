@@ -65,8 +65,29 @@ pub fn route_command_with_state_import<'a>(
     allow_import: bool,
 ) -> RouteDecision<'a> {
     let topology = state.topology_arc();
+    route_command_with_snapshot(cluster, state, topology.as_ref(), command, args, allow_import)
+}
+
+/// Route against a topology snapshot the caller already holds.
+///
+/// The per-command variant above has to take the topology `RwLock` and clone an
+/// `Arc` — two contended atomic read-modify-writes shared by every worker. A
+/// connection that caches its snapshot and revalidates it against
+/// `ClusterState::topology_version` can call this instead and pay one relaxed
+/// load in the steady state.
+///
+/// Every redirect it produces owns its address, so the result borrows neither
+/// the config nor the snapshot.
+pub fn route_command_with_snapshot(
+    cluster: &ClusterConfig,
+    state: &super::ClusterState,
+    topology: &super::Topology,
+    command: &[u8],
+    args: &[&[u8]],
+    allow_import: bool,
+) -> RouteDecision<'static> {
     let pattern = key_pattern(command);
-    let decision = route_command_with_topology(cluster, topology.as_ref(), command, args);
+    let decision = route_command_with_topology_owned(cluster, topology, command, args);
     if allow_import
         && let Some(pat) = pattern
         && let Some(index) = pat.indices(args.len()).next()
@@ -75,19 +96,8 @@ pub fn route_command_with_state_import<'a>(
         return RouteDecision::Local;
     }
     match decision {
-        RouteDecision::Moved { slot, address } => {
-            return RouteDecision::MovedOwned {
-                slot,
-                address: address.to_owned(),
-            };
-        }
-        RouteDecision::CrossSlot => return RouteDecision::CrossSlot,
-        RouteDecision::Unassigned(slot) => return RouteDecision::Unassigned(slot),
-        RouteDecision::Ask { slot, address } => return RouteDecision::Ask { slot, address },
-        RouteDecision::MovedOwned { slot, address } => {
-            return RouteDecision::MovedOwned { slot, address };
-        }
         RouteDecision::Local => {}
+        other => return other,
     }
     let Some(pat) = pattern else {
         return RouteDecision::Local;
@@ -109,6 +119,38 @@ pub fn route_command_with_state_import<'a>(
                 })
         })
         .unwrap_or(RouteDecision::Local)
+}
+
+/// Same routing as `route_command_with_topology`, but any redirect address is
+/// owned so the decision does not borrow the snapshot.
+fn route_command_with_topology_owned(
+    cluster: &ClusterConfig,
+    topology: &super::Topology,
+    command: &[u8],
+    args: &[&[u8]],
+) -> RouteDecision<'static> {
+    if !cluster.enabled {
+        return RouteDecision::Local;
+    }
+    let Some(pattern) = key_pattern(command) else {
+        return RouteDecision::Local;
+    };
+    let mut indices = pattern.indices(args.len());
+    let Some(first_index) = indices.next() else {
+        return RouteDecision::Local;
+    };
+    let slot = hash_slot(args[first_index]);
+    if indices.any(|index| hash_slot(args[index]) != slot) {
+        return RouteDecision::CrossSlot;
+    }
+    match topology.owner(slot) {
+        Some(owner) if owner.id == cluster.local_id => RouteDecision::Local,
+        Some(owner) => RouteDecision::MovedOwned {
+            slot,
+            address: owner.address.clone(),
+        },
+        None => RouteDecision::Unassigned(slot),
+    }
 }
 
 #[derive(Clone, Copy)]

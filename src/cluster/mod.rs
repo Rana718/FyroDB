@@ -20,8 +20,8 @@ pub use replication::{
     encode_replication_message,
 };
 pub use routing::{
-    RouteDecision, is_write_command, route_command, route_command_with_state,
-    route_command_with_state_import, route_command_with_topology,
+    RouteDecision, is_write_command, route_command, route_command_with_snapshot,
+    route_command_with_state, route_command_with_state_import, route_command_with_topology,
 };
 pub use server::start_listener;
 pub use state::ClusterState;

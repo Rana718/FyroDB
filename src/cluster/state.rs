@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
@@ -8,6 +8,10 @@ use super::{FailureReport, FailureTracker};
 pub struct ClusterState {
     failures: Arc<Mutex<FailureTracker>>,
     topology: Arc<RwLock<Arc<super::Topology>>>,
+    /// Bumped on every topology install. Lets a reader hold a cached snapshot
+    /// and revalidate with one relaxed load instead of taking the `RwLock` and
+    /// cloning the `Arc` on every command.
+    version: Arc<AtomicU64>,
     migrations: Arc<Mutex<std::collections::HashMap<u16, String>>>,
     imports: Arc<Mutex<std::collections::HashMap<u16, String>>>,
     has_imports: Arc<AtomicBool>,
@@ -91,6 +95,125 @@ mod tests {
         assert_eq!(committed.owner(Slot(42)).unwrap().id, "r");
         assert_eq!(committed.owner(Slot(41)).unwrap().id, "p");
     }
+
+    /// Routing caches a snapshot and revalidates against the version counter,
+    /// so every install has to move it — a missed bump would pin a connection
+    /// to a stale topology and it would keep serving slots it no longer owns.
+    #[test]
+    fn every_topology_install_advances_the_version() {
+        let state = ClusterState::with_topology(2, Duration::from_secs(30), topology());
+        let mut seen = state.topology_version();
+
+        let mut expect_bump = |label: &str, state: &ClusterState| {
+            let now = state.topology_version();
+            assert!(now > seen, "{label} did not advance the topology version");
+            seen = now;
+        };
+
+        let mut newer = topology();
+        newer.epoch = 5;
+        assert!(state.replace_topology(newer));
+        expect_bump("replace_topology", &state);
+
+        assert!(state.begin_slot_migration(Slot(42), "r".into()));
+        assert!(state.commit_slot_migration(Slot(42)).is_some());
+        expect_bump("commit_slot_migration", &state);
+
+        assert!(state.del_slots("p", &[Slot(7)]).is_some());
+        expect_bump("del_slots", &state);
+
+        assert!(state.add_slots("p", &[Slot(7)]).is_some());
+        expect_bump("add_slots", &state);
+
+        assert!(
+            state
+                .meet_node(NodeInfo {
+                    id: "n".into(),
+                    address: "n:8000".into(),
+                    cluster_address: "n:18000".into(),
+                    role: NodeRole::Primary,
+                    replica_of: None,
+                    epoch: 1,
+                    slots: vec![],
+                })
+                .is_some()
+        );
+        expect_bump("meet_node", &state);
+
+        assert!(state.forget_node("n").is_some());
+        expect_bump("forget_node", &state);
+
+        state.reset_slots("p");
+        expect_bump("reset_slots", &state);
+    }
+
+    /// `CLUSTER SETSLOT <slot> NODE` must land on nodes that were not the
+    /// migration source too. The old fallback used `add_slots`, which refuses a
+    /// slot recorded as owned elsewhere, so those nodes silently kept the
+    /// previous owner and the slot ended up in a MOVED loop.
+    #[test]
+    fn assign_slot_takes_the_slot_from_its_current_owner() {
+        let state = ClusterState::with_topology(2, Duration::from_secs(30), topology());
+        let before_version = state.topology_version();
+        let before_epoch = state.topology().epoch;
+
+        let moved = state
+            .assign_slot(Slot(6399), "r")
+            .expect("target is a known node that does not own the slot");
+
+        assert_eq!(moved.owner(Slot(6399)).unwrap().id, "r");
+        assert_eq!(moved.owner(Slot(6398)).unwrap().id, "p");
+        assert_eq!(moved.owner(Slot(6400)).unwrap().id, "p");
+        assert_eq!(moved.nodes.iter().find(|n| n.id == "r").unwrap().role, NodeRole::Primary);
+        assert!(moved.epoch > before_epoch);
+        assert!(state.topology_version() > before_version);
+
+        // Idempotent: re-applying it is a no-op rather than a duplicate range.
+        assert!(state.assign_slot(Slot(6399), "r").is_none());
+        assert!(state.assign_slot(Slot(6399), "does-not-exist").is_none());
+    }
+
+    #[test]
+    fn assign_slot_leaves_the_rest_of_the_keyspace_owned() {
+        let state = ClusterState::with_topology(2, Duration::from_secs(30), topology());
+        assert!(state.assign_slot(Slot(0), "r").is_some());
+        let after = state.topology();
+        for slot in [1u16, 500, 6399, 16383] {
+            assert!(
+                after.owner(Slot(slot)).is_some(),
+                "slot {slot} lost its owner"
+            );
+        }
+        assert_eq!(after.owner(Slot(0)).unwrap().id, "r");
+    }
+
+    #[test]
+    fn a_rejected_topology_leaves_the_version_alone() {
+        let state = ClusterState::with_topology(2, Duration::from_secs(30), topology());
+        let before = state.topology_version();
+        assert!(!state.replace_topology(topology()), "stale epoch");
+        assert_eq!(state.topology_version(), before);
+    }
+
+    #[test]
+    fn cached_readers_only_refetch_after_a_change() {
+        let state = ClusterState::with_topology(2, Duration::from_secs(30), topology());
+        let (version, snapshot) = state
+            .topology_if_newer(0)
+            .expect("first fetch always returns a snapshot");
+        assert!(state.topology_if_newer(version).is_none());
+
+        let mut newer = topology();
+        newer.epoch = 9;
+        assert!(state.replace_topology(newer));
+
+        let (next_version, next_snapshot) = state
+            .topology_if_newer(version)
+            .expect("an install must invalidate the cache");
+        assert!(next_version > version);
+        assert_eq!(snapshot.epoch, 1);
+        assert_eq!(next_snapshot.epoch, 9);
+    }
 }
 
 impl ClusterState {
@@ -98,6 +221,7 @@ impl ClusterState {
         Self {
             failures: Arc::new(Mutex::new(FailureTracker::new(quorum, retention))),
             topology: Arc::new(RwLock::new(Arc::new(super::Topology::default()))),
+            version: Arc::new(AtomicU64::new(1)),
             migrations: Arc::new(Mutex::new(std::collections::HashMap::new())),
             imports: Arc::new(Mutex::new(std::collections::HashMap::new())),
             has_imports: Arc::new(AtomicBool::new(false)),
@@ -109,6 +233,7 @@ impl ClusterState {
         Self {
             failures: Arc::new(Mutex::new(FailureTracker::new(quorum, retention))),
             topology: Arc::new(RwLock::new(Arc::new(topology))),
+            version: Arc::new(AtomicU64::new(1)),
             migrations: Arc::new(Mutex::new(std::collections::HashMap::new())),
             imports: Arc::new(Mutex::new(std::collections::HashMap::new())),
             has_imports: Arc::new(AtomicBool::new(false)),
@@ -122,6 +247,33 @@ impl ClusterState {
 
     pub fn topology_arc(&self) -> Arc<super::Topology> {
         Arc::clone(&*self.topology.read().unwrap())
+    }
+
+    /// Version of the currently installed topology.
+    #[inline(always)]
+    pub fn topology_version(&self) -> u64 {
+        self.version.load(Ordering::Acquire)
+    }
+
+    /// Fetch a fresh snapshot only when `cached` is stale.
+    ///
+    /// The steady-state cost is one relaxed-ish load, which is what lets the
+    /// command path skip the `RwLock` acquire plus `Arc` clone it used to pay
+    /// per command.
+    pub fn topology_if_newer(&self, cached: u64) -> Option<(u64, Arc<super::Topology>)> {
+        let guard = self.topology.read().unwrap();
+        let version = self.version.load(Ordering::Acquire);
+        if version == cached {
+            return None;
+        }
+        Some((version, Arc::clone(&*guard)))
+    }
+
+    /// Publish a topology and advance the version so cached readers refresh.
+    fn install_topology(&self, topology: Arc<super::Topology>) {
+        let mut guard = self.topology.write().unwrap();
+        *guard = topology;
+        self.version.fetch_add(1, Ordering::Release);
     }
 
     pub fn begin_slot_migration(&self, slot: super::Slot, target: String) -> bool {
@@ -169,7 +321,7 @@ impl ClusterState {
         topology.epoch = topology.epoch.saturating_add(1);
         topology.nodes[source_index].epoch = topology.epoch;
         topology.nodes[target_index].epoch = topology.epoch;
-        *self.topology.write().unwrap() = Arc::new(topology.clone());
+        self.install_topology(Arc::new(topology.clone()));
         Some(topology)
     }
 
@@ -217,6 +369,9 @@ impl ClusterState {
             return false;
         }
         *current = Arc::new(topology);
+        // Bumped under the write lock rather than via `install_topology`, which
+        // would deadlock on the guard held for the epoch comparison.
+        self.version.fetch_add(1, Ordering::Release);
         true
     }
 
@@ -258,7 +413,7 @@ impl ClusterState {
         topology.nodes[replica_index].slots = slots;
         topology.nodes[replica_index].epoch = next_epoch;
         topology.epoch = next_epoch;
-        *self.topology.write().unwrap() = Arc::new(topology.clone());
+        self.install_topology(Arc::new(topology.clone()));
         Some(topology)
     }
 
@@ -268,6 +423,46 @@ impl ClusterState {
 
     pub fn failure_report_count(&self, target_id: &str, epoch: u64) -> usize {
         self.failures.lock().unwrap().report_count(target_id, epoch)
+    }
+
+    /// Move one slot to `target`, taking it from whichever primary holds it.
+    ///
+    /// `CLUSTER SETSLOT <slot> NODE <target>` has to be sent to every master to
+    /// finish a migration, but only the migration source has a pending record
+    /// for `commit_slot_migration` to consume. On the other nodes the fallback
+    /// was `add_slots`, which refuses a slot that is still recorded as owned
+    /// elsewhere — so they kept the old owner, and the slot ended up in a MOVED
+    /// loop between nodes that disagreed about it.
+    ///
+    /// Returns `None` if the target is unknown or already owns the slot.
+    pub fn assign_slot(&self, slot: super::Slot, target: &str) -> Option<super::Topology> {
+        let mut topology = self.topology.write().unwrap().as_ref().clone();
+        let target_index = topology.nodes.iter().position(|node| node.id == target)?;
+        if topology.nodes[target_index]
+            .slots
+            .iter()
+            .any(|range| range.contains(slot))
+        {
+            return None;
+        }
+
+        for node in topology.nodes.iter_mut() {
+            if node.slots.iter().any(|range| range.contains(slot)) {
+                remove_slot(&mut node.slots, slot);
+            }
+        }
+
+        topology.epoch = topology.epoch.saturating_add(1);
+        let epoch = topology.epoch;
+        let target_node = &mut topology.nodes[target_index];
+        target_node.role = super::NodeRole::Primary;
+        target_node.replica_of = None;
+        target_node.slots.push(super::SlotRange::new(slot, slot)?);
+        target_node.slots.sort_by_key(|range| range.start.value());
+        compact_ranges(&mut target_node.slots);
+        target_node.epoch = epoch;
+        self.install_topology(Arc::new(topology.clone()));
+        Some(topology)
     }
 
     /// Add a new node to the topology (CLUSTER MEET).
@@ -280,7 +475,7 @@ impl ClusterState {
         topology.epoch = topology.epoch.saturating_add(1);
         topology.nodes.push(node);
         let new_topo = Arc::new(topology.clone());
-        *self.topology.write().unwrap() = new_topo;
+        self.install_topology(new_topo);
         Some(topology)
     }
 
@@ -309,7 +504,7 @@ impl ClusterState {
         compact_ranges(&mut topology.nodes[idx].slots);
         topology.epoch = topology.epoch.saturating_add(1);
         topology.nodes[idx].epoch = topology.epoch;
-        *self.topology.write().unwrap() = Arc::new(topology.clone());
+        self.install_topology(Arc::new(topology.clone()));
         Some(topology)
     }
 
@@ -326,7 +521,7 @@ impl ClusterState {
         }
         topology.epoch = topology.epoch.saturating_add(1);
         topology.nodes[idx].epoch = topology.epoch;
-        *self.topology.write().unwrap() = Arc::new(topology.clone());
+        self.install_topology(Arc::new(topology.clone()));
         Some(topology)
     }
 
@@ -336,7 +531,7 @@ impl ClusterState {
         let idx = topology.nodes.iter().position(|n| n.id == node_id)?;
         topology.nodes.remove(idx);
         topology.epoch = topology.epoch.saturating_add(1);
-        *self.topology.write().unwrap() = Arc::new(topology.clone());
+        self.install_topology(Arc::new(topology.clone()));
         Some(topology)
     }
 
@@ -347,7 +542,7 @@ impl ClusterState {
             node.slots.clear();
         }
         topology.epoch = topology.epoch.saturating_add(1);
-        *self.topology.write().unwrap() = Arc::new(topology.clone());
+        self.install_topology(Arc::new(topology.clone()));
         topology
     }
 }

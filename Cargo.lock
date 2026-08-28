@@ -53,6 +53,7 @@ name = "fyro_db"
 version = "0.1.2"
 dependencies = [
  "crossbeam-queue",
+ "crossbeam-utils",
  "customhash",
  "foldhash",
  "libc",

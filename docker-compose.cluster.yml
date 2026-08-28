@@ -1,59 +1,107 @@
 services:
+  # Client-facing addresses (the left side of `@`) are what a node returns in a
+  # MOVED/ASK redirect, so they must be reachable by the *client*. A host
+  # running `redis-cli -c` cannot resolve Compose service names, and the
+  # published host port differs per node, so those addresses use
+  # 127.0.0.1:<published port>.
+  #
+  # Cluster-bus addresses (the right side of `@`) are only used between nodes,
+  # so they stay on the Compose network where every node listens on 18000.
+  #
+  # Consequence: this file is set up for a client on the host. A client running
+  # *inside* the Compose network would be handed 127.0.0.1 and fail — point the
+  # client-facing addresses at the service names instead for that case.
+  # Slot ranges match how bench/kv.go maps a key to a node
+  # (`keySlot(key) * len(addrs) / 16384`), an even split with boundaries at
+  # 16384/3. Off-by-one ranges leave a slot the bench sends to the wrong node,
+  # and it treats the resulting MOVED as a fatal error rather than following it.
+  cluster-config:
+    image: busybox
+    restart: "no"
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        cat > /config/fyrodb-nodes.conf <<'EOF'
+        node-1 127.0.0.1:8000@node-1:18000 master - 1 0 0 connected 0-5461
+        node-2 127.0.0.1:8001@node-2:18000 master - 1 0 0 connected 5462-10922
+        node-3 127.0.0.1:8002@node-3:18000 master - 1 0 0 connected 10923-16383
+        EOF
+        cp /config/fyrodb-nodes.conf /config/fyrodb-nodes-1.conf
+        cp /config/fyrodb-nodes.conf /config/fyrodb-nodes-2.conf
+        cp /config/fyrodb-nodes.conf /config/fyrodb-nodes-3.conf
+        echo "nodes.conf written"
+    volumes:
+      - cluster-config:/config
+
   node-1:
-    image: rana718/fyrodb:latest
+    build: .
+    depends_on:
+      cluster-config:
+        condition: service_completed_successfully
     environment:
       FYRODB_CLUSTER_ENABLED: "true"
       FYRODB_BIND: "0.0.0.0"
       FYRODB_PORT: "8000"
       FYRODB_CLUSTER_PORT: "18000"
-      FYRODB_ADVERTISE_ADDR: "127.0.0.1"
-      FYRODB_CLUSTER_CONFIG_FILE: "/data/fyrodb-nodes.conf"
+      FYRODB_ADVERTISE_ADDR: "node-1"
+      FYRODB_NODE_ID: "node-1"
+      FYRODB_CLUSTER_CONFIG_FILE: "/config/fyrodb-nodes-1.conf"
       FYRODB_RDB_PATH: "/data/fyrodb.rdb"
-      FYRODB_MAX_KEYS: "1000000"
       FYRODB_WORKERS: "2"
     ports:
       - "8000:8000"
       - "18000:18000"
     volumes:
       - node-1-data:/data
+      - cluster-config:/config
 
   node-2:
-    image: rana718/fyrodb:latest
+    build: .
+    depends_on:
+      cluster-config:
+        condition: service_completed_successfully
     environment:
       FYRODB_CLUSTER_ENABLED: "true"
       FYRODB_BIND: "0.0.0.0"
       FYRODB_PORT: "8000"
       FYRODB_CLUSTER_PORT: "18000"
-      FYRODB_ADVERTISE_ADDR: "127.0.0.1"
-      FYRODB_CLUSTER_CONFIG_FILE: "/data/fyrodb-nodes.conf"
+      FYRODB_ADVERTISE_ADDR: "node-2"
+      FYRODB_NODE_ID: "node-2"
+      FYRODB_CLUSTER_CONFIG_FILE: "/config/fyrodb-nodes-2.conf"
       FYRODB_RDB_PATH: "/data/fyrodb.rdb"
-      FYRODB_MAX_KEYS: "1000000"
       FYRODB_WORKERS: "2"
     ports:
       - "8001:8000"
       - "18001:18000"
     volumes:
       - node-2-data:/data
+      - cluster-config:/config
 
   node-3:
-    image: rana718/fyrodb:latest
+    build: .
+    depends_on:
+      cluster-config:
+        condition: service_completed_successfully
     environment:
       FYRODB_CLUSTER_ENABLED: "true"
       FYRODB_BIND: "0.0.0.0"
       FYRODB_PORT: "8000"
       FYRODB_CLUSTER_PORT: "18000"
-      FYRODB_ADVERTISE_ADDR: "127.0.0.1"
-      FYRODB_CLUSTER_CONFIG_FILE: "/data/fyrodb-nodes.conf"
+      FYRODB_ADVERTISE_ADDR: "node-3"
+      FYRODB_NODE_ID: "node-3"
+      FYRODB_CLUSTER_CONFIG_FILE: "/config/fyrodb-nodes-3.conf"
       FYRODB_RDB_PATH: "/data/fyrodb.rdb"
-      FYRODB_MAX_KEYS: "1000000"
       FYRODB_WORKERS: "2"
     ports:
       - "8002:8000"
       - "18002:18000"
     volumes:
       - node-3-data:/data
+      - cluster-config:/config
 
 volumes:
   node-1-data:
   node-2-data:
   node-3-data:
+  cluster-config:
