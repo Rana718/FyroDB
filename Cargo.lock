@@ -29,7 +29,7 @@ checksum = "61803da095bee82a81bb1a452ecc25d3b2f1416d1897eb86430c6159ef717c17"
 
 [[package]]
 name = "customhash"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "crossbeam-utils",
  "foldhash",
@@ -50,7 +50,7 @@ checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 
 [[package]]
 name = "fyro_db"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "crossbeam-queue",
  "crossbeam-utils",
@@ -130,7 +130,7 @@ dependencies = [
 
 [[package]]
 name = "rust-zmalloc"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "libc",
  "mimalloc",

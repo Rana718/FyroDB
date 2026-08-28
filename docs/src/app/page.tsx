@@ -85,7 +85,7 @@ export default function HomePage() {
             <div>
                <div className="mb-6 inline-flex items-center gap-2 rounded-full border border-primary/25 bg-primary/10 px-3 py-1.5 text-xs font-medium text-primary">
                   <span className="h-1.5 w-1.5 rounded-full bg-accent-green" />
-                  v0.1.2 · Open source · Rust-powered
+                  v0.2.0 · Open source · Rust-powered
                </div>
                <h1 className="max-w-3xl text-5xl font-semibold tracking-[-0.04em] text-fg sm:text-7xl">
                   The fast path to{" "}

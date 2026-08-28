@@ -13,7 +13,7 @@ body:
     attributes:
       label: FyroDB Version or Commit Hash
       description: What version of FyroDB or git commit are you running?
-      placeholder: "e.g., v0.1.2 or commit abc1234"
+      placeholder: "e.g., v0.2.0 or commit abc1234"
     validations:
       required: true
 

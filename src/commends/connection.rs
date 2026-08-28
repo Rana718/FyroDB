@@ -607,7 +607,7 @@ pub fn hello(_parts: &[&str], out: &mut Vec<u8>) {
         resp::write_bulk(out, "server");
         resp::write_bulk(out, "fyrodb");
         resp::write_bulk(out, "version");
-        resp::write_bulk(out, "0.1.0");
+        resp::write_bulk(out, env!("CARGO_PKG_VERSION"));
         resp::write_bulk(out, "proto");
         resp::write_integer(out, 2);
         resp::write_bulk(out, "id");
