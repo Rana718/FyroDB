@@ -65,7 +65,108 @@ pub fn route_command_with_state_import<'a>(
     allow_import: bool,
 ) -> RouteDecision<'a> {
     let topology = state.topology_arc();
-    route_command_with_snapshot(cluster, state, topology.as_ref(), command, args, allow_import)
+    let routing = super::RoutingTable::build(topology.as_ref());
+    route_command_with_snapshot(
+        cluster,
+        state,
+        topology.as_ref(),
+        &routing,
+        command,
+        args,
+        allow_import,
+    )
+}
+
+/// How much of a command's argument list routing has to look at.
+///
+/// The dispatcher materializes `&[&[u8]]` argument slices only when routing
+/// actually needs more than the first key. Most commands — and every keyless
+/// one — do not, and building a 32-slot slice array for them was pure cost on
+/// the hot path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RoutingScope {
+    /// No keys: always local.
+    Keyless,
+    /// The first argument alone determines the slot.
+    FirstKey,
+    /// Several arguments must be checked for cross-slot violations.
+    ManyKeys,
+}
+
+#[inline]
+pub fn routing_scope(command: &[u8]) -> RoutingScope {
+    match key_pattern(command) {
+        None => RoutingScope::Keyless,
+        Some(KeyPattern::First) => RoutingScope::FirstKey,
+        Some(_) => RoutingScope::ManyKeys,
+    }
+}
+
+/// Route a command whose slot is decided by one key.
+///
+/// Same decisions as `route_command_with_snapshot`, without requiring the caller
+/// to build an argument slice array.
+pub fn route_single_key(
+    cluster: &ClusterConfig,
+    state: &super::ClusterState,
+    topology: &super::Topology,
+    routing: &super::RoutingTable,
+    key: &[u8],
+    allow_import: bool,
+) -> RouteDecision<'static> {
+    if !cluster.enabled {
+        return RouteDecision::Local;
+    }
+    resolve_slot(
+        cluster,
+        state,
+        topology,
+        routing,
+        hash_slot(key),
+        allow_import,
+    )
+}
+
+/// Shared tail of every routing decision once the slot is known.
+#[inline]
+fn resolve_slot(
+    cluster: &ClusterConfig,
+    state: &super::ClusterState,
+    topology: &super::Topology,
+    routing: &super::RoutingTable,
+    slot: Slot,
+    allow_import: bool,
+) -> RouteDecision<'static> {
+    // An inbound ASK for a slot being imported here outranks ownership: the
+    // slot still belongs to the source until the migration commits.
+    if allow_import && state.is_importing(slot) {
+        return RouteDecision::Local;
+    }
+
+    let owner = match routing.owner_index(slot) {
+        Some(index) => &topology.nodes[index],
+        None => return RouteDecision::Unassigned(slot),
+    };
+    if owner.id != cluster.local_id {
+        return RouteDecision::MovedOwned {
+            slot,
+            address: owner.address.clone(),
+        };
+    }
+
+    // Owned locally, but a migration in flight must send writes to the target.
+    match state.migrating_target(slot) {
+        Some(target) => topology
+            .nodes
+            .iter()
+            .find(|node| node.id == target)
+            .map(|node| RouteDecision::Ask {
+                slot,
+                address: node.address.clone(),
+            })
+            .unwrap_or(RouteDecision::Local),
+        None => RouteDecision::Local,
+    }
 }
 
 /// Route against a topology snapshot the caller already holds.
@@ -76,58 +177,22 @@ pub fn route_command_with_state_import<'a>(
 /// `ClusterState::topology_version` can call this instead and pay one relaxed
 /// load in the steady state.
 ///
+/// Everything the routing decision needs is derived once: the key pattern is
+/// matched a single time, the slot is CRC'd a single time, and the owner comes
+/// from a flat table rather than a scan over nodes and their range lists. The
+/// earlier shape recomputed the pattern twice and the slot up to three times per
+/// command.
+///
 /// Every redirect it produces owns its address, so the result borrows neither
 /// the config nor the snapshot.
 pub fn route_command_with_snapshot(
     cluster: &ClusterConfig,
     state: &super::ClusterState,
     topology: &super::Topology,
+    routing: &super::RoutingTable,
     command: &[u8],
     args: &[&[u8]],
     allow_import: bool,
-) -> RouteDecision<'static> {
-    let pattern = key_pattern(command);
-    let decision = route_command_with_topology_owned(cluster, topology, command, args);
-    if allow_import
-        && let Some(pat) = pattern
-        && let Some(index) = pat.indices(args.len()).next()
-        && state.is_importing(hash_slot(args[index]))
-    {
-        return RouteDecision::Local;
-    }
-    match decision {
-        RouteDecision::Local => {}
-        other => return other,
-    }
-    let Some(pat) = pattern else {
-        return RouteDecision::Local;
-    };
-    let Some(index) = pat.indices(args.len()).next() else {
-        return RouteDecision::Local;
-    };
-    let slot = hash_slot(args[index]);
-    state
-        .migrating_target(slot)
-        .and_then(|target| {
-            topology
-                .nodes
-                .iter()
-                .find(|node| node.id == target)
-                .map(|node| RouteDecision::Ask {
-                    slot,
-                    address: node.address.clone(),
-                })
-        })
-        .unwrap_or(RouteDecision::Local)
-}
-
-/// Same routing as `route_command_with_topology`, but any redirect address is
-/// owned so the decision does not borrow the snapshot.
-fn route_command_with_topology_owned(
-    cluster: &ClusterConfig,
-    topology: &super::Topology,
-    command: &[u8],
-    args: &[&[u8]],
 ) -> RouteDecision<'static> {
     if !cluster.enabled {
         return RouteDecision::Local;
@@ -143,14 +208,7 @@ fn route_command_with_topology_owned(
     if indices.any(|index| hash_slot(args[index]) != slot) {
         return RouteDecision::CrossSlot;
     }
-    match topology.owner(slot) {
-        Some(owner) if owner.id == cluster.local_id => RouteDecision::Local,
-        Some(owner) => RouteDecision::MovedOwned {
-            slot,
-            address: owner.address.clone(),
-        },
-        None => RouteDecision::Unassigned(slot),
-    }
+    resolve_slot(cluster, state, topology, routing, slot, allow_import)
 }
 
 #[derive(Clone, Copy)]

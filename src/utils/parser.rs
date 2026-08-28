@@ -24,13 +24,22 @@ impl Default for RespParser {
 }
 
 impl RespParser {
+    /// Idle size of the read buffer, and the size it is reclaimed to.
+    const IDLE_READ_BUFFER: usize = 2 * 1024;
+
+    /// Buffers start unallocated and are created on first use.
+    ///
+    /// Every accepted connection used to commit ~3 KiB up front whether or not
+    /// it ever sent a byte. That is invisible for one client and material at
+    /// scale — and cluster mode multiplies it, since a cluster-aware client
+    /// dials every node, so N clients become 3N server-side connections.
     pub fn new() -> Self {
         Self {
-            rbuf: vec![0u8; 2 * 1024],
+            rbuf: Vec::new(),
             filled: 0,
             pos: 0,
-            wbuf: Vec::with_capacity(1024),
-            parts_raw: Vec::with_capacity(4),
+            wbuf: Vec::new(),
+            parts_raw: Vec::new(),
         }
     }
 
@@ -42,7 +51,10 @@ impl RespParser {
                 self.pos = 0;
             }
             if self.rbuf.len() - self.filled < 1024 {
-                self.rbuf.resize(self.rbuf.len() * 2, 0);
+                // `len * 2` cannot grow an empty buffer, so the first read has
+                // to establish the idle size.
+                let grown = (self.rbuf.len() * 2).max(Self::IDLE_READ_BUFFER);
+                self.rbuf.resize(grown, 0);
             }
         }
         &mut self.rbuf[self.filled..]
@@ -113,8 +125,8 @@ impl RespParser {
     pub fn release_read_buffer(&mut self) {
         if self.pos == self.filled && self.rbuf.len() > 16 * 1024 {
             self.parts_raw.clear();
-            self.rbuf.truncate(2 * 1024);
-            self.rbuf.shrink_to(2 * 1024);
+            self.rbuf.truncate(Self::IDLE_READ_BUFFER);
+            self.rbuf.shrink_to(Self::IDLE_READ_BUFFER);
             self.filled = 0;
             self.pos = 0;
         }
@@ -218,5 +230,47 @@ mod tests {
         assert!(parser.parts_raw.is_empty());
         assert_eq!(parser.pos, 0);
         assert_eq!(parser.filled, 0);
+    }
+
+    /// An accepted-but-silent connection should not commit buffer memory.
+    #[test]
+    fn a_fresh_parser_allocates_nothing() {
+        let parser = RespParser::new();
+        assert_eq!(parser.rbuf.capacity(), 0);
+        assert_eq!(parser.wbuf.capacity(), 0);
+        assert_eq!(parser.parts_raw.capacity(), 0);
+    }
+
+    /// The first read still has to produce a usable buffer; doubling an empty
+    /// one would loop forever at zero length.
+    #[test]
+    fn the_first_read_establishes_the_idle_buffer_size() {
+        let mut parser = RespParser::new();
+        let buf = parser.read_buf();
+        assert!(
+            buf.len() >= 1024,
+            "first read_buf handed back only {} bytes",
+            buf.len()
+        );
+        assert_eq!(parser.rbuf.len(), RespParser::IDLE_READ_BUFFER);
+    }
+
+    #[test]
+    fn a_lazy_parser_still_parses_a_pipeline() {
+        let mut parser = RespParser::new();
+        let mut wire = Vec::new();
+        for i in 0..64 {
+            let key = format!("key{i}");
+            wire.extend_from_slice(
+                format!("*2\r\n$3\r\nGET\r\n${}\r\n{key}\r\n", key.len()).as_bytes(),
+            );
+        }
+        feed(&mut parser, &wire);
+        let mut parsed = 0;
+        while let ParseResult::Complete = parser.parse_one() {
+            assert_eq!(parser.parts_raw.len(), 2);
+            parsed += 1;
+        }
+        assert_eq!(parsed, 64);
     }
 }

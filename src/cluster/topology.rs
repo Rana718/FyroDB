@@ -94,3 +94,151 @@ mod tests {
         assert!(topology.is_complete());
     }
 }
+
+/// Flat slot-to-owner map, resolved once per published topology.
+///
+/// `Topology::owner` scans primaries and their range lists on every lookup,
+/// which lands on the command path. Redis keeps a flat `slots[16384]` array for
+/// exactly this reason; `RoutingTable` is that array. One 32 KiB allocation is
+/// shared by every connection through an `Arc`, so the cost does not scale with
+/// client count.
+pub struct RoutingTable {
+    /// Index into `Topology::nodes`, or `UNASSIGNED`.
+    owners: Box<[u16]>,
+}
+
+/// Sentinel for a slot no primary claims.
+const UNASSIGNED: u16 = u16::MAX;
+
+impl RoutingTable {
+    pub fn build(topology: &Topology) -> Self {
+        let mut owners = vec![UNASSIGNED; HASH_SLOTS as usize];
+        let last = owners.len() - 1;
+        for (index, node) in topology.nodes.iter().enumerate() {
+            if node.role != NodeRole::Primary {
+                continue;
+            }
+            // A node index that cannot be represented would silently alias
+            // another node; leave those slots unassigned instead.
+            let Ok(encoded) = u16::try_from(index) else {
+                continue;
+            };
+            if encoded == UNASSIGNED {
+                continue;
+            }
+            for range in &node.slots {
+                let start = (range.start.value() as usize).min(last);
+                let end = (range.end.value() as usize).min(last);
+                for slot in &mut owners[start..=end] {
+                    // First primary wins, matching `Topology::owner`'s `find`.
+                    if *slot == UNASSIGNED {
+                        *slot = encoded;
+                    }
+                }
+            }
+        }
+        Self {
+            owners: owners.into_boxed_slice(),
+        }
+    }
+
+    /// Index into `Topology::nodes` for the primary serving `slot`.
+    #[inline(always)]
+    pub fn owner_index(&self, slot: Slot) -> Option<usize> {
+        match self.owners.get(slot.value() as usize).copied() {
+            Some(UNASSIGNED) | None => None,
+            Some(index) => Some(index as usize),
+        }
+    }
+}
+
+impl Default for RoutingTable {
+    fn default() -> Self {
+        Self::build(&Topology::default())
+    }
+}
+
+#[cfg(test)]
+mod routing_table_tests {
+    use super::*;
+
+    fn topology() -> Topology {
+        Topology::new(
+            1,
+            vec![
+                NodeInfo {
+                    id: "a".into(),
+                    address: "a:8000".into(),
+                    cluster_address: "a:18000".into(),
+                    role: NodeRole::Primary,
+                    replica_of: None,
+                    epoch: 1,
+                    slots: vec![SlotRange::new(Slot(0), Slot(5461)).unwrap()],
+                },
+                NodeInfo {
+                    id: "r".into(),
+                    address: "r:8000".into(),
+                    cluster_address: "r:18000".into(),
+                    role: NodeRole::Replica,
+                    replica_of: Some("a".into()),
+                    epoch: 1,
+                    slots: vec![SlotRange::new(Slot(0), Slot(5461)).unwrap()],
+                },
+                NodeInfo {
+                    id: "b".into(),
+                    address: "b:8000".into(),
+                    cluster_address: "b:18000".into(),
+                    role: NodeRole::Primary,
+                    replica_of: None,
+                    epoch: 1,
+                    slots: vec![SlotRange::new(Slot(5462), Slot(16383)).unwrap()],
+                },
+            ],
+        )
+    }
+
+    /// The table must agree with `Topology::owner` on every slot, since it
+    /// replaces it on the command path.
+    #[test]
+    fn table_matches_the_scanning_lookup_for_every_slot() {
+        let topology = topology();
+        let table = RoutingTable::build(&topology);
+        for raw in 0..HASH_SLOTS {
+            let slot = Slot(raw);
+            let scanned = topology.owner(slot).map(|node| node.id.as_str());
+            let looked_up = table
+                .owner_index(slot)
+                .map(|index| topology.nodes[index].id.as_str());
+            assert_eq!(scanned, looked_up, "slot {raw}");
+        }
+    }
+
+    #[test]
+    fn replicas_never_own_a_slot() {
+        let topology = topology();
+        let table = RoutingTable::build(&topology);
+        for raw in 0..HASH_SLOTS {
+            if let Some(index) = table.owner_index(Slot(raw)) {
+                assert_eq!(topology.nodes[index].role, NodeRole::Primary, "slot {raw}");
+            }
+        }
+    }
+
+    #[test]
+    fn unassigned_slots_have_no_owner() {
+        let mut topology = topology();
+        topology.nodes[2].slots = vec![SlotRange::new(Slot(5462), Slot(9000)).unwrap()];
+        let table = RoutingTable::build(&topology);
+        assert!(table.owner_index(Slot(9000)).is_some());
+        assert!(table.owner_index(Slot(9001)).is_none());
+        assert!(table.owner_index(Slot(HASH_SLOTS - 1)).is_none());
+    }
+
+    #[test]
+    fn an_empty_topology_owns_nothing() {
+        let table = RoutingTable::default();
+        for raw in [0u16, 1, 8000, HASH_SLOTS - 1] {
+            assert!(table.owner_index(Slot(raw)).is_none());
+        }
+    }
+}

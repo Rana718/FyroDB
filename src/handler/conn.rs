@@ -40,9 +40,14 @@ pub struct Conn {
     /// Index of the worker owning this connection. Selects the write-fence
     /// counter, which must not be shared between workers.
     pub worker: usize,
-    /// Cached cluster topology, revalidated against
-    /// `ClusterState::topology_version` instead of re-locking per command.
-    topology_cache: Option<(u64, Arc<crate::cluster::Topology>)>,
+    /// Cached cluster topology plus its flat slot-to-owner table, revalidated
+    /// against `ClusterState::topology_version` instead of re-locking per
+    /// command.
+    topology_cache: Option<(
+        u64,
+        Arc<crate::cluster::Topology>,
+        Arc<crate::cluster::RoutingTable>,
+    )>,
 }
 
 impl Conn {
@@ -76,29 +81,36 @@ impl Conn {
     }
 
     /// Bring the cached topology up to date. One `Acquire` load in the steady
-    /// state; only a version change pays for the lock and `Arc` clone.
+    /// state; only a version change pays for the lock and `Arc` clones.
     #[inline]
     fn refresh_topology(&mut self) {
         let state = self.store.cluster_state_ref();
-        match self.topology_cache.as_ref().map(|(version, _)| *version) {
+        match self.topology_cache.as_ref().map(|(version, ..)| *version) {
             Some(version) => {
                 if let Some(fresh) = state.topology_if_newer(version) {
                     self.topology_cache = Some(fresh);
                 }
             }
             None => {
-                let version = state.topology_version();
-                self.topology_cache = Some((version, state.topology_arc()));
+                // `topology_if_newer(0)` always returns, since versions start
+                // at 1 and only ever increase.
+                self.topology_cache = state.topology_if_newer(0);
             }
         }
     }
 
     #[inline]
-    fn cached_topology(&self) -> &crate::cluster::Topology {
-        self.topology_cache
+    fn cached_topology(
+        &self,
+    ) -> (
+        &crate::cluster::Topology,
+        &crate::cluster::RoutingTable,
+    ) {
+        let (_, topology, routing) = self
+            .topology_cache
             .as_ref()
-            .map(|(_, topology)| topology.as_ref())
-            .expect("refresh_topology must run first")
+            .expect("refresh_topology must run first");
+        (topology.as_ref(), routing.as_ref())
     }
 
     pub fn do_read(&mut self) -> bool {
@@ -254,21 +266,42 @@ fn dispatch_raw(conn: &mut Conn, raw: &[(*const u8, usize)]) {
         conn.refresh_topology();
         let asking = std::mem::take(&mut conn.asking);
 
-        const STACK_ARGS: usize = 32;
-        let mut stack_args = [&[][..]; STACK_ARGS];
-
-        let decision = if raw.len().saturating_sub(1) > STACK_ARGS {
-            let args: Vec<&[u8]> = raw[1..]
-                .iter()
-                .map(|&part| unsafe { part_bytes(part) })
-                .collect();
-            route_cached(conn, cmd, &args, asking)
-        } else {
-            for (index, part) in raw[1..].iter().enumerate() {
-                stack_args[index] = unsafe { part_bytes(*part) };
+        // Only commands that need several keys checked for cross-slot
+        // violations pay for materializing an argument slice array; keyless
+        // commands and the single-key majority skip it entirely.
+        let decision = match crate::cluster::routing_scope(cmd) {
+            crate::cluster::RoutingScope::Keyless => crate::cluster::RouteDecision::Local,
+            crate::cluster::RoutingScope::FirstKey => match raw.get(1) {
+                Some(&part) => {
+                    let (topology, routing) = conn.cached_topology();
+                    crate::cluster::route_single_key(
+                        &conn.store.cluster,
+                        conn.store.cluster_state_ref(),
+                        topology,
+                        routing,
+                        unsafe { part_bytes(part) },
+                        asking,
+                    )
+                }
+                None => crate::cluster::RouteDecision::Local,
+            },
+            crate::cluster::RoutingScope::ManyKeys => {
+                const STACK_ARGS: usize = 32;
+                let mut stack_args = [&[][..]; STACK_ARGS];
+                if raw.len().saturating_sub(1) > STACK_ARGS {
+                    let args: Vec<&[u8]> = raw[1..]
+                        .iter()
+                        .map(|&part| unsafe { part_bytes(part) })
+                        .collect();
+                    route_cached(conn, cmd, &args, asking)
+                } else {
+                    for (index, part) in raw[1..].iter().enumerate() {
+                        stack_args[index] = unsafe { part_bytes(*part) };
+                    }
+                    let args = &stack_args[..raw.len() - 1];
+                    route_cached(conn, cmd, args, asking)
+                }
             }
-            let args = &stack_args[..raw.len() - 1];
-            route_cached(conn, cmd, args, asking)
         };
         match decision {
             crate::cluster::RouteDecision::Local => {}
@@ -419,10 +452,12 @@ fn route_cached(
     args: &[&[u8]],
     asking: bool,
 ) -> crate::cluster::RouteDecision<'static> {
+    let (topology, routing) = conn.cached_topology();
     crate::cluster::route_command_with_snapshot(
         &conn.store.cluster,
         conn.store.cluster_state_ref(),
-        conn.cached_topology(),
+        topology,
+        routing,
         cmd,
         args,
         asking,

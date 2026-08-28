@@ -8,6 +8,10 @@ use super::{FailureReport, FailureTracker};
 pub struct ClusterState {
     failures: Arc<Mutex<FailureTracker>>,
     topology: Arc<RwLock<Arc<super::Topology>>>,
+    /// Flat slot-to-owner map for the topology above. Published under the same
+    /// write lock so the two never disagree, and handed out together so a
+    /// reader cannot pair a table with a different generation's node list.
+    routing: Arc<RwLock<Arc<super::RoutingTable>>>,
     /// Bumped on every topology install. Lets a reader hold a cached snapshot
     /// and revalidate with one relaxed load instead of taking the `RwLock` and
     /// cloning the `Arc` on every command.
@@ -198,7 +202,7 @@ mod tests {
     #[test]
     fn cached_readers_only_refetch_after_a_change() {
         let state = ClusterState::with_topology(2, Duration::from_secs(30), topology());
-        let (version, snapshot) = state
+        let (version, snapshot, routing) = state
             .topology_if_newer(0)
             .expect("first fetch always returns a snapshot");
         assert!(state.topology_if_newer(version).is_none());
@@ -207,32 +211,44 @@ mod tests {
         newer.epoch = 9;
         assert!(state.replace_topology(newer));
 
-        let (next_version, next_snapshot) = state
+        let (next_version, next_snapshot, next_routing) = state
             .topology_if_newer(version)
             .expect("an install must invalidate the cache");
         assert!(next_version > version);
         assert_eq!(snapshot.epoch, 1);
         assert_eq!(next_snapshot.epoch, 9);
+
+        // The table must describe the topology it was handed out with, or a
+        // reader would index the wrong generation's node list.
+        for (topology, table) in [(&snapshot, &routing), (&next_snapshot, &next_routing)] {
+            for raw in [0u16, 42, 5461, 16383] {
+                let slot = Slot(raw);
+                assert_eq!(
+                    topology.owner(slot).map(|node| node.id.as_str()),
+                    table
+                        .owner_index(slot)
+                        .map(|index| topology.nodes[index].id.as_str())
+                );
+            }
+        }
     }
 }
 
 impl ClusterState {
     pub fn new(quorum: usize, retention: Duration) -> Self {
-        Self {
-            failures: Arc::new(Mutex::new(FailureTracker::new(quorum, retention))),
-            topology: Arc::new(RwLock::new(Arc::new(super::Topology::default()))),
-            version: Arc::new(AtomicU64::new(1)),
-            migrations: Arc::new(Mutex::new(std::collections::HashMap::new())),
-            imports: Arc::new(Mutex::new(std::collections::HashMap::new())),
-            has_imports: Arc::new(AtomicBool::new(false)),
-            has_migrations: Arc::new(AtomicBool::new(false)),
-        }
+        Self::build(quorum, retention, super::Topology::default())
     }
 
     pub fn with_topology(quorum: usize, retention: Duration, topology: super::Topology) -> Self {
+        Self::build(quorum, retention, topology)
+    }
+
+    fn build(quorum: usize, retention: Duration, topology: super::Topology) -> Self {
+        let routing = super::RoutingTable::build(&topology);
         Self {
             failures: Arc::new(Mutex::new(FailureTracker::new(quorum, retention))),
             topology: Arc::new(RwLock::new(Arc::new(topology))),
+            routing: Arc::new(RwLock::new(Arc::new(routing))),
             version: Arc::new(AtomicU64::new(1)),
             migrations: Arc::new(Mutex::new(std::collections::HashMap::new())),
             imports: Arc::new(Mutex::new(std::collections::HashMap::new())),
@@ -257,21 +273,31 @@ impl ClusterState {
 
     /// Fetch a fresh snapshot only when `cached` is stale.
     ///
-    /// The steady-state cost is one relaxed-ish load, which is what lets the
-    /// command path skip the `RwLock` acquire plus `Arc` clone it used to pay
-    /// per command.
-    pub fn topology_if_newer(&self, cached: u64) -> Option<(u64, Arc<super::Topology>)> {
-        let guard = self.topology.read().unwrap();
-        let version = self.version.load(Ordering::Acquire);
-        if version == cached {
+    /// The version is checked *before* the lock. Taking the read lock first
+    /// defeats the entire purpose: an `RwLock` read is still an atomic
+    /// read-modify-write on one shared cache line, so every worker paid for it
+    /// on every command. Steady state is now a single `Acquire` load.
+    ///
+    /// The routing table comes along so a caller can never pair it with a
+    /// different generation's node list.
+    pub fn topology_if_newer(
+        &self,
+        cached: u64,
+    ) -> Option<(u64, Arc<super::Topology>, Arc<super::RoutingTable>)> {
+        if self.version.load(Ordering::Acquire) == cached {
             return None;
         }
-        Some((version, Arc::clone(&*guard)))
+        let topology = self.topology.read().unwrap();
+        let routing = self.routing.read().unwrap();
+        let version = self.version.load(Ordering::Acquire);
+        Some((version, Arc::clone(&topology), Arc::clone(&routing)))
     }
 
     /// Publish a topology and advance the version so cached readers refresh.
     fn install_topology(&self, topology: Arc<super::Topology>) {
+        let routing = Arc::new(super::RoutingTable::build(&topology));
         let mut guard = self.topology.write().unwrap();
+        *self.routing.write().unwrap() = routing;
         *guard = topology;
         self.version.fetch_add(1, Ordering::Release);
     }
@@ -368,6 +394,8 @@ impl ClusterState {
         if topology.epoch <= current.epoch || !topology.is_valid() {
             return false;
         }
+        let routing = Arc::new(super::RoutingTable::build(&topology));
+        *self.routing.write().unwrap() = routing;
         *current = Arc::new(topology);
         // Bumped under the write lock rather than via `install_topology`, which
         // would deadlock on the guard held for the epoch comparison.
