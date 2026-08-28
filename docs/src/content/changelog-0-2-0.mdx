@@ -1,0 +1,144 @@
+---
+title: Changelog v0.2.0
+description: Redis Cluster compatibility, high-availability replication, automated failover, slot migration, and extreme concurrency optimizations.
+order: 19
+---
+
+# v0.2.0
+
+Released: August 2026
+
+v0.2.0 is a major milestone release that introduces production-grade **Redis Cluster compatibility**, **high-availability replication with automated failover**, **online slot migration**, and **deep storage and concurrency performance optimizations**.
+
+A single FyroDB node outperforms a 12-master Redis Cluster while consuming roughly half the memory. In cluster mode, FyroDB provides drop-in compatibility with standard cluster-aware Redis clients (such as `redis-py`, `ioredis`, `go-redis`, `jedis`, and `redis-cli -c`).
+
+---
+
+## Highlights
+
+- **Full Redis Cluster Compatibility**: 16,384 hash slots, CRC16 hashing, hash tags (`{...}`), automatic `MOVED` and `ASK` client redirections, and multi-key `CROSSSLOT` validation.
+- **High-Availability Replication & Failover**: Master-replica replication stream backed by an in-memory replication backlog ring buffer, asynchronous PSYNC / full RDB resync, consensus-based failure detection (`PFAIL`/`FAIL`), and automated failover election.
+- **Online Slot Migration**: Live slot migration supporting `MIGRATING` and `IMPORTING` states, cluster state synchronization, and `ASKING` command semantics.
+- **Flat 16,384-Entry Routing Table**: Zero-allocation slot lookup resolving through a shared flat routing table, cached per connection and validated with a single atomic epoch comparison.
+- **Tagged-Pointer Hash Probing**: Embedded 7-bit hash tags in `CustomMap` slot metadata skip non-matching entries during linear probing without dereferencing entry cache lines.
+- **Contention Spin Backoff**: Exponential backoff and thread yields under spinlock contention eliminate cache-line bouncing and negative scaling on hot keys.
+- **Allocation-Free Pops & Lazy Buffers**: `LPOP` and `RPOP` serialize directly into connection output buffers; accepted idle connections defer buffer allocation until active.
+- **Unified Key-Capacity Admission**: Default `FYRODB_MAX_KEYS` set to `0` (unlimited, matching Redis `maxmemory 0`).
+
+---
+
+## Redis Cluster & Topology Management
+
+### 16,384 Hash Slot Architecture
+- Standard CRC16 slot computation mapping all keys to slots `0..16383`.
+- Hash tag extraction: curly braces (`{user:100}:profile`) hash only the substring inside the brackets, guaranteeing related keys map to the same slot and master.
+- Multi-key commands (`MGET`, `MSET`, `DEL`, transactions) automatically enforce single-slot locality, returning `CROSSSLOT Keys in request don't hash to the same slot` if keys span multiple slots.
+
+### Inter-Node Cluster Bus & Failure Detection
+- Dedicated cluster bus port (`port + 10000`) for inter-node communication with custom high-performance binary framing.
+- Heartbeat gossip mechanism (`PING`/`PONG`) propagating cluster topology, node flags, and epoch metadata.
+- Decentralized failure detection: nodes track `PFAIL` (possible failure) states and transition to `FAIL` upon consensus from a majority of masters.
+
+### High-Availability Replication & Auto-Failover
+- Streaming master-replica replication engine (`ReplicationEngine`) with an in-memory replication backlog buffer.
+- Asynchronous partial resync (PSYNC) and full resynchronization via streaming RDB snapshots.
+- Automated failover election: when a master is flagged as `FAIL`, healthy replicas request votes from remaining masters and promote themselves upon majority consensus.
+- Replica auto-reconnect and state reconciliation.
+
+### Online Slot Migration
+- Dynamic slot state transitions: `SETSLOT <slot> MIGRATING <node-id>`, `SETSLOT <slot> IMPORTING <node-id>`, `SETSLOT <slot> STABLE`, and `SETSLOT <slot> NODE <node-id>`.
+- Client `ASK` redirection during migration windows with full support for the `ASKING` command flag.
+- Per-slot key tracking in storage engine for `COUNTKEYSINSLOT` and `GETKEYSINSLOT`.
+
+### Cluster Configuration Persistence (`nodes.conf`)
+- Automatic state persistence conforming to the Redis `nodes.conf` file format.
+- Node identity tracking (`myid`), current config epochs, and slot allocation tables.
+- Automatic configuration reloading on startup and manual flush via `CLUSTER SAVECONFIG`.
+
+---
+
+## Cluster Commands
+
+FyroDB v0.2.0 implements the full suite of Redis Cluster commands:
+
+| Command | Description |
+| ------- | ----------- |
+| `CLUSTER INFO` | Cluster state, assigned slots, node count, current epoch |
+| `CLUSTER MYID` | Returns the unique 40-character hexadecimal node ID |
+| `CLUSTER NODES` | Complete cluster topology and node state in `nodes.conf` format |
+| `CLUSTER SLOTS` | Nested array mapping slot ranges to master and replica endpoints |
+| `CLUSTER SHARDS` | Modern shard-level topology description with health status |
+| `CLUSTER KEYSLOT <key>` | Computes the CRC16 hash slot for a key |
+| `CLUSTER COUNTKEYSINSLOT <slot>` | Returns the number of keys currently stored in a slot |
+| `CLUSTER GETKEYSINSLOT <slot> <count>` | Returns up to `count` keys present in a slot |
+| `CLUSTER MEET <ip> <port> [cport]` | Connects to a new node and initiates cluster gossip handshake |
+| `CLUSTER FORGET <node-id>` | Removes a node from the cluster state table |
+| `CLUSTER ADDSLOTS <slot...>` / `ADDSLOTSRANGE` | Assigns slot ranges to the receiving node |
+| `CLUSTER DELSLOTS <slot...>` / `DELSLOTSRANGE` | Removes slot ranges from the receiving node |
+| `CLUSTER SETSLOT <slot> <action>` | Sets slot status to `MIGRATING`, `IMPORTING`, `STABLE`, or `NODE` |
+| `CLUSTER REPLICATE <node-id>` | Configures the receiving node as a replica of a target master |
+| `CLUSTER RESET [HARD\|SOFT]` | Resets node cluster configuration and node identity |
+| `CLUSTER SAVECONFIG` | Forces an immediate write of `nodes.conf` to disk |
+| `CLUSTER FAILOVER [FORCE\|TAKEOVER]` | Manually initiates a replica failover |
+| `CLUSTER BUMPEPOCH` | Advances the node configuration epoch |
+| `ASKING` | Sets the connection asking flag to permit execution after `ASK` redirects |
+
+---
+
+## Storage & Concurrency Performance
+
+### Tagged-Pointer Hash Probing
+- In `customhash::CustomMap`, each slot's state word embeds a 7-bit hash tag in previously unused high bits.
+- During linear probing, entries that do not match the key's hash tag are rejected immediately without fetching the map entry into CPU cache lines, reducing memory bandwidth pressure during lookups.
+
+### Contention Spin Backoff
+- Per-key spinlocks now implement exponential backoff with thread yields when a key is heavily contended by multiple worker threads.
+- Eliminates CPU core thrashing and negative throughput scaling on hot keys under 100+ concurrent clients.
+
+### Flat Routing Table & Standalone Fast Path
+- Slot ownership is looked up in a shared 16,384-entry flat routing table.
+- Worker connections cache a local view and validate freshness with a single atomic load (`epoch == local_epoch`), eliminating locking overhead on the request dispatch hot path.
+- When cluster mode is disabled (`ClusterRouting::Disabled`), all cluster checks are bypassed completely with zero branching penalty.
+
+### Allocation-Free Pops & Lazy Connection Buffers
+- `LPOP` and `RPOP` serialize the popped element directly into the connection's TCP output buffer without temporary `Vec` or string allocations.
+- Accepted idle connections defer I/O buffer allocation until the first frame is received, slashing baseline memory usage when maintaining thousands of idle connections.
+
+### Unified Key-Capacity Admission
+- Centralized key limit accounting across all hash map shards (`src/storage/capacity.rs`).
+- `FYRODB_MAX_KEYS` defaults to `0` (unlimited live keys, matching Redis's default `maxmemory 0`).
+
+---
+
+## Benchmarks
+
+Benchmarked on a 6-core Intel i5-11400H (12 hardware threads), loopback TCP, 100 clients, 1M operations per run:
+
+### Whole-Machine: FyroDB (1 node, 12 workers) vs. Redis Cluster (12 masters)
+
+| Benchmark | FyroDB (1 node, 12 workers) | Redis Cluster (12 masters) | Speedup |
+| --------- | --------------------------- | -------------------------- | ------- |
+| Pipeline-64 SET | **9.00M ops/sec** | 5.26M ops/sec | **1.7×** |
+| Pipeline-100 SET | **22.12M ops/sec** | 7.39M ops/sec | **3.0×** |
+| Pipeline-100 GET | **26.61M ops/sec** | 8.26M ops/sec | **3.2×** |
+| Pipeline-100 LPUSH | **18.73M ops/sec** | 6.54M ops/sec | **2.9×** |
+| Pipeline-100 LPOP | **20.45M ops/sec** | 6.81M ops/sec | **3.0×** |
+| Pipeline-100 SADD | **19.82M ops/sec** | 7.11M ops/sec | **2.8×** |
+| Pipeline-100 ZADD | **10.24M ops/sec** | 4.35M ops/sec | **2.4×** |
+
+### Memory Footprint
+
+| State | FyroDB (1 node) | Redis Cluster (12 masters) |
+| ----- | --------------- | -------------------------- |
+| Idle RSS | **5 MB** | ~120 MB (total) |
+| Loaded RSS (1M keys) | **57 MB** | 120 MB (total) |
+| After `FLUSHALL` | **16 MB** | 120 MB (total) |
+
+---
+
+## Upgrade Notes
+
+- **Default Key Capacity**: `FYRODB_MAX_KEYS` now defaults to `0` (unlimited keys). Set it explicitly if a fixed key ceiling is required.
+- **Cluster Mode**: Disabled by default. Enable cluster mode by setting `FYRODB_CLUSTER_ENABLED=true` or providing `--cluster-enabled yes`.
+- **Backward Compatibility**: Fully compatible with existing RDB snapshot files from v0.1.1 and v0.1.2.
+- **Client Compatibility**: Works with standard Redis standalone clients and cluster clients (`redis-py`, `ioredis`, `go-redis`, `jedis`, `redis-rs`, `redis-cli -c`).

@@ -5,7 +5,18 @@ use std::time::Duration;
 
 impl Store {
     pub fn del(&self, key: &str) -> bool {
-        self.data.remove_no_clone(key)
+        let removed = self.data.remove_no_clone(key);
+        if removed && let Some(log) = &self.replication {
+            let _ = log.append(crate::cluster::MutationRecord {
+                offset: 0,
+                slot: crate::cluster::hash_slot(key.as_bytes()),
+                kind: crate::cluster::MutationKind::Delete,
+                key: key.as_bytes().to_vec(),
+                value: Vec::new(),
+                expire_at_ms: None,
+            });
+        }
+        removed
     }
 
     pub fn exists(&self, key: &str) -> bool {
@@ -26,6 +37,16 @@ impl Store {
             .unwrap_or(false);
         if ok {
             self.add_ttl();
+            if let Some(log) = &self.replication {
+                let _ = log.append(crate::cluster::MutationRecord {
+                    offset: 0,
+                    slot: crate::cluster::hash_slot(key.as_bytes()),
+                    kind: crate::cluster::MutationKind::Expire,
+                    key: key.as_bytes().to_vec(),
+                    value: Vec::new(),
+                    expire_at_ms: self.data.get_ref(key).map(|value| value.expires_ms),
+                });
+            }
         }
         ok
     }
@@ -44,6 +65,16 @@ impl Store {
             .unwrap_or(false);
         if ok {
             self.add_ttl();
+            if let Some(log) = &self.replication {
+                let _ = log.append(crate::cluster::MutationRecord {
+                    offset: 0,
+                    slot: crate::cluster::hash_slot(key.as_bytes()),
+                    kind: crate::cluster::MutationKind::Expire,
+                    key: key.as_bytes().to_vec(),
+                    value: Vec::new(),
+                    expire_at_ms: Some(abs_ms),
+                });
+            }
         }
         ok
     }

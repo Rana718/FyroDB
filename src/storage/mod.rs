@@ -1,4 +1,5 @@
 pub mod bitmap;
+pub mod capacity;
 pub mod geo;
 pub mod hash;
 pub mod hll;

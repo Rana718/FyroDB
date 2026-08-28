@@ -8,7 +8,7 @@ order: 1
 
 FyroDB is a Redis-compatible in-memory key-value store written in Rust. It speaks the RESP protocol — any Redis client, SDK, or CLI tool works without modification.
 
-Unlike Redis (single-threaded), FyroDB uses **all CPU cores** via a thread-per-core architecture with a fully lock-free concurrent hash map and per-key seqlock. A single FyroDB node outperforms a 6-node Redis Cluster on every workload.
+Unlike Redis (single-threaded), FyroDB uses **all CPU cores** via a thread-per-core architecture with a fully lock-free concurrent hash map and per-key seqlock. A single FyroDB node outperforms a 12-master Redis Cluster on every workload while holding roughly half the memory.
 
 ## Key Features
 
@@ -16,29 +16,35 @@ Unlike Redis (single-threaded), FyroDB uses **all CPU cores** via a thread-per-c
 - **Lock-free reads** — epoch-based reclamation, seqlock validation for iteration safety
 - **Zero-clone writes** — per-key spinlock with in-place mutation, no CAS retry loops
 - **Thread-per-core** — one epoll loop per CPU, SO_REUSEPORT kernel accept
+- **Redis Cluster** — 16384 hash slots, MOVED/ASK redirects, hash tags, gossip bus
 - **Zero-copy GET** — writes directly from stored value to TCP buffer
 - **Full data type support** — String, Hash, List, Set, Sorted Set, JSON, Stream, Bitmap, HyperLogLog, Geospatial
 - **RDB persistence** — automatic snapshots, atomic saves, crash-safe
-- **Pub/Sub** — 29.26M msg/sec delivery with lock-free Arc snapshots
+- **Pub/Sub** — 26.14M msg/sec delivery with lock-free Arc snapshots
 
 ## Performance
 
-| Benchmark            | FyroDB (1 node)    | Redis Cluster (6 nodes) | Speedup |
-| -------------------- | ------------------ | ----------------------- | ------- |
-| Pipeline-64 SET      | ~14.7M ops/sec     | ~3.5M ops/sec           | 4.2×    |
-| Pipeline-100 SET     | ~14.9M ops/sec     | ~7.9M ops/sec           | 1.9×    |
-| Pipeline-100 GET     | ~20.05M ops/sec    | ~8.3M ops/sec           | 2.4×    |
-| Mixed SET/GET        | ~21.05M ops/sec    | ~3.11M ops/sec          | 6.8×    |
-| INCR (counters)      | ~34.09M ops/sec    | ~3.96M ops/sec          | 8.6×    |
-| HSET/HGET            | ~17.07M ops/sec    | ~3.52M ops/sec          | 4.8×    |
-| LPUSH/RPOP           | ~31.93M ops/sec    | ~3.64M ops/sec          | 8.8×    |
-| SADD                 | ~17.13M ops/sec    | ~2.84M ops/sec          | 6.0×    |
-| ZADD                 | ~7.95M ops/sec     | ~2.30M ops/sec          | 3.5×    |
-| JSON.SET/GET         | ~5.41M ops/sec     | ~1.69M ops/sec          | 3.2×    |
-| SET+EXPIRE           | ~12.13M ops/sec    | ~1.85M ops/sec          | 6.6×    |
-| Hot Key (contention) | ~23.00M ops/sec    | ~1.65M ops/sec          | 13.9×   |
-| Pub/Sub delivery     | ~29.26M msg/sec    | ~6.03M msg/sec          | 4.9×    |
-| Producer/Consumer    | ~3.03M ops/sec     | ~833.6K ops/sec         | 3.6×    |
+| Benchmark            | FyroDB (1 node, 12 workers) | Redis Cluster (12 masters) | Speedup |
+| -------------------- | --------------------------- | -------------------------- | ------- |
+| Pipeline-64 SET      | 9.00M ops/sec               | 5.26M ops/sec              | 1.7×    |
+| Pipeline-100 SET     | 22.12M ops/sec              | 7.39M ops/sec              | 3.0×    |
+| Pipeline-100 GET     | 26.61M ops/sec              | 8.26M ops/sec              | 3.2×    |
+| Mixed SET/GET        | 19.23M ops/sec              | 5.34M ops/sec              | 3.6×    |
+| INCR (counters)      | 29.81M ops/sec              | 6.59M ops/sec              | 4.5×    |
+| HSET/HGET            | 21.72M ops/sec              | 5.98M ops/sec              | 3.6×    |
+| LPUSH/RPOP           | 37.51M ops/sec              | 5.48M ops/sec              | 6.8×    |
+| SADD                 | 21.28M ops/sec              | 5.52M ops/sec              | 3.9×    |
+| ZADD                 | 12.77M ops/sec              | 3.68M ops/sec              | 3.5×    |
+| JSON.SET/GET         | 14.67M ops/sec              | — (module required)        | —       |
+| SET+EXPIRE           | 9.32M ops/sec               | 2.25M ops/sec              | 4.1×    |
+| Hot Key (contention) | 13.32M ops/sec              | 1.57M ops/sec              | 8.5×    |
+| Pub/Sub publish      | 523.0K ops/sec              | 49.7K ops/sec              | 10.5×   |
+| Pub/Sub delivery     | 26.14M msg/sec              | 2.49M msg/sec              | 10.5×   |
+| Producer/Consumer    | 6.13M ops/sec               | 824.0K ops/sec             | 7.4×    |
+
+Both sides get the whole machine: one FyroDB node with 12 workers against 12
+single-threaded Redis masters pinned one per hardware thread. Redis is
+single-threaded per master, so master count is its core count.
 
 ## Links
 

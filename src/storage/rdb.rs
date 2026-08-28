@@ -22,6 +22,104 @@ const TYPE_STREAM: u8 = 6;
 const TYPE_EOF: u8 = 0xFF;
 
 const MAX_LOAD_STRING: u32 = 512 * 1024 * 1024;
+const MAX_LOAD_ELEMENTS: u32 = 4 * 1024 * 1024;
+const REPL_MAGIC: &[u8; 4] = b"FLRP";
+const REPL_VERSION: u8 = 1;
+const CLUSTER_MAGIC: &[u8; 4] = b"FLCL";
+const CLUSTER_VERSION: u8 = 1;
+
+pub fn save_cluster_metadata(path: &str, node_id: &str, epoch: u64) -> io::Result<()> {
+    if node_id.is_empty() || node_id.len() > u16::MAX as usize {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid node id",
+        ));
+    }
+    let tmp = format!("{path}.tmp");
+    let mut file = File::create(&tmp)?;
+    file.write_all(CLUSTER_MAGIC)?;
+    file.write_all(&[CLUSTER_VERSION])?;
+    file.write_all(&(node_id.len() as u16).to_le_bytes())?;
+    file.write_all(node_id.as_bytes())?;
+    file.write_all(&epoch.to_le_bytes())?;
+    file.flush()?;
+    fsync_file(&file)?;
+    fs::rename(tmp, path)
+}
+
+pub fn load_cluster_metadata(path: &str) -> io::Result<Option<(String, u64)>> {
+    if !Path::new(path).exists() {
+        return Ok(None);
+    }
+    let mut file = File::open(path)?;
+    let mut header = [0u8; 7];
+    file.read_exact(&mut header)?;
+    if &header[..4] != CLUSTER_MAGIC || header[4] != CLUSTER_VERSION {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid cluster metadata",
+        ));
+    }
+    let len = u16::from_le_bytes([header[5], header[6]]) as usize;
+    let mut id = vec![0u8; len];
+    file.read_exact(&mut id)?;
+    let mut epoch = [0u8; 8];
+    file.read_exact(&mut epoch)?;
+    let id = String::from_utf8(id)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid node id"))?;
+    Ok(Some((id, u64::from_le_bytes(epoch))))
+}
+
+#[cfg(test)]
+mod cluster_metadata_tests {
+    use super::*;
+
+    #[test]
+    fn cluster_metadata_round_trip_is_strict() {
+        let path = std::env::temp_dir().join(format!("fyrodb-cluster-meta-{}", std::process::id()));
+        let path = path.to_str().unwrap();
+        save_cluster_metadata(path, "node-a", 42).unwrap();
+        assert_eq!(
+            load_cluster_metadata(path).unwrap(),
+            Some(("node-a".into(), 42))
+        );
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+pub fn save_replication_metadata(path: &str, epoch: u64, offset: u64) -> io::Result<()> {
+    let tmp = format!("{path}.tmp");
+    {
+        let mut file = File::create(&tmp)?;
+        file.write_all(REPL_MAGIC)?;
+        file.write_all(&[REPL_VERSION])?;
+        file.write_all(&epoch.to_le_bytes())?;
+        file.write_all(&offset.to_le_bytes())?;
+        file.flush()?;
+        fsync_file(&file)?;
+    }
+    fs::rename(tmp, path)?;
+    Ok(())
+}
+
+pub fn load_replication_metadata(path: &str) -> io::Result<Option<(u64, u64)>> {
+    if !Path::new(path).exists() {
+        return Ok(None);
+    }
+    let mut file = File::open(path)?;
+    let mut bytes = [0u8; 21];
+    file.read_exact(&mut bytes)?;
+    if &bytes[..4] != REPL_MAGIC || bytes[4] != REPL_VERSION {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid replication metadata",
+        ));
+    }
+    Ok(Some((
+        u64::from_le_bytes(bytes[5..13].try_into().unwrap()),
+        u64::from_le_bytes(bytes[13..21].try_into().unwrap()),
+    )))
+}
 
 pub fn save(store: &Store, path: &str) -> io::Result<()> {
     let tmp = format!("{path}.tmp");
@@ -162,6 +260,14 @@ pub fn save(store: &Store, path: &str) -> io::Result<()> {
 }
 
 pub fn load(store: &Store, path: &str) -> io::Result<usize> {
+    load_with_policy(store, path, false)
+}
+
+pub fn load_strict(store: &Store, path: &str) -> io::Result<usize> {
+    load_with_policy(store, path, true)
+}
+
+fn load_with_policy(store: &Store, path: &str, strict: bool) -> io::Result<usize> {
     if !Path::new(path).exists() {
         return Ok(0);
     }
@@ -200,6 +306,12 @@ pub fn load(store: &Store, path: &str) -> io::Result<usize> {
         let type_byte = match read_u8(&mut r) {
             Ok(b) => b,
             Err(ref e) if e.kind() == io::ErrorKind::UnexpectedEof => {
+                if strict {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "truncated RDB snapshot",
+                    ));
+                }
                 eprintln!("[rdb] warning: truncated file, loaded {count} keys");
                 break;
             }
@@ -387,11 +499,155 @@ pub fn load(store: &Store, path: &str) -> io::Result<usize> {
             }
         };
 
+        if store_value.expires_ms != 0 {
+            store.add_ttl();
+        }
         store.data.insert(key, store_value);
         count += 1;
     }
 
     Ok(count)
+}
+
+/// Encode/decode one StoreValue using the same bounded representation as RDB.
+/// This is used by replication so all supported data types share one codec.
+pub fn encode_single_value(value: &StoreValue) -> io::Result<Vec<u8>> {
+    let mut out = Vec::new();
+    write_u64(&mut out, value.expires_ms)?;
+    match &value.value {
+        FyroDB::String(s) => {
+            write_u8(&mut out, TYPE_STRING)?;
+            write_bytes(&mut out, s.as_bytes())?;
+        }
+        FyroDB::Hash(h) => {
+            write_u8(&mut out, TYPE_HASH)?;
+            write_u32(&mut out, h.len() as u32)?;
+            for (field, val) in h.iter() {
+                write_bytes(&mut out, field.as_bytes())?;
+                write_bytes(&mut out, val.as_bytes())?;
+            }
+        }
+        FyroDB::List(l) => {
+            write_u8(&mut out, TYPE_LIST)?;
+            write_u32(&mut out, l.deque().len() as u32)?;
+            for item in l.deque() {
+                write_bytes(&mut out, item.as_bytes())?;
+            }
+        }
+        FyroDB::Set(s) => {
+            write_u8(&mut out, TYPE_SET)?;
+            write_u32(&mut out, s.len() as u32)?;
+            for member in s.iter() {
+                write_bytes(&mut out, member.to_string().as_bytes())?;
+            }
+        }
+        FyroDB::ZSet(z) => {
+            write_u8(&mut out, TYPE_ZSET)?;
+            write_u32(&mut out, z.len() as u32)?;
+            for entry in z.iter() {
+                write_bytes(&mut out, entry.member.as_bytes())?;
+                write_u64(&mut out, entry.score.to_bits())?;
+            }
+        }
+        FyroDB::Json(json) => {
+            write_u8(&mut out, TYPE_JSON)?;
+            write_bytes(&mut out, json.as_bytes())?;
+        }
+        FyroDB::Stream(stream) => {
+            write_u8(&mut out, TYPE_STREAM)?;
+            write_u32(&mut out, stream.entries.len() as u32)?;
+            for (id, fields) in &stream.entries {
+                write_u64(&mut out, id.ms)?;
+                write_u64(&mut out, id.seq)?;
+                write_u32(&mut out, fields.len() as u32)?;
+                for (field, val) in fields {
+                    write_bytes(&mut out, field.as_bytes())?;
+                    write_bytes(&mut out, val.as_bytes())?;
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+pub fn decode_single_value(bytes: &[u8]) -> io::Result<StoreValue> {
+    let mut reader = std::io::Cursor::new(bytes);
+    let expires_ms = read_u64(&mut reader)?;
+    let kind = read_u8(&mut reader)?;
+    let value = match kind {
+        TYPE_STRING => FyroDB::String(SmallStr::from_string(read_string_bounded(&mut reader)?)),
+        TYPE_HASH => {
+            let count = read_count_bounded(&mut reader)? as usize;
+            let mut map = HashMap::with_capacity(count.min(1024));
+            for _ in 0..count {
+                map.insert(
+                    read_string_bounded(&mut reader)?.into(),
+                    read_string_bounded(&mut reader)?.into(),
+                );
+            }
+            FyroDB::Hash(Box::new(HashInner::Full(Box::new(map))))
+        }
+        TYPE_LIST => {
+            let count = read_count_bounded(&mut reader)? as usize;
+            let mut list = std::collections::VecDeque::with_capacity(count.min(1024));
+            for _ in 0..count {
+                list.push_back(SmallStr::from_string(read_string_bounded(&mut reader)?));
+            }
+            FyroDB::List(Box::new(ListInner::Full(Box::new(list))))
+        }
+        TYPE_SET => {
+            let count = read_count_bounded(&mut reader)? as usize;
+            let mut set = foldhash::HashSet::with_capacity(count.min(1024));
+            for _ in 0..count {
+                set.insert(read_string_bounded(&mut reader)?);
+            }
+            FyroDB::Set(Box::new(SetInner::from_strings(set)))
+        }
+        TYPE_ZSET => {
+            let count = read_count_bounded(&mut reader)? as usize;
+            let mut zset = crate::storage::value::ZSetData::new();
+            for _ in 0..count {
+                let member = read_string_bounded(&mut reader)?;
+                zset.insert(f64::from_bits(read_u64(&mut reader)?), &member);
+            }
+            FyroDB::ZSet(Box::new(zset))
+        }
+        TYPE_JSON => FyroDB::Json(SmallStr::from_string(read_string_bounded(&mut reader)?)),
+        TYPE_STREAM => {
+            let count = read_count_bounded(&mut reader)? as usize;
+            let mut stream = crate::storage::stream::StreamData::new();
+            for _ in 0..count {
+                let id = crate::storage::stream::StreamId::new(
+                    read_u64(&mut reader)?,
+                    read_u64(&mut reader)?,
+                );
+                let fields_count = read_count_bounded(&mut reader)? as usize;
+                let mut fields = Vec::with_capacity(fields_count.min(1024));
+                for _ in 0..fields_count {
+                    fields.push((
+                        SmallStr::from_string(read_string_bounded(&mut reader)?),
+                        SmallStr::from_string(read_string_bounded(&mut reader)?),
+                    ));
+                }
+                stream.entries.insert(id, fields);
+                stream.last_id = id;
+            }
+            FyroDB::Stream(Box::new(stream))
+        }
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "unknown value type",
+            ));
+        }
+    };
+    if reader.position() != bytes.len() as u64 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "trailing value bytes",
+        ));
+    }
+    Ok(StoreValue { value, expires_ms })
 }
 
 pub fn start_background_save(store: Arc<Store>, path: String, interval: Duration) {
@@ -404,6 +660,9 @@ pub fn start_background_save(store: Arc<Store>, path: String, interval: Duration
                 match save(&store, &path) {
                     Ok(()) => {}
                     Err(e) => eprintln!("[rdb] background save error: {e}"),
+                }
+                if let Some(log) = store.replication_coordinator() {
+                    log.flush_journal();
                 }
             }
         })
@@ -468,6 +727,18 @@ fn read_string_bounded(r: &mut impl Read) -> io::Result<String> {
     let mut buf = vec![0u8; len];
     r.read_exact(&mut buf)?;
     String::from_utf8(buf).map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid utf8"))
+}
+
+#[inline]
+fn read_count_bounded(r: &mut impl Read) -> io::Result<u32> {
+    let count = read_u32(r)?;
+    if count > MAX_LOAD_ELEMENTS {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "collection element count exceeds maximum in replication value",
+        ));
+    }
+    Ok(count)
 }
 
 fn skip_string(r: &mut impl Read) -> io::Result<()> {

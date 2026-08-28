@@ -2,7 +2,7 @@ version: "3"
 
 vars:
    BINARY: fyro_db
-   VERSION: v0.1.2
+   VERSION: v0.2.0
 
 tasks:
    run:
@@ -70,20 +70,63 @@ tasks:
          - cd bench && go run . -p 6379
 
    bench-redis-cluster:
-      desc: benchmark redis cluster (6 masters, 0 replicas — fair 6-core vs 6-core)
+      desc: "benchmark redis cluster: 6 masters, one per physical core (pair with bench-fyro-cluster)"
       cmds:
          - cd bench && go run . -cluster 127.0.0.1:7001,127.0.0.1:7002,127.0.0.1:7003,127.0.0.1:7004,127.0.0.1:7005,127.0.0.1:7006
 
-   up:
-      desc: Start Redis Cluster
+   bench-redis-cluster-12:
+      desc: "benchmark redis cluster: 12 masters, one per hardware thread (pair with bench-fyro-cluster-12)"
       cmds:
+         - cd bench && go run . -cluster 127.0.0.1:7001,127.0.0.1:7002,127.0.0.1:7003,127.0.0.1:7004,127.0.0.1:7005,127.0.0.1:7006,127.0.0.1:7007,127.0.0.1:7008,127.0.0.1:7009,127.0.0.1:7010,127.0.0.1:7011,127.0.0.1:7012
+
+   bench-fyro-cluster:
+      desc: "benchmark FyroDB cluster: 3 nodes x 2 workers = 6 (pair with bench-redis-cluster)"
+      cmds:
+         - cd bench && go run . -cluster 127.0.0.1:8000,127.0.0.1:8001,127.0.0.1:8002
+
+   bench-fyro-cluster-12:
+      desc: "benchmark FyroDB cluster: 3 nodes x 4 workers = 12 (pair with bench-redis-cluster-12)"
+      cmds:
+         - cd bench && go run . -cluster 127.0.0.1:8000,127.0.0.1:8001,127.0.0.1:8002
+
+   redis-up:
+      desc: Start Redis Cluster (6 masters)
+      cmds:
+         - task: redis-down-12
          - cd bench/redis-cluster && docker compose up -d
          - cd bench/redis-cluster && docker compose wait cluster-init
 
-   down:
-      desc: Stop Redis Cluster
+   redis-down:
+      desc: Stop Redis Cluster (6 masters)
       cmds:
          - cd bench/redis-cluster && docker compose down
+
+   redis-up-12:
+      desc: Start Redis Cluster (12 masters, one per hardware thread)
+      cmds:
+         - task: redis-down
+         - cd bench/redis-cluster && docker compose -f docker-compose.12.yml up -d
+         - cd bench/redis-cluster && docker compose -f docker-compose.12.yml wait cluster-init
+
+   redis-down-12:
+      desc: Stop Redis Cluster (12 masters)
+      cmds:
+         - cd bench/redis-cluster && docker compose -f docker-compose.12.yml down
+
+   fyro-up:
+     desc: Start Fyro Cluster
+     cmds:
+       - docker compose -f docker-compose.cluster.yml up -d --build
+
+   fyro-down:
+     desc: Stop Fyro Cluster
+     cmds:
+       - docker compose -f docker-compose.cluster.yml down
+
+   fyro-rmi:
+     desc: rmi Fyro
+     cmds:
+       -  docker rmi og-m-fyrodb-a og-m-fyrodb-b og-m-fyrodb-c
 
    fyro-dock:
      desc: fyrodb runing under docker with 1 worker && 10K keys
@@ -92,7 +135,19 @@ tasks:
        - docker run -d --name fyrodb-1k -p 8000:8000 -e FYRODB_WORKERS=1 fyrodb
 
    redis-clean:
-      desc: Flush all data from every Redis Cluster master node
+      desc: Flush all data from every Redis Cluster master node (6 masters)
       cmds:
          - for: ["7001", "7002", "7003", "7004", "7005", "7006"]
+           cmd: redis-cli -p {{.ITEM}} FLUSHALL
+
+   redis-clean-12:
+      desc: Flush all data from every Redis Cluster master node (12 masters)
+      cmds:
+         - for: ["7001", "7002", "7003", "7004", "7005", "7006", "7007", "7008", "7009", "7010", "7011", "7012"]
+           cmd: redis-cli -p {{.ITEM}} FLUSHALL
+
+   fyro-clean:
+      desc: Flush all data from every Fyro Cluster master node
+      cmds:
+         - for: ["8000", "8001", "8002"]
            cmd: redis-cli -p {{.ITEM}} FLUSHALL

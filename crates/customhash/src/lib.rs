@@ -20,7 +20,7 @@ pub struct Full;
 
 impl std::fmt::Display for Full {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("OOM command not allowed: store is at capacity")
+        f.write_str("command not allowed when used memory > 'maxmemory'.")
     }
 }
 impl std::error::Error for Full {}
@@ -177,24 +177,20 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
         let _guard = ebr::pin();
         let shard = unsafe { self.shards.get_unchecked(idx) };
         if let Some(existing) = shard.find(key, h) {
-            if state_occupied(&existing.state, Ordering::Acquire) {
-                state_lock(&existing.state);
-                state_seq_add(&existing.state, Ordering::Relaxed);
+            state_lock(&existing.state);
+            // Re-check under the lock: the pre-lock occupancy test can race a
+            // concurrent remove, and dropping an already-dropped value would
+            // be a double free.
+            let was_occupied = state_occupied(&existing.state, Ordering::Relaxed);
+            write_begin(&existing.state);
+            if was_occupied {
                 unsafe { (*existing.value.get()).assume_init_drop() };
-                unsafe { (*existing.value.get()).write(value) };
-                // Combine final seq bump + unlock into one store
-                let cur = existing.state.load(Ordering::Relaxed);
-                let final_val = (cur + STATE_SEQ_ONE) & !STATE_LOCK;
-                existing.state.store(final_val, Ordering::Release);
+            }
+            unsafe { (*existing.value.get()).write(value) };
+            write_end(&existing.state, true);
+            if was_occupied {
                 return false;
             }
-            state_lock(&existing.state);
-            state_seq_add(&existing.state, Ordering::Relaxed);
-            unsafe { (*existing.value.get()).write(value) };
-            // Combine set_occupied + seq bump + unlock into one store
-            let cur = existing.state.load(Ordering::Relaxed);
-            let final_val = ((cur + STATE_SEQ_ONE) | STATE_OCCUPIED) & !STATE_LOCK;
-            existing.state.store(final_val, Ordering::Release);
             self.key_count.fetch_add(1, Ordering::Relaxed);
             return true;
         }
@@ -239,12 +235,10 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
             state_unlock(&entry.state);
             return None;
         }
-        state_seq_add(&entry.state, Ordering::Release);
+        write_begin(&entry.state);
         let value = unsafe { (*entry.value.get()).assume_init_ref().clone() };
         unsafe { (*entry.value.get()).assume_init_drop() };
-        state_set_occupied(&entry.state, false, Ordering::Release);
-        state_seq_add(&entry.state, Ordering::Release);
-        state_unlock(&entry.state);
+        write_end(&entry.state, false);
         self.key_count.fetch_sub(1, Ordering::Relaxed);
         Some(value)
     }
@@ -265,11 +259,9 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
             state_unlock(&entry.state);
             return false;
         }
-        state_seq_add(&entry.state, Ordering::Release);
+        write_begin(&entry.state);
         unsafe { (*entry.value.get()).assume_init_drop() };
-        state_set_occupied(&entry.state, false, Ordering::Release);
-        state_seq_add(&entry.state, Ordering::Release);
-        state_unlock(&entry.state);
+        write_end(&entry.state, false);
         self.key_count.fetch_sub(1, Ordering::Relaxed);
         true
     }
@@ -288,11 +280,9 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
             return None;
         }
         let result = f(unsafe { (*entry.value.get()).assume_init_ref() });
-        state_seq_add(&entry.state, Ordering::Release);
+        write_begin(&entry.state);
         unsafe { (*entry.value.get()).assume_init_drop() };
-        state_set_occupied(&entry.state, false, Ordering::Release);
-        state_seq_add(&entry.state, Ordering::Release);
-        state_unlock(&entry.state);
+        write_end(&entry.state, false);
         self.key_count.fetch_sub(1, Ordering::Relaxed);
         Some(result)
     }
@@ -309,11 +299,10 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
             return None;
         }
         let (new_val, result) = f(unsafe { (*entry.value.get()).assume_init_ref() });
-        state_seq_add(&entry.state, Ordering::Release);
+        write_begin(&entry.state);
         unsafe { (*entry.value.get()).assume_init_drop() };
         unsafe { (*entry.value.get()).write(new_val) };
-        state_seq_add(&entry.state, Ordering::Release);
-        state_unlock(&entry.state);
+        write_end(&entry.state, true);
         Some(result)
     }
 
@@ -331,11 +320,10 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
         let result = f(unsafe { (*entry.value.get()).assume_init_ref() });
         match result {
             Some((new_val, r)) => {
-                state_seq_add(&entry.state, Ordering::Release);
+                write_begin(&entry.state);
                 unsafe { (*entry.value.get()).assume_init_drop() };
                 unsafe { (*entry.value.get()).write(new_val) };
-                state_seq_add(&entry.state, Ordering::Release);
-                state_unlock(&entry.state);
+                write_end(&entry.state, true);
                 Some(r)
             }
             None => {
@@ -356,10 +344,9 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
             state_unlock(&entry.state);
             return None;
         }
-        state_seq_add(&entry.state, Ordering::Release);
+        write_begin(&entry.state);
         let result = f(unsafe { (*entry.value.get()).assume_init_mut() });
-        state_seq_add(&entry.state, Ordering::Release);
-        state_unlock(&entry.state);
+        write_end(&entry.state, true);
         Some(result)
     }
 
@@ -417,11 +404,9 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
                 state_unlock(&entry.state);
                 return false;
             }
-            state_seq_add(&entry.state, Ordering::Release);
+            write_begin(&entry.state);
             unsafe { (*entry.value.get()).write(value) };
-            state_set_occupied(&entry.state, true, Ordering::Release);
-            state_seq_add(&entry.state, Ordering::Release);
-            state_unlock(&entry.state);
+            write_end(&entry.state, true);
             self.key_count.fetch_add(1, Ordering::Relaxed);
             return true;
         }
@@ -435,6 +420,21 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
     #[inline]
     pub fn len(&self) -> usize {
         self.key_count.load(Ordering::Relaxed)
+    }
+
+    /// Whether the configured key ceiling has been reached.
+    ///
+    /// Costs a single relaxed load, and is trivially false when no limit is
+    /// configured, so callers can gate every write on it.
+    #[inline(always)]
+    pub fn is_full(&self) -> bool {
+        self.max_keys != usize::MAX && self.key_count.load(Ordering::Relaxed) >= self.max_keys
+    }
+
+    /// The configured key ceiling, or `usize::MAX` when unlimited.
+    #[inline]
+    pub fn capacity_limit(&self) -> usize {
+        self.max_keys
     }
 
     #[inline]
@@ -559,5 +559,80 @@ mod tests {
             assert!(map.is_empty());
             assert!(!map.contains_key("round-0-0"));
         }
+    }
+
+    /// Regression: concurrent remove during overwrite must not double-free.
+    ///
+    /// Values own a heap allocation so the allocator will catch a double-free.
+    #[test]
+    fn concurrent_overwrite_and_remove_never_double_frees() {
+        let map = Arc::new(CustomMap::<String>::with_capacity(4, 4_096));
+        const KEYS: usize = 64;
+
+        std::thread::scope(|scope| {
+            for writer in 0..4 {
+                let map = Arc::clone(&map);
+                scope.spawn(move || {
+                    for round in 0..20_000 {
+                        let key = format!("key-{}", round % KEYS);
+                        let payload = format!("value-{writer}-{round}-aaaaaaaaaaaaaaaaaaaaaaaa");
+                        if round % 2 == 0 {
+                            map.set(&key, payload, || key.clone());
+                        } else {
+                            map.insert(key, payload);
+                        }
+                    }
+                });
+            }
+            for _ in 0..2 {
+                let map = Arc::clone(&map);
+                scope.spawn(move || {
+                    for round in 0..20_000 {
+                        let key = format!("key-{}", round % KEYS);
+                        map.remove_no_clone(&key);
+                    }
+                });
+            }
+            for _ in 0..2 {
+                let map = Arc::clone(&map);
+                scope.spawn(move || {
+                    for round in 0..20_000 {
+                        let key = format!("key-{}", round % KEYS);
+                        // Reads must never observe a torn or freed value.
+                        if let Some(value) = map.read_consistent(&key, |v| v.clone()) {
+                            assert!(value.starts_with("value-"), "torn read: {value:?}");
+                        }
+                    }
+                });
+            }
+        });
+
+        assert!(map.len() <= KEYS);
+    }
+
+    /// `key_count` has to stay in step with what is actually reachable, across
+    /// the tombstone-revival path that `set` and `insert_if_absent` share.
+    #[test]
+    fn key_count_survives_insert_remove_revive_cycles() {
+        let map = CustomMap::<u64>::with_capacity(2, 1_024);
+        for round in 0..500u64 {
+            for i in 0..32u64 {
+                let key = format!("key-{i}");
+                map.set(&key, round, || key.clone());
+            }
+            assert_eq!(map.len(), 32, "after set round {round}");
+            for i in 0..32u64 {
+                assert!(map.remove_no_clone(&format!("key-{i}")));
+            }
+            assert_eq!(map.len(), 0, "after remove round {round}");
+            for i in 0..32u64 {
+                assert!(map.insert_if_absent(format!("key-{i}"), round));
+            }
+            assert_eq!(map.len(), 32, "after revive round {round}");
+            for i in 0..32u64 {
+                assert!(map.remove_no_clone(&format!("key-{i}")));
+            }
+        }
+        assert_eq!(map.len(), 0);
     }
 }

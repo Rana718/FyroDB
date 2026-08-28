@@ -43,9 +43,21 @@ impl ChannelShard {
     /// Load the current Arc snapshot.
     #[inline(always)]
     fn load_snapshot(&self) -> Snapshot {
+        let _lock = self.mu.lock().unwrap_or_else(|e| e.into_inner());
+        self.load_snapshot_locked()
+    }
+
+    #[inline(always)]
+    fn load_snapshot_locked(&self) -> Snapshot {
         let ptr = self.snapshot.load(Ordering::Acquire);
-        let arc_ref = unsafe { &*ptr };
-        Arc::clone(arc_ref)
+        Arc::clone(unsafe { &*ptr })
+    }
+
+    #[inline(always)]
+    fn store_snapshot_locked(&self, new_snap: Snapshot) {
+        let new_ptr = Box::into_raw(Box::new(new_snap));
+        let old_ptr = self.snapshot.swap(new_ptr, Ordering::AcqRel);
+        unsafe { drop(Box::from_raw(old_ptr)) };
     }
 
     #[inline(always)]
@@ -65,7 +77,7 @@ impl ChannelShard {
 
     fn subscribe(&self, channel: &str, slot: Arc<SubSlot>) {
         let _lock = self.mu.lock().unwrap_or_else(|e| e.into_inner());
-        let old_snap = self.load_snapshot();
+        let old_snap = self.load_snapshot_locked();
 
         let mut new_vec: Vec<ChannelData> = Vec::with_capacity(old_snap.len() + 1);
         let mut found = false;
@@ -92,15 +104,12 @@ impl ChannelShard {
             });
         }
 
-        let new_snap: Snapshot = Arc::new(new_vec);
-        let new_ptr = Box::into_raw(Box::new(new_snap));
-        let old_ptr = self.snapshot.swap(new_ptr, Ordering::AcqRel);
-        unsafe { drop(Box::from_raw(old_ptr)) };
+        self.store_snapshot_locked(Arc::new(new_vec));
     }
 
     fn unsubscribe(&self, channel: &str, slot: &Arc<SubSlot>) {
         let _lock = self.mu.lock().unwrap_or_else(|e| e.into_inner());
-        let old_snap = self.load_snapshot();
+        let old_snap = self.load_snapshot_locked();
 
         let mut new_vec: Vec<ChannelData> = Vec::with_capacity(old_snap.len());
         for ch in old_snap.iter() {
@@ -125,10 +134,7 @@ impl ChannelShard {
             }
         }
 
-        let new_snap: Snapshot = Arc::new(new_vec);
-        let new_ptr = Box::into_raw(Box::new(new_snap));
-        let old_ptr = self.snapshot.swap(new_ptr, Ordering::AcqRel);
-        unsafe { drop(Box::from_raw(old_ptr)) };
+        self.store_snapshot_locked(Arc::new(new_vec));
     }
 
     fn count_for(&self, channel: &str) -> usize {

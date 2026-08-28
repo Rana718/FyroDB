@@ -14,7 +14,7 @@ export const metadata: Metadata = {
       template: "%s | FyroDB Docs",
    },
    description:
-      "FyroDB is a Redis-compatible, lock-free in-memory key-value store written in Rust. 17M+ ops/sec on a single node. Supports String, Hash, List, Set, Sorted Set, JSON, Stream, Bitmap, HyperLogLog, and Geospatial data types.",
+      "FyroDB is a Redis-compatible, lock-free in-memory key-value store written in Rust. 22M+ ops/sec on a single node. Supports String, Hash, List, Set, Sorted Set, JSON, Stream, Bitmap, HyperLogLog, and Geospatial data types.",
    keywords: [
       "FyroDB",
       "Redis alternative",
@@ -50,7 +50,7 @@ export const metadata: Metadata = {
       siteName: "FyroDB",
       title: "FyroDB — Redis-compatible In-Memory Database in Rust",
       description:
-         "Lock-free in-memory key-value store written in Rust. 17M+ ops/sec on a single node. Drop-in Redis replacement with full RESP protocol support.",
+         "Lock-free in-memory key-value store written in Rust. 22M+ ops/sec on a single node. Drop-in Redis replacement with full RESP protocol support.",
       images: [
          {
             url: `${BASE_URL}/logo.png`,
@@ -65,7 +65,7 @@ export const metadata: Metadata = {
       card: "summary_large_image",
       title: "FyroDB — Redis-compatible In-Memory Database in Rust",
       description:
-         "Lock-free in-memory key-value store in Rust. 17M+ ops/sec on a single node. Drop-in Redis replacement.",
+         "Lock-free in-memory key-value store in Rust. 22M+ ops/sec on a single node. Drop-in Redis replacement.",
       images: [`${BASE_URL}/logo.png`],
    },
    icons: {

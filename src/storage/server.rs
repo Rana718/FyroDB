@@ -1,6 +1,16 @@
 use crate::storage::store::{Store, cgroup_memory_bytes, peak_rss_bytes, rss_bytes};
 use crate::storage::value::{now_ms, tick_clock};
 
+/// High-water mark of `used_memory`, sampled whenever `INFO` is served.
+///
+/// Redis reports `used_memory_peak` as the peak of *requested* bytes, which is
+/// not the same curve as peak RSS.
+fn record_peak_allocated(current: usize) -> usize {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static PEAK: AtomicUsize = AtomicUsize::new(0);
+    PEAK.fetch_max(current, Ordering::Relaxed).max(current)
+}
+
 impl Store {
     pub fn cleanup_expired(&self) {
         tick_clock();
@@ -56,6 +66,7 @@ impl Store {
         let connected = self.connected_clients();
         let allocated = rust_zmalloc::used_memory();
         let rss = rss_bytes();
+        let peak_allocated = record_peak_allocated(allocated);
         let peak_rss = peak_rss_bytes();
         let cgroup = cgroup_memory_bytes();
         let rss_human = format_bytes(rss);
@@ -63,6 +74,65 @@ impl Store {
             rss as f64 / allocated as f64
         } else {
             0.0
+        };
+
+        let cluster_info = if self.cluster.enabled {
+            let topology = self.cluster_topology();
+            let primaries = topology
+                .nodes
+                .iter()
+                .filter(|node| node.role == crate::cluster::NodeRole::Primary)
+                .count();
+            let assigned: usize = topology
+                .nodes
+                .iter()
+                .filter(|node| node.role == crate::cluster::NodeRole::Primary)
+                .flat_map(|node| node.slots.iter())
+                .map(|range| usize::from(range.end.value() - range.start.value()) + 1)
+                .sum();
+            let log_len = self.replication.as_ref().map_or(0, |log| log.len());
+            let log_bytes = self
+                .replication
+                .as_ref()
+                .map_or(0, |log| log.retained_bytes());
+            let log_byte_limit = self
+                .replication
+                .as_ref()
+                .map_or(0, |log| log.retained_byte_limit());
+            let next_offset = self.replication.as_ref().map_or(0, |log| log.next_offset());
+            let appended = self
+                .replication
+                .as_ref()
+                .map_or(0, |log| log.appended_count());
+            let (peer_total, peer_healthy, peer_suspect) = self.cluster_health_counts();
+            let (queue_full, reconnects) = self.cluster_transport_metrics();
+            let snapshots = self.cluster_snapshot_attempts();
+            let (lag_total, lag_max) = self.cluster_replication_lag();
+            format!(
+                "# Cluster\r\ncluster_enabled:1\r\ncluster_state:{}\r\ncluster_my_id:{}\r\ncluster_current_epoch:{}\r\ncluster_known_nodes:{}\r\ncluster_size:{}\r\ncluster_slots_assigned:{}\r\ncluster_replication_log_len:{}\r\ncluster_replication_log_bytes:{}\r\ncluster_replication_log_byte_limit:{}\r\ncluster_replication_next_offset:{}\r\ncluster_replication_appended:{}\r\ncluster_peer_total:{}\r\ncluster_peer_healthy:{}\r\ncluster_peer_suspect:{}\r\ncluster_peer_queue_full_total:{}\r\ncluster_peer_reconnect_total:{}\r\ncluster_snapshot_attempts:{}\r\ncluster_replication_lag_total:{}\r\ncluster_replication_lag_max:{}\r\ncluster_replica_applied_offset:{}\r\n\r\n",
+                if topology.is_complete() { "ok" } else { "fail" },
+                self.cluster.local_id,
+                topology.epoch,
+                topology.nodes.len(),
+                primaries,
+                assigned,
+                log_len,
+                log_bytes,
+                log_byte_limit,
+                next_offset,
+                appended,
+                peer_total,
+                peer_healthy,
+                peer_suspect,
+                queue_full,
+                reconnects,
+                snapshots,
+                lag_total,
+                lag_max,
+                self.replica_applied_offset()
+            )
+        } else {
+            String::new()
         };
 
         format!(
@@ -79,21 +149,27 @@ impl Store {
              used_memory_human:{allocated_human}\r\n\
              used_memory_rss:{rss}\r\n\
              used_memory_rss_human:{rss_human}\r\n\
-             used_memory_peak:{peak_rss}\r\n\
-             used_memory_peak_human:{peak_human}\r\n\
+             used_memory_peak:{peak_allocated}\r\n\
+             used_memory_peak_human:{peak_allocated_human}\r\n\
+             used_memory_rss_peak:{peak_rss}\r\n\
+             used_memory_rss_peak_human:{peak_human}\r\n\
              used_memory_cgroup:{cgroup}\r\n\
              used_memory_cgroup_human:{cgroup_human}\r\n\
              mem_fragmentation_ratio:{frag_ratio:.2}\r\n\
+             mem_allocator:mimalloc\r\n\
              \r\n\
              # Stats\r\n\
-             total_keys:{total_keys}\r\n",
+             total_keys:{total_keys}\r\n\
+             {cluster_info}",
             os = std::env::consts::OS,
             arch = std::env::consts::ARCH,
             version = env!("CARGO_PKG_VERSION"),
             peak_human = format_bytes(peak_rss),
             allocated = allocated,
             allocated_human = format_bytes(allocated),
+            peak_allocated_human = format_bytes(peak_allocated),
             cgroup_human = format_bytes(cgroup),
+            cluster_info = cluster_info,
         )
     }
 

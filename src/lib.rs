@@ -1,3 +1,4 @@
+pub mod cluster;
 pub mod commends;
 pub mod handler;
 pub mod macros;

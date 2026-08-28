@@ -14,7 +14,7 @@ All configuration is via environment variables. Every setting has a production-r
 | `FYRODB_BIND`         | `0.0.0.0`    | Bind address                                   |
 | `FYRODB_WORKERS`      | `0` (auto)   | Worker threads (0 = number of CPU cores)       |
 | `FYRODB_SHARDS`       | `0` (auto)   | Hash map shards (0 = workers × 4, power of 2)  |
-| `FYRODB_MAX_KEYS`     | `1000`       | Maximum live keys (admission limit)            |
+| `FYRODB_MAX_KEYS`     | `0` (unlimited) | Key ceiling; `0` means no limit, matching Redis's `maxmemory 0` |
 | `FYRODB_MAX_CLIENTS`  | `10000`      | Max concurrent connections                     |
 | `FYRODB_AUTH`         | (none)       | Password for AUTH command (empty = no auth)    |
 | `FYRODB_RDB_PATH`     | `fyrodb.rdb` | Snapshot file path                             |
@@ -70,7 +70,13 @@ docker run -d \
 
 ## Sizing Guide
 
-- **`FYRODB_MAX_KEYS`** — admission limit for live keys. Shards start with eight slots and grow lazily, so a high limit no longer reserves the full table at startup.
+- **`FYRODB_MAX_KEYS`** — admission limit for live keys, unlimited by default. When
+  a limit is set it is enforced on every command that can grow the keyspace, and
+  refused commands get Redis's reply:
+  `-OOM command not allowed when used memory > 'maxmemory'.` Reads and commands
+  that only free memory (`DEL`, `UNLINK`, `EXPIRE`, `FLUSHALL`, `LPOP`, `SPOP`, …)
+  stay available so a client can recover. Shards start with eight slots and grow
+  lazily, so a high limit does not reserve the full table at startup.
 - **`FYRODB_SHARDS`** — more shards = less contention between threads. Default (workers × 4) is optimal for most workloads.
 - **`FYRODB_WORKERS`** — defaults to CPU core count. Reduce if you want to leave cores for other processes.
 - **`FYRODB_AUTH`** — set to require `AUTH password` from clients before any commands are accepted.

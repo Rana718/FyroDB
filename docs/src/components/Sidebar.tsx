@@ -24,6 +24,7 @@ const sections = [
          { label: "Installation", slug: "getting-started", icon: FiBox },
          { label: "Docker", slug: "docker", icon: FiBox },
          { label: "Configuration", slug: "configuration", icon: FiSettings },
+         { label: "Cluster", slug: "cluster", icon: FiServer },
       ],
    },
    {
@@ -65,6 +66,7 @@ const sections = [
    {
       title: "Changelog",
       items: [
+         { label: "v0.2.0", slug: "changelog-0-2-0", icon: FiFileText },
          { label: "v0.1.2", slug: "changelog-0-1-2", icon: FiFileText },
          { label: "v0.1.1", slug: "changelog-0-1-1", icon: FiFileText },
       ],

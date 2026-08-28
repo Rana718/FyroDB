@@ -33,6 +33,21 @@ pub struct Conn {
     pub notifier: Arc<WorkerNotifier>,
     pub auth_required: Option<Arc<String>>,
     pub authenticated: bool,
+    pub asking: bool,
+    /// Mirrors whether the poll registration currently includes `WRITABLE`, so
+    /// the common fully-drained case costs no `reregister` syscall.
+    pub writable_registered: bool,
+    /// Index of the worker owning this connection. Selects the write-fence
+    /// counter, which must not be shared between workers.
+    pub worker: usize,
+    /// Cached cluster topology plus its flat slot-to-owner table, revalidated
+    /// against `ClusterState::topology_version` instead of re-locking per
+    /// command.
+    topology_cache: Option<(
+        u64,
+        Arc<crate::cluster::Topology>,
+        Arc<crate::cluster::RoutingTable>,
+    )>,
 }
 
 impl Conn {
@@ -43,6 +58,7 @@ impl Conn {
         token: usize,
         notifier: Arc<WorkerNotifier>,
         auth: Option<Arc<String>>,
+        worker: usize,
     ) -> Self {
         store.client_connected();
         let authenticated = auth.is_none();
@@ -57,7 +73,44 @@ impl Conn {
             notifier,
             auth_required: auth,
             authenticated,
+            asking: false,
+            writable_registered: false,
+            worker,
+            topology_cache: None,
         }
+    }
+
+    /// Bring the cached topology up to date. One `Acquire` load in the steady
+    /// state; only a version change pays for the lock and `Arc` clones.
+    #[inline]
+    fn refresh_topology(&mut self) {
+        let state = self.store.cluster_state_ref();
+        match self.topology_cache.as_ref().map(|(version, ..)| *version) {
+            Some(version) => {
+                if let Some(fresh) = state.topology_if_newer(version) {
+                    self.topology_cache = Some(fresh);
+                }
+            }
+            None => {
+                // `topology_if_newer(0)` always returns, since versions start
+                // at 1 and only ever increase.
+                self.topology_cache = state.topology_if_newer(0);
+            }
+        }
+    }
+
+    #[inline]
+    fn cached_topology(
+        &self,
+    ) -> (
+        &crate::cluster::Topology,
+        &crate::cluster::RoutingTable,
+    ) {
+        let (_, topology, routing) = self
+            .topology_cache
+            .as_ref()
+            .expect("refresh_topology must run first");
+        (topology.as_ref(), routing.as_ref())
     }
 
     pub fn do_read(&mut self) -> bool {
@@ -83,6 +136,10 @@ impl Conn {
                 ParseResult::Error => return false,
             }
         }
+
+        // Safe only here: no dispatch is in flight, so no `parts_raw` pointer
+        // into the read buffer is still being read.
+        self.parser.release_read_buffer();
 
         true
     }
@@ -168,6 +225,93 @@ fn dispatch_raw(conn: &mut Conn, raw: &[(*const u8, usize)]) {
         return;
     }
 
+    // Only pay for the write gate when cluster is actually enabled and the
+    // command is a write.
+    let cluster_is_write = conn.store.cluster.enabled && crate::cluster::is_write_command(cmd);
+
+    // One admission check for every command that can grow the keyspace, so a
+    // configured ceiling applies uniformly instead of only to the handful of
+    // paths that happened to route through a `try_*` store helper.
+    if conn.store.at_key_capacity() && crate::storage::capacity::is_denyoom_command(cmd) {
+        conn.parser
+            .wbuf
+            .extend_from_slice(crate::storage::capacity::OOM_REPLY);
+        return;
+    }
+
+    let _cluster_write_guard = if cluster_is_write {
+        // `conn.store` is an `Arc` this connection owns for its whole life and
+        // never reassigns, so the ticket's borrow outlives every `&mut conn` use
+        // below. The borrow checker cannot see that through the `Arc`.
+        let store_ptr: *const Store = &*conn.store;
+        Some(unsafe { &*store_ptr }.begin_write(conn.worker))
+    } else {
+        None
+    };
+
+    if conn.store.cluster.enabled {
+        if conn.store.replica_installing() {
+            conn.parser
+                .wbuf
+                .extend_from_slice(b"-CLUSTERDOWN Replica snapshot is installing\r\n");
+            return;
+        }
+        if conn.store.cluster.is_replica && cluster_is_write {
+            conn.parser
+                .wbuf
+                .extend_from_slice(b"-READONLY You can't write against a read only replica.\r\n");
+            return;
+        }
+
+        conn.refresh_topology();
+        let asking = std::mem::take(&mut conn.asking);
+
+        // Only commands that need several keys checked for cross-slot
+        // violations pay for materializing an argument slice array; keyless
+        // commands and the single-key majority skip it entirely.
+        let decision = match crate::cluster::routing_scope(cmd) {
+            crate::cluster::RoutingScope::Keyless => crate::cluster::RouteDecision::Local,
+            crate::cluster::RoutingScope::FirstKey => match raw.get(1) {
+                Some(&part) => {
+                    let (topology, routing) = conn.cached_topology();
+                    crate::cluster::route_single_key(
+                        &conn.store.cluster,
+                        conn.store.cluster_state_ref(),
+                        topology,
+                        routing,
+                        unsafe { part_bytes(part) },
+                        asking,
+                    )
+                }
+                None => crate::cluster::RouteDecision::Local,
+            },
+            crate::cluster::RoutingScope::ManyKeys => {
+                const STACK_ARGS: usize = 32;
+                let mut stack_args = [&[][..]; STACK_ARGS];
+                if raw.len().saturating_sub(1) > STACK_ARGS {
+                    let args: Vec<&[u8]> = raw[1..]
+                        .iter()
+                        .map(|&part| unsafe { part_bytes(part) })
+                        .collect();
+                    route_cached(conn, cmd, &args, asking)
+                } else {
+                    for (index, part) in raw[1..].iter().enumerate() {
+                        stack_args[index] = unsafe { part_bytes(*part) };
+                    }
+                    let args = &stack_args[..raw.len() - 1];
+                    route_cached(conn, cmd, args, asking)
+                }
+            }
+        };
+        match decision {
+            crate::cluster::RouteDecision::Local => {}
+            other => {
+                write_route_decision(&mut conn.parser.wbuf, other);
+                return;
+            }
+        }
+    }
+
     if cmd_len == 3 {
         if cmd.eq_ignore_ascii_case(b"SET") && raw.len() >= 3 {
             let out = &mut conn.parser.wbuf;
@@ -179,6 +323,9 @@ fn dispatch_raw(conn: &mut Conn, raw: &[(*const u8, usize)]) {
             };
             if raw.len() == 3 {
                 conn.store.set_string(key, value, 0);
+                if conn.store.has_replication() {
+                    conn.store.record_current_value(key);
+                }
                 conn.parser.wbuf.extend_from_slice(b"+OK\r\n");
                 return;
             }
@@ -210,7 +357,12 @@ fn dispatch_raw(conn: &mut Conn, raw: &[(*const u8, usize)]) {
                 return;
             };
             match conn.store.incr(key) {
-                Ok(n) => crate::utils::resp::write_integer(&mut conn.parser.wbuf, n),
+                Ok(n) => {
+                    if conn.store.has_replication() {
+                        conn.store.record_current_value(key);
+                    }
+                    crate::utils::resp::write_integer(&mut conn.parser.wbuf, n)
+                }
                 Err(e) => crate::utils::resp::write_err(&mut conn.parser.wbuf, e),
             }
             return;
@@ -219,11 +371,29 @@ fn dispatch_raw(conn: &mut Conn, raw: &[(*const u8, usize)]) {
             let Some(key) = part_str(out, raw[1]) else {
                 return;
             };
-            match conn.store.rpop(key, 1) {
-                Ok(items) if !items.is_empty() => {
-                    crate::utils::resp::write_bulk(&mut conn.parser.wbuf, &items[0]);
+            match conn.store.pop_one_to_buf(key, true, &mut conn.parser.wbuf) {
+                Ok(true) => {
+                    if conn.store.has_replication() {
+                        conn.store.record_current_value(key);
+                    }
                 }
-                _ => conn.parser.wbuf.extend_from_slice(b"$-1\r\n"),
+                Ok(false) => conn.parser.wbuf.extend_from_slice(b"$-1\r\n"),
+                Err(_) => crate::utils::resp::write_wrong_type(&mut conn.parser.wbuf),
+            }
+            return;
+        } else if cmd.eq_ignore_ascii_case(b"LPOP") && raw.len() == 2 {
+            let out = &mut conn.parser.wbuf;
+            let Some(key) = part_str(out, raw[1]) else {
+                return;
+            };
+            match conn.store.pop_one_to_buf(key, false, &mut conn.parser.wbuf) {
+                Ok(true) => {
+                    if conn.store.has_replication() {
+                        conn.store.record_current_value(key);
+                    }
+                }
+                Ok(false) => conn.parser.wbuf.extend_from_slice(b"$-1\r\n"),
+                Err(_) => crate::utils::resp::write_wrong_type(&mut conn.parser.wbuf),
             }
             return;
         } else if cmd.eq_ignore_ascii_case(b"SADD") && raw.len() >= 3 {
@@ -236,7 +406,12 @@ fn dispatch_raw(conn: &mut Conn, raw: &[(*const u8, usize)]) {
                     return;
                 };
                 match conn.store.sadd(key, &[member]) {
-                    Ok(n) => crate::utils::resp::write_integer(&mut conn.parser.wbuf, n as i64),
+                    Ok(n) => {
+                        if conn.store.has_replication() {
+                            conn.store.record_current_value(key);
+                        }
+                        crate::utils::resp::write_integer(&mut conn.parser.wbuf, n as i64)
+                    }
                     Err(_) => crate::utils::resp::write_wrong_type(&mut conn.parser.wbuf),
                 }
                 return;
@@ -251,7 +426,12 @@ fn dispatch_raw(conn: &mut Conn, raw: &[(*const u8, usize)]) {
             return;
         };
         match conn.store.lpush(key, &[value]) {
-            Ok(n) => crate::utils::resp::write_integer(&mut conn.parser.wbuf, n as i64),
+            Ok(n) => {
+                if conn.store.has_replication() {
+                    conn.store.record_current_value(key);
+                }
+                crate::utils::resp::write_integer(&mut conn.parser.wbuf, n as i64)
+            }
             Err(_) => crate::utils::resp::write_wrong_type(&mut conn.parser.wbuf),
         }
         return;
@@ -276,6 +456,64 @@ fn dispatch_raw(conn: &mut Conn, raw: &[(*const u8, usize)]) {
             parts.push(s);
         }
         dispatch(conn, &parts);
+    }
+}
+
+/// Route one command against this connection's cached topology snapshot.
+#[inline(always)]
+fn route_cached(
+    conn: &Conn,
+    cmd: &[u8],
+    args: &[&[u8]],
+    asking: bool,
+) -> crate::cluster::RouteDecision<'static> {
+    let (topology, routing) = conn.cached_topology();
+    crate::cluster::route_command_with_snapshot(
+        &conn.store.cluster,
+        conn.store.cluster_state_ref(),
+        topology,
+        routing,
+        cmd,
+        args,
+        asking,
+    )
+}
+
+/// Write a non-Local routing decision into the output buffer.
+#[cold]
+#[inline(never)]
+fn write_route_decision(out: &mut Vec<u8>, decision: crate::cluster::RouteDecision<'_>) {
+    match decision {
+        crate::cluster::RouteDecision::Moved { slot, address } => {
+            out.extend_from_slice(b"-MOVED ");
+            crate::utils::resp::write_usize(out, slot.value() as usize);
+            out.push(b' ');
+            out.extend_from_slice(address.as_bytes());
+            out.extend_from_slice(b"\r\n");
+        }
+        crate::cluster::RouteDecision::MovedOwned { slot, address } => {
+            out.extend_from_slice(b"-MOVED ");
+            crate::utils::resp::write_usize(out, slot.value() as usize);
+            out.push(b' ');
+            out.extend_from_slice(address.as_bytes());
+            out.extend_from_slice(b"\r\n");
+        }
+        crate::cluster::RouteDecision::Ask { slot, address } => {
+            out.extend_from_slice(b"-ASK ");
+            crate::utils::resp::write_usize(out, slot.value() as usize);
+            out.push(b' ');
+            out.extend_from_slice(address.as_bytes());
+            out.extend_from_slice(b"\r\n");
+        }
+        crate::cluster::RouteDecision::CrossSlot => {
+            out.extend_from_slice(
+                b"-CROSSSLOT Keys in request don't hash to the same slot\r\n",
+            );
+        }
+        crate::cluster::RouteDecision::Unassigned(_) => {
+            out.extend_from_slice(b"-CLUSTERDOWN Hash slot not served\r\n");
+        }
+        crate::cluster::RouteDecision::Local => {}
     }
 }
 

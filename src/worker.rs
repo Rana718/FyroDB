@@ -33,6 +33,7 @@ pub fn run_worker(
     port: u16,
     bind: String,
     auth: Option<Arc<String>>,
+    worker_index: usize,
 ) {
     let addr: SocketAddr = format!("{}:{}", bind, port).parse().unwrap();
     let mut listener = make_listener(addr);
@@ -66,17 +67,10 @@ pub fn run_worker(
             return;
         }
 
-        let has_pending = sub_dirty.iter().any(|&id| {
-            conns
-                .get(id)
-                .and_then(|s| s.as_ref())
-                .is_some_and(|c| c.has_pending_write())
-        });
-
-        let timeout = if has_pending {
-            Some(std::time::Duration::from_micros(50))
-        } else {
+        let timeout = if sub_dirty.is_empty() {
             None
+        } else {
+            Some(std::time::Duration::from_micros(50))
         };
 
         match poll.poll(&mut events, timeout) {
@@ -115,6 +109,7 @@ pub fn run_worker(
                                 id,
                                 Arc::clone(&notifier),
                                 auth.clone(),
+                                worker_index,
                             ));
                         }
                         Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
@@ -130,10 +125,18 @@ pub fn run_worker(
 
                 token => {
                     let id = token.0;
-                    let close = match conns.get_mut(id).and_then(|s| s.as_mut()) {
-                        Some(conn) => !conn.do_read(),
-                        None => false,
-                    };
+                    let mut close = false;
+                    if let Some(conn) = conns.get_mut(id).and_then(|s| s.as_mut()) {
+                        if event.is_readable() && !conn.do_read() {
+                            close = true;
+                        }
+                        // This arm retries writes that previously hit WouldBlock;
+                        // without it a client that stops reading mid-response
+                        // never gets the rest.
+                        if !close && event.is_writable() && !conn.do_write() {
+                            close = true;
+                        }
+                    }
                     if close {
                         close_conn(&mut conns, &mut poll, &mut free, id);
                     } else {
@@ -144,10 +147,14 @@ pub fn run_worker(
         }
 
         for id in dirty.drain(..) {
-            if let Some(Some(conn)) = conns.get_mut(id)
-                && !conn.do_write()
-            {
+            let close = match conns.get_mut(id).and_then(|s| s.as_mut()) {
+                Some(conn) => !conn.do_write(),
+                None => continue,
+            };
+            if close {
                 close_conn(&mut conns, &mut poll, &mut free, id);
+            } else {
+                sync_write_interest(&mut conns, &mut poll, id);
             }
         }
 
@@ -166,9 +173,11 @@ pub fn run_worker(
                     continue;
                 }
                 if !conn.has_pending_write() {
+                    sync_write_interest(&mut conns, &mut poll, id);
                     sub_dirty.swap_remove(i);
                     continue;
                 }
+                sync_write_interest(&mut conns, &mut poll, id);
                 i += 1;
             } else {
                 sub_dirty.swap_remove(i);
@@ -218,5 +227,33 @@ fn close_conn(conns: &mut [Option<Conn>], poll: &mut Poll, free: &mut Vec<usize>
     {
         let _ = poll.registry().deregister(&mut conn.stream);
         free.push(id);
+    }
+}
+
+/// Keep the poll registration in step with whether a reply is still buffered.
+///
+/// Connections are registered `READABLE` at accept time. If a write stops
+/// short, the remainder can only be flushed once the socket reports writable,
+/// so `WRITABLE` has to be added — and removed again once drained, otherwise
+/// every idle connection spins the event loop.
+fn sync_write_interest(conns: &mut [Option<Conn>], poll: &mut Poll, id: usize) {
+    let Some(Some(conn)) = conns.get_mut(id) else {
+        return;
+    };
+    let wants_writable = conn.has_pending_write();
+    if wants_writable == conn.writable_registered {
+        return;
+    }
+    let interest = if wants_writable {
+        Interest::READABLE | Interest::WRITABLE
+    } else {
+        Interest::READABLE
+    };
+    if poll
+        .registry()
+        .reregister(&mut conn.stream, Token(id), interest)
+        .is_ok()
+    {
+        conn.writable_registered = wants_writable;
     }
 }

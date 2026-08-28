@@ -1,0 +1,132 @@
+x-redis-common: &redis-common
+  image: redis:7.4-alpine
+  network_mode: host
+  restart: "no"
+  ulimits:
+    nofile:
+      soft: 65536
+      hard: 65536
+
+x-redis-args: &redis-args >
+  redis-server
+  --cluster-enabled yes
+  --cluster-config-file nodes.conf
+  --cluster-node-timeout 5000
+  --save ""
+  --appendonly no
+  --hz 10
+  --dynamic-hz yes
+  --tcp-backlog 4096
+  --tcp-keepalive 0
+  --timeout 0
+  --maxmemory-policy noeviction
+  --lazyfree-lazy-eviction yes
+  --lazyfree-lazy-expire yes
+  --lazyfree-lazy-server-del yes
+  --no-appendfsync-on-rewrite yes
+  --activerehashing yes
+  --activedefrag no
+  --protected-mode no
+  --loglevel warning
+
+services:
+  redis-1:
+    <<: *redis-common
+    container_name: redis12-1
+    cpuset: "0"
+    command: [ "sh", "-c", "exec $$0 --port 7001", *redis-args ]
+  redis-2:
+    <<: *redis-common
+    container_name: redis12-2
+    cpuset: "1"
+    command: [ "sh", "-c", "exec $$0 --port 7002", *redis-args ]
+  redis-3:
+    <<: *redis-common
+    container_name: redis12-3
+    cpuset: "2"
+    command: [ "sh", "-c", "exec $$0 --port 7003", *redis-args ]
+  redis-4:
+    <<: *redis-common
+    container_name: redis12-4
+    cpuset: "3"
+    command: [ "sh", "-c", "exec $$0 --port 7004", *redis-args ]
+  redis-5:
+    <<: *redis-common
+    container_name: redis12-5
+    cpuset: "4"
+    command: [ "sh", "-c", "exec $$0 --port 7005", *redis-args ]
+  redis-6:
+    <<: *redis-common
+    container_name: redis12-6
+    cpuset: "5"
+    command: [ "sh", "-c", "exec $$0 --port 7006", *redis-args ]
+  redis-7:
+    <<: *redis-common
+    container_name: redis12-7
+    cpuset: "6"
+    command: [ "sh", "-c", "exec $$0 --port 7007", *redis-args ]
+  redis-8:
+    <<: *redis-common
+    container_name: redis12-8
+    cpuset: "7"
+    command: [ "sh", "-c", "exec $$0 --port 7008", *redis-args ]
+  redis-9:
+    <<: *redis-common
+    container_name: redis12-9
+    cpuset: "8"
+    command: [ "sh", "-c", "exec $$0 --port 7009", *redis-args ]
+  redis-10:
+    <<: *redis-common
+    container_name: redis12-10
+    cpuset: "9"
+    command: [ "sh", "-c", "exec $$0 --port 7010", *redis-args ]
+  redis-11:
+    <<: *redis-common
+    container_name: redis12-11
+    cpuset: "10"
+    command: [ "sh", "-c", "exec $$0 --port 7011", *redis-args ]
+  redis-12:
+    <<: *redis-common
+    container_name: redis12-12
+    cpuset: "11"
+    command: [ "sh", "-c", "exec $$0 --port 7012", *redis-args ]
+
+  cluster-init:
+    image: redis:7.4-alpine
+    container_name: redis12-init
+    network_mode: host
+    restart: "no"
+    depends_on:
+      - redis-1
+      - redis-12
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        for p in $$(seq 7001 7012); do
+          until redis-cli -h 127.0.0.1 -p $$p ping 2>/dev/null | grep -q PONG; do sleep 0.2; done
+        done
+
+        i=0
+        for r in 0:1365 1366:2730 2731:4095 4096:5461 5462:6826 6827:8191 \
+                 8192:9557 9558:10922 10923:12287 12288:13653 13654:15018 15019:16383; do
+          redis-cli -h 127.0.0.1 -p $$((7001 + i)) cluster addslotsrange $${r%%:*} $${r##*:}
+          i=$$((i + 1))
+        done
+
+        for p in $$(seq 7002 7012); do
+          redis-cli -h 127.0.0.1 -p 7001 cluster meet 127.0.0.1 $$p
+        done
+
+        for _ in $$(seq 1 200); do
+          ok=1
+          for p in $$(seq 7001 7012); do
+            redis-cli -h 127.0.0.1 -p $$p cluster info | grep -q '^cluster_state:ok' || ok=0
+          done
+          [ "$$ok" = 1 ] && break
+          sleep 0.3
+        done
+        redis-cli -h 127.0.0.1 -p 7001 cluster info |
+          grep -E 'cluster_state|cluster_slots_assigned|cluster_known_nodes'
+        echo "cluster ready"

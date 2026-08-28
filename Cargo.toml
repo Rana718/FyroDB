@@ -1,6 +1,6 @@
 [package]
 name = "fyro_db"
-version = "0.1.2"
+version = "0.2.0"
 edition = "2024"
 license = "Apache-2.0"
 
@@ -23,4 +23,5 @@ mio = { version = "1.2.2", features = ["net", "os-poll"] }
 memchr = "2.8.3"
 libc = "0.2.186"
 crossbeam-queue = "0.3.13"
+crossbeam-utils = "0.8.22"
 foldhash = "0.2.0"

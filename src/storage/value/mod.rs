@@ -1,12 +1,12 @@
-mod small_str;
 mod collections;
-mod zset_data;
 mod json_value;
+mod small_str;
+mod zset_data;
 
-pub use small_str::SmallStr;
-pub use collections::{HashInner, ListInner, SetInner, HashIter, SetIter, SetMemberRef};
-pub use zset_data::{ZSetData, ZEntry};
+pub use collections::{HashInner, HashIter, ListInner, SetInner, SetIter, SetMemberRef};
 pub use json_value::JsonValue;
+pub use small_str::SmallStr;
+pub use zset_data::{ZEntry, ZSetData};
 
 use foldhash::{HashMap, HashSet};
 use std::collections::VecDeque;

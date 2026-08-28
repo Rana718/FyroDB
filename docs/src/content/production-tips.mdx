@@ -6,7 +6,7 @@ order: 13
 
 ## Pre-warming the Hash Table
 
-FyroDB starts with minimal shard tables (8 slots per shard) to keep idle memory at ~4 MB. When you first load 1M+ keys, the tables grow dynamically through several doublings (8→16→32→...→32768). Each growth pauses that shard briefly.
+FyroDB starts with minimal shard tables (8 slots per shard) to keep idle memory at ~5 MB. When you first load 1M+ keys, the tables grow dynamically through several doublings (8→16→32→...→32768). Each growth pauses that shard briefly.
 
 To avoid growth pauses during peak traffic, pre-warm the server after startup:
 
@@ -16,7 +16,7 @@ redis-cli -p 8000 DEBUG POPULATE 100000
 redis-cli -p 8000 FLUSHALL
 ```
 
-Or insert your expected key count at deployment time before routing traffic. After pre-warming, Pipeline-64 SET throughput improves from ~8M to ~17M ops/sec.
+Or insert your expected key count at deployment time before routing traffic. After pre-warming, Pipeline-64 SET throughput improves from ~9M to ~17M ops/sec.
 
 ## Recommended Configuration
 
@@ -77,7 +77,22 @@ FyroDB uses mimalloc which eagerly decommits unused pages. After bulk deletes or
 - FLUSHALL triggers immediate collection + purge
 - No manual MEMORY PURGE needed (unlike Redis with jemalloc)
 
-If you store 1M keys and then delete them, RSS will return to ~4 MB baseline within 10-20 seconds automatically.
+If you store 1M keys and then delete them, RSS returns close to the ~5 MB
+baseline within 10-20 seconds automatically.
+
+### What does not come back
+
+A mixed workload leaves some memory resident that a pure string workload does
+not. After the full benchmark suite plus `FLUSHALL`, a node reports
+`used_memory: 0.58 MB` against ~50 MB resident — almost nothing is live, and the
+rest is allocator pages held for reuse. Deleting only *part* of a keyspace is
+worse: half-emptied pages cannot be returned at all, and `mem_fragmentation_ratio`
+in `INFO` will show it. Both figures are now real rather than derived from RSS, so
+the ratio is worth watching.
+
+Redis Cluster behaves the same way in this test — 120 MB resident before and
+after a flush — so this is allocator behaviour rather than something specific to
+FyroDB.
 
 ## Sorted Set Performance
 

@@ -1,8 +1,8 @@
 use std::sync::atomic::Ordering;
 
+use super::CustomMap;
 use super::ebr;
 use super::shard::*;
-use super::CustomMap;
 
 impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
     pub fn for_each(&self, mut f: impl FnMut(&str, &V)) {
@@ -24,25 +24,48 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
         }
     }
 
-    /// Rebuild live values in place under their entry locks. This is the
-    /// ownership-safe equivalent of Redis active defrag for Rust values: the
-    /// entry address never moves, so pinned lock-free readers remain valid,
-    /// while fragmented child allocations are replaced and reclaimed later by
-    /// EBR.
-    pub fn defragment_values(&self, budget: usize, mut rebuild: impl FnMut(&mut V)) -> usize {
-        let keys = self.keys();
-        let mut rebuilt = 0;
-        for key in keys.into_iter().take(budget) {
-            if self
-                .update_with(&key, |value| {
-                    rebuild(value);
-                })
-                .is_some()
-            {
+    /// Rebuild fragmented child allocations in place under their entry locks.
+    ///
+    /// Entry addresses never move, so lock-free readers remain valid.
+    /// Reclaimed memory is deferred to EBR. Walks one shard from `start_slot`,
+    /// stopping after `budget` rebuilds. Returns `(next_slot, capacity,
+    /// rebuilt)`; `next_slot == capacity` means the shard is done.
+    pub fn defragment_shard_range(
+        &self,
+        shard_idx: usize,
+        start_slot: usize,
+        budget: usize,
+        mut rebuild: impl FnMut(&mut V),
+    ) -> Option<(usize, usize, usize)> {
+        let shard = self.shards.get(shard_idx)?;
+        let _guard = ebr::pin();
+        let t = shard.table();
+        let capacity = t.capacity();
+        let mut slot = start_slot.min(capacity);
+        let mut rebuilt = 0usize;
+
+        while slot < capacity && rebuilt < budget {
+            let p = unsafe { t.slots().get_unchecked(slot) }.load(Ordering::Acquire);
+            slot += 1;
+            if p.is_null() {
+                continue;
+            }
+            let entry = unsafe { &*p };
+            if !state_occupied(&entry.state, Ordering::Acquire) {
+                continue;
+            }
+            state_lock(&entry.state);
+            if state_occupied(&entry.state, Ordering::Relaxed) {
+                write_begin(&entry.state);
+                rebuild(unsafe { (*entry.value.get()).assume_init_mut() });
+                write_end(&entry.state, true);
                 rebuilt += 1;
+            } else {
+                state_unlock(&entry.state);
             }
         }
-        rebuilt
+
+        Some((slot, capacity, rebuilt))
     }
 
     pub fn keys(&self) -> Vec<String> {
@@ -69,13 +92,13 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
                 }) {
                     state_lock(&entry.state);
                     if state_occupied(&entry.state, Ordering::Relaxed) {
-                        state_seq_add(&entry.state, Ordering::Release);
+                        write_begin(&entry.state);
                         unsafe { (*entry.value.get()).assume_init_drop() };
-                        state_set_occupied(&entry.state, false, Ordering::Release);
-                        state_seq_add(&entry.state, Ordering::Release);
+                        write_end(&entry.state, false);
                         self.key_count.fetch_sub(1, Ordering::Relaxed);
+                    } else {
+                        state_unlock(&entry.state);
                     }
-                    state_unlock(&entry.state);
                 }
             }
         }
@@ -116,13 +139,13 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
             }
             state_lock(&entry.state);
             if state_occupied(&entry.state, Ordering::Relaxed) {
-                state_seq_add(&entry.state, Ordering::Release);
+                write_begin(&entry.state);
                 unsafe { (*entry.value.get()).assume_init_drop() };
-                state_set_occupied(&entry.state, false, Ordering::Release);
-                state_seq_add(&entry.state, Ordering::Release);
+                write_end(&entry.state, false);
                 self.key_count.fetch_sub(1, Ordering::Relaxed);
+            } else {
+                state_unlock(&entry.state);
             }
-            state_unlock(&entry.state);
         }
         Some((end, capacity))
     }
@@ -174,7 +197,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
             loop {
                 let new_slot = unsafe { new_table.slots().get_unchecked(i) };
                 if new_slot.load(Ordering::Relaxed).is_null() {
-                    new_slot.store(p, Ordering::Relaxed);
+                    new_slot.store(p, e.hash, Ordering::Relaxed);
                     break;
                 }
                 i = (i + 1) & new_table.mask;
@@ -282,5 +305,49 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
         Some(f(entry.key.as_str(), unsafe {
             (*entry.value.get()).assume_init_ref()
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::CustomMap;
+
+    /// Regression: cursor defrag must visit each slot at most once per pass
+    /// and honour the budget exactly.
+    #[test]
+    fn cursor_defrag_covers_every_value_within_budget() {
+        let map = CustomMap::with_capacity(1, 512);
+        for i in 0..200 {
+            map.insert(format!("key-{i}"), vec![i; 4]);
+        }
+
+        let mut cursor = 0usize;
+        let mut total_rebuilt = 0usize;
+        let mut passes = 0usize;
+        loop {
+            let (next, capacity, rebuilt) = map
+                .defragment_shard_range(0, cursor, 16, |value| value.shrink_to_fit())
+                .unwrap();
+            total_rebuilt += rebuilt;
+            assert!(rebuilt <= 16, "budget exceeded: {rebuilt}");
+            passes += 1;
+            assert!(passes < 1_000, "cursor failed to advance");
+            if next >= capacity {
+                break;
+            }
+            assert!(next > cursor);
+            cursor = next;
+        }
+
+        assert_eq!(total_rebuilt, 200);
+        for i in 0..200 {
+            assert_eq!(map.get(&format!("key-{i}")), Some(vec![i; 4]));
+        }
+    }
+
+    #[test]
+    fn cursor_defrag_reports_no_progress_for_a_missing_shard() {
+        let map = CustomMap::<u32>::with_capacity(1, 8);
+        assert!(map.defragment_shard_range(9, 0, 4, |_| {}).is_none());
     }
 }

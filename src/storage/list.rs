@@ -97,7 +97,7 @@ impl Store {
                             out.push(v.into_string());
                         }
                     }
-                    if l.is_empty() {
+                    if l.is_empty() && l.capacity() > Self::LIST_KEEP_CAPACITY {
                         l.shrink_to_fit();
                     }
                     Ok(out)
@@ -126,7 +126,7 @@ impl Store {
                             out.push(v.into_string());
                         }
                     }
-                    if l.is_empty() {
+                    if l.is_empty() && l.capacity() > Self::LIST_KEEP_CAPACITY {
                         l.shrink_to_fit();
                     }
                     Ok(out)
@@ -139,6 +139,53 @@ impl Store {
             Some(r) => r,
             None => Ok(vec![]),
         }
+    }
+
+    /// Capacity below which an emptied list keeps its buffer.
+    ///
+    /// A queue workload drains to empty constantly, and calling
+    /// `shrink_to_fit` every time turns each drain into a free plus a
+    /// reallocation inside the entry lock. Only oversized buffers are worth
+    /// releasing.
+    const LIST_KEEP_CAPACITY: usize = 64;
+
+    /// Pop one element and write it straight into the reply buffer.
+    ///
+    /// The `Vec<String>`-returning form allocates a vector *and* a string per
+    /// popped element, both inside the entry lock, then the caller copies the
+    /// bytes out and drops them. For the single-element pops that dominate queue
+    /// traffic none of that is needed.
+    ///
+    /// `Ok(true)` means an element was written, `Ok(false)` that the list was
+    /// missing, expired or empty.
+    pub fn pop_one_to_buf(
+        &self,
+        key: &str,
+        from_back: bool,
+        out: &mut Vec<u8>,
+    ) -> Result<bool, &'static str> {
+        let result = self.data.update_with(key, |val| {
+            if val.is_expired() {
+                return Ok(false);
+            }
+            let Some(list) = val.value.as_list_mut() else {
+                return Err("WRONGTYPE");
+            };
+            let popped = if from_back {
+                list.pop_back()
+            } else {
+                list.pop_front()
+            };
+            let Some(value) = popped else {
+                return Ok(false);
+            };
+            crate::utils::resp::write_bulk(out, value.as_str());
+            if list.is_empty() && list.capacity() > Self::LIST_KEEP_CAPACITY {
+                list.shrink_to_fit();
+            }
+            Ok(true)
+        });
+        result.unwrap_or(Ok(false))
     }
 
     pub fn llen(&self, key: &str) -> Result<usize, &'static str> {

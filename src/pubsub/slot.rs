@@ -1,7 +1,7 @@
 use crossbeam_queue::SegQueue;
 use mio::Waker;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub struct WorkerNotifier {
     pub pending: SegQueue<usize>,
@@ -51,7 +51,6 @@ pub struct SubSlot {
     pub queue: SegQueue<Arc<[u8]>>,
     notify_pending: AtomicBool,
     notifier: Arc<WorkerNotifier>,
-    len: AtomicUsize,
 }
 
 impl SubSlot {
@@ -61,13 +60,14 @@ impl SubSlot {
             queue: SegQueue::new(),
             notify_pending: AtomicBool::new(false),
             notifier,
-            len: AtomicUsize::new(0),
         }
     }
 
+    /// Enqueue one frame for this subscriber.
+    ///
+    /// The queue tracks its own length, so no separate counter is maintained.
     #[inline]
     pub fn push(&self, msg: Arc<[u8]>) {
-        self.len.fetch_add(1, Ordering::Relaxed);
         self.queue.push(msg);
         if !self.notify_pending.swap(true, Ordering::AcqRel) {
             self.notifier.notify(self.token);
@@ -81,16 +81,11 @@ impl SubSlot {
 
     pub fn drain_into_limit(&self, out: &mut Vec<u8>, max_bytes: usize) {
         self.notify_pending.store(false, Ordering::Release);
-        let mut drained = 0usize;
         while let Some(msg) = self.queue.pop() {
             out.extend_from_slice(&msg);
-            drained += 1;
             if out.len() >= max_bytes {
                 break;
             }
-        }
-        if drained != 0 {
-            self.len.fetch_sub(drained, Ordering::Relaxed);
         }
         if !self.queue.is_empty() && !self.notify_pending.swap(true, Ordering::AcqRel) {
             self.notifier.notify(self.token);
@@ -102,8 +97,12 @@ impl SubSlot {
         !self.queue.is_empty()
     }
 
+    /// Backlog size, used to shed slow subscribers.
+    ///
+    /// Derived from the queue's internal head/tail indices — no maintained
+    /// counter needed.
     #[inline]
     pub fn queue_len(&self) -> usize {
-        self.len.load(Ordering::Relaxed)
+        self.queue.len()
     }
 }

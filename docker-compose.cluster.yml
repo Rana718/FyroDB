@@ -1,0 +1,91 @@
+services:
+  cluster-config:
+    image: busybox
+    restart: "no"
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        cat > /config/fyrodb-nodes.conf <<'EOF'
+        node-1 127.0.0.1:8000@node-1:18000 master - 1 0 0 connected 0-5461
+        node-2 127.0.0.1:8001@node-2:18000 master - 1 0 0 connected 5462-10922
+        node-3 127.0.0.1:8002@node-3:18000 master - 1 0 0 connected 10923-16383
+        EOF
+        cp /config/fyrodb-nodes.conf /config/fyrodb-nodes-1.conf
+        cp /config/fyrodb-nodes.conf /config/fyrodb-nodes-2.conf
+        cp /config/fyrodb-nodes.conf /config/fyrodb-nodes-3.conf
+        echo "nodes.conf written"
+    volumes:
+      - cluster-config:/config
+
+  node-1:
+    build: .
+    depends_on:
+      cluster-config:
+        condition: service_completed_successfully
+    environment:
+      FYRODB_CLUSTER_ENABLED: "true"
+      FYRODB_BIND: "0.0.0.0"
+      FYRODB_PORT: "8000"
+      FYRODB_CLUSTER_PORT: "18000"
+      FYRODB_ADVERTISE_ADDR: "node-1"
+      FYRODB_NODE_ID: "node-1"
+      FYRODB_CLUSTER_CONFIG_FILE: "/config/fyrodb-nodes-1.conf"
+      FYRODB_RDB_PATH: "/data/fyrodb.rdb"
+      FYRODB_WORKERS: "4"
+    ports:
+      - "8000:8000"
+      - "18000:18000"
+    volumes:
+      - node-1-data:/data
+      - cluster-config:/config
+
+  node-2:
+    build: .
+    depends_on:
+      cluster-config:
+        condition: service_completed_successfully
+    environment:
+      FYRODB_CLUSTER_ENABLED: "true"
+      FYRODB_BIND: "0.0.0.0"
+      FYRODB_PORT: "8000"
+      FYRODB_CLUSTER_PORT: "18000"
+      FYRODB_ADVERTISE_ADDR: "node-2"
+      FYRODB_NODE_ID: "node-2"
+      FYRODB_CLUSTER_CONFIG_FILE: "/config/fyrodb-nodes-2.conf"
+      FYRODB_RDB_PATH: "/data/fyrodb.rdb"
+      FYRODB_WORKERS: "4"
+    ports:
+      - "8001:8000"
+      - "18001:18000"
+    volumes:
+      - node-2-data:/data
+      - cluster-config:/config
+
+  node-3:
+    build: .
+    depends_on:
+      cluster-config:
+        condition: service_completed_successfully
+    environment:
+      FYRODB_CLUSTER_ENABLED: "true"
+      FYRODB_BIND: "0.0.0.0"
+      FYRODB_PORT: "8000"
+      FYRODB_CLUSTER_PORT: "18000"
+      FYRODB_ADVERTISE_ADDR: "node-3"
+      FYRODB_NODE_ID: "node-3"
+      FYRODB_CLUSTER_CONFIG_FILE: "/config/fyrodb-nodes-3.conf"
+      FYRODB_RDB_PATH: "/data/fyrodb.rdb"
+      FYRODB_WORKERS: "4"
+    ports:
+      - "8002:8000"
+      - "18002:18000"
+    volumes:
+      - node-3-data:/data
+      - cluster-config:/config
+
+volumes:
+  node-1-data:
+  node-2-data:
+  node-3-data:
+  cluster-config:
