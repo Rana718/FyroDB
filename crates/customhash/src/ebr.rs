@@ -60,11 +60,9 @@ impl Local {
 
     #[cold]
     fn initialize(&mut self) {
-        // Participant nodes are never unlinked — `collect` walks the list
-        // lock-free, so mutating `next` is not safe. Instead a thread that
-        // exits marks its slot RETIRED and a later thread claims it, which
-        // bounds the list at peak concurrent thread count rather than letting
-        // it grow with every thread ever spawned.
+        // Participant nodes are never unlinked because `collect` walks the
+        // list lock-free. Exited threads mark their slot RETIRED so the next
+        // thread can claim it, bounding list length to peak concurrent threads.
         let mut candidate = PARTICIPANTS.load(Ordering::Acquire);
         while !candidate.is_null() {
             let node = unsafe { &*candidate };
@@ -248,10 +246,9 @@ impl Drop for Local {
 pub fn force_collect() {
     LOCAL.with(|c| {
         let l = unsafe { &mut *c.get() };
-        // Register even if this thread has never pinned or retired: collection
-        // also adopts garbage orphaned by exited threads, and skipping that
-        // would leave it stranded whenever the caller is a maintenance thread
-        // that only ever reads.
+        // Always register: collection also adopts garbage from exited threads,
+        // which would otherwise be stranded if the caller is a maintenance
+        // thread that only ever reads.
         l.ensure_init();
         l.collect();
         l.collect();
@@ -343,11 +340,10 @@ mod tests {
         .unwrap();
     }
 
-    /// Retired pointers used to die with the thread that produced them: `Local`
-    /// had no destructor, so its garbage vector was dropped without ever
-    /// invoking the stored `drop_fn`. Two producer threads also interleave
-    /// epochs, which is what forces the merged-garbage sort to be correct —
-    /// `collect` trusts `partition_point` over an epoch-sorted vector.
+    /// Retired pointers from exited threads are adopted and reclaimed by the
+    /// next call to `collect`. Two producer threads interleave epochs, which
+    /// requires the merged-garbage sort to be correct — `collect` relies on
+    /// `partition_point` over an epoch-sorted vector.
     #[test]
     fn garbage_from_exited_threads_is_still_reclaimed() {
         let _serialize = SERIALIZE.lock().unwrap_or_else(|e| e.into_inner());

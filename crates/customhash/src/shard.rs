@@ -98,11 +98,37 @@ pub(crate) fn state_lock(state: &AtomicU64) {
     }
 }
 
+/// Spin iterations before a waiter stops burning its timeslice and yields.
+///
+/// Workers each serve many connections, so a worker spinning on one hot entry
+/// is a worker not serving anything else. Backing off and then yielding turns
+/// contention back into latency instead of lost throughput.
+const MAX_SPIN_BACKOFF: u32 = 64;
+
 #[cold]
 fn state_lock_slow(state: &AtomicU64) {
+    // Test-and-test-and-set with exponential backoff. Without the backoff every
+    // waiter observes the unlock in the same instant and issues a
+    // compare-exchange against the same cache line, so one handoff between N
+    // contenders costs N exclusive-ownership transfers. On a single hot key that
+    // inverted scaling outright: twelve workers ran ~2x slower than one.
+    let mut backoff = 1u32;
     loop {
+        // Spin on a plain load. The line can stay shared in this core's cache
+        // until the holder writes, whereas a CAS takes it exclusively on every
+        // attempt and invalidates every other waiter.
         while state.load(Ordering::Relaxed) & STATE_LOCK != 0 {
-            std::hint::spin_loop();
+            for _ in 0..backoff {
+                std::hint::spin_loop();
+            }
+            if backoff < MAX_SPIN_BACKOFF {
+                backoff <<= 1;
+            } else {
+                // More runnable threads than cores is the normal case here, so
+                // the holder may not even be scheduled. Hand the CPU over
+                // rather than spinning against a descheduled owner.
+                std::thread::yield_now();
+            }
         }
         let current = state.load(Ordering::Relaxed);
         if current & STATE_LOCK == 0
@@ -128,11 +154,10 @@ pub(crate) fn state_unlock(state: &AtomicU64) {
 /// Open a seqlock write window on an entry whose `STATE_LOCK` the caller
 /// already holds.
 ///
-/// Holding the lock means no other writer can touch these bits, so a plain
-/// store beats a read-modify-write. The release fence keeps the value writes
-/// that follow from being reordered ahead of the odd sequence — without it a
-/// `read_consistent` reader on a weakly-ordered target can observe a
-/// half-written value while still seeing an even sequence.
+/// Uses a plain store (no RMW) since no other writer can race. The release
+/// fence prevents value writes from being reordered ahead of the odd sequence
+/// number, which would let a `read_consistent` reader see a half-written value
+/// on a weakly-ordered target.
 #[inline(always)]
 pub(crate) fn write_begin(state: &AtomicU64) {
     let current = state.load(Ordering::Relaxed);
@@ -164,16 +189,14 @@ pub(crate) struct SlotTable<V> {
 
 /// Bits of a slot word reserved for a hash tag.
 ///
-/// Userspace pointers leave bits 48..63 clear under x86-64 4-level paging and
-/// AArch64 39/48-bit VA, so a tag can ride along in the slot array itself.
-/// Probing then rejects non-matching entries without dereferencing them, which
-/// is what turns each probe step from a dependent cache miss into a register
-/// compare.
+/// Userspace pointers leave bits 48..63 clear on x86-64 (4-level paging) and
+/// AArch64 (39/48-bit VA), so a tag rides in the slot array itself. Probing
+/// rejects non-matching entries without dereferencing them, turning each probe
+/// step from a dependent cache miss into a register compare.
 ///
-/// Bit 63 records whether a tag is present at all. Userspace never sees an
-/// address with that bit set, so a pointer that genuinely occupies bits 49..62
-/// (x86-64 5-level paging, AArch64 LVA) is stored verbatim and read back
-/// intact — masking unconditionally would silently truncate it.
+/// Bit 63 marks tag presence. On 5-level x86-64 or AArch64 LVA a pointer may
+/// use bits 49..62; storing verbatim and masking only when TAG_FLAG is set
+/// avoids silently truncating it.
 const TAG_FLAG: usize = 1 << 63;
 const TAG_BITS: usize = 14;
 const TAG_SHIFT: u32 = 49;

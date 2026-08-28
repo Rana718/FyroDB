@@ -11,10 +11,9 @@ static MIMALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 /// Number of independent counters used to track live allocated bytes.
 ///
-/// A single global counter would serialize every allocation on one cache line.
-/// Striping by CPU keeps the update uncontended in the common case; a block
-/// freed on a different CPU than it was allocated on simply moves the debt
-/// between stripes, and the *sum* stays exact.
+/// Striped by CPU to keep updates uncontended. A block freed on a different
+/// CPU than it was allocated on moves debt between stripes; the *sum* stays
+/// exact.
 const STRIPES: usize = 64;
 
 #[repr(align(128))]

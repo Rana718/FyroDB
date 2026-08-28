@@ -169,8 +169,7 @@ impl Default for ReplicationStream {
 
 const MAX_FIELD: usize = 16 * 1024 * 1024;
 /// Hard upper bound for retained encoded mutation payloads per node.
-/// This prevents a record-count-only log from consuming unbounded RSS when
-/// values are large. The bound is deliberately independent of Store capacity.
+/// Caps RSS consumption when values are large, independent of Store capacity.
 const MAX_LOG_BYTES: usize = 64 * 1024 * 1024;
 
 pub fn encode_replication_message(

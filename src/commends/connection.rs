@@ -479,9 +479,8 @@ pub fn cluster_cmd(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
                 );
                 let _ = store.install_cluster_topology(topology);
             } else if let Some(topology) = store.cluster_state_ref().assign_slot(slot, target) {
-                // Reached on every node that is not the migration source. It
-                // still has to record the new owner, or it will keep
-                // redirecting the slot to the previous one.
+                // Non-source nodes still need to record the new owner,
+                // otherwise they keep redirecting the slot to the old one.
                 let _ = crate::cluster::save_nodes_conf(
                     &cluster.nodes_config_file,
                     &topology,

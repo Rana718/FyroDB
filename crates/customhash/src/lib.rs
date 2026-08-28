@@ -561,10 +561,9 @@ mod tests {
         }
     }
 
-    /// `set` and `insert_hashed` used to test occupancy *before* taking the
-    /// entry lock and then unconditionally drop the old value, so a remove
-    /// landing in that window caused a double free. Values here own a heap
-    /// allocation so the allocator catches it.
+    /// Regression: concurrent remove during overwrite must not double-free.
+    ///
+    /// Values own a heap allocation so the allocator will catch a double-free.
     #[test]
     fn concurrent_overwrite_and_remove_never_double_frees() {
         let map = Arc::new(CustomMap::<String>::with_capacity(4, 4_096));

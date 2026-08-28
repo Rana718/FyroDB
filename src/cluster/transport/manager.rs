@@ -730,16 +730,10 @@ fn read_replies(
 
 /// Resolve a cluster-bus address into every candidate socket address.
 ///
-/// Hostnames are the norm once nodes run under an orchestrator — Docker Compose
-/// service names, Kubernetes service DNS — and a bare `parse::<SocketAddr>()`
-/// rejects them. It used to, silently: the peer worker returned before its first
-/// connect, so a hostname-addressed cluster came up with no heartbeats, no
-/// failure detection and no replication, while still answering reads because
-/// every node had the static slot map from nodes.conf.
-///
-/// All candidates are returned because resolution order is not connectability
-/// order: `localhost` and dual-stack service names usually yield the IPv6
-/// address first, while a node bound to `127.0.0.1` only accepts IPv4.
+/// Accepts hostnames (Docker Compose service names, Kubernetes DNS) in
+/// addition to bare `ip:port`. Returns all candidates because resolution
+/// order is not connectability order — dual-stack names often yield IPv6
+/// first while the node may only bind IPv4.
 fn resolve_peer_address(address: &str, node_id: &str) -> Vec<SocketAddr> {
     if let Ok(parsed) = address.parse::<SocketAddr>() {
         return vec![parsed];
@@ -847,9 +841,8 @@ mod tests {
         );
     }
 
-    /// A cluster-bus address of `host:port` used to be rejected by
-    /// `parse::<SocketAddr>()`, and the peer worker returned before its first
-    /// connect — so a Compose/Kubernetes cluster ran with no bus at all.
+    /// Regression: hostname cluster-bus addresses must resolve to socket
+    /// addresses; bare `parse::<SocketAddr>()` rejects them.
     #[test]
     fn hostname_cluster_addresses_resolve() {
         let candidates = super::resolve_peer_address("localhost:19301", "node-1");

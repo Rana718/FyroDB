@@ -28,11 +28,6 @@ impl RespParser {
     const IDLE_READ_BUFFER: usize = 2 * 1024;
 
     /// Buffers start unallocated and are created on first use.
-    ///
-    /// Every accepted connection used to commit ~3 KiB up front whether or not
-    /// it ever sent a byte. That is invisible for one client and material at
-    /// scale — and cluster mode multiplies it, since a cluster-aware client
-    /// dials every node, so N clients become 3N server-side connections.
     pub fn new() -> Self {
         Self {
             rbuf: Vec::new(),
@@ -189,9 +184,9 @@ mod tests {
         }
     }
 
-    /// `parse_one` used to shrink `rbuf` before returning `Complete`, leaving
-    /// every pointer in `parts_raw` covering freed memory. A single command
-    /// large enough to grow `rbuf` past 16KiB reproduced it.
+    /// Regression: `parts_raw` pointers must remain valid after `parse_one`
+    /// returns `Complete` — `rbuf` must not be reallocated until dispatch is
+    /// done.
     #[test]
     fn large_command_parts_stay_inside_the_live_read_buffer() {
         let mut parser = RespParser::new();

@@ -179,8 +179,8 @@ fn capture_if_success(conn: &mut Conn, parts: &[&str], response_start: usize) {
 }
 
 /// Returns the key index to capture for replication, or `None` if this
-/// command does not need capture. Using match on (len, first_byte) gives the
-/// compiler a jump table instead of the previous O(N) slice scan.
+/// command does not need capture. Dispatches on `(len, first_byte)` for a
+/// compiler-generated jump table.
 #[inline]
 fn mutation_key_index(command: &[u8]) -> Option<usize> {
     let first = command.first().map(|b| b.to_ascii_uppercase())?;

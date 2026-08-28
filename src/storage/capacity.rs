@@ -1,11 +1,8 @@
 //! Key-capacity admission control.
 //!
-//! Redis rejects commands flagged `denyoom` once `maxmemory` is reached, and
-//! lets memory-freeing commands through so a client can recover. FyroDB caps on
-//! key count rather than bytes, but the admission rule is the same — and it has
-//! to be applied in one place. Previously the limit lived inside a handful of
-//! `try_*` store helpers, so `SET k v EX 10` returned OOM while plain `SET k v`
-//! and `LPUSH` ignored the cap entirely.
+//! FyroDB caps on key count rather than bytes, mirroring Redis `denyoom`
+//! semantics: write commands that grow the keyspace are refused at the limit
+//! while memory-freeing commands remain available so a client can recover.
 
 /// Whether a command should be refused when the store is at capacity.
 ///

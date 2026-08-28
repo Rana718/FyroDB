@@ -130,9 +130,9 @@ pub fn run_worker(
                         if event.is_readable() && !conn.do_read() {
                             close = true;
                         }
-                        // A reply that previously hit WouldBlock is only
-                        // retried because of this arm; without it a client
-                        // that stops reading mid-response never gets the rest.
+                        // This arm retries writes that previously hit WouldBlock;
+                        // without it a client that stops reading mid-response
+                        // never gets the rest.
                         if !close && event.is_writable() && !conn.do_write() {
                             close = true;
                         }

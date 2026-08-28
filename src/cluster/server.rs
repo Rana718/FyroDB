@@ -181,9 +181,8 @@ fn handle_peer(
             MessageType::Hello => {}
             MessageType::FailureReport => {
                 if let Some(report) = decode_failure_report(&frame.payload) {
-                    // A peer may only attest for itself. This prevents an
-                    // authenticated node from forging quorum evidence for a
-                    // different reporter or for an unknown target.
+                    // A peer may only attest for itself — reject reports
+                    // from a node claiming to speak for another.
                     let known_reporter = report.reporter_id == remote_id
                         && topology
                             .nodes

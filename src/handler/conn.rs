@@ -371,14 +371,29 @@ fn dispatch_raw(conn: &mut Conn, raw: &[(*const u8, usize)]) {
             let Some(key) = part_str(out, raw[1]) else {
                 return;
             };
-            match conn.store.rpop(key, 1) {
-                Ok(items) if !items.is_empty() => {
+            match conn.store.pop_one_to_buf(key, true, &mut conn.parser.wbuf) {
+                Ok(true) => {
                     if conn.store.has_replication() {
                         conn.store.record_current_value(key);
                     }
-                    crate::utils::resp::write_bulk(&mut conn.parser.wbuf, &items[0]);
                 }
-                _ => conn.parser.wbuf.extend_from_slice(b"$-1\r\n"),
+                Ok(false) => conn.parser.wbuf.extend_from_slice(b"$-1\r\n"),
+                Err(_) => crate::utils::resp::write_wrong_type(&mut conn.parser.wbuf),
+            }
+            return;
+        } else if cmd.eq_ignore_ascii_case(b"LPOP") && raw.len() == 2 {
+            let out = &mut conn.parser.wbuf;
+            let Some(key) = part_str(out, raw[1]) else {
+                return;
+            };
+            match conn.store.pop_one_to_buf(key, false, &mut conn.parser.wbuf) {
+                Ok(true) => {
+                    if conn.store.has_replication() {
+                        conn.store.record_current_value(key);
+                    }
+                }
+                Ok(false) => conn.parser.wbuf.extend_from_slice(b"$-1\r\n"),
+                Err(_) => crate::utils::resp::write_wrong_type(&mut conn.parser.wbuf),
             }
             return;
         } else if cmd.eq_ignore_ascii_case(b"SADD") && raw.len() >= 3 {

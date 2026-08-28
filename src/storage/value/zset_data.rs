@@ -22,6 +22,30 @@ fn member_hash(member: &str) -> u64 {
     h
 }
 
+/// Bits probed per member.
+///
+/// The filter keeps 8–16 bits per entry, where the optimal probe count is
+/// `m/n * ln2` ≈ 6–11. Two probes left the false-positive rate around 3–5%, and
+/// every false positive costs a full linear scan of the member list — the
+/// dominant cost of `ZADD` into a large sorted set. Five probes cut that rate by
+/// roughly 4x for the same memory and a handful of extra bit tests.
+const BLOOM_PROBES: u32 = 5;
+
+/// Split one hash into the pair used for double hashing.
+///
+/// `h2` is forced odd so successive probes stride the whole bit space instead of
+/// cycling through a subset.
+#[inline(always)]
+fn bloom_seeds(h: u64) -> (u64, u64) {
+    (h, h.rotate_left(31) | 1)
+}
+
+#[inline(always)]
+fn bloom_position(h1: u64, h2: u64, probe: u32, bits: usize) -> usize {
+    // `bits` is always a power of two, so the mask is exact.
+    (h1.wrapping_add((probe as u64).wrapping_mul(h2)) as usize) & (bits - 1)
+}
+
 impl ZSetData {
     pub fn new() -> Self {
         Self {
@@ -51,19 +75,24 @@ impl ZSetData {
     #[inline]
     fn bloom_maybe_contains(&self, h: u64) -> bool {
         let bits = self.bloom.len() * 64;
-        let a = h as usize & (bits - 1);
-        let b = h.rotate_left(31) as usize & (bits - 1);
-        (self.bloom[a / 64] & (1u64 << (a % 64))) != 0
-            && (self.bloom[b / 64] & (1u64 << (b % 64))) != 0
+        let (h1, h2) = bloom_seeds(h);
+        for probe in 0..BLOOM_PROBES {
+            let index = bloom_position(h1, h2, probe, bits);
+            if (self.bloom[index / 64] & (1u64 << (index % 64))) == 0 {
+                return false;
+            }
+        }
+        true
     }
 
     #[inline]
     fn bloom_set(&mut self, h: u64) {
         let bits = self.bloom.len() * 64;
-        let a = h as usize & (bits - 1);
-        let b = h.rotate_left(31) as usize & (bits - 1);
-        self.bloom[a / 64] |= 1u64 << (a % 64);
-        self.bloom[b / 64] |= 1u64 << (b % 64);
+        let (h1, h2) = bloom_seeds(h);
+        for probe in 0..BLOOM_PROBES {
+            let index = bloom_position(h1, h2, probe, bits);
+            self.bloom[index / 64] |= 1u64 << (index % 64);
+        }
     }
 
     fn bloom_grow_if_needed(&mut self) {
@@ -83,13 +112,14 @@ impl ZSetData {
             .max(1);
         self.bloom.clear();
         self.bloom.resize(words, 0);
+        let bits = self.bloom.len() * 64;
         for i in 0..self.entries.len() {
             let h = member_hash(self.entries[i].member.as_str());
-            let bits = self.bloom.len() * 64;
-            let a = h as usize & (bits - 1);
-            let b = h.rotate_left(31) as usize & (bits - 1);
-            self.bloom[a / 64] |= 1u64 << (a % 64);
-            self.bloom[b / 64] |= 1u64 << (b % 64);
+            let (h1, h2) = bloom_seeds(h);
+            for probe in 0..BLOOM_PROBES {
+                let index = bloom_position(h1, h2, probe, bits);
+                self.bloom[index / 64] |= 1u64 << (index % 64);
+            }
         }
     }
 
@@ -424,5 +454,97 @@ impl ZSetData {
 impl Default for ZSetData {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod bloom_tests {
+    use super::*;
+
+    /// Bloom probes must all land inside the filter, whatever its size.
+    #[test]
+    fn probes_stay_in_range_for_every_filter_size() {
+        for words in [1usize, 2, 8, 64, 1024] {
+            let bits = words * 64;
+            for seed in 0..512u64 {
+                let (h1, h2) = bloom_seeds(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15));
+                for probe in 0..BLOOM_PROBES {
+                    assert!(bloom_position(h1, h2, probe, bits) < bits);
+                }
+            }
+        }
+    }
+
+    /// A second seed with an even value would revisit the same slots; forcing
+    /// it odd is what makes successive probes stride the whole space.
+    #[test]
+    fn probes_are_distinct_for_a_reasonable_filter() {
+        let bits = 4096;
+        let mut collisions = 0;
+        for seed in 0..1000u64 {
+            let (h1, h2) = bloom_seeds(member_hash(&seed.to_string()));
+            let mut seen = std::collections::HashSet::new();
+            for probe in 0..BLOOM_PROBES {
+                if !seen.insert(bloom_position(h1, h2, probe, bits)) {
+                    collisions += 1;
+                }
+            }
+        }
+        assert!(
+            collisions < 50,
+            "{collisions} duplicate probe positions across 1000 members"
+        );
+    }
+
+    /// The filter must never report a member absent when it is present, and its
+    /// false-positive rate has to stay low enough that `insert` avoids the
+    /// linear membership scan.
+    #[test]
+    fn no_false_negatives_and_a_low_false_positive_rate() {
+        let mut zset = ZSetData::new();
+        const PRESENT: usize = 4000;
+        for i in 0..PRESENT {
+            zset.insert(i as f64, &format!("member-{i}"));
+        }
+        assert_eq!(zset.len(), PRESENT);
+
+        for i in 0..PRESENT {
+            let h = member_hash(&format!("member-{i}"));
+            assert!(
+                zset.bloom_maybe_contains(h),
+                "false negative for member-{i}"
+            );
+        }
+
+        let mut positives = 0;
+        const ABSENT: usize = 20_000;
+        for i in 0..ABSENT {
+            let h = member_hash(&format!("absent-{i}"));
+            if zset.bloom_maybe_contains(h) {
+                positives += 1;
+            }
+        }
+        let rate = positives as f64 / ABSENT as f64;
+        assert!(
+            rate < 0.02,
+            "false-positive rate {rate:.4} is high enough to reintroduce the scan"
+        );
+    }
+
+    /// Re-adding existing members must not duplicate them, which is what the
+    /// membership check behind the filter exists to guarantee.
+    #[test]
+    fn re_adding_members_does_not_duplicate_them() {
+        let mut zset = ZSetData::new();
+        for i in 0..2000 {
+            zset.insert(i as f64, &format!("m{i}"));
+        }
+        for i in 0..2000 {
+            assert!(!zset.insert(i as f64, &format!("m{i}")), "m{i} counted new");
+        }
+        assert_eq!(zset.len(), 2000);
+        for i in 0..2000 {
+            assert_eq!(zset.get_score(&format!("m{i}")), Some(i as f64));
+        }
     }
 }

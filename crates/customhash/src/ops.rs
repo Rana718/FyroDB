@@ -24,18 +24,12 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
         }
     }
 
-    /// Rebuild live values in place under their entry locks. This is the
-    /// ownership-safe equivalent of Redis active defrag for Rust values: the
-    /// entry address never moves, so pinned lock-free readers remain valid,
-    /// while fragmented child allocations are replaced and reclaimed later by
-    /// EBR.
+    /// Rebuild fragmented child allocations in place under their entry locks.
     ///
-    /// Walks one shard from `start_slot`, stopping after `budget` rebuilds.
-    /// Returns `(next_slot, capacity, rebuilt)`; `next_slot == capacity` means
-    /// the shard is finished. Callers keep the cursor so a large keyspace is
-    /// covered across ticks — an earlier version materialized every key into a
-    /// `Vec<String>` just to rebuild `budget` of them, which spiked memory in
-    /// the code path meant to reduce it.
+    /// Entry addresses never move, so lock-free readers remain valid.
+    /// Reclaimed memory is deferred to EBR. Walks one shard from `start_slot`,
+    /// stopping after `budget` rebuilds. Returns `(next_slot, capacity,
+    /// rebuilt)`; `next_slot == capacity` means the shard is done.
     pub fn defragment_shard_range(
         &self,
         shard_idx: usize,
@@ -318,9 +312,8 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
 mod tests {
     use super::super::CustomMap;
 
-    /// Defrag used to materialize every key into a `Vec<String>` before
-    /// rebuilding `budget` of them. The cursor form must instead visit each
-    /// slot at most once per pass and honour the budget exactly.
+    /// Regression: cursor defrag must visit each slot at most once per pass
+    /// and honour the budget exactly.
     #[test]
     fn cursor_defrag_covers_every_value_within_budget() {
         let map = CustomMap::with_capacity(1, 512);

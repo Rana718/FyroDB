@@ -32,12 +32,9 @@ impl ClusterMetrics {
 
 /// Fence coordinating bulk cluster operations against in-flight writes.
 ///
-/// Slot migration and replica snapshot bootstrap need "no writes in flight",
-/// not mutual exclusion between writers — but the previous implementation gave
-/// them a single process-wide `Mutex` that every write command had to acquire,
-/// which serialized cluster writes across all workers. Writers now touch only
-/// their own counter, and a fence holder asks them to fall back to the mutex
-/// while it drains.
+/// Slot migration and replica snapshot bootstrap require no writes to be
+/// in flight. Writers increment their own per-worker counter; a fence holder
+/// sets the flag and waits for all counters to drain before proceeding.
 struct WriteFence {
     /// In-flight write count per worker. Uncontended: one worker owns each.
     in_flight: Box<[CachePadded<AtomicUsize>]>,
@@ -86,13 +83,103 @@ impl Drop for WriteFenceGuard<'_> {
     }
 }
 
+/// Striped TTL bookkeeping.
+///
+/// Counters are striped by CPU so concurrent `SET ... EX` commands update
+/// independent cache lines. `adds` is monotonic and doubles as the scan
+/// generation, eliminating the need for a separate generation counter.
+struct TtlCounters {
+    adds: Box<[CachePadded<AtomicU64>]>,
+    removes: Box<[CachePadded<AtomicU64>]>,
+}
+
+impl TtlCounters {
+    fn new() -> Self {
+        let stripes = ttl_stripes();
+        Self {
+            adds: (0..stripes)
+                .map(|_| CachePadded::new(AtomicU64::new(0)))
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+            removes: (0..stripes)
+                .map(|_| CachePadded::new(AtomicU64::new(0)))
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+        }
+    }
+
+    #[inline(always)]
+    fn stripe(&self) -> usize {
+        #[cfg(target_os = "linux")]
+        {
+            let cpu = unsafe { libc::sched_getcpu() };
+            if cpu < 0 {
+                0
+            } else {
+                cpu as usize % self.adds.len()
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            0
+        }
+    }
+
+    #[inline]
+    fn add(&self) {
+        let index = self.stripe();
+        unsafe { self.adds.get_unchecked(index) }.fetch_add(1, Ordering::Relaxed);
+    }
+
+    #[inline]
+    fn remove(&self) {
+        let index = self.stripe();
+        unsafe { self.removes.get_unchecked(index) }.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn total_adds(&self) -> u64 {
+        self.adds
+            .iter()
+            .map(|stripe| stripe.load(Ordering::Acquire))
+            .fold(0u64, u64::wrapping_add)
+    }
+
+    fn total_removes(&self) -> u64 {
+        self.removes
+            .iter()
+            .map(|stripe| stripe.load(Ordering::Acquire))
+            .fold(0u64, u64::wrapping_add)
+    }
+
+    /// Live TTL keys, saturating at zero: `removes` can momentarily lead
+    /// `adds` across stripes, and an over-count is repaired by the next scan.
+    fn live(&self) -> usize {
+        self.total_adds().saturating_sub(self.total_removes()) as usize
+    }
+
+    /// Force the live count to `live_ttls` by moving the removes counter.
+    fn set_live(&self, live_ttls: usize) {
+        let adds = self.total_adds();
+        let target_removes = adds.saturating_sub(live_ttls as u64);
+        let current = self.total_removes();
+        if target_removes > current {
+            self.removes[0].fetch_add(target_removes - current, Ordering::Release);
+        } else if current > target_removes {
+            self.removes[0].fetch_sub(current - target_removes, Ordering::Release);
+        }
+    }
+}
+
+fn ttl_stripes() -> usize {
+    num_cpus::get().next_power_of_two().clamp(1, 64)
+}
+
 pub struct Store {
     pub(crate) data: CustomMap<StoreValue>,
     pub(crate) replication: Option<crate::cluster::ReplicationCoordinator>,
 
     pub(crate) connected_clients: AtomicUsize,
-    pub(crate) ttl_count: AtomicUsize,
-    ttl_generation: AtomicU64,
+    ttl: TtlCounters,
     replica_applied_offset: AtomicU64,
     pub(crate) int_create_lock: Mutex<()>,
     replica_installing: std::sync::atomic::AtomicBool,
@@ -149,8 +236,7 @@ impl Store {
                 None
             },
             connected_clients: AtomicUsize::new(0),
-            ttl_count: AtomicUsize::new(0),
-            ttl_generation: AtomicU64::new(0),
+            ttl: TtlCounters::new(),
             replica_applied_offset: AtomicU64::new(0),
             replica_meta_path: Mutex::new(None),
             replica_identity: Mutex::new(None),
@@ -673,51 +759,48 @@ impl Store {
         WriteFenceGuard { fence, _gate: gate }
     }
 
+    /// One uncontended increment on this CPU's stripe.
     #[inline]
     pub fn add_ttl(&self) {
-        self.ttl_generation.fetch_add(1, Ordering::Release);
-        self.ttl_count.fetch_add(1, Ordering::Relaxed);
+        self.ttl.add();
     }
 
     #[inline]
     pub fn sub_ttl(&self) {
-        let _ = self
-            .ttl_count
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
-                count.checked_sub(1)
-            });
+        self.ttl.remove();
     }
 
     #[inline]
     pub fn has_ttl_keys(&self) -> bool {
-        self.ttl_count.load(Ordering::Relaxed) > 0
+        self.ttl.live() > 0
     }
 
     pub fn reset_ttl_count(&self) {
-        self.ttl_count.store(0, Ordering::Relaxed);
-        self.ttl_generation.fetch_add(1, Ordering::Release);
+        self.ttl.set_live(0);
     }
 
+    /// Monotonic count of TTLs ever created.
+    ///
+    /// Doubles as the scan generation: changes only when a TTL is added,
+    /// so `finish_ttl_scan` can detect a stale repair without a second atomic.
     #[inline]
     pub fn ttl_generation(&self) -> u64 {
-        self.ttl_generation.load(Ordering::Acquire)
+        self.ttl.total_adds()
     }
 
     #[inline]
     pub fn finish_ttl_scan(&self, generation: u64, live_ttls: usize) {
-        if self.ttl_generation.load(Ordering::Acquire) != generation {
+        // A TTL created while the scan ran makes its tally stale; leave the
+        // counter alone and let the next pass repair it.
+        if self.ttl.total_adds() != generation {
             return;
         }
-        let observed = self.ttl_count.load(Ordering::Acquire);
-        if self.ttl_generation.load(Ordering::Acquire) != generation {
-            return;
-        }
-        let _ = self.ttl_count.compare_exchange(
-            observed,
-            live_ttls,
-            Ordering::Release,
-            Ordering::Relaxed,
-        );
+        self.ttl.set_live(live_ttls);
+    }
+
+    #[cfg(test)]
+    fn ttl_live(&self) -> usize {
+        self.ttl.live()
     }
 }
 
@@ -778,15 +861,15 @@ mod tests {
         store
             .apply_replica_mutation(&replace(1, &expiring))
             .unwrap();
-        assert_eq!(store.ttl_count.load(Ordering::Relaxed), 1);
+        assert_eq!(store.ttl_live(), 1);
         store
             .apply_replica_mutation(&replace(2, &expiring))
             .unwrap();
-        assert_eq!(store.ttl_count.load(Ordering::Relaxed), 1);
+        assert_eq!(store.ttl_live(), 1);
         store
             .apply_replica_mutation(&replace(3, &persistent))
             .unwrap();
-        assert_eq!(store.ttl_count.load(Ordering::Relaxed), 0);
+        assert_eq!(store.ttl_live(), 0);
 
         store
             .apply_replica_mutation(&replace(4, &expiring))
@@ -800,7 +883,7 @@ mod tests {
             expire_at_ms: None,
         };
         store.apply_replica_mutation(&delete).unwrap();
-        assert_eq!(store.ttl_count.load(Ordering::Relaxed), 0);
+        assert_eq!(store.ttl_live(), 0);
     }
 
     #[test]
@@ -816,10 +899,10 @@ mod tests {
             "key".to_owned(),
             StoreValue::string_with_expiry("two".to_owned(), expires_at),
         );
-        assert_eq!(store.ttl_count.load(Ordering::Relaxed), 2);
+        assert_eq!(store.ttl_live(), 2);
 
         store.cleanup_expired();
-        assert_eq!(store.ttl_count.load(Ordering::Relaxed), 1);
+        assert_eq!(store.ttl_live(), 1);
 
         assert!(store.del("key"));
         store.cleanup_expired();
@@ -948,9 +1031,8 @@ pub fn purge_allocator() {
 
 /// Purge only when fragmentation is material.
 ///
-/// `used_memory` is live requested bytes and `rss` is what the process holds
-/// from the OS, so the gap between them is real allocator/page fragmentation.
-/// This comparison was previously rss-vs-rss and could never fire.
+/// `used_memory` is live requested bytes; `rss` is what the OS has mapped.
+/// The gap between them measures real allocator/page fragmentation.
 pub fn purge_allocator_if_fragmented() {
     let used = rust_zmalloc::used_memory();
     let rss = rust_zmalloc::resident_memory();

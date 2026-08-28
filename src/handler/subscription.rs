@@ -60,7 +60,7 @@ pub fn handle_unsubscribe(conn: &mut Conn, parts: &[&str]) {
     let mut removed = HashSet::new();
     for ch in &targets {
         if channels.remove(ch) {
-            conn.pubsub.unsubscribe(ch, &slot);
+            conn.pubsub.unsubscribe(ch, slot);
             removed.insert(ch.clone());
         }
     }
@@ -134,7 +134,7 @@ pub fn handle_punsubscribe(conn: &mut Conn, parts: &[&str]) {
     let mut removed = HashSet::new();
     for pat in &targets {
         if patterns.remove(pat) {
-            conn.pubsub.punsubscribe(pat, &slot);
+            conn.pubsub.punsubscribe(pat, slot);
             removed.insert(pat.clone());
         }
     }
