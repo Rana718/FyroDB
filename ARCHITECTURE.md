@@ -8,21 +8,25 @@ FyroDB is a Redis-compatible in-memory key-value store written in Rust. It speak
 
 ## Why It's Fast
 
-| Factor | Redis | FyroDB |
-| ------ | ----- | ------ |
-| I/O model | Single-thread epoll | Thread-per-core epoll (mio), SO_REUSEPORT |
-| Accept queue | Single shared queue | Per-thread kernel queue — no contention |
-| Hash map | Custom, single-threaded | Lock-free CustomMap — EBR + seqlock + per-key spinlock |
-| RESP parsing | Copy into dynamic buffer | Zero-copy: parse directly from read buffer |
-| Command dispatch | String comparison | First-byte fast-path for 13 hot commands; static `foldhash` map (O(1)) for all others |
-| Response building | Format into String | Inline bulk headers, raw byte writes |
-| GET path | Clone value + allocate | Zero-copy: write directly from stored value to buffer |
-| Mutations | Single-threaded (safe) | In-place under per-key spinlock, seqlock for reader safety |
-| TTL computation | clock_gettime per op | Cached clock ticked once per event loop iteration |
-| Allocator | libc malloc | mimalloc with zero-overhead hot path and periodic RSS tracking |
-| Memory search | Naive byte scan | SIMD memchr (AVX2) for newline scanning |
-| Write batching | Per-command write | Batched: all events read first, then flush all writes |
-| Pub/Sub fan-out | Per-message frame copy | Single Arc allocation, shared to all subscribers |
+| Factor              | Redis                         | FyroDB                                                                                       |
+| ------------------- | ----------------------------- | -------------------------------------------------------------------------------------------- |
+| I/O model           | Single-thread epoll           | Thread-per-core epoll (mio), SO_REUSEPORT                                                    |
+| Accept queue        | Single shared queue           | Per-thread kernel queue — no contention                                                      |
+| Hash map            | Custom, single-threaded       | Lock-free CustomMap — EBR + seqlock + per-key spinlock                                       |
+| RESP parsing        | Copy into dynamic buffer      | Zero-copy: parse directly from read buffer                                                   |
+| Command dispatch    | String comparison             | First-byte fast-path for 13 hot commands; static `foldhash` map (O(1)) for all others        |
+| Response building   | Format into String            | Inline bulk headers, raw byte writes                                                         |
+| GET path            | Clone value + allocate        | Zero-copy: write directly from stored value to buffer                                        |
+| Mutations           | Single-threaded (safe)        | In-place under per-key spinlock, seqlock for reader safety                                   |
+| TTL computation     | clock_gettime per op          | Cached clock ticked once per event loop iteration                                            |
+| Allocator           | libc malloc                   | mimalloc with zero-overhead hot path and periodic RSS tracking                               |
+| Memory search       | Naive byte scan               | SIMD memchr (AVX2) for newline scanning                                                      |
+| Write batching      | Per-command write             | Batched: all events read first, then flush all writes                                        |
+| Pub/Sub fan-out     | Per-message frame copy        | Single Arc allocation, shared to all subscribers                                             |
+| Hash probe step     | Deref entry to compare key    | 15-bit hash tag packed into the slot pointer — reject a non-match without touching the entry |
+| Lock contention     | Single-threaded, none         | Test-and-test-and-set with exponential backoff, then yield                                   |
+| Cluster slot lookup | Flat `slots[16384]` array     | Same: shared routing table, revalidated per connection with one atomic load                  |
+| Memory accounting   | `zmalloc_used_memory` counter | Per-CPU striped counters, so `used_memory` is real and drives purge/defrag                   |
 
 ---
 
@@ -54,6 +58,7 @@ Entry<V>  (per key, heap-allocated)
 ### Concurrency Model
 
 **Writers** (SET, LPUSH, SADD, HSET, ZADD, INCR):
+
 ```
 1. Find entry via lock-free linear probe
 2. Acquire per-key spinlock (single atomic CAS, Acquire ordering)
@@ -63,6 +68,7 @@ Entry<V>  (per key, heap-allocated)
 ```
 
 **Single-field Readers** (GET, HGET, SISMEMBER, ZSCORE, LINDEX):
+
 ```
 1. Find entry via lock-free linear probe
 2. Pin EBR epoch (thread-local atomic store)
@@ -72,6 +78,7 @@ Entry<V>  (per key, heap-allocated)
 ```
 
 **Iteration Readers** (LRANGE, SMEMBERS, HGETALL, HKEYS, HVALS):
+
 ```
 1. Find entry via lock-free linear probe
 2. Pin EBR epoch
@@ -94,7 +101,8 @@ Entry<V>  (per key, heap-allocated)
 
 ### Dynamic Growth
 
-Every shard starts with eight slots and grows only as keys arrive. When a shard reaches 90% occupancy:
+Every shard starts with eight slots and grows only as keys arrive. When a shard reaches 75% occupancy:
+
 1. Set GROWING flag in insert_gate (blocks new inserts)
 2. Wait for in-flight inserts to complete
 3. Allocate new SlotTable at 2× capacity
@@ -106,6 +114,7 @@ Every shard starts with eight slots and grows only as keys arrive. When a shard 
 ### Epoch-Based Reclamation (EBR)
 
 When an entry or slot table is retired:
+
 - Stamped with current global epoch
 - Added to thread-local garbage list
 - Freed only after all threads have advanced past epoch + 2
@@ -121,12 +130,30 @@ Updates to existing keys mutate their value in place. Allocations are needed onl
 - Sorted sets use one score-ordered `Vec<ZEntry>` with a bloom filter for fast negative member lookups; score-range operations use binary partition points
 - Background maintenance can shrink collection capacity and rebuild fragmented values under the existing entry lock
 
+### Contention Behaviour
+
+The per-key spinlock is a test-and-test-and-set: waiters spin on a plain load so
+the line can stay shared, back off exponentially, then yield once the backoff
+saturates. Yielding matters because a worker serves many connections — a worker
+spinning on one hot key is a worker not serving anything else. Without the
+backoff, every waiter observed the unlock in the same instant and issued a
+compare-exchange against the same cache line, so a single handoff between N
+contenders cost N exclusive-ownership transfers and a hot key scaled _negatively_
+with worker count.
+
+Reads never take the lock at all, which is why a read-heavy hot key stays fast
+while a write-only hot key is bounded by lock handoff latency.
+
 ### Memory Maintenance
 
 - EBR and allocator collection run every 10 seconds
-- Fragmentation checks and bounded value defragmentation run every 60 seconds
+- Fragmentation checks run every 60 seconds; when RSS exceeds live bytes by more
+  than 20% a cursor-based defragmentation pass rebuilds a bounded number of
+  values per tick, so a large keyspace never materializes at once
 - Underutilized shard tables are compacted every 120 seconds
 - Flush performs repeated EBR collection, a quiescent collection, then allocator purge
+- `used_memory` is tracked by per-CPU striped counters over every allocation, so
+  the fragmentation ratio reported by `INFO` is real rather than `rss / rss`
 
 ---
 
@@ -146,6 +173,53 @@ PUBLISH channel message:
 ### Subscribe/Unsubscribe (Copy-on-Write)
 
 Rebuilds the channel list under a brief mutex, then atomically swaps the Arc snapshot pointer. Publishers holding the old snapshot keep it alive until they finish.
+
+---
+
+## Cluster
+
+### Slot Routing
+
+FyroDB implements Redis Cluster's 16384-slot model. Per command:
+
+```
+1. Match the command name to a routing scope (keyless / first key / many keys)
+2. Keyless commands and the single-key majority skip building an argument array
+3. CRC16 the key once (hash tags honoured) -> slot
+4. One index into the shared RoutingTable -> owning node
+5. Local -> execute; remote -> MOVED; importing/migrating -> ASK
+```
+
+`RoutingTable` is a flat 16384-entry `slot -> node index` array rebuilt once per
+published topology and shared by every connection through an `Arc`, so lookup
+cost does not scale with node count or client count. Each connection caches the
+topology and its table together, revalidated against a version counter with a
+single `Acquire` load — checking the version _before_ taking the lock is the
+whole point, since an `RwLock` read is still an atomic read-modify-write on one
+shared line.
+
+### Write Fence
+
+Slot migration and replica snapshot bootstrap need "no writes in flight", not
+mutual exclusion between writers. Each worker owns an in-flight counter; a write
+increments its own counter and reads a fence flag, both sequentially consistent
+so the single total order guarantees one side observes the other. A fence holder
+sets the flag, takes a mutex, then drains every counter. Steady-state cost is one
+uncontended increment on the worker's own cache line instead of a process-wide
+mutex acquire.
+
+### Cluster Bus
+
+Each node keeps one outbound connection per peer plus a reply reader, and accepts
+one inbound connection per peer. Addresses resolve through `to_socket_addrs` on
+every connect attempt — hostnames are normal under an orchestrator, and every
+resolved candidate is tried because resolution order is not connectability order
+(`localhost` yields IPv6 first while a node bound to `127.0.0.1` accepts only
+IPv4).
+
+`nodes.conf` separates the two addresses a node advertises: the client-facing
+address returned in redirects, and the bus address used only between nodes. They
+live in different reachability domains and must be set accordingly.
 
 ---
 
@@ -235,70 +309,96 @@ crates/customhash/src/
 └── ebr.rs               Epoch-based reclamation
 
 crates/rust-zmalloc/src/
-└── lib.rs               mimalloc allocator, RSS stats, purge (mi_collect)
+└── lib.rs               mimalloc allocator, striped allocation counters, RSS, purge (mi_collect)
+```
+
+Cluster sources:
+
+```
+src/cluster/
+├── mod.rs               Public cluster API re-exports
+├── config.rs            Env config, nodes.conf load/save
+├── hash.rs              CRC16 slot hashing, hash tags, SlotRange
+├── topology.rs          Topology, NodeInfo, flat RoutingTable
+├── routing.rs           RoutingScope, MOVED/ASK/CROSSSLOT decisions
+├── state.rs             Versioned topology, migrations, imports, failure quorum
+├── replication.rs       Mutation log, replica apply
+├── server.rs            Cluster bus listener
+└── transport/
+    ├── manager.rs       Peer queues, connect/handshake, health monitor, slot migration
+    ├── codec.rs         Frame codec
+    ├── peer.rs          Peer connection
+    ├── requests.rs      Bounded request registry
+    ├── health.rs        Per-peer health tracking
+    └── topology.rs      Topology wire encoding
 ```
 
 ---
 
 ## Complexity Reference
 
-| Operation | Time | Mechanism |
-| --------- | ---- | --------- |
-| GET / HGET / SISMEMBER | O(1) | Lock-free probe + atomic load |
-| SET / DEL / EXPIRE | O(1) average | Lock-free probe + per-entry mutation/removal |
-| INCR / LPUSH / SADD | O(1) | Per-key spinlock + in-place mutate |
-| HGETALL / SMEMBERS | O(N) | Seqlock-validated iteration |
-| ZADD | O(N) worst case | Bloom filter skips scan for new members; append is O(1) for ascending scores |
-| ZRANGE | O(K) | Contiguous sorted Vec slice |
-| ZRANGEBYSCORE | O(log N + K) | Binary partition points + slice iteration |
-| ZRANK / ZSCORE | O(N) | Linear member lookup |
-| ZPOPMIN / ZPOPMAX | O(N) / O(1) | Vec front removal / tail pop |
-| LINDEX | O(N) | VecDeque index access |
-| LRANGE | O(N) | Seqlock + VecDeque slice iteration |
-| LREM / LPOS | O(N) | Linear scan of VecDeque |
-| LPUSH / RPUSH | O(1) | VecDeque push_front/push_back under spinlock |
-| LPOP / RPOP | O(1) | VecDeque pop_front/pop_back under spinlock |
-| SINTER | O(N × M) | HashSet intersection (smallest-first) |
-| SUNION / SDIFF | O(N) | HashSet union/difference |
-| GEOSEARCH | O(N) | Full ZSet scan with haversine filter |
-| JSON.SET (root) | O(V) | JSON parse + atomic store |
-| JSON.SET (path) | O(D) | D = path depth traversal |
-| JSON.GET | O(1) | Direct path lookup |
-| XADD | O(1) | BTreeMap append (auto-incrementing ID) |
-| XRANGE | O(log N + K) | BTreeMap range query |
-| BITCOUNT | O(N) | Byte-level popcount |
-| PFADD / PFCOUNT | O(1) | HyperLogLog register update/estimate |
-| PUBLISH | O(S) | S = subscriber count, lock-free |
-| SCAN | O(COUNT) | Hash-based cursor, stable across mutations |
-| KEYS pattern | O(N) | Full scan with per-slot EBR pin |
-| SORT | O(N log N) | Vec collect + sort |
-| RDB save | O(N) | Per-slot iteration, buffered I/O |
-| RESP parse | O(B) | B = bytes, SIMD memchr for newlines |
-| Command dispatch (fast-path) | O(1) | First-byte + `cmd_eq` for 13 hot commands (GET/SET/HGET/HSET/LPUSH/LPOP/LRANGE/RPUSH/RPOP/EXPIRE/ZADD/JSON.GET/JSON.SET) |
-| Command dispatch (all others) | O(1) | Static `OnceLock<foldhash::HashMap>` — uppercase to 32-byte stack buf + one hash probe; built once, zero allocation per call |
-| Hash probe (avg) | O(1) | Open addressing, 90% load factor |
-| Hash probe (worst) | O(N/S) | N = keys in shard, linear probe |
-| Growth / Resize | O(N/S) | Per-shard, copies live pointers only |
-| EBR collect | O(G) | G = garbage list length |
+| Operation                     | Time                                                                                                       | Mechanism                                                                                                                         |
+| ----------------------------- | ---------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| GET / HGET / SISMEMBER        | O(1)                                                                                                       | Lock-free tag-filtered probe + atomic load; never takes the entry lock                                                            |
+| SET / DEL / EXPIRE            | O(1) average                                                                                               | Tag-filtered probe + per-entry mutation/removal                                                                                   |
+| INCR / LPUSH / SADD           | O(1)                                                                                                       | Per-key spinlock + in-place mutate                                                                                                |
+| HGETALL / SMEMBERS            | O(N)                                                                                                       | Seqlock-validated iteration                                                                                                       |
+| ZADD                          | O(1) amortized for a new member with an ascending score; O(N) when the bloom filter reports a possible hit | 5-probe bloom filter keeps the false-positive rate near 0.5%, so the linear membership scan is rarely reached                     |
+| ZRANGE                        | O(K)                                                                                                       | Contiguous sorted Vec slice                                                                                                       |
+| ZRANGEBYSCORE                 | O(log N + K)                                                                                               | Binary partition points + slice iteration                                                                                         |
+| ZRANK / ZSCORE                | O(N)                                                                                                       | Linear member lookup                                                                                                              |
+| ZPOPMIN / ZPOPMAX             | O(N) / O(1)                                                                                                | Vec front removal / tail pop                                                                                                      |
+| LINDEX                        | O(N)                                                                                                       | VecDeque index access                                                                                                             |
+| LRANGE                        | O(N)                                                                                                       | Seqlock + VecDeque slice iteration                                                                                                |
+| LREM / LPOS                   | O(N)                                                                                                       | Linear scan of VecDeque                                                                                                           |
+| LPUSH / RPUSH                 | O(1)                                                                                                       | VecDeque push_front/push_back under spinlock                                                                                      |
+| LPOP / RPOP                   | O(1)                                                                                                       | VecDeque pop under spinlock; a single-element pop writes the reply straight to the output buffer with no Vec or String allocation |
+| SINTER                        | O(N × M)                                                                                                   | HashSet intersection (smallest-first)                                                                                             |
+| SUNION / SDIFF                | O(N)                                                                                                       | HashSet union/difference                                                                                                          |
+| GEOSEARCH                     | O(N)                                                                                                       | Full ZSet scan with haversine filter                                                                                              |
+| JSON.SET (root)               | O(V)                                                                                                       | JSON parse + atomic store                                                                                                         |
+| JSON.SET (path)               | O(D)                                                                                                       | D = path depth traversal                                                                                                          |
+| JSON.GET                      | O(1)                                                                                                       | Direct path lookup                                                                                                                |
+| XADD                          | O(1)                                                                                                       | BTreeMap append (auto-incrementing ID)                                                                                            |
+| XRANGE                        | O(log N + K)                                                                                               | BTreeMap range query                                                                                                              |
+| BITCOUNT                      | O(N)                                                                                                       | Byte-level popcount                                                                                                               |
+| PFADD / PFCOUNT               | O(1)                                                                                                       | HyperLogLog register update/estimate                                                                                              |
+| PUBLISH                       | O(S)                                                                                                       | S = subscriber count, lock-free                                                                                                   |
+| SCAN                          | O(COUNT)                                                                                                   | Hash-based cursor, stable across mutations                                                                                        |
+| KEYS pattern                  | O(N)                                                                                                       | Full scan with per-slot EBR pin                                                                                                   |
+| SORT                          | O(N log N)                                                                                                 | Vec collect + sort                                                                                                                |
+| RDB save                      | O(N)                                                                                                       | Per-slot iteration, buffered I/O                                                                                                  |
+| RESP parse                    | O(B)                                                                                                       | B = bytes, SIMD memchr for newlines                                                                                               |
+| Command dispatch (fast-path)  | O(1)                                                                                                       | First-byte + `cmd_eq` for 13 hot commands (GET/SET/HGET/HSET/LPUSH/LPOP/LRANGE/RPUSH/RPOP/EXPIRE/ZADD/JSON.GET/JSON.SET)          |
+| Command dispatch (all others) | O(1)                                                                                                       | Static `OnceLock<foldhash::HashMap>` — uppercase to 32-byte stack buf + one hash probe; built once, zero allocation per call      |
+| Hash probe (avg)              | O(1)                                                                                                       | Open addressing at 75% load factor; a slot's hash tag rejects non-matches without dereferencing the entry                         |
+| Hash probe (worst)            | O(N/S)                                                                                                     | N = keys in shard, linear probe                                                                                                   |
+| Growth / Resize               | O(N/S)                                                                                                     | Per-shard, copies live pointers only                                                                                              |
+| EBR collect                   | O(G)                                                                                                       | G = garbage list length                                                                                                           |
+| Cluster slot routing          | O(1)                                                                                                       | Key CRC16 once, then one index into the shared 16384-entry owner table                                                            |
+| Cluster topology refresh      | O(1)                                                                                                       | One `Acquire` load of a version counter; only a change pays for the lock and `Arc` clone                                          |
+| Cluster write fence           | O(1) per write, O(W) to engage                                                                             | Per-worker in-flight counter; a fence holder drains W counters                                                                    |
+| Value defragmentation         | O(budget)                                                                                                  | Cursor walks one shard per tick and rebuilds at most `budget` values                                                              |
+| `used_memory`                 | O(S)                                                                                                       | Sums S per-CPU allocation stripes                                                                                                 |
 
 ### Data Structures Used
 
-| Type | Structure | Why |
-| ---- | --------- | --- |
-| Key→Value mapping | Open-addressing hash table (linear probe) | Cache-friendly, no pointer chasing |
-| Hash fields | compact `Vec<SmallStr>` → `foldhash::HashMap<SmallStr, SmallStr>` | Low overhead for small hashes, O(1) access after promotion |
-| List | compact/full `VecDeque<SmallStr>` | Inline short values and O(1) push/pop both ends |
-| Set | sorted integers → compact `Vec<SmallStr>` → `foldhash::HashSet<SmallStr>` | Representation follows member type and cardinality |
-| Sorted Set | score-ordered `Vec<ZEntry>` + bloom filter | Compact memory, O(1) append for ascending scores, O(log n) score ranges, bloom skips scan for new members |
-| Stream consumer groups | `foldhash::HashMap<String, ConsumerGroup>` | O(1) group/consumer lookup |
-| Command name → enum | `OnceLock<foldhash::HashMap<&'static str, ComdType>>` | O(1) dispatch after one-time init |
-| JSON | Custom recursive enum (`JsonValue`) | Zero-dependency, path traversal |
-| Stream | `BTreeMap<StreamId, Vec<(String, String)>>` | Ordered by ID, O(log N) range |
-| HyperLogLog | 16384-register byte array | Fixed 16KB, probabilistic counting |
-| Geospatial | ZSet with geohash-encoded scores | Reuses sorted set, haversine filtering |
-| Pub/Sub channels | Arc-snapshot Vec per shard | Lock-free publish, copy-on-write subscribe |
-| Subscriber queue | `crossbeam::SegQueue` | Lock-free MPMC, bounded backpressure |
-| EBR garbage | Thread-local `Vec<Garbage>` | Batched collection every 512 retires |
-| Allocator accounting | `rust-zmalloc` + mimalloc | Zero-overhead allocator; RSS tracked periodically via /proc, explicit page release via mi_collect |
-| Shard selection | Bit shift + mask (foldhash) | Single instruction, no modulo |
-| RESP newline scan | `memchr` (SIMD AVX2) | 32 bytes per cycle |
+| Type                   | Structure                                                                 | Why                                                                                                       |
+| ---------------------- | ------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| Key→Value mapping      | Open-addressing hash table (linear probe)                                 | Cache-friendly, no pointer chasing                                                                        |
+| Hash fields            | compact `Vec<SmallStr>` → `foldhash::HashMap<SmallStr, SmallStr>`         | Low overhead for small hashes, O(1) access after promotion                                                |
+| List                   | compact/full `VecDeque<SmallStr>`                                         | Inline short values and O(1) push/pop both ends                                                           |
+| Set                    | sorted integers → compact `Vec<SmallStr>` → `foldhash::HashSet<SmallStr>` | Representation follows member type and cardinality                                                        |
+| Sorted Set             | score-ordered `Vec<ZEntry>` + bloom filter                                | Compact memory, O(1) append for ascending scores, O(log n) score ranges, bloom skips scan for new members |
+| Stream consumer groups | `foldhash::HashMap<String, ConsumerGroup>`                                | O(1) group/consumer lookup                                                                                |
+| Command name → enum    | `OnceLock<foldhash::HashMap<&'static str, ComdType>>`                     | O(1) dispatch after one-time init                                                                         |
+| JSON                   | Custom recursive enum (`JsonValue`)                                       | Zero-dependency, path traversal                                                                           |
+| Stream                 | `BTreeMap<StreamId, Vec<(String, String)>>`                               | Ordered by ID, O(log N) range                                                                             |
+| HyperLogLog            | 16384-register byte array                                                 | Fixed 16KB, probabilistic counting                                                                        |
+| Geospatial             | ZSet with geohash-encoded scores                                          | Reuses sorted set, haversine filtering                                                                    |
+| Pub/Sub channels       | Arc-snapshot Vec per shard                                                | Lock-free publish, copy-on-write subscribe                                                                |
+| Subscriber queue       | `crossbeam::SegQueue`                                                     | Lock-free MPMC, bounded backpressure                                                                      |
+| EBR garbage            | Thread-local `Vec<Garbage>`                                               | Batched collection every 512 retires                                                                      |
+| Allocator accounting   | `rust-zmalloc` + mimalloc                                                 | Zero-overhead allocator; RSS tracked periodically via /proc, explicit page release via mi_collect         |
+| Shard selection        | Bit shift + mask (foldhash)                                               | Single instruction, no modulo                                                                             |
+| RESP newline scan      | `memchr` (SIMD AVX2)                                                      | 32 bytes per cycle                                                                                        |

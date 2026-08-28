@@ -31,12 +31,23 @@ Built from scratch using atomic pointers, CAS loops, and epoch-based reclamation
 
 Key properties:
 
-- Lookups are lock-free atomic probes
+- Lookups are lock-free atomic probes and never take the entry lock
+- A 15-bit hash tag rides in each slot pointer's unused high bits, so a probe
+  step rejects a non-match without dereferencing the entry and touching its cache
+  line. Addresses that genuinely use those bits are stored untagged, so the scheme
+  stays correct on any virtual-address layout
+- Tables grow at 75% occupancy, which keeps linear-probe chains short
 - Writers serialize only on the matching entry; unrelated keys do not contend
 - Lock, occupied state, and seqlock generation share one atomic state word
+- A mutation costs one compare-exchange plus two plain stores, not five
+  read-modify-writes on the same cache line
+- Waiters spin on a plain load, back off exponentially, then yield. Without the
+  backoff a hot key scaled *negatively* with worker count, because every waiter
+  saw the unlock at once and stampeded the same line with compare-exchanges
 - Keys up to 15 bytes are stored inline; longer keys use one boxed string
 - Shards begin with eight slots and grow lazily to the configured key limit
-- Retired entries and tables are freed through EBR after a grace period
+- Retired entries and tables are freed through EBR after a grace period; a thread
+  that exits hands its remaining garbage to a global list instead of leaking it
 
 ## Compact Values and Collections
 
@@ -45,16 +56,30 @@ Key properties:
 - Sets use sorted integers for numeric members, a compact vector for small sets, and promote to a hash set only when needed
 - Compact collections promote after 64 elements and can demote again after shrinking
 - Sorted sets use one score-ordered vector instead of duplicate ordered and lookup indexes
+- A sorted set's bloom filter probes five bits per member, keeping the
+  false-positive rate near 0.5%. Each false positive costs a full linear scan of
+  the member list, which is the dominant cost of `ZADD` into a large set
 - Removal paths shrink oversized buffers, while background defragmentation compacts long-lived values
+- An emptied list keeps its ring buffer unless it is oversized, so a queue that
+  drains to empty constantly does not free and reallocate on every pop
+- `LPOP`/`RPOP` of a single element write the reply straight into the output
+  buffer, allocating neither a vector nor a string
 
 ## Memory Allocation and Reclamation
 
-FyroDB uses the internal `rust-zmalloc` layer backed by mimalloc. It tracks live allocated bytes for `INFO`, exposes RSS and fragmentation metrics, and can force unused pages back to the operating system.
+FyroDB uses the internal `rust-zmalloc` layer backed by mimalloc. Live allocated
+bytes are tracked by per-CPU striped counters over every allocation, so
+`used_memory` in `INFO` is the analogue of Redis's `zmalloc_used_memory` and
+`mem_fragmentation_ratio` is a real `rss / used` figure rather than `rss / rss`.
+That is what makes the purge and defragmentation triggers below able to fire at
+all.
 
 Memory maintenance runs outside command hot paths:
 
 - EBR garbage collection and mimalloc collection every 10 seconds
-- Fragmentation checks and bounded value defragmentation every 60 seconds
+- Fragmentation checks every 60 seconds; when RSS exceeds live bytes by more than
+  20%, a cursor walks one shard per tick and rebuilds a bounded number of values,
+  so a large keyspace is never materialized at once
 - Underutilized shard-table compaction every 120 seconds
 - `FLUSHALL`/`FLUSHDB` perform quiescent EBR collection before allocator purge
 
@@ -74,4 +99,15 @@ main thread
   └── signal thread (SIGTERM → drain → save → exit)
 ```
 
-No global lock exists on a command hot path. Workers contend only on the atomic state of the individual entry they update; table growth and compaction are isolated per shard.
+No global lock exists on a command hot path. Workers contend only on the atomic
+state of the individual entry they update; table growth and compaction are
+isolated per shard.
+
+In cluster mode a write no longer takes a process-wide mutex. Each worker owns an
+in-flight counter, and slot migration or replica snapshot bootstrap engages a
+fence that drains those counters — they need "no writes in flight", not mutual
+exclusion between writers. Slot ownership resolves through a flat 16384-entry
+table shared by every connection and revalidated with a single atomic load on a
+version counter.
+
+See [Cluster](/docs/cluster) for setup and operations.

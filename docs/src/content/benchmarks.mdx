@@ -10,6 +10,8 @@ order: 17
 - **Network**: Loopback TCP (127.0.0.1)
 - **Clients**: 100 concurrent connections
 - **Operations**: 1M total (10K per client)
+- **FyroDB**: 1 node, 12 workers (one per hardware thread)
+- **Redis**: 12 single-threaded masters, one pinned per hardware thread
 - **Pipeline**: 100 commands per batch
 - **Pub/Sub**: 50 subscribers, 10 publishers, 200K messages, pipeline 200
 
@@ -17,45 +19,55 @@ All tests run with the same Go benchmark tool. Best of three runs.
 
 ## KV Throughput
 
-| Metric           | FyroDB     | Redis Cluster (6 nodes) | DragonflyDB | DiceDB (1 node) |
-| ---------------- | ---------- | ----------------------- | ----------- | --------------- |
-| Pipeline-64 SET  | **7.67M**  | 4.20M                   | 3.65M       | 766K            |
-| Pipeline-100 SET | **20.91M** | 4.90M                   | 3.78M       | 1.62M           |
-| Pipeline-100 GET | **22.04M** | 6.14M                   | 3.97M       | 1.88M           |
+| Metric           | FyroDB     | Redis Cluster (12 masters) | DragonflyDB | DiceDB (1 node) |
+| ---------------- | ---------- | -------------------------- | ----------- | --------------- |
+| Pipeline-64 SET  | **9.00M**  | 5.26M                      | 3.65M       | 766K            |
+| Pipeline-100 SET | **22.12M** | 7.39M                      | 3.78M       | 1.62M           |
+| Pipeline-100 GET | **26.61M** | 8.26M                      | 3.97M       | 1.88M           |
 
 ## Mixed Workload Throughput
 
-| Metric               | FyroDB     | Redis Cluster (6 nodes) |
-| -------------------- | ---------- | ----------------------- |
-| Mixed SET/GET        | **19.95M** | 3.43M                   |
-| INCR (counters)      | **30.91M** | 4.61M                   |
-| HSET/HGET            | **22.01M** | 3.39M                   |
-| LPUSH/RPOP           | **35.08M** | 3.48M                   |
-| SADD                 | **24.40M** | 3.63M                   |
-| ZADD                 | **4.10M**  | 2.99M                   |
-| JSON.SET/GET         | **13.15M** | 1.63M                   |
-| SET+EXPIRE           | **7.26M**  | 1.67M                   |
-| Hot Key (contention) | **7.38M**  | 1.70M                   |
-| Producer/Consumer    | **2.62M**  | 872.6K                  |
+| Metric               | FyroDB     | Redis Cluster (12 masters) |
+| -------------------- | ---------- | -------------------------- |
+| Mixed SET/GET        | **19.23M** | 5.34M                      |
+| INCR (counters)      | **29.81M** | 6.59M                      |
+| HSET/HGET            | **21.72M** | 5.98M                      |
+| LPUSH/RPOP           | **37.51M** | 5.48M                      |
+| SADD                 | **21.28M** | 5.52M                      |
+| ZADD                 | **12.77M** | 3.68M                      |
+| JSON.SET/GET         | **14.67M** | — (module required)        |
+| SET+EXPIRE           | **9.32M**  | 2.25M                      |
+| Hot Key (contention) | **13.32M** | 1.57M                      |
+| Producer/Consumer    | **6.13M**  | 824.0K                     |
 
 ## Pub/Sub Throughput
 
-| Metric           | FyroDB     | Redis Cluster (6 nodes) | DragonflyDB | DiceDB (1 node) |
-| ---------------- | ---------- | ----------------------- | ----------- | --------------- |
-| Publish ops/sec  | **540.4K** | ~134.6K                 | 294.2K      | 167.8K          |
-| Delivery msg/sec | **27.02M** | 6.73M                   | 12.78M      | 8.39M           |
+| Metric           | FyroDB     | Redis Cluster (12 masters) | DragonflyDB | DiceDB (1 node) |
+| ---------------- | ---------- | -------------------------- | ----------- | --------------- |
+| Publish ops/sec  | **523.0K** | 49.7K                      | 294.2K      | 167.8K          |
+| Delivery msg/sec | **26.14M** | 2.49M                      | 12.78M      | 8.39M           |
+
+Redis Cluster broadcasts every `PUBLISH` to all nodes, so its publish rate falls
+as master count rises. The six-master configuration measured ~134.6K/sec.
 
 ## Resource Usage
 
-v0.1.2 reduces peak RSS from roughly **600 MB to 247 MB**, about a **59% reduction**. FyroDB also uses about **62% less peak memory** than the measured six-node Redis Cluster total of 650 MB.
+Measured over the same full suite, RSS summed across all processes.
 
-| Metric   | FyroDB  | Redis Cluster (6 nodes) | DragonflyDB | DiceDB (1 node) |
-| -------- | ------- | ----------------------- | ----------- | --------------- |
-| Idle RSS | ~4 MB   | ~150 MB (total)         | 209 MB      | 12 MB           |
-| Peak RSS | 247 MB  | 650 MB (total)          | 266 MB      | 102 MB          |
-| Avg RSS  | 134 MB  | 463 MB (total)          | —           | —               |
-| Peak CPU | 96%     | 390%                    | 341%        | 97%             |
-| Avg CPU  | 61%     | 159%                    | —           | —               |
+| Metric           | FyroDB | Redis Cluster (12 masters) | DragonflyDB | DiceDB (1 node) |
+| ---------------- | ------ | -------------------------- | ----------- | --------------- |
+| Idle RSS         | 5 MB   | ~120 MB (total)            | 209 MB      | 12 MB           |
+| Loaded RSS       | 57 MB  | 120 MB (total)             | 266 MB      | 102 MB          |
+| After `FLUSHALL` | 50 MB  | 120 MB (total)             | —           | —               |
+
+Two things worth reading carefully:
+
+- The DragonflyDB and DiceDB columns are earlier measurements carried over and
+  were not re-run for this release; treat them as indicative.
+- Neither FyroDB nor Redis returns everything to the OS after a flush. FyroDB
+  reports `used_memory: 0.58 MB` against 50 MB resident, so nearly all of what
+  remains is allocator pages held for reuse rather than live data. See
+  [Production Tips](/docs/production-tips).
 
 ## Throughput vs Others (SET ops/sec)
 
@@ -79,17 +91,36 @@ v0.1.2 reduces peak RSS from roughly **600 MB to 247 MB**, about a **59% reducti
 | Reads        | Single thread            | Lock per segment                | Wait-free via seqlock + EBR              |
 | Value access | Copy                     | Copy                            | Zero-copy GET (direct to TCP buffer)     |
 | Pub/Sub      | Single-thread fan-out    | Thread-per-connection           | Lock-free Arc snapshot, per-CPU delivery |
+| Hash probe   | Deref entry per step     | Segment scan                    | Hash tag in the slot pointer rejects non-matches without a deref |
+| Hot key      | Serialized by design     | Lock per segment                | Reads never lock; writers back off then yield |
+| Cluster      | 16384-slot array         | n/a                             | Shared flat routing table, version-checked per connection |
 
 ## Run Your Own Benchmark
 
+The benchmark tool lives in the repository, so start from a clone:
+
 ```bash
-cd bench && go run .              # Full (KV + Pub/Sub + Mixed)
-cd bench && go run . -m key       # KV only
-cd bench && go run . -m pub       # Pub/Sub only
-cd bench && go run . -m mix       # Mixed workloads only
-cd bench && go run . -p 6379      # Against Redis
-cd bench && go run . --cluster addr1,addr2,...  # Against Redis Cluster
+git clone https://github.com/Rana718/FyroDB && cd FyroDB/bench
+
+go run .                            # Full (KV + Pub/Sub + Mixed)
+go run . -m key                     # KV only
+go run . -m pub                     # Pub/Sub only
+go run . -m mix                     # Mixed workloads only
+go run . -p 6379                    # Against Redis
+go run . -cluster addr1,addr2,...   # Against a cluster
 ```
+
+The clone also ships shortcuts that start each side with a matched core count and
+tear it down again. Run `task --list` inside it to see them; the cluster ones are
+`redis-up-12` / `bench-redis-cluster-12` and `fyro-up` / `bench-fyro-cluster-12`,
+plus 6-core equivalents without the `-12` suffix.
+
+Reproducing these numbers depends on details that are easy to get wrong, so the
+committed Redis compose files pin one master per core, disable persistence, use
+host networking so no NAT hop sits on the critical path, and assign slot ranges
+that match the harness's own key-to-node mapping. Without that last part a handful
+of boundary slots get sent to the wrong node and the harness treats the resulting
+`MOVED` as fatal.
 
 | Flag        | Default | Description                       |
 | ----------- | ------- | --------------------------------- |

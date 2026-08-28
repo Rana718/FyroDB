@@ -24,6 +24,7 @@ const sections = [
          { label: "Installation", slug: "getting-started", icon: FiBox },
          { label: "Docker", slug: "docker", icon: FiBox },
          { label: "Configuration", slug: "configuration", icon: FiSettings },
+         { label: "Cluster", slug: "cluster", icon: FiServer },
       ],
    },
    {
