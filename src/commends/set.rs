@@ -41,10 +41,10 @@ pub fn smismember(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
 }
 
 pub fn smembers(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
-    match parts {
-        [_, key] => resp::write_array(out, &wt!(out, store.smembers(key))),
-        _ => resp::write_wrong_args(out, "smembers"),
-    }
+    let [_, key] = parts else {
+        return resp::write_wrong_args(out, "smembers");
+    };
+    wt!(out, store.smembers_to_buf(key, out));
 }
 
 pub fn scard(parts: &[&str], store: &Store, out: &mut Vec<u8>) {

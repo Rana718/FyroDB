@@ -30,6 +30,16 @@ impl PeerConnection {
         self.codec.write_frame(&mut self.stream, frame)
     }
 
+    /// Send a batch of frames in one vectored syscall. The whole batch is
+    /// retried on reconnect, matching single-frame semantics.
+    pub fn send_batch(
+        &mut self,
+        frames: &[Frame],
+        scratch: &mut Vec<[u8; 48]>,
+    ) -> Result<(), ProtocolError> {
+        self.codec.write_frames(&mut self.stream, frames, scratch)
+    }
+
     pub fn receive(&mut self) -> Result<Frame, ProtocolError> {
         self.codec.read_frame(&mut self.stream)
     }

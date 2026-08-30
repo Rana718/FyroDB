@@ -150,8 +150,7 @@ pub fn zrange(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     let s = parse_int!(out, start);
     let e = parse_int!(out, stop);
     let withscores = rest.iter().any(|r| r.eq_ignore_ascii_case("WITHSCORES"));
-    let items = wt!(out, store.zrange(key, s, e, withscores));
-    write_zset_result(out, &items, withscores);
+    wt!(out, store.zrange_to_buf(key, s, e, withscores, out));
 }
 
 pub fn zrevrange(parts: &[&str], store: &Store, out: &mut Vec<u8>) {

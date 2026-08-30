@@ -188,6 +188,39 @@ impl Store {
         result.unwrap_or(Ok(false))
     }
 
+    /// Pop one element into a caller-reused String scratch: no Vec and no
+    /// fresh allocation once the scratch has been used once.
+    pub fn pop_one_to_scratch(
+        &self,
+        key: &str,
+        from_back: bool,
+        scratch: &mut String,
+    ) -> Result<bool, &'static str> {
+        let result = self.data.update_with(key, |val| {
+            if val.is_expired() {
+                return Ok(false);
+            }
+            let Some(list) = val.value.as_list_mut() else {
+                return Err("WRONGTYPE");
+            };
+            let popped = if from_back {
+                list.pop_back()
+            } else {
+                list.pop_front()
+            };
+            let Some(value) = popped else {
+                return Ok(false);
+            };
+            scratch.clear();
+            scratch.push_str(value.as_str());
+            if list.is_empty() && list.capacity() > Self::LIST_KEEP_CAPACITY {
+                list.shrink_to_fit();
+            }
+            Ok(true)
+        });
+        result.unwrap_or(Ok(false))
+    }
+
     pub fn llen(&self, key: &str) -> Result<usize, &'static str> {
         match self.data.get_ref(key) {
             None => Ok(0),
@@ -272,6 +305,57 @@ impl Store {
         match result {
             Some(r) => r,
             None => Ok(vec![]),
+        }
+    }
+
+    /// Zero-alloc LRANGE: bulk elements stream straight into `out`; the
+    /// closure truncates back to its entry length so seqlock retries stay
+    /// idempotent.
+    pub fn lrange_to_buf(
+        &self,
+        key: &str,
+        start: i64,
+        stop: i64,
+        out: &mut Vec<u8>,
+    ) -> Result<usize, &'static str> {
+        let start_len = out.len();
+        let result = self.data.read_consistent(key, |val| {
+            out.truncate(start_len);
+            if val.is_expired() {
+                return Ok(0);
+            }
+            match val.value.as_list() {
+                Some(l) => {
+                    let len = l.len() as i64;
+                    let s = if start < 0 {
+                        (len + start).max(0)
+                    } else {
+                        start.min(len)
+                    } as usize;
+                    let e_idx = if stop < 0 {
+                        (len + stop).max(0)
+                    } else {
+                        stop.min(len - 1)
+                    } as usize;
+                    if s > e_idx {
+                        return Ok(0);
+                    }
+                    let n = e_idx - s + 1;
+                    crate::utils::resp::write_array_header(out, n);
+                    for v in l.iter().skip(s).take(n) {
+                        crate::utils::resp::write_bulk(out, v.as_str());
+                    }
+                    Ok(n)
+                }
+                None => Err("WRONGTYPE"),
+            }
+        });
+        match result {
+            Some(r) => r,
+            None => {
+                out.truncate(start_len);
+                Ok(0)
+            }
         }
     }
 

@@ -222,6 +222,35 @@ pub fn approx_now_ms() -> u64 {
     if cached == 0 { now_ms() } else { cached }
 }
 
+/// Formats an integer into `buf`, returning the written slice; i64 never
+/// needs more than 20 ASCII bytes.
+#[inline]
+pub fn write_int_to(buf: &mut [u8; 20], mut n: i64) -> &str {
+    let mut i = buf.len();
+    let neg = n < 0;
+    if neg {
+        let mut m = (n as i128).unsigned_abs();
+        while m >= 10 {
+            i -= 1;
+            buf[i] = b'0' + (m % 10) as u8;
+            m /= 10;
+        }
+        i -= 1;
+        buf[i] = b'0' + m as u8;
+        i -= 1;
+        buf[i] = b'-';
+    } else {
+        while n >= 10 {
+            i -= 1;
+            buf[i] = b'0' + (n % 10) as u8;
+            n /= 10;
+        }
+        i -= 1;
+        buf[i] = b'0' + n as u8;
+    }
+    unsafe { std::str::from_utf8_unchecked(&buf[i..]) }
+}
+
 impl StoreValue {
     pub fn compact_allocations(&mut self) {
         self.value.compact_allocations();

@@ -18,6 +18,10 @@ const (
 )
 
 var (
+	// skipFlush (-f): keep all keys between phases so peak RSS at the end
+	// reflects the true steady-state footprint of the full workload.
+	skipFlush bool
+
 	incrHdr     = []byte("*2\r\n$4\r\nINCR\r\n$")
 	hsetHdr     = []byte("*4\r\n$4\r\nHSET\r\n$")
 	hgetHdr     = []byte("*3\r\n$4\r\nHGET\r\n$")
@@ -68,6 +72,9 @@ func recordResult(label string, ops int64, elapsed time.Duration) {
 }
 
 func flushServer() {
+	if skipFlush {
+		return
+	}
 	for _, addr := range addrs {
 		conn, err := net.Dial("tcp", addr)
 		if err != nil {

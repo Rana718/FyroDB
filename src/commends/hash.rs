@@ -56,12 +56,7 @@ pub fn hgetall(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     let [_, key] = parts else {
         return resp::write_wrong_args(out, "hgetall");
     };
-    let pairs = wt!(out, store.hgetall(key));
-    resp::write_array_header(out, pairs.len() * 2);
-    for (f, v) in pairs {
-        resp::write_bulk(out, &f);
-        resp::write_bulk(out, &v);
-    }
+    wt!(out, store.hgetall_to_buf(key, out));
 }
 
 pub fn hdel(parts: &[&str], store: &Store, out: &mut Vec<u8>) {

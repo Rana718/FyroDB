@@ -338,8 +338,6 @@ impl<V> SlotTable<V> {
     pub(crate) fn new(cap: usize) -> Self {
         let cap = cap.next_power_of_two().max(8);
         let layout = Layout::array::<TaggedSlot<V>>(cap).expect("slot array layout overflow");
-        // calloc gives zeroed pages from the kernel; mimalloc skips touching
-        // them until first use, so a fresh table costs no cache pollution.
         let slots = unsafe { rust_zmalloc::alloc_raw_zeroed(layout) }.cast::<TaggedSlot<V>>();
         if slots.is_null() {
             std::alloc::handle_alloc_error(layout);
@@ -422,9 +420,6 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
         let t = self.table();
         let mut i = (hash as usize) & t.mask;
         loop {
-            // Slots whose tag rules out a match are skipped without touching
-            // the entry, so a long probe chain stays inside the slot array
-            // instead of chasing one cache line per step.
             match unsafe { t.slots().get_unchecked(i) }.load_if_tag_matches(hash, Ordering::Acquire)
             {
                 Ok(p) => {
@@ -459,10 +454,10 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
             write_end(&existing.state, true);
             return !was_occupied;
         }
-        self.insert_new(key, value, hash)
+        self.insert_new(key, value, hash, true)
     }
 
-    pub(crate) fn insert_new(&self, key: String, value: V, hash: u64) -> bool {
+    pub(crate) fn insert_new(&self, key: String, value: V, hash: u64, overwrite: bool) -> bool {
         let entry: *mut Entry<V> = alloc_entry(Entry {
             hash,
             key: CompactKey::from_string(key),
@@ -524,6 +519,14 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
                     }
                     state_lock(&e.state);
                     let was_occupied = state_occupied(&e.state, Ordering::Relaxed);
+                    if !overwrite && was_occupied {
+                        state_unlock(&e.state);
+                        unsafe {
+                            state_set_occupied(&(*entry).state, false, Ordering::Relaxed);
+                            drop_raw_entry::<V>(entry.cast());
+                        }
+                        return false;
+                    }
                     write_begin(&e.state);
                     if was_occupied {
                         unsafe { (*e.value.get()).assume_init_drop() };

@@ -96,8 +96,7 @@ pub fn lrange(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     };
     let s = parse_int!(out, start);
     let e = parse_int!(out, stop);
-    let items = wt!(out, store.lrange(key, s, e));
-    resp::write_array(out, &items);
+    wt!(out, store.lrange_to_buf(key, s, e, out));
 }
 
 pub fn ltrim(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
@@ -226,16 +225,18 @@ pub fn blpop(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     }
     let _timeout = parts[parts.len() - 1];
     let keys = &parts[1..parts.len() - 1];
+    // Reused single-element scratch avoids a Vec<String> per key probed.
+    let mut scratch = String::new();
     for &k in keys {
-        let items = match store.lpop(k, 1) {
-            Ok(v) => v,
+        match store.pop_one_to_scratch(k, false, &mut scratch) {
+            Ok(true) => {
+                resp::write_array_header(out, 2);
+                resp::write_bulk(out, k);
+                resp::write_bulk(out, &scratch);
+                return;
+            }
+            Ok(false) => {}
             Err(_) => continue,
-        };
-        if !items.is_empty() {
-            resp::write_array_header(out, 2);
-            resp::write_bulk(out, k);
-            resp::write_bulk(out, &items[0]);
-            return;
         }
     }
     resp::write_nil(out);
@@ -247,16 +248,17 @@ pub fn brpop(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     }
     let _timeout = parts[parts.len() - 1];
     let keys = &parts[1..parts.len() - 1];
+    let mut scratch = String::new();
     for &k in keys {
-        let items = match store.rpop(k, 1) {
-            Ok(v) => v,
+        match store.pop_one_to_scratch(k, true, &mut scratch) {
+            Ok(true) => {
+                resp::write_array_header(out, 2);
+                resp::write_bulk(out, k);
+                resp::write_bulk(out, &scratch);
+                return;
+            }
+            Ok(false) => {}
             Err(_) => continue,
-        };
-        if !items.is_empty() {
-            resp::write_array_header(out, 2);
-            resp::write_bulk(out, k);
-            resp::write_bulk(out, &items[0]);
-            return;
         }
     }
     resp::write_nil(out);

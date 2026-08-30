@@ -21,10 +21,9 @@ impl Store {
                 Some(h) => {
                     let mut added = 0;
                     for (f, v) in fields.iter() {
-                        if !h.contains_key(f) {
+                        if h.insert_ref(f, v) {
                             added += 1;
                         }
-                        h.insert(f.to_string(), v.to_string());
                     }
                     Ok(added)
                 }
@@ -152,6 +151,38 @@ impl Store {
         match result {
             Some(r) => r,
             None => Ok(vec![]),
+        }
+    }
+
+    /// Zero-alloc HGETALL: bulk elements stream straight into `out`. The
+    /// closure truncates back to its entry length first, so a seqlock retry
+    /// never leaves a torn attempt's bytes behind.
+    pub fn hgetall_to_buf(&self, key: &str, out: &mut Vec<u8>) -> Result<usize, &'static str> {
+        let start_len = out.len();
+        let result = self.data.read_consistent(key, |val| {
+            out.truncate(start_len);
+            if val.is_expired() {
+                return Ok(0);
+            }
+            match val.value.as_hash() {
+                Some(h) => {
+                    let n = h.len();
+                    crate::utils::resp::write_array_header(out, n * 2);
+                    for (k, v) in h.iter() {
+                        crate::utils::resp::write_bulk(out, k.as_str());
+                        crate::utils::resp::write_bulk(out, v.as_str());
+                    }
+                    Ok(n)
+                }
+                None => Err("WRONGTYPE"),
+            }
+        });
+        match result {
+            Some(r) => r,
+            None => {
+                out.truncate(start_len);
+                Ok(0)
+            }
         }
     }
 

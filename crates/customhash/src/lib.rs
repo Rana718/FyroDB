@@ -194,7 +194,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
             self.key_count.fetch_add(1, Ordering::Relaxed);
             return true;
         }
-        let is_new = shard.insert_new(key_owned(), value, h);
+        let is_new = shard.insert_new(key_owned(), value, h, true);
         if is_new {
             self.key_count.fetch_add(1, Ordering::Relaxed);
         }
@@ -367,7 +367,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
     }
 
     #[inline]
-    pub fn read_consistent<R>(&self, key: &str, f: impl Fn(&V) -> R) -> Option<R> {
+    pub fn read_consistent<R>(&self, key: &str, mut f: impl FnMut(&V) -> R) -> Option<R> {
         let (h, idx) = self.locate(key);
         let _guard = ebr::pin();
         let entry = unsafe { self.shards.get_unchecked(idx) }.find(key, h)?;
@@ -410,7 +410,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
             self.key_count.fetch_add(1, Ordering::Relaxed);
             return true;
         }
-        let is_new = shard.insert_new(key, value, h);
+        let is_new = shard.insert_new(key, value, h, false);
         if is_new {
             self.key_count.fetch_add(1, Ordering::Relaxed);
         }
@@ -480,6 +480,41 @@ mod tests {
         for i in 0..16 {
             assert_eq!(map.contains_key(&format!("key-{i}")), i % 2 == 0);
         }
+    }
+
+    #[test]
+    fn insert_if_absent_never_overwrites_a_won_race() {
+        let map = Arc::new(CustomMap::with_capacity(1, 16));
+        std::thread::scope(|scope| {
+            for t in 0..8 {
+                let map = Arc::clone(&map);
+                scope.spawn(move || {
+                    for _ in 0..20_000 {
+                        // update-then-create-if-missing, the INCR pattern
+                        if map.update_with("counter", |v: &mut i64| *v += 1).is_none() {
+                            let mut i = 1i64;
+                            let created = map.insert_if_absent("counter".into(), {
+                                i += 1;
+                                1
+                            });
+                            if !created {
+                                // Lost the create race; the increment still
+                                // must happen via a retried update.
+                                let mut spins = 0;
+                                while map.update_with("counter", |v| *v += 1).is_none() {
+                                    spins += 1;
+                                    if spins > 1_000_000 {
+                                        panic!("update never succeeded after lost race");
+                                    }
+                                }
+                            }
+                        }
+                        let _ = t;
+                    }
+                });
+            }
+        });
+        assert_eq!(map.get("counter"), Some(160_000));
     }
 
     #[test]
@@ -561,8 +596,6 @@ mod tests {
         }
     }
 
-    /// Regression: concurrent remove during overwrite must not double-free.
-    ///
     /// Values own a heap allocation so the allocator will catch a double-free.
     #[test]
     fn concurrent_overwrite_and_remove_never_double_frees() {

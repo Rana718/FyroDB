@@ -69,6 +69,21 @@ tasks:
       cmds:
          - cd bench && go run . -p 6379
 
+   bench-fyro-f:
+      desc: "benchmark FyroDB without flushing between phases: keyspace accumulates, final RSS + key count reported"
+      cmds:
+         - cd bench && go run . -f
+
+   bench-redis-f:
+      desc: "benchmark redis without flushing between phases: keyspace accumulates, final RSS + key count reported"
+      cmds:
+         - cd bench && go run . -p 6379 -f
+
+   bench-fyro-cluster-f:
+      desc: "benchmark FyroDB cluster without flushing between phases: keyspace accumulates, final RSS + key count reported"
+      cmds:
+         - cd bench && go run . -f -cluster 127.0.0.1:8000,127.0.0.1:8001,127.0.0.1:8002
+
    bench-redis-cluster:
       desc: "benchmark redis cluster: 6 masters, one per physical core (pair with bench-fyro-cluster)"
       cmds:

@@ -625,8 +625,11 @@ fn run_peer_worker(
     let mut backoff = MIN_BACKOFF;
     let mut request_id = 1u64;
     let mut connected_once = false;
+    let mut batch: Vec<Frame> = Vec::with_capacity(64);
+    let mut scratch: Vec<[u8; 48]> = Vec::new();
     loop {
-        let frame = match receiver.recv_timeout(heartbeat_interval) {
+        batch.clear();
+        let first = match receiver.recv_timeout(heartbeat_interval) {
             Ok(frame) => frame,
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 let frame = Frame {
@@ -643,6 +646,15 @@ fn run_peer_worker(
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         };
+        batch.push(first);
+        // Drain everything already queued so a replication burst leaves in
+        // one writev instead of one syscall per frame.
+        while batch.len() < 256 {
+            match receiver.try_recv() {
+                Ok(frame) => batch.push(frame),
+                Err(_) => break,
+            }
+        }
         loop {
             if peer.is_none() {
                 health.connecting();
@@ -693,7 +705,7 @@ fn run_peer_worker(
             }
             if peer
                 .as_mut()
-                .is_some_and(|connection| connection.send(&frame).is_ok())
+                .is_some_and(|connection| connection.send_batch(&batch, &mut scratch).is_ok())
             {
                 break;
             }

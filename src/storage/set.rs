@@ -101,6 +101,37 @@ impl Store {
         }
     }
 
+    /// Zero-alloc SMEMBERS: bulk elements stream straight into `out`; the
+    /// closure truncates back to its entry length so seqlock retries stay
+    /// idempotent.
+    pub fn smembers_to_buf(&self, key: &str, out: &mut Vec<u8>) -> Result<usize, &'static str> {
+        let start_len = out.len();
+        let result = self.data.read_consistent(key, |val| {
+            out.truncate(start_len);
+            if val.is_expired() {
+                return Ok(0);
+            }
+            match val.value.as_set() {
+                Some(s) => {
+                    let n = s.len();
+                    crate::utils::resp::write_array_header(out, n);
+                    for m in s.iter() {
+                        m.write_bulk_to(out);
+                    }
+                    Ok(n)
+                }
+                None => Err("WRONGTYPE"),
+            }
+        });
+        match result {
+            Some(r) => r,
+            None => {
+                out.truncate(start_len);
+                Ok(0)
+            }
+        }
+    }
+
     pub fn scard(&self, key: &str) -> Result<usize, &'static str> {
         match self.data.get_ref(key) {
             None => Ok(0),
