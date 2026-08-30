@@ -275,7 +275,7 @@ fn audit_zset_members() {
                 let score = m as f64;
                 let _ = store.zadd(
                     &key,
-                    &[(score, ms.clone())],
+                    &[(score, ms.as_str())],
                     false,
                     false,
                     false,

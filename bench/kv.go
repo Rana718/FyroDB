@@ -469,6 +469,40 @@ func flushAll(conns []*net.TCPConn, bufs [][]byte, cnts []int) {
 	}
 }
 
+// warmup runs a small pipelined SET/GET round so neither the client nor the
+// server pays first-touch costs inside the timed phases.
+func warmup() {
+	conns := preDial(CLIENTS)
+	defer closeAll(conns)
+	var wg sync.WaitGroup
+	for i := range conns {
+		wg.Add(1)
+		go func(conn *net.TCPConn, id int) {
+			defer wg.Done()
+			r := bufio.NewReaderSize(conn, 32<<10)
+			buf := make([]byte, 0, 512)
+			var kb [32]byte
+			key := strconv.AppendInt(append(kb[:0], "warmup:"...), int64(id), 10)
+			for round := 0; round < 4; round++ {
+				buf = buf[:0]
+				for j := 0; j < 50; j++ {
+					buf = appendSetBytes(buf, key)
+				}
+				writeFull(conn, buf)
+				discardN(r, 50*5)
+				buf = buf[:0]
+				for j := 0; j < 50; j++ {
+					buf = appendGetBytes(buf, key)
+				}
+				writeFull(conn, buf)
+				skipGetReplies(r, 50)
+			}
+		}(conns[i], i)
+	}
+	wg.Wait()
+	flushServer()
+}
+
 // readSetReplies reads cnt[n] × "+OK\r\n" (5 bytes each) from each node's reader.
 func readSetReplies(readers []*bufio.Reader, cnts []int) {
 	for n, cnt := range cnts {

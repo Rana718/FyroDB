@@ -22,27 +22,20 @@ pub enum ConnMode {
     },
 }
 
-pub struct Conn {
+pub struct Conn<'a> {
     pub stream: TcpStream,
     pub parser: RespParser,
-    pub store: Arc<Store>,
-    pub pubsub: Arc<PubSub>,
+    pub store: &'a Arc<Store>,
+    pub pubsub: &'a PubSub,
     pub write_offset: usize,
     pub mode: ConnMode,
     pub token: usize,
-    pub notifier: Arc<WorkerNotifier>,
-    pub auth_required: Option<Arc<String>>,
+    pub notifier: &'a Arc<WorkerNotifier>,
+    pub auth_required: Option<&'a str>,
     pub authenticated: bool,
     pub asking: bool,
-    /// Mirrors whether the poll registration currently includes `WRITABLE`, so
-    /// the common fully-drained case costs no `reregister` syscall.
     pub writable_registered: bool,
-    /// Index of the worker owning this connection. Selects the write-fence
-    /// counter, which must not be shared between workers.
     pub worker: usize,
-    /// Cached cluster topology plus its flat slot-to-owner table, revalidated
-    /// against `ClusterState::topology_version` instead of re-locking per
-    /// command.
     topology_cache: Option<(
         u64,
         Arc<crate::cluster::Topology>,
@@ -50,14 +43,14 @@ pub struct Conn {
     )>,
 }
 
-impl Conn {
+impl<'a> Conn<'a> {
     pub fn new(
         stream: TcpStream,
-        store: Arc<Store>,
-        pubsub: Arc<PubSub>,
+        store: &'a Arc<Store>,
+        pubsub: &'a PubSub,
         token: usize,
-        notifier: Arc<WorkerNotifier>,
-        auth: Option<Arc<String>>,
+        notifier: &'a Arc<WorkerNotifier>,
+        auth: Option<&'a str>,
         worker: usize,
     ) -> Self {
         store.client_connected();
@@ -92,20 +85,13 @@ impl Conn {
                 }
             }
             None => {
-                // `topology_if_newer(0)` always returns, since versions start
-                // at 1 and only ever increase.
                 self.topology_cache = state.topology_if_newer(0);
             }
         }
     }
 
     #[inline]
-    fn cached_topology(
-        &self,
-    ) -> (
-        &crate::cluster::Topology,
-        &crate::cluster::RoutingTable,
-    ) {
+    fn cached_topology(&self) -> (&crate::cluster::Topology, &crate::cluster::RoutingTable) {
         let (_, topology, routing) = self
             .topology_cache
             .as_ref()
@@ -137,8 +123,6 @@ impl Conn {
             }
         }
 
-        // Safe only here: no dispatch is in flight, so no `parts_raw` pointer
-        // into the read buffer is still being read.
         self.parser.release_read_buffer();
 
         true
@@ -187,7 +171,7 @@ impl Conn {
     }
 }
 
-impl Drop for Conn {
+impl Drop for Conn<'_> {
     fn drop(&mut self) {
         do_full_unsubscribe(self);
         self.store.client_disconnected();
@@ -212,7 +196,7 @@ fn part_str<'a>(out: &mut Vec<u8>, part: (*const u8, usize)) -> Option<&'a str> 
 }
 
 #[inline(always)]
-fn dispatch_raw(conn: &mut Conn, raw: &[(*const u8, usize)]) {
+fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
     if raw.is_empty() {
         return;
     }
@@ -229,9 +213,6 @@ fn dispatch_raw(conn: &mut Conn, raw: &[(*const u8, usize)]) {
     // command is a write.
     let cluster_is_write = conn.store.cluster.enabled && crate::cluster::is_write_command(cmd);
 
-    // One admission check for every command that can grow the keyspace, so a
-    // configured ceiling applies uniformly instead of only to the handful of
-    // paths that happened to route through a `try_*` store helper.
     if conn.store.at_key_capacity() && crate::storage::capacity::is_denyoom_command(cmd) {
         conn.parser
             .wbuf
@@ -239,12 +220,9 @@ fn dispatch_raw(conn: &mut Conn, raw: &[(*const u8, usize)]) {
         return;
     }
 
+    let store = conn.store;
     let _cluster_write_guard = if cluster_is_write {
-        // `conn.store` is an `Arc` this connection owns for its whole life and
-        // never reassigns, so the ticket's borrow outlives every `&mut conn` use
-        // below. The borrow checker cannot see that through the `Arc`.
-        let store_ptr: *const Store = &*conn.store;
-        Some(unsafe { &*store_ptr }.begin_write(conn.worker))
+        Some(store.begin_write(conn.worker))
     } else {
         None
     };
@@ -462,7 +440,7 @@ fn dispatch_raw(conn: &mut Conn, raw: &[(*const u8, usize)]) {
 /// Route one command against this connection's cached topology snapshot.
 #[inline(always)]
 fn route_cached(
-    conn: &Conn,
+    conn: &Conn<'_>,
     cmd: &[u8],
     args: &[&[u8]],
     asking: bool,
@@ -506,9 +484,7 @@ fn write_route_decision(out: &mut Vec<u8>, decision: crate::cluster::RouteDecisi
             out.extend_from_slice(b"\r\n");
         }
         crate::cluster::RouteDecision::CrossSlot => {
-            out.extend_from_slice(
-                b"-CROSSSLOT Keys in request don't hash to the same slot\r\n",
-            );
+            out.extend_from_slice(b"-CROSSSLOT Keys in request don't hash to the same slot\r\n");
         }
         crate::cluster::RouteDecision::Unassigned(_) => {
             out.extend_from_slice(b"-CLUSTERDOWN Hash slot not served\r\n");
@@ -519,13 +495,13 @@ fn write_route_decision(out: &mut Vec<u8>, decision: crate::cluster::RouteDecisi
 
 #[cold]
 #[inline(never)]
-fn handle_unauth(conn: &mut Conn, raw: &[(*const u8, usize)], cmd: &[u8], cmd_len: usize) {
+fn handle_unauth(conn: &mut Conn<'_>, raw: &[(*const u8, usize)], cmd: &[u8], cmd_len: usize) {
     if cmd_len == 4 && cmd.eq_ignore_ascii_case(b"AUTH") {
         if raw.len() >= 2 {
             let Some(pass) = part_str(&mut conn.parser.wbuf, raw[1]) else {
                 return;
             };
-            if let Some(ref expected) = conn.auth_required {
+            if let Some(expected) = conn.auth_required {
                 if constant_time_eq(pass.as_bytes(), expected.as_bytes()) {
                     conn.authenticated = true;
                     conn.parser.wbuf.extend_from_slice(b"+OK\r\n");

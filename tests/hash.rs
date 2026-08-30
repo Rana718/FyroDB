@@ -3,11 +3,7 @@ use common::*;
 use fyro_db::storage::value::StoreValue;
 
 fn hset(s: &fyro_db::storage::store::Store, key: &str, pairs: &[(&str, &str)]) {
-    let fields = pairs
-        .iter()
-        .map(|(f, v)| (f.to_string(), v.to_string()))
-        .collect();
-    s.hset(key, fields).unwrap();
+    s.hset(key, pairs).unwrap();
 }
 
 // HSET / HGET
@@ -15,20 +11,8 @@ fn hset(s: &fyro_db::storage::store::Store, key: &str, pairs: &[(&str, &str)]) {
 #[test]
 fn hset_returns_new_field_count() {
     let s = store();
-    assert_eq!(
-        s.hset(
-            "k",
-            vec![("a".into(), "1".into()), ("b".into(), "2".into())]
-        ),
-        Ok(2)
-    );
-    assert_eq!(
-        s.hset(
-            "k",
-            vec![("a".into(), "updated".into()), ("c".into(), "3".into())]
-        ),
-        Ok(1)
-    );
+    assert_eq!(s.hset("k", &[("a", "1"), ("b", "2")]), Ok(2));
+    assert_eq!(s.hset("k", &[("a", "updated"), ("c", "3")]), Ok(1));
 }
 
 #[test]
@@ -205,7 +189,7 @@ fn all_hash_ops_wrongtype_on_string_key() {
     let s = store();
     s.set("k".into(), StoreValue::string("hello".into()));
 
-    assert!(s.hset("k", vec![("f".into(), "v".into())]).is_err());
+    assert!(s.hset("k", &[("f", "v")]).is_err());
     assert!(s.hsetnx("k", "f", "v".into()).is_err());
     assert!(s.hget("k", "f").is_err());
     assert!(s.hmget("k", &["f"]).is_err());

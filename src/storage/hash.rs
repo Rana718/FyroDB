@@ -1,17 +1,17 @@
 use crate::storage::store::Store;
-use crate::storage::value::{FyroDB, HashInner, StoreValue};
+use crate::storage::value::{FyroDB, HashInner, SmallStr, StoreValue};
 use crate::utils::util::format_float;
 use foldhash::{HashMap, HashMapExt};
 
 impl Store {
-    pub fn hset(&self, key: &str, fields: Vec<(String, String)>) -> Result<usize, &'static str> {
+    pub fn hset(&self, key: &str, fields: &[(&str, &str)]) -> Result<usize, &'static str> {
         let result = self.data.update_with(key, |val| {
             if val.is_expired() {
                 let added = fields.len();
                 let mut v = Vec::with_capacity(fields.len() * 2);
                 for (f, val) in fields.iter() {
-                    v.push(f.clone().into());
-                    v.push(val.clone().into());
+                    v.push(SmallStr::new(f));
+                    v.push(SmallStr::new(val));
                 }
                 val.value = FyroDB::Hash(Box::new(HashInner::Compact(v)));
                 val.expires_ms = 0;
@@ -24,7 +24,7 @@ impl Store {
                         if !h.contains_key(f) {
                             added += 1;
                         }
-                        h.insert(f.clone(), v.clone());
+                        h.insert(f.to_string(), v.to_string());
                     }
                     Ok(added)
                 }
@@ -38,8 +38,8 @@ impl Store {
                 let added = fields.len();
                 let mut v = Vec::with_capacity(fields.len() * 2);
                 for (f, val) in fields {
-                    v.push(f.into());
-                    v.push(val.into());
+                    v.push(SmallStr::new(f));
+                    v.push(SmallStr::new(val));
                 }
                 self.data.insert(
                     key.to_string(),
@@ -99,6 +99,24 @@ impl Store {
             Some(e) if e.is_expired() => Ok(None),
             Some(e) => match e.value.as_hash() {
                 Some(h) => Ok(h.get(field).map(|v| v.to_string())),
+                None => Err("WRONGTYPE"),
+            },
+        }
+    }
+
+    /// Zero-alloc HGET: writes the bulk reply straight into `out`.
+    pub fn hget_to_buf(&self, key: &str, field: &str, out: &mut Vec<u8>) -> Result<bool, &'static str> {
+        match self.data.get_ref(key) {
+            None => Ok(false),
+            Some(e) if e.is_expired() => Ok(false),
+            Some(e) => match e.value.as_hash() {
+                Some(h) => match h.get(field) {
+                    Some(v) => {
+                        crate::utils::resp::write_bulk(out, v.as_str());
+                        Ok(true)
+                    }
+                    None => Ok(false),
+                },
                 None => Err("WRONGTYPE"),
             },
         }

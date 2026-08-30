@@ -16,6 +16,10 @@ struct PatternEntry {
 
 const CHANNEL_SHARDS: usize = 64;
 
+unsafe fn drop_snapshot_box(ptr: *mut u8) {
+    unsafe { drop(Box::from_raw(ptr.cast::<Snapshot>())) };
+}
+
 struct ChannelData {
     name: Arc<str>,
     slots: Vec<Arc<SubSlot>>,
@@ -40,11 +44,13 @@ impl ChannelShard {
         }
     }
 
-    /// Load the current Arc snapshot.
+    /// Lock-free snapshot load. The boxed slot is EBR-retired on swap, so the
+    /// Arc stays alive while this guard is held.
     #[inline(always)]
     fn load_snapshot(&self) -> Snapshot {
-        let _lock = self.mu.lock().unwrap_or_else(|e| e.into_inner());
-        self.load_snapshot_locked()
+        let _guard = customhash::pin();
+        let ptr = self.snapshot.load(Ordering::Acquire);
+        Arc::clone(unsafe { &*ptr })
     }
 
     #[inline(always)]
@@ -57,17 +63,20 @@ impl ChannelShard {
     fn store_snapshot_locked(&self, new_snap: Snapshot) {
         let new_ptr = Box::into_raw(Box::new(new_snap));
         let old_ptr = self.snapshot.swap(new_ptr, Ordering::AcqRel);
-        unsafe { drop(Box::from_raw(old_ptr)) };
+        unsafe { customhash::retire_raw(old_ptr.cast::<u8>(), drop_snapshot_box) };
     }
 
     #[inline(always)]
-    fn publish(&self, channel: &str, frame: &Arc<[u8]>) -> usize {
+    fn publish(&self, channel: &str, frame: &dyn Fn() -> Arc<[u8]>) -> usize {
         let snap = self.load_snapshot();
         for ch in snap.iter() {
             if ch.name.as_ref() == channel {
                 let n = ch.slots.len();
-                for slot in &ch.slots {
-                    slot.push(Arc::clone(frame));
+                if n != 0 {
+                    let frame = frame();
+                    for slot in &ch.slots {
+                        slot.push(Arc::clone(&frame));
+                    }
                 }
                 return n;
             }
@@ -137,16 +146,6 @@ impl ChannelShard {
         self.store_snapshot_locked(Arc::new(new_vec));
     }
 
-    fn count_for(&self, channel: &str) -> usize {
-        let snap = self.load_snapshot();
-        for ch in snap.iter() {
-            if ch.name.as_ref() == channel {
-                return ch.slots.len();
-            }
-        }
-        0
-    }
-
     fn active_channels(&self, pattern: Option<&str>) -> Vec<String> {
         let snap = self.load_snapshot();
         let mut result = Vec::new();
@@ -159,11 +158,23 @@ impl ChannelShard {
         }
         result
     }
+
+    fn count_for(&self, channel: &str) -> usize {
+        let snap = self.load_snapshot();
+        for ch in snap.iter() {
+            if ch.name.as_ref() == channel {
+                return ch.slots.len();
+            }
+        }
+        0
+    }
 }
 
+// Final teardown frees the boxed snapshot directly: no concurrent readers can
+// exist once the whole registry is dropping.
 impl Drop for ChannelShard {
     fn drop(&mut self) {
-        let ptr = self.snapshot.load(Ordering::Relaxed);
+        let ptr = *self.snapshot.get_mut();
         if !ptr.is_null() {
             unsafe { drop(Box::from_raw(ptr)) };
         }
@@ -270,8 +281,9 @@ impl PubSub {
     pub fn publish(&self, channel: &str, message: &str) -> usize {
         let mut count = 0usize;
 
-        let frame: Arc<[u8]> = encode_message(channel, message);
-        count += self.shard_for(channel).publish(channel, &frame);
+        count += self
+            .shard_for(channel)
+            .publish(channel, &|| encode_message(channel, message));
 
         let guard = self.patterns.read().unwrap_or_else(|e| e.into_inner());
         if !guard.is_empty() {

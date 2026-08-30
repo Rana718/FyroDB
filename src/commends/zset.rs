@@ -52,7 +52,7 @@ pub fn zadd(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     let mut members = Vec::with_capacity(score_members.len() / 2);
     for chunk in score_members.chunks(2) {
         let score = parse_float!(out, chunk[0]);
-        members.push((score, chunk[1].to_string()));
+        members.push((score, chunk[1]));
     }
 
     resp::write_integer(

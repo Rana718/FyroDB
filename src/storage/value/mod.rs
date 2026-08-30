@@ -235,6 +235,14 @@ impl StoreValue {
     }
 
     #[inline]
+    pub fn string_small(s: SmallStr) -> Self {
+        Self {
+            value: FyroDB::String(s),
+            expires_ms: 0,
+        }
+    }
+
+    #[inline]
     pub fn string_with_expiry(s: String, expires_at: Option<std::time::Instant>) -> Self {
         let expires_ms = match expires_at {
             None => 0,

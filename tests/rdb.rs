@@ -37,11 +37,7 @@ fn rdb_hash_roundtrip() {
     cleanup(&path);
 
     let s = store();
-    s.hset(
-        "user:1",
-        vec![("name".into(), "rana".into()), ("age".into(), "25".into())],
-    )
-    .unwrap();
+    s.hset("user:1", &[("name", "rana"), ("age", "25")]).unwrap();
 
     rdb::save(&s, &path).unwrap();
 
@@ -61,7 +57,7 @@ fn rdb_mixed_types_roundtrip() {
 
     let s = store();
     set_str(&s, "str_key", "hello");
-    s.hset("hash_key", vec![("f".into(), "v".into())]).unwrap();
+    s.hset("hash_key", &[("f", "v")]).unwrap();
 
     rdb::save(&s, &path).unwrap();
 

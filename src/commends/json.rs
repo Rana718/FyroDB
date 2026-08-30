@@ -1,7 +1,7 @@
 use crate::storage::store::Store;
 use crate::utils::resp;
 use crate::utils::util::format_float;
-use crate::{parse_float, parse_int};
+use crate::{parse_float, parse_int, wt};
 
 pub fn json_set(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     let [_, key, path, value, rest @ ..] = parts else {
@@ -29,10 +29,9 @@ pub fn json_get(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     let [_, key, paths @ ..] = parts else {
         return resp::write_wrong_args(out, "json.get");
     };
-    match store.json_get(key, paths) {
-        Ok(Some(s)) => resp::write_bulk(out, &s),
-        Ok(None) => resp::write_nil(out),
-        Err(e) => resp::write_store_err(out, e),
+    match wt!(out, store.json_get_to_buf(key, paths, out)) {
+        true => {}
+        false => resp::write_nil(out),
     }
 }
 
@@ -268,9 +267,9 @@ pub fn json_mget(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     let keys = &parts[1..parts.len() - 1];
     resp::write_array_header(out, keys.len());
     for &k in keys {
-        match store.json_get(k, &[path]) {
-            Ok(Some(s)) => resp::write_bulk(out, &s),
-            _ => resp::write_nil(out),
+        match wt!(out, store.json_get_to_buf(k, &[path], out)) {
+            true => {}
+            false => resp::write_nil(out),
         }
     }
 }
@@ -281,9 +280,8 @@ pub fn json_resp(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
         [_, key, path] => (*key, *path),
         _ => return resp::write_wrong_args(out, "json.resp"),
     };
-    match store.json_get(key, &[path]) {
-        Ok(Some(s)) => resp::write_bulk(out, &s),
-        Ok(None) => resp::write_nil(out),
-        Err(e) => resp::write_store_err(out, e),
+    match wt!(out, store.json_get_to_buf(key, &[path], out)) {
+        true => {}
+        false => resp::write_nil(out),
     }
 }

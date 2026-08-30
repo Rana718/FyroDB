@@ -53,48 +53,54 @@ pub fn set(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     }
 
     if nx || xx || get {
-        let new_sv = StoreValue {
-            value: crate::storage::value::FyroDB::String(SmallStr::new(value)),
-            expires_ms,
-        };
-
-        let result = store.data.try_update(key, |current| {
+        // (did_set, old value). `update_with` itself returns None when the
+        // key is absent, which falls to the insert path below.
+        let result = store.data.update_with(key, |current| {
             let key_exists = !current.is_expired();
             let old_val = if key_exists {
-                current.value.as_string().cloned()
+                current.value.as_string().map(|s| s.to_string())
             } else {
                 None
             };
 
             if nx && key_exists {
-                if get {
-                    return Some((current.clone(), (false, old_val)));
-                }
-                return Some((current.clone(), (false, None)));
+                return (false, if get { old_val } else { None });
             }
             if xx && !key_exists {
-                return Some((current.clone(), (false, None)));
+                return (false, None);
             }
 
-            Some((new_sv.clone(), (true, old_val)))
+            current.value = crate::storage::value::FyroDB::String(SmallStr::new(value));
+            current.expires_ms = expires_ms;
+            (true, old_val)
         });
 
         match result {
-            Some((did_set, old_val)) => {
-                if !did_set && !get {
-                    return resp::write_nil(out);
-                }
+            Some((true, old_val)) => {
                 if get {
-                    resp::write_opt_bulk(out, old_val.map(|s| s.to_string()));
+                    resp::write_opt_bulk(out, old_val);
                 } else {
                     resp::write_ok(out);
+                }
+            }
+            Some((false, old_val)) => {
+                if get {
+                    resp::write_opt_bulk(out, old_val);
+                } else {
+                    resp::write_nil(out);
                 }
             }
             None => {
                 if xx {
                     return resp::write_nil(out);
                 }
-                store.data.insert(key.to_string(), new_sv);
+                store.data.insert(
+                    key.to_string(),
+                    StoreValue {
+                        value: crate::storage::value::FyroDB::String(SmallStr::new(value)),
+                        expires_ms,
+                    },
+                );
                 if get {
                     resp::write_nil(out);
                 } else {

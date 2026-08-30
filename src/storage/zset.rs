@@ -6,7 +6,7 @@ impl Store {
     pub fn zadd(
         &self,
         key: &str,
-        members: &[(f64, String)],
+        members: &[(f64, &str)],
         nx: bool,
         xx: bool,
         gt: bool,
@@ -19,7 +19,7 @@ impl Store {
                 let mut added = 0;
                 for (score, member) in members {
                     if !xx {
-                        z.insert(*score, member.as_str());
+                        z.insert(*score, member);
                         added += 1;
                     }
                 }
@@ -50,7 +50,7 @@ impl Store {
                                         true
                                     };
                                     if should_update {
-                                        z.insert(*score, member.as_str());
+                                        z.insert(*score, member);
                                         changed += 1;
                                     }
                                 }
@@ -58,14 +58,14 @@ impl Store {
                                     if xx {
                                         continue;
                                     }
-                                    z.insert(*score, member.as_str());
+                                    z.insert(*score, member);
                                     added += 1;
                                 }
                             }
                         } else {
                             // Fast path: no flags, just insert directly.
                             // insert() returns true if new, false if updated.
-                            if z.insert(*score, member.as_str()) {
+                            if z.insert(*score, member) {
                                 added += 1;
                             } else {
                                 changed += 1;
@@ -88,7 +88,7 @@ impl Store {
                 let mut z = ZSetData::new();
                 let mut added = 0;
                 for (score, member) in members {
-                    z.insert(*score, member.as_str());
+                    z.insert(*score, member);
                     added += 1;
                 }
                 self.data.insert(key.to_string(), StoreValue::zset(z));

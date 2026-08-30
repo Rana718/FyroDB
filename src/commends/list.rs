@@ -21,8 +21,13 @@ pub fn rpush(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
 }
 
 pub fn lpop(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
+    if let [_, key] = parts {
+        return match wt!(out, store.pop_one_to_buf(key, false, out)) {
+            true => {}
+            false => resp::write_nil(out),
+        };
+    }
     let (key, count) = match parts {
-        [_, key] => (*key, 1usize),
         [_, key, cnt] => {
             let c = parse_int!(out, cnt, usize);
             (*key, c)
@@ -30,24 +35,21 @@ pub fn lpop(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
         _ => return resp::write_wrong_args(out, "lpop"),
     };
     let items = wt!(out, store.lpop(key, count));
-    if count == 1 && parts.len() == 2 {
-        if items.is_empty() {
-            resp::write_nil(out);
-        } else {
-            resp::write_bulk(out, &items[0]);
-        }
+    if items.is_empty() && parts.len() == 2 {
+        resp::write_nil(out);
     } else {
-        if items.is_empty() && parts.len() == 2 {
-            resp::write_nil(out);
-        } else {
-            resp::write_array(out, &items);
-        }
+        resp::write_array(out, &items);
     }
 }
 
 pub fn rpop(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
+    if let [_, key] = parts {
+        return match wt!(out, store.pop_one_to_buf(key, true, out)) {
+            true => {}
+            false => resp::write_nil(out),
+        };
+    }
     let (key, count) = match parts {
-        [_, key] => (*key, 1usize),
         [_, key, cnt] => {
             let c = parse_int!(out, cnt, usize);
             (*key, c)
@@ -55,18 +57,10 @@ pub fn rpop(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
         _ => return resp::write_wrong_args(out, "rpop"),
     };
     let items = wt!(out, store.rpop(key, count));
-    if count == 1 && parts.len() == 2 {
-        if items.is_empty() {
-            resp::write_nil(out);
-        } else {
-            resp::write_bulk(out, &items[0]);
-        }
+    if items.is_empty() && parts.len() == 2 {
+        resp::write_nil(out);
     } else {
-        if items.is_empty() && parts.len() == 2 {
-            resp::write_nil(out);
-        } else {
-            resp::write_array(out, &items);
-        }
+        resp::write_array(out, &items);
     }
 }
 

@@ -1,6 +1,5 @@
 pub(crate) const SMALL_STR_CAP: usize = 15;
 
-#[derive(Clone)]
 #[repr(C)]
 pub struct SmallStr {
     data: [u8; SMALL_STR_CAP],
@@ -19,6 +18,38 @@ impl SmallStr {
         let mut lb = [0u8; 8];
         lb[..7].copy_from_slice(&data[8..15]);
         u64::from_ne_bytes(lb) as usize
+    }
+
+    /// Formats an integer into the inline buffer. i64 never exceeds 20 ASCII
+    /// digits, so this allocates only when the digits exceed SMALL_STR_CAP.
+    #[inline]
+    pub fn from_int(mut n: i64) -> Self {
+        let mut buf = [0u8; 20];
+        let neg = n < 0;
+        if neg {
+            // i64::MIN handled without overflow: negate digit-wise below.
+            let mut m = (n as i128).unsigned_abs();
+            let mut i = buf.len();
+            while m >= 10 {
+                i -= 1;
+                buf[i] = b'0' + (m % 10) as u8;
+                m /= 10;
+            }
+            i -= 1;
+            buf[i] = b'0' + m as u8;
+            i -= 1;
+            buf[i] = b'-';
+            return Self::new(unsafe { std::str::from_utf8_unchecked(&buf[i..]) });
+        }
+        let mut i = buf.len();
+        while n >= 10 {
+            i -= 1;
+            buf[i] = b'0' + (n % 10) as u8;
+            n /= 10;
+        }
+        i -= 1;
+        buf[i] = b'0' + n as u8;
+        Self::new(unsafe { std::str::from_utf8_unchecked(&buf[i..]) })
     }
 
     #[inline]
@@ -107,6 +138,12 @@ impl SmallStr {
 
     #[inline]
     pub fn push_str(&mut self, s: &str) {
+        let cur = self.len();
+        if self.len != 0xFF && cur + s.len() <= SMALL_STR_CAP {
+            self.data[cur..cur + s.len()].copy_from_slice(s.as_bytes());
+            self.len = (cur + s.len()) as u8;
+            return;
+        }
         let mut owned = self.as_str().to_owned();
         owned.push_str(s);
         *self = Self::from_string(owned);
@@ -153,6 +190,22 @@ impl Drop for SmallStr {
                     std::ptr::slice_from_raw_parts_mut(ptr_val as *mut u8, len_val) as *mut str,
                 ));
             }
+        }
+    }
+}
+
+// Derived Clone would bitwise-copy the heap pointer, aliasing one allocation
+// between two owners. Clone must deep-copy instead.
+impl Clone for SmallStr {
+    #[inline]
+    fn clone(&self) -> Self {
+        if self.len != 0xFF {
+            Self {
+                data: self.data,
+                len: self.len,
+            }
+        } else {
+            Self::new(self.as_str())
         }
     }
 }
@@ -227,5 +280,38 @@ impl PartialEq<str> for SmallStr {
 impl PartialEq<&str> for SmallStr {
     fn eq(&self, other: &&str) -> bool {
         self.as_str() == *other
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SmallStr;
+
+    #[test]
+    fn clone_is_an_independent_copy() {
+        let long = "0123456789abcdefghij";
+        let a = SmallStr::new(long);
+        let b = a.clone();
+        assert_eq!(a.as_str(), long);
+        assert_eq!(b.as_str(), long);
+        // Heap variant must not alias: two owners of one box would double-free.
+        if long.len() > super::SMALL_STR_CAP {
+            assert_ne!(
+                a.as_str().as_ptr(),
+                b.as_str().as_ptr(),
+                "cloned heap variant aliases the original allocation"
+            );
+        }
+        let mut c = a.clone();
+        c.push_str("x");
+        assert_eq!(a.as_str(), long);
+        assert_eq!(c.as_str(), "0123456789abcdefghijx");
+    }
+
+    #[test]
+    fn push_str_stays_inline_when_it_fits() {
+        let mut s = SmallStr::new("hello");
+        s.push_str(" world"); // 11 bytes total, fits inline
+        assert_eq!(s.as_str(), "hello world");
     }
 }

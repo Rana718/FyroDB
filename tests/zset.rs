@@ -3,11 +3,7 @@ use common::*;
 use fyro_db::storage::zset::ZAggregate;
 
 fn zadd_simple(s: &fyro_db::storage::store::Store, key: &str, members: &[(f64, &str)]) {
-    let m: Vec<(f64, String)> = members
-        .iter()
-        .map(|(sc, mb)| (*sc, mb.to_string()))
-        .collect();
-    s.zadd(key, &m, false, false, false, false, false).unwrap();
+    s.zadd(key, members, false, false, false, false, false).unwrap();
 }
 
 #[test]

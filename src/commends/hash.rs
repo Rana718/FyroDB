@@ -6,11 +6,8 @@ use crate::{parse_float, parse_int, store_ok, wt};
 pub fn hset(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     match parts {
         [_, key, pairs @ ..] if !pairs.is_empty() && pairs.len() % 2 == 0 => {
-            let fields = pairs
-                .chunks(2)
-                .map(|c| (c[0].to_string(), c[1].to_string()))
-                .collect();
-            resp::write_integer(out, wt!(out, store.hset(key, fields)) as i64);
+            let fields: Vec<(&str, &str)> = pairs.chunks(2).map(|c| (c[0], c[1])).collect();
+            resp::write_integer(out, wt!(out, store.hset(key, &fields)) as i64);
         }
         _ => resp::write_wrong_args(out, "hset"),
     }
@@ -27,7 +24,10 @@ pub fn hsetnx(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
 
 pub fn hget(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     match parts {
-        [_, key, field] => resp::write_opt_bulk(out, wt!(out, store.hget(key, field))),
+        [_, key, field] => match wt!(out, store.hget_to_buf(key, field, out)) {
+            true => {}
+            false => resp::write_nil(out),
+        },
         _ => resp::write_wrong_args(out, "hget"),
     }
 }
@@ -44,11 +44,8 @@ pub fn hmget(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
 pub fn hmset(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     match parts {
         [_, key, pairs @ ..] if !pairs.is_empty() && pairs.len() % 2 == 0 => {
-            let fields = pairs
-                .chunks(2)
-                .map(|c| (c[0].to_string(), c[1].to_string()))
-                .collect();
-            wt!(out, store.hset(key, fields));
+            let fields: Vec<(&str, &str)> = pairs.chunks(2).map(|c| (c[0], c[1])).collect();
+            wt!(out, store.hset(key, &fields));
             resp::write_ok(out);
         }
         _ => resp::write_wrong_args(out, "hmset"),

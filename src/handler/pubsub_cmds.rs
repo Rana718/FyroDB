@@ -1,9 +1,7 @@
-use std::sync::Arc;
-
 use crate::pubsub::PubSub;
 use crate::utils::resp;
 
-pub fn pubsub_info(parts: &[&str], pubsub: &Arc<PubSub>, out: &mut Vec<u8>) {
+pub fn pubsub_info(parts: &[&str], pubsub: &PubSub, out: &mut Vec<u8>) {
     let sub = match parts.get(1) {
         Some(s) => *s,
         None => {

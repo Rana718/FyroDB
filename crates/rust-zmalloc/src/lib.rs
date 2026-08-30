@@ -156,6 +156,16 @@ pub unsafe fn alloc_raw(layout: Layout) -> *mut u8 {
     ptr
 }
 
+/// Raw zeroed allocation; tables of null slots otherwise pay a manual fill.
+#[inline]
+pub unsafe fn alloc_raw_zeroed(layout: Layout) -> *mut u8 {
+    let ptr = unsafe { MIMALLOC.alloc_zeroed(layout) };
+    if !ptr.is_null() {
+        record(layout.size() as i64);
+    }
+    ptr
+}
+
 #[inline]
 pub unsafe fn dealloc_raw(ptr: *mut u8, layout: Layout) {
     if !ptr.is_null() {

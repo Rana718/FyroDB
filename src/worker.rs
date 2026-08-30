@@ -28,11 +28,11 @@ pub fn initiate_shutdown() {
 }
 
 pub fn run_worker(
-    store: Arc<Store>,
-    pubsub: Arc<PubSub>,
+    store: &Arc<Store>,
+    pubsub: &PubSub,
     port: u16,
-    bind: String,
-    auth: Option<Arc<String>>,
+    bind: &str,
+    auth: Option<&str>,
     worker_index: usize,
 ) {
     let addr: SocketAddr = format!("{}:{}", bind, port).parse().unwrap();
@@ -104,11 +104,11 @@ pub fn run_worker(
                                 .unwrap();
                             conns[id] = Some(Conn::new(
                                 stream,
-                                Arc::clone(&store),
-                                Arc::clone(&pubsub),
+                                store,
+                                pubsub,
                                 id,
-                                Arc::clone(&notifier),
-                                auth.clone(),
+                                &notifier,
+                                auth,
                                 worker_index,
                             ));
                         }
@@ -230,12 +230,6 @@ fn close_conn(conns: &mut [Option<Conn>], poll: &mut Poll, free: &mut Vec<usize>
     }
 }
 
-/// Keep the poll registration in step with whether a reply is still buffered.
-///
-/// Connections are registered `READABLE` at accept time. If a write stops
-/// short, the remainder can only be flushed once the socket reports writable,
-/// so `WRITABLE` has to be added — and removed again once drained, otherwise
-/// every idle connection spins the event loop.
 fn sync_write_interest(conns: &mut [Option<Conn>], poll: &mut Poll, id: usize) {
     let Some(Some(conn)) = conns.get_mut(id) else {
         return;

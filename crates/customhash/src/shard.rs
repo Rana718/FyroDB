@@ -222,6 +222,7 @@ pub(crate) struct TaggedSlot<V>(AtomicPtr<Entry<V>>);
 
 impl<V> TaggedSlot<V> {
     #[inline(always)]
+    #[allow(dead_code)]
     fn null() -> Self {
         TaggedSlot(AtomicPtr::new(ptr::null_mut()))
     }
@@ -337,14 +338,11 @@ impl<V> SlotTable<V> {
     pub(crate) fn new(cap: usize) -> Self {
         let cap = cap.next_power_of_two().max(8);
         let layout = Layout::array::<TaggedSlot<V>>(cap).expect("slot array layout overflow");
-        let slots = unsafe { rust_zmalloc::alloc_raw(layout) }.cast::<TaggedSlot<V>>();
+        // calloc gives zeroed pages from the kernel; mimalloc skips touching
+        // them until first use, so a fresh table costs no cache pollution.
+        let slots = unsafe { rust_zmalloc::alloc_raw_zeroed(layout) }.cast::<TaggedSlot<V>>();
         if slots.is_null() {
             std::alloc::handle_alloc_error(layout);
-        }
-        for i in 0..cap {
-            unsafe {
-                slots.add(i).write(TaggedSlot::null());
-            }
         }
         SlotTable {
             slots,

@@ -3,7 +3,7 @@ mod key;
 mod ops;
 mod shard;
 
-pub use ebr::{force_collect, force_collect_quiescent};
+pub use ebr::{Guard, force_collect, force_collect_quiescent, pin, retire_raw};
 
 use std::marker::PhantomData;
 use std::ops::Deref;

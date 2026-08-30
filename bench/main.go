@@ -147,6 +147,11 @@ func main() {
 
 	mixResults = nil
 
+	// Warmup: one small pipelined round-trip per connection so the first
+	// timed phase does not pay connection setup, page faults and cold code
+	// paths. Too small to affect the server's own caches meaningfully.
+	warmup()
+
 	switch *mode {
 	case "key":
 		runKV()

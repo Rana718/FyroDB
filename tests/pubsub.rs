@@ -277,7 +277,7 @@ fn concurrent_push_and_drain_never_wraps_queue_length() {
         let slot = Arc::clone(&slot);
         scope.spawn(move || {
             let mut out = Vec::new();
-            while slot.queue_len() != 0 || !slot.queue.is_empty() {
+            while slot.queue_len() != 0 {
                 slot.drain_into_limit(&mut out, 4096);
                 out.clear();
                 assert!(slot.queue_len() <= producers * per_producer);

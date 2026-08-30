@@ -8,7 +8,7 @@ use super::subscription::{
     handle_psubscribe, handle_punsubscribe, handle_subscribe, handle_unsubscribe,
 };
 
-pub fn dispatch(conn: &mut Conn, parts: &[&str]) {
+pub fn dispatch(conn: &mut Conn<'_>, parts: &[&str]) {
     if parts.is_empty() {
         conn.parser
             .wbuf
@@ -24,83 +24,83 @@ pub fn dispatch(conn: &mut Conn, parts: &[&str]) {
                 Some(b'S') => {
                     if cmd_eq(cmd, b"SET") {
                         let response_start = conn.parser.wbuf.len();
-                        commends::string::set(parts, &conn.store, &mut conn.parser.wbuf);
+                        commends::string::set(parts, conn.store, &mut conn.parser.wbuf);
                         capture_if_success(conn, parts, response_start);
                         return;
                     } else if cmd_eq(cmd, b"SADD") {
                         let response_start = conn.parser.wbuf.len();
-                        commends::set::sadd(parts, &conn.store, &mut conn.parser.wbuf);
+                        commends::set::sadd(parts, conn.store, &mut conn.parser.wbuf);
                         capture_if_success(conn, parts, response_start);
                         return;
                     }
                 }
                 Some(b'G') if cmd_eq(cmd, b"GET") => {
-                    return commends::string::get(parts, &conn.store, &mut conn.parser.wbuf);
+                    return commends::string::get(parts, conn.store, &mut conn.parser.wbuf);
                 }
                 Some(b'D') if cmd_eq(cmd, b"DEL") => {
-                    return commends::keys::del(parts, &conn.store, &mut conn.parser.wbuf);
+                    return commends::keys::del(parts, conn.store, &mut conn.parser.wbuf);
                 }
                 Some(b'I') if cmd_eq(cmd, b"INCR") => {
                     let response_start = conn.parser.wbuf.len();
-                    commends::string::incr(parts, &conn.store, &mut conn.parser.wbuf);
+                    commends::string::incr(parts, conn.store, &mut conn.parser.wbuf);
                     capture_if_success(conn, parts, response_start);
                     return;
                 }
                 Some(b'H') => {
                     if cmd_eq(cmd, b"HSET") {
                         let response_start = conn.parser.wbuf.len();
-                        commends::hash::hset(parts, &conn.store, &mut conn.parser.wbuf);
+                        commends::hash::hset(parts, conn.store, &mut conn.parser.wbuf);
                         capture_if_success(conn, parts, response_start);
                         return;
                     } else if cmd_eq(cmd, b"HGET") {
-                        return commends::hash::hget(parts, &conn.store, &mut conn.parser.wbuf);
+                        return commends::hash::hget(parts, conn.store, &mut conn.parser.wbuf);
                     }
                 }
                 Some(b'L') => {
                     if cmd_eq(cmd, b"LPUSH") {
                         let response_start = conn.parser.wbuf.len();
-                        commends::list::lpush(parts, &conn.store, &mut conn.parser.wbuf);
+                        commends::list::lpush(parts, conn.store, &mut conn.parser.wbuf);
                         capture_if_success(conn, parts, response_start);
                         return;
                     } else if cmd_eq(cmd, b"LPOP") {
                         let response_start = conn.parser.wbuf.len();
-                        commends::list::lpop(parts, &conn.store, &mut conn.parser.wbuf);
+                        commends::list::lpop(parts, conn.store, &mut conn.parser.wbuf);
                         capture_if_success(conn, parts, response_start);
                         return;
                     } else if cmd_eq(cmd, b"LRANGE") {
-                        return commends::list::lrange(parts, &conn.store, &mut conn.parser.wbuf);
+                        return commends::list::lrange(parts, conn.store, &mut conn.parser.wbuf);
                     }
                 }
                 Some(b'R') => {
                     if cmd_eq(cmd, b"RPUSH") {
                         let response_start = conn.parser.wbuf.len();
-                        commends::list::rpush(parts, &conn.store, &mut conn.parser.wbuf);
+                        commends::list::rpush(parts, conn.store, &mut conn.parser.wbuf);
                         capture_if_success(conn, parts, response_start);
                         return;
                     } else if cmd_eq(cmd, b"RPOP") {
                         let response_start = conn.parser.wbuf.len();
-                        commends::list::rpop(parts, &conn.store, &mut conn.parser.wbuf);
+                        commends::list::rpop(parts, conn.store, &mut conn.parser.wbuf);
                         capture_if_success(conn, parts, response_start);
                         return;
                     }
                 }
                 Some(b'E') if cmd_eq(cmd, b"EXPIRE") => {
-                    return commends::keys::expire(parts, &conn.store, &mut conn.parser.wbuf);
+                    return commends::keys::expire(parts, conn.store, &mut conn.parser.wbuf);
                 }
                 Some(b'Z') if cmd_eq(cmd, b"ZADD") => {
                     let response_start = conn.parser.wbuf.len();
-                    commends::zset::zadd(parts, &conn.store, &mut conn.parser.wbuf);
+                    commends::zset::zadd(parts, conn.store, &mut conn.parser.wbuf);
                     capture_if_success(conn, parts, response_start);
                     return;
                 }
                 Some(b'J') if cmd.len() == 8 => {
                     if cmd_eq(cmd, b"JSON.SET") {
                         let response_start = conn.parser.wbuf.len();
-                        commends::json::json_set(parts, &conn.store, &mut conn.parser.wbuf);
+                        commends::json::json_set(parts, conn.store, &mut conn.parser.wbuf);
                         capture_if_success(conn, parts, response_start);
                         return;
                     } else if cmd_eq(cmd, b"JSON.GET") {
-                        return commends::json::json_get(parts, &conn.store, &mut conn.parser.wbuf);
+                        return commends::json::json_get(parts, conn.store, &mut conn.parser.wbuf);
                     }
                 }
                 _ => {}
@@ -123,10 +123,10 @@ pub fn dispatch(conn: &mut Conn, parts: &[&str]) {
                     _ => resp::write_wrong_args(&mut conn.parser.wbuf, "publish"),
                 }
             } else if cmd_eq(cmd, b"PUBSUB") {
-                pubsub_info(parts, &conn.pubsub, &mut conn.parser.wbuf);
+                pubsub_info(parts, conn.pubsub, &mut conn.parser.wbuf);
             } else {
                 let response_start = conn.parser.wbuf.len();
-                commends::execute(parts, &conn.store, &mut conn.parser.wbuf);
+                commends::execute(parts, conn.store, &mut conn.parser.wbuf);
                 capture_if_success(conn, parts, response_start);
             }
         }
@@ -141,7 +141,7 @@ pub fn dispatch(conn: &mut Conn, parts: &[&str]) {
             } else if cmd_eq(cmd, b"PUNSUBSCRIBE") {
                 handle_punsubscribe(conn, parts);
             } else if cmd_eq(cmd, b"ASKING") {
-                // Redis Cluster clients send ASKING immediately before a
+                //  Cluster clients send ASKING immediately before a
                 // redirected command. FyroDB's migration fence is enforced
                 // by the routing layer, so the marker itself is a no-op.
                 conn.asking = true;
@@ -205,64 +205,77 @@ fn mutation_key_index(command: &[u8]) -> Option<usize> {
         _ => {}
     }
     let is_mutation = match first {
-        b'S' => matches!(
-            command.len(),
-            3 if command.eq_ignore_ascii_case(b"SET")
-        ) || command.eq_ignore_ascii_case(b"SETNX")
-            || command.eq_ignore_ascii_case(b"SETEX")
-            || command.eq_ignore_ascii_case(b"PSETEX")
-            || command.eq_ignore_ascii_case(b"SETRANGE")
-            || command.eq_ignore_ascii_case(b"SETBIT")
-            || command.eq_ignore_ascii_case(b"SADD")
-            || command.eq_ignore_ascii_case(b"SREM")
-            || command.eq_ignore_ascii_case(b"SPOP"),
-        b'G' => command.eq_ignore_ascii_case(b"GETDEL")
-            || command.eq_ignore_ascii_case(b"GETSET")
-            || command.eq_ignore_ascii_case(b"GETEX")
-            || command.eq_ignore_ascii_case(b"GEOADD"),
-        b'I' => command.eq_ignore_ascii_case(b"INCR")
-            || command.eq_ignore_ascii_case(b"INCRBY")
-            || command.eq_ignore_ascii_case(b"INCRBYFLOAT"),
-        b'D' => command.eq_ignore_ascii_case(b"DECR")
-            || command.eq_ignore_ascii_case(b"DECRBY"),
+        b'S' => {
+            matches!(
+                command.len(),
+                3 if command.eq_ignore_ascii_case(b"SET")
+            ) || command.eq_ignore_ascii_case(b"SETNX")
+                || command.eq_ignore_ascii_case(b"SETEX")
+                || command.eq_ignore_ascii_case(b"PSETEX")
+                || command.eq_ignore_ascii_case(b"SETRANGE")
+                || command.eq_ignore_ascii_case(b"SETBIT")
+                || command.eq_ignore_ascii_case(b"SADD")
+                || command.eq_ignore_ascii_case(b"SREM")
+                || command.eq_ignore_ascii_case(b"SPOP")
+        }
+        b'G' => {
+            command.eq_ignore_ascii_case(b"GETDEL")
+                || command.eq_ignore_ascii_case(b"GETSET")
+                || command.eq_ignore_ascii_case(b"GETEX")
+                || command.eq_ignore_ascii_case(b"GEOADD")
+        }
+        b'I' => {
+            command.eq_ignore_ascii_case(b"INCR")
+                || command.eq_ignore_ascii_case(b"INCRBY")
+                || command.eq_ignore_ascii_case(b"INCRBYFLOAT")
+        }
+        b'D' => command.eq_ignore_ascii_case(b"DECR") || command.eq_ignore_ascii_case(b"DECRBY"),
         b'A' => command.eq_ignore_ascii_case(b"APPEND"),
-        b'P' => command.eq_ignore_ascii_case(b"PERSIST")
-            || command.eq_ignore_ascii_case(b"PFADD"),
-        b'H' => command.eq_ignore_ascii_case(b"HSET")
-            || command.eq_ignore_ascii_case(b"HSETNX")
-            || command.eq_ignore_ascii_case(b"HMSET")
-            || command.eq_ignore_ascii_case(b"HDEL")
-            || command.eq_ignore_ascii_case(b"HINCRBY")
-            || command.eq_ignore_ascii_case(b"HINCRBYFLOAT"),
-        b'L' => command.eq_ignore_ascii_case(b"LPUSH")
-            || command.eq_ignore_ascii_case(b"LPOP")
-            || command.eq_ignore_ascii_case(b"LSET")
-            || command.eq_ignore_ascii_case(b"LTRIM")
-            || command.eq_ignore_ascii_case(b"LREM")
-            || command.eq_ignore_ascii_case(b"LINSERT"),
-        b'R' => command.eq_ignore_ascii_case(b"RPUSH")
-            || command.eq_ignore_ascii_case(b"RPOP"),
-        b'Z' => command.eq_ignore_ascii_case(b"ZADD")
-            || command.eq_ignore_ascii_case(b"ZREM")
-            || command.eq_ignore_ascii_case(b"ZINCRBY")
-            || command.eq_ignore_ascii_case(b"ZPOPMIN")
-            || command.eq_ignore_ascii_case(b"ZPOPMAX"),
-        b'J' => command.eq_ignore_ascii_case(b"JSON.SET")
-            || command.eq_ignore_ascii_case(b"JSON.DEL")
-            || command.eq_ignore_ascii_case(b"JSON.NUMINCRBY")
-            || command.eq_ignore_ascii_case(b"JSON.NUMMULTBY")
-            || command.eq_ignore_ascii_case(b"JSON.STRAPPEND")
-            || command.eq_ignore_ascii_case(b"JSON.ARRAPPEND")
-            || command.eq_ignore_ascii_case(b"JSON.ARRINSERT")
-            || command.eq_ignore_ascii_case(b"JSON.ARRPOP")
-            || command.eq_ignore_ascii_case(b"JSON.ARRTRIM")
-            || command.eq_ignore_ascii_case(b"JSON.TOGGLE")
-            || command.eq_ignore_ascii_case(b"JSON.CLEAR"),
-        b'X' => command.eq_ignore_ascii_case(b"XADD")
-            || command.eq_ignore_ascii_case(b"XTRIM")
-            || command.eq_ignore_ascii_case(b"XDEL")
-            || command.eq_ignore_ascii_case(b"XGROUP")
-            || command.eq_ignore_ascii_case(b"XACK"),
+        b'P' => command.eq_ignore_ascii_case(b"PERSIST") || command.eq_ignore_ascii_case(b"PFADD"),
+        b'H' => {
+            command.eq_ignore_ascii_case(b"HSET")
+                || command.eq_ignore_ascii_case(b"HSETNX")
+                || command.eq_ignore_ascii_case(b"HMSET")
+                || command.eq_ignore_ascii_case(b"HDEL")
+                || command.eq_ignore_ascii_case(b"HINCRBY")
+                || command.eq_ignore_ascii_case(b"HINCRBYFLOAT")
+        }
+        b'L' => {
+            command.eq_ignore_ascii_case(b"LPUSH")
+                || command.eq_ignore_ascii_case(b"LPOP")
+                || command.eq_ignore_ascii_case(b"LSET")
+                || command.eq_ignore_ascii_case(b"LTRIM")
+                || command.eq_ignore_ascii_case(b"LREM")
+                || command.eq_ignore_ascii_case(b"LINSERT")
+        }
+        b'R' => command.eq_ignore_ascii_case(b"RPUSH") || command.eq_ignore_ascii_case(b"RPOP"),
+        b'Z' => {
+            command.eq_ignore_ascii_case(b"ZADD")
+                || command.eq_ignore_ascii_case(b"ZREM")
+                || command.eq_ignore_ascii_case(b"ZINCRBY")
+                || command.eq_ignore_ascii_case(b"ZPOPMIN")
+                || command.eq_ignore_ascii_case(b"ZPOPMAX")
+        }
+        b'J' => {
+            command.eq_ignore_ascii_case(b"JSON.SET")
+                || command.eq_ignore_ascii_case(b"JSON.DEL")
+                || command.eq_ignore_ascii_case(b"JSON.NUMINCRBY")
+                || command.eq_ignore_ascii_case(b"JSON.NUMMULTBY")
+                || command.eq_ignore_ascii_case(b"JSON.STRAPPEND")
+                || command.eq_ignore_ascii_case(b"JSON.ARRAPPEND")
+                || command.eq_ignore_ascii_case(b"JSON.ARRINSERT")
+                || command.eq_ignore_ascii_case(b"JSON.ARRPOP")
+                || command.eq_ignore_ascii_case(b"JSON.ARRTRIM")
+                || command.eq_ignore_ascii_case(b"JSON.TOGGLE")
+                || command.eq_ignore_ascii_case(b"JSON.CLEAR")
+        }
+        b'X' => {
+            command.eq_ignore_ascii_case(b"XADD")
+                || command.eq_ignore_ascii_case(b"XTRIM")
+                || command.eq_ignore_ascii_case(b"XDEL")
+                || command.eq_ignore_ascii_case(b"XGROUP")
+                || command.eq_ignore_ascii_case(b"XACK")
+        }
         _ => false,
     };
     if is_mutation { Some(1) } else { None }

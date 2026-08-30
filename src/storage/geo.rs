@@ -11,12 +11,18 @@ impl Store {
         xx: bool,
         ch: bool,
     ) -> Result<usize, &'static str> {
-        let members: Vec<(f64, String)> = items
+        // Geohash interning: distinct members may hash to the same score, so
+        // members are owned by this Vec while zadd borrows them.
+        let owned: Vec<(f64, String)> = items
             .iter()
             .map(|(lon, lat, member)| {
                 let hash = geohash_encode(*lon, *lat);
                 (f64::from_bits(hash), member.clone())
             })
+            .collect();
+        let members: Vec<(f64, &str)> = owned
+            .iter()
+            .map(|(score, member)| (*score, member.as_str()))
             .collect();
 
         self.zadd(key, &members, nx, xx, false, false, ch)

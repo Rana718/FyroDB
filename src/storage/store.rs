@@ -181,7 +181,6 @@ pub struct Store {
     pub(crate) connected_clients: AtomicUsize,
     ttl: TtlCounters,
     replica_applied_offset: AtomicU64,
-    pub(crate) int_create_lock: Mutex<()>,
     replica_installing: std::sync::atomic::AtomicBool,
 
     pub cluster: Box<crate::cluster::ClusterConfig>,
@@ -241,7 +240,6 @@ impl Store {
             replica_meta_path: Mutex::new(None),
             replica_identity: Mutex::new(None),
             cluster_meta_path: Mutex::new(None),
-            int_create_lock: Mutex::new(()),
             cluster_state: crate::cluster::ClusterState::with_topology(
                 failure_quorum,
                 std::time::Duration::from_secs(30),

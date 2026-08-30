@@ -7,7 +7,6 @@ use std::fs::{self, File};
 use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::os::unix::io::AsRawFd;
 use std::path::Path;
-use std::sync::Arc;
 use std::time::Duration;
 
 const MAGIC: &[u8; 4] = b"FLDB";
@@ -650,23 +649,17 @@ pub fn decode_single_value(bytes: &[u8]) -> io::Result<StoreValue> {
     Ok(StoreValue { value, expires_ms })
 }
 
-pub fn start_background_save(store: Arc<Store>, path: String, interval: Duration) {
-    std::thread::Builder::new()
-        .name("fyrodb-rdb-saver".into())
-        .stack_size(64 * 1024)
-        .spawn(move || {
-            loop {
-                std::thread::sleep(interval);
-                match save(&store, &path) {
-                    Ok(()) => {}
-                    Err(e) => eprintln!("[rdb] background save error: {e}"),
-                }
-                if let Some(log) = store.replication_coordinator() {
-                    log.flush_journal();
-                }
-            }
-        })
-        .expect("failed to spawn RDB saver thread");
+pub fn background_save_loop(store: &Store, path: &str, interval: Duration) {
+    loop {
+        std::thread::sleep(interval);
+        match save(store, path) {
+            Ok(()) => {}
+            Err(e) => eprintln!("[rdb] background save error: {e}"),
+        }
+        if let Some(log) = store.replication_coordinator() {
+            log.flush_journal();
+        }
+    }
 }
 
 #[inline]

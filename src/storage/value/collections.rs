@@ -226,6 +226,11 @@ impl SetInner {
     }
 
     #[inline]
+    pub fn insert_str(&mut self, member: &str) -> bool {
+        self.insert_small(SmallStr::new(member))
+    }
+
+    #[inline]
     pub fn insert_small(&mut self, member: SmallStr) -> bool {
         match self {
             Self::Integers(v) => {

@@ -7,10 +7,7 @@ impl Store {
         let result = self.data.update_with(key, |val| {
             if val.is_expired() {
                 let mut set = SetInner::new();
-                let added = members
-                    .iter()
-                    .filter(|m| set.insert((*m).to_string()))
-                    .count();
+                let added = members.iter().filter(|m| set.insert_str(m)).count();
                 val.value = FyroDB::Set(Box::new(set));
                 val.expires_ms = 0;
                 return Ok(added);
@@ -19,7 +16,7 @@ impl Store {
                 Some(s) => {
                     let mut added = 0;
                     for m in members {
-                        if s.insert(m.to_string()) {
+                        if s.insert_str(m) {
                             added += 1;
                         }
                     }
@@ -33,10 +30,7 @@ impl Store {
             Some(r) => r,
             None => {
                 let mut set = SetInner::new();
-                let added = members
-                    .iter()
-                    .filter(|m| set.insert((*m).to_string()))
-                    .count();
+                let added = members.iter().filter(|m| set.insert_str(m)).count();
                 self.data.insert(
                     key.to_string(),
                     StoreValue {

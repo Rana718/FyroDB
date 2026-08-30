@@ -83,9 +83,32 @@ impl Store {
     }
 
     pub fn json_get(&self, key: &str, paths: &[&str]) -> Result<Option<String>, &'static str> {
+        let mut buf = Vec::new();
+        match self.json_get_to_buf(key, paths, &mut buf) {
+            Ok(true) => {
+                // Strip the bulk header and trailing CRLF to return the value.
+                let s = String::from_utf8_lossy(&buf).into_owned();
+                let start = s.find("\r\n").map(|i| i + 2).unwrap_or(0);
+                let end = s.len().saturating_sub(2);
+                Ok(Some(s[start..end].to_string()))
+            }
+            Ok(false) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Zero-alloc JSON.GET for the common root-path case: the stored raw
+    /// document is written straight into `out`. Complex paths still build a
+    /// String. Returns Ok(true) when a reply was written.
+    pub fn json_get_to_buf(
+        &self,
+        key: &str,
+        paths: &[&str],
+        out: &mut Vec<u8>,
+    ) -> Result<bool, &'static str> {
         match self.data.get_ref(key) {
-            None => Ok(None),
-            Some(e) if e.is_expired() => Ok(None),
+            None => Ok(false),
+            Some(e) if e.is_expired() => Ok(false),
             Some(e) => {
                 let raw = match e.value.as_json_str() {
                     Some(s) => s,
@@ -95,16 +118,20 @@ impl Store {
                     || (paths.len() == 1
                         && (paths[0] == "." || paths[0] == "$" || paths[0].is_empty()))
                 {
-                    return Ok(Some(raw.to_owned()));
+                    crate::utils::resp::write_bulk(out, raw);
+                    return Ok(true);
                 }
                 let json = match e.value.parse_json() {
                     Some(j) => j,
-                    None => return Ok(None),
+                    None => return Ok(false),
                 };
                 if paths.len() == 1 {
                     match json.get_path(paths[0]) {
-                        Some(v) => Ok(Some(v.to_resp_string())),
-                        None => Ok(None),
+                        Some(v) => {
+                            crate::utils::resp::write_bulk(out, &v.to_resp_string());
+                            Ok(true)
+                        }
+                        None => Ok(false),
                     }
                 } else {
                     let mut result = String::from("{");
@@ -121,7 +148,8 @@ impl Store {
                         }
                     }
                     result.push('}');
-                    Ok(Some(result))
+                    crate::utils::resp::write_bulk(out, &result);
+                    Ok(true)
                 }
             }
         }
