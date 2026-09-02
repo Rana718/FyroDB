@@ -137,6 +137,54 @@ impl Store {
         }
     }
 
+    /// Zero-alloc ZMSCORE: one element per member streams straight into `out`,
+    /// with nil for missing members. The closure truncates back to its entry
+    /// length first, so a seqlock retry never leaves a torn attempt's bytes behind.
+    pub fn zmscore_to_buf(
+        &self,
+        key: &str,
+        members: &[&str],
+        out: &mut Vec<u8>,
+    ) -> Result<(), &'static str> {
+        let start_len = out.len();
+        let result = self.data.read_consistent(key, |val| {
+            out.truncate(start_len);
+            if val.is_expired() {
+                crate::utils::resp::write_array_header(out, members.len());
+                for _ in members {
+                    crate::utils::resp::write_nil(out);
+                }
+                return Ok(());
+            }
+            match val.value.as_zset() {
+                Some(z) => {
+                    crate::utils::resp::write_array_header(out, members.len());
+                    for m in members {
+                        match z.get_score(m) {
+                            Some(score) => crate::utils::resp::write_bulk(
+                                out,
+                                &crate::utils::util::format_float(score),
+                            ),
+                            None => crate::utils::resp::write_nil(out),
+                        }
+                    }
+                    Ok(())
+                }
+                None => Err("WRONGTYPE"),
+            }
+        });
+        match result {
+            Some(r) => r,
+            None => {
+                crate::utils::resp::write_array_header(out, members.len());
+                for _ in members {
+                    crate::utils::resp::write_nil(out);
+                }
+                Ok(())
+            }
+        }
+    }
+
     pub fn zrank(&self, key: &str, member: &str) -> Result<Option<usize>, &'static str> {
         match self.data.get_ref(key) {
             None => Ok(None),

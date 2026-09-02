@@ -72,6 +72,32 @@ fn hmget_missing_key_all_nil() {
     assert_eq!(s.hmget("nope", &fields), Ok(vec![None, None]));
 }
 
+#[test]
+fn hmget_to_buf_matches_hmget() {
+    let s = store();
+    hset(&s, "k", &[("a", "1"), ("b", "2")]);
+    let fields = vec!["a", "missing", "b"];
+    let mut out = Vec::new();
+    s.hmget_to_buf("k", &fields, &mut out).unwrap();
+    assert_eq!(out, b"*3\r\n$1\r\n1\r\n$-1\r\n$1\r\n2\r\n");
+
+    let mut out = Vec::new();
+    s.hmget_to_buf("nope", &fields, &mut out).unwrap();
+    assert_eq!(out, b"*3\r\n$-1\r\n$-1\r\n$-1\r\n");
+}
+
+#[test]
+fn hmget_to_buf_wrongtype_errors_without_leaking_bytes() {
+    let s = store();
+    s.set_string("strk", "x", 0);
+    let fields = vec!["a", "b"];
+    let mut out = Vec::new();
+    assert_eq!(s.hmget_to_buf("strk", &fields, &mut out), Err("WRONGTYPE"));
+    // The error reply is written by the caller; the buffer must hold no
+    // partial array bytes from the aborted attempt.
+    assert!(out.is_empty());
+}
+
 // HGETALL
 
 #[test]

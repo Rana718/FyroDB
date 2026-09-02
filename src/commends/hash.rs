@@ -35,7 +35,7 @@ pub fn hget(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
 pub fn hmget(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     match parts {
         [_, key, fields @ ..] if !fields.is_empty() => {
-            resp::write_opt_array(out, &wt!(out, store.hmget(key, fields)))
+            wt!(out, store.hmget_to_buf(key, fields, out));
         }
         _ => resp::write_wrong_args(out, "hmget"),
     }

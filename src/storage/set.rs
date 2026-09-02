@@ -85,6 +85,48 @@ impl Store {
         }
     }
 
+    /// Zero-alloc SMISMEMBER: one integer per member streams straight into
+    /// `out`. The closure truncates back to its entry length first, so a
+    /// seqlock retry never leaves a torn attempt's bytes behind.
+    pub fn smismember_to_buf(
+        &self,
+        key: &str,
+        members: &[&str],
+        out: &mut Vec<u8>,
+    ) -> Result<(), &'static str> {
+        let start_len = out.len();
+        let result = self.data.read_consistent(key, |val| {
+            out.truncate(start_len);
+            if val.is_expired() {
+                crate::utils::resp::write_array_header(out, members.len());
+                for _ in members {
+                    crate::utils::resp::write_integer(out, 0);
+                }
+                return Ok(());
+            }
+            match val.value.as_set() {
+                Some(s) => {
+                    crate::utils::resp::write_array_header(out, members.len());
+                    for m in members {
+                        crate::utils::resp::write_integer(out, s.contains(m) as i64);
+                    }
+                    Ok(())
+                }
+                None => Err("WRONGTYPE"),
+            }
+        });
+        match result {
+            Some(r) => r,
+            None => {
+                crate::utils::resp::write_array_header(out, members.len());
+                for _ in members {
+                    crate::utils::resp::write_integer(out, 0);
+                }
+                Ok(())
+            }
+        }
+    }
+
     pub fn smembers(&self, key: &str) -> Result<Vec<String>, &'static str> {
         let result = self.data.read_consistent(key, |val| {
             if val.is_expired() {

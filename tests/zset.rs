@@ -117,6 +117,31 @@ fn zmscore_mixed() {
 }
 
 #[test]
+fn zmscore_to_buf_matches_zmscore() {
+    let s = store();
+    zadd_simple(&s, "k", &[(1.5, "a"), (2.5, "b")]);
+    let mut out = Vec::new();
+    s.zmscore_to_buf("k", &["a", "z", "b"], &mut out).unwrap();
+    assert_eq!(out, b"*3\r\n$3\r\n1.5\r\n$-1\r\n$3\r\n2.5\r\n");
+
+    let mut out = Vec::new();
+    s.zmscore_to_buf("nope", &["a"], &mut out).unwrap();
+    assert_eq!(out, b"*1\r\n$-1\r\n");
+}
+
+#[test]
+fn zmscore_to_buf_wrongtype_errors_without_leaking_bytes() {
+    let s = store();
+    s.set_string("strk", "x", 0);
+    let mut out = Vec::new();
+    assert_eq!(
+        s.zmscore_to_buf("strk", &["a"], &mut out),
+        Err("WRONGTYPE")
+    );
+    assert!(out.is_empty());
+}
+
+#[test]
 fn zrank_ascending() {
     let s = store();
     zadd_simple(&s, "k", &[(1.0, "a"), (2.0, "b"), (3.0, "c")]);

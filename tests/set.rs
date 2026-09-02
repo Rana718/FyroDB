@@ -80,6 +80,31 @@ fn smismember_mixed() {
 }
 
 #[test]
+fn smismember_to_buf_matches_smismember() {
+    let s = store();
+    s.sadd("k", &["a", "b"]).unwrap();
+    let mut out = Vec::new();
+    s.smismember_to_buf("k", &["a", "z", "b"], &mut out).unwrap();
+    assert_eq!(out, b"*3\r\n:1\r\n:0\r\n:1\r\n");
+
+    let mut out = Vec::new();
+    s.smismember_to_buf("nope", &["a", "b"], &mut out).unwrap();
+    assert_eq!(out, b"*2\r\n:0\r\n:0\r\n");
+}
+
+#[test]
+fn smismember_to_buf_wrongtype_errors_without_leaking_bytes() {
+    let s = store();
+    s.set_string("strk", "x", 0);
+    let mut out = Vec::new();
+    assert_eq!(
+        s.smismember_to_buf("strk", &["a"], &mut out),
+        Err("WRONGTYPE")
+    );
+    assert!(out.is_empty());
+}
+
+#[test]
 fn smembers_returns_all() {
     let s = store();
     s.sadd("k", &["a", "b", "c"]).unwrap();

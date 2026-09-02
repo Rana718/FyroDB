@@ -9,6 +9,80 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 static MIMALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+#[cfg(feature = "jemalloc")]
+static JEMALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
+
+#[cfg(feature = "system")]
+static SYSTEM: std::alloc::System = std::alloc::System;
+
+#[inline(always)]
+#[cfg(not(any(feature = "jemalloc", feature = "system")))]
+fn backend_alloc(layout: Layout) -> *mut u8 {
+    unsafe { MIMALLOC.alloc(layout) }
+}
+
+#[inline(always)]
+#[cfg(feature = "jemalloc")]
+fn backend_alloc(layout: Layout) -> *mut u8 {
+    unsafe { JEMALLOC.alloc(layout) }
+}
+
+#[inline(always)]
+#[cfg(feature = "system")]
+fn backend_alloc(layout: Layout) -> *mut u8 {
+    unsafe { SYSTEM.alloc(layout) }
+}
+
+#[inline(always)]
+#[cfg(not(any(feature = "jemalloc", feature = "system")))]
+fn backend_dealloc(ptr: *mut u8, layout: Layout) {
+    unsafe { MIMALLOC.dealloc(ptr, layout) }
+}
+
+#[inline(always)]
+#[cfg(feature = "jemalloc")]
+fn backend_dealloc(ptr: *mut u8, layout: Layout) {
+    unsafe { JEMALLOC.dealloc(ptr, layout) }
+}
+
+#[inline(always)]
+#[cfg(feature = "system")]
+fn backend_dealloc(ptr: *mut u8, layout: Layout) {
+    unsafe { SYSTEM.dealloc(ptr, layout) }
+}
+
+#[inline(always)]
+fn backend_alloc_zeroed(layout: Layout) -> *mut u8 {
+    #[cfg(not(any(feature = "jemalloc", feature = "system")))]
+    {
+        unsafe { MIMALLOC.alloc_zeroed(layout) }
+    }
+    #[cfg(feature = "jemalloc")]
+    {
+        unsafe { JEMALLOC.alloc_zeroed(layout) }
+    }
+    #[cfg(feature = "system")]
+    {
+        unsafe { SYSTEM.alloc_zeroed(layout) }
+    }
+}
+
+#[inline(always)]
+fn backend_realloc(ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+    #[cfg(not(any(feature = "jemalloc", feature = "system")))]
+    {
+        unsafe { MIMALLOC.realloc(ptr, layout, new_size) }
+    }
+    #[cfg(feature = "jemalloc")]
+    {
+        unsafe { JEMALLOC.realloc(ptr, layout, new_size) }
+    }
+    #[cfg(feature = "system")]
+    {
+        unsafe { SYSTEM.realloc(ptr, layout, new_size) }
+    }
+}
+
 /// Number of independent counters used to track live allocated bytes.
 ///
 /// Striped by CPU to keep updates uncontended. A block freed on a different
@@ -55,7 +129,7 @@ pub struct Zmalloc;
 unsafe impl GlobalAlloc for Zmalloc {
     #[inline]
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        let ptr = unsafe { MIMALLOC.alloc(layout) };
+        let ptr = backend_alloc(layout);
         if !ptr.is_null() {
             record(layout.size() as i64);
         }
@@ -64,11 +138,11 @@ unsafe impl GlobalAlloc for Zmalloc {
     #[inline]
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         record(-(layout.size() as i64));
-        unsafe { MIMALLOC.dealloc(ptr, layout) }
+        backend_dealloc(ptr, layout);
     }
     #[inline]
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-        let ptr = unsafe { MIMALLOC.alloc_zeroed(layout) };
+        let ptr = backend_alloc_zeroed(layout);
         if !ptr.is_null() {
             record(layout.size() as i64);
         }
@@ -76,7 +150,7 @@ unsafe impl GlobalAlloc for Zmalloc {
     }
     #[inline]
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        let new_ptr = unsafe { MIMALLOC.realloc(ptr, layout, new_size) };
+        let new_ptr = backend_realloc(ptr, layout, new_size);
         if !new_ptr.is_null() {
             record(new_size as i64 - layout.size() as i64);
         }
@@ -124,12 +198,19 @@ pub fn stats() -> Stats {
     }
 }
 
-/// Force mimalloc to collect and return unused pages to the OS.
+/// Force the backing allocator to collect and return unused pages to the OS.
+#[cfg(not(any(feature = "jemalloc", feature = "system")))]
 pub fn purge() {
     unsafe extern "C" {
         fn mi_collect(force: bool);
     }
     unsafe { mi_collect(true) };
+}
+
+#[cfg(any(feature = "jemalloc", feature = "system"))]
+pub fn purge() {
+    // jemalloc returns dirty pages via decay; there is no portable force
+    // equivalent exposed through the Rust crate, so this is best-effort.
 }
 
 #[inline]
@@ -149,7 +230,7 @@ pub fn fragmentation_ratio() -> f64 {
 /// Raw allocation helper for EBR-managed objects.
 #[inline]
 pub unsafe fn alloc_raw(layout: Layout) -> *mut u8 {
-    let ptr = unsafe { MIMALLOC.alloc(layout) };
+    let ptr = backend_alloc(layout);
     if !ptr.is_null() {
         record(layout.size() as i64);
     }
@@ -159,7 +240,7 @@ pub unsafe fn alloc_raw(layout: Layout) -> *mut u8 {
 /// Raw zeroed allocation; tables of null slots otherwise pay a manual fill.
 #[inline]
 pub unsafe fn alloc_raw_zeroed(layout: Layout) -> *mut u8 {
-    let ptr = unsafe { MIMALLOC.alloc_zeroed(layout) };
+    let ptr = backend_alloc_zeroed(layout);
     if !ptr.is_null() {
         record(layout.size() as i64);
     }
@@ -170,7 +251,7 @@ pub unsafe fn alloc_raw_zeroed(layout: Layout) -> *mut u8 {
 pub unsafe fn dealloc_raw(ptr: *mut u8, layout: Layout) {
     if !ptr.is_null() {
         record(-(layout.size() as i64));
-        unsafe { MIMALLOC.dealloc(ptr, layout) }
+        backend_dealloc(ptr, layout);
     }
 }
 

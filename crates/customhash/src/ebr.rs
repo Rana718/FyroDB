@@ -6,9 +6,6 @@ use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering, fence};
 use crossbeam_utils::CachePadded;
 
 const INACTIVE: u64 = 0;
-/// Marks a participant slot whose thread has exited. Reclaimable by the next
-/// thread that registers. `collect` already ignores it: the epoch check only
-/// rejects values below the global epoch, and this is the maximum.
 const RETIRED: u64 = u64::MAX;
 const COLLECT_INTERVAL: usize = 512;
 
@@ -258,7 +255,6 @@ pub fn force_collect() {
 
 /// Demand-driven quiescence used by destructive commands.  It never frees an
 /// object while a reader is pinned; it simply gives concurrent readers a short
-/// chance to leave their critical section before collecting retired storage.
 pub fn force_collect_quiescent() {
     for _ in 0..64 {
         force_collect();

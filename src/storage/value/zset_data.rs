@@ -125,25 +125,20 @@ impl ZSetData {
 
     pub fn insert(&mut self, score: f64, member: &str) -> bool {
         let h = member_hash(member);
-        // Fast check: if bloom says "definitely not here", skip linear scan
+        // Fast check: if bloom says "definitely not here", skip membership scan
         if self.bloom_maybe_contains(h) {
-            // Check last entry first (ascending pattern)
-            if let Some(last) = self.entries.last()
-                && last.member.as_str() == member
+            // Same-score re-add: the (score, member) ordering makes an exact
+            // hit findable by binary search instead of a linear scan, which
+            // otherwise makes re-populating large zsets quadratic.
+            let pos = self.find_insert_pos(score, member);
+            if pos < self.entries.len()
+                && self.entries[pos].score == score
+                && self.entries[pos].member.as_str() == member
             {
-                if (last.score - score).abs() > f64::EPSILON {
-                    self.entries.pop();
-                    let insert_pos = self.find_insert_pos(score, member);
-                    self.entries.insert(
-                        insert_pos,
-                        ZEntry {
-                            score,
-                            member: SmallStr::new(member),
-                        },
-                    );
-                }
                 return false;
             }
+            // Different-score update: the old entry sits elsewhere in the
+            // ordering, so fall back to a positional scan.
             if let Some(pos) = self
                 .entries
                 .iter()
@@ -546,5 +541,49 @@ mod bloom_tests {
         for i in 0..2000 {
             assert_eq!(zset.get_score(&format!("m{i}")), Some(i as f64));
         }
+    }
+
+    /// Same-score re-adds must stay off the linear membership scan, which made
+    /// re-populating large zsets (e.g. replaying an RDB or re-running a
+    /// workload against a warm server) quadratic in the zset size.
+    #[test]
+    fn same_score_re_add_is_not_quadratic() {
+        const N: usize = 50_000;
+        let mut zset = ZSetData::new();
+        for i in 0..N {
+            zset.insert(i as f64, &format!("m{i}"));
+        }
+        let start = std::time::Instant::now();
+        for i in 0..N {
+            assert!(!zset.insert(i as f64, &format!("m{i}")));
+        }
+        let elapsed = start.elapsed();
+        // Binary search: ~N * log2(N) comparisons. The linear scan this guards
+        // against is ~N^2/2 comparisons — at N=50_000 that is >1s, while the
+        // binary-search path is a few ms.
+        assert!(
+            elapsed.as_millis() < 100,
+            "re-adding {N} members took {elapsed:?}, membership check regressed to a linear scan"
+        );
+        assert_eq!(zset.len(), N);
+    }
+
+    /// Different-score updates must still relocate the member and preserve the
+    /// (score, member) ordering.
+    #[test]
+    fn changed_score_re_add_moves_the_member() {
+        let mut zset = ZSetData::new();
+        for i in 0..1000 {
+            zset.insert(i as f64, &format!("m{i}"));
+        }
+        for i in 0..1000 {
+            // New score lands past the tail for most members.
+            assert!(!zset.insert(i as f64 + 2000.0, &format!("m{i}")));
+            assert_eq!(zset.get_score(&format!("m{i}")), Some(i as f64 + 2000.0));
+        }
+        assert_eq!(zset.len(), 1000);
+        // Ordering invariant: scores ascending.
+        let scores: Vec<f64> = zset.iter().map(|e| e.score).collect();
+        assert!(scores.windows(2).all(|w| w[0] <= w[1]));
     }
 }

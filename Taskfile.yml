@@ -69,7 +69,7 @@ tasks:
       cmds:
          - cd bench && go run . -p 6379
 
-   bench-fyro-f:
+   bench-fyrodb-f:
       desc: "benchmark FyroDB without flushing between phases: keyspace accumulates, final RSS + key count reported"
       cmds:
          - cd bench && go run . -f

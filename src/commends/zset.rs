@@ -83,14 +83,7 @@ pub fn zscore(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
 pub fn zmscore(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     match parts {
         [_, key, members @ ..] if !members.is_empty() => {
-            let scores = wt!(out, store.zmscore(key, members));
-            resp::write_array_header(out, scores.len());
-            for s in scores {
-                match s {
-                    Some(v) => resp::write_bulk(out, &format_float(v)),
-                    None => resp::write_nil(out),
-                }
-            }
+            wt!(out, store.zmscore_to_buf(key, members, out));
         }
         _ => resp::write_wrong_args(out, "zmscore"),
     }
