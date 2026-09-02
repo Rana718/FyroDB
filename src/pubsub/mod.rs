@@ -4,4 +4,4 @@ pub mod slot;
 
 pub use frame::encode_sub_reply;
 pub use registry::PubSub;
-pub use slot::{SubSlot, WorkerNotifier};
+pub use slot::{FanEntry, SubSlot, WorkerNotifier};

@@ -164,12 +164,20 @@ impl Store {
         from_back: bool,
         out: &mut Vec<u8>,
     ) -> Result<bool, &'static str> {
+        // The entry lock is the serialization point of a contended queue
+        // key: every nanosecond of hold time is paid by every waiter. Pop
+        // under the lock, serialize the reply after releasing it.
+        enum Popped {
+            Empty,
+            WrongType,
+            Value(crate::storage::value::SmallStr),
+        }
         let result = self.data.update_with(key, |val| {
             if val.is_expired() {
-                return Ok(false);
+                return Popped::Empty;
             }
             let Some(list) = val.value.as_list_mut() else {
-                return Err("WRONGTYPE");
+                return Popped::WrongType;
             };
             let popped = if from_back {
                 list.pop_back()
@@ -177,15 +185,21 @@ impl Store {
                 list.pop_front()
             };
             let Some(value) = popped else {
-                return Ok(false);
+                return Popped::Empty;
             };
-            crate::utils::resp::write_bulk(out, value.as_str());
             if list.is_empty() && list.capacity() > Self::LIST_KEEP_CAPACITY {
                 list.shrink_to_fit();
             }
-            Ok(true)
+            Popped::Value(value)
         });
-        result.unwrap_or(Ok(false))
+        match result {
+            Some(Popped::Value(value)) => {
+                crate::utils::resp::write_bulk(out, value.as_str());
+                Ok(true)
+            }
+            Some(Popped::Empty) | None => Ok(false),
+            Some(Popped::WrongType) => Err("WRONGTYPE"),
+        }
     }
 
     /// Pop one element into a caller-reused String scratch: no Vec and no

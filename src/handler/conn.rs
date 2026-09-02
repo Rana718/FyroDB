@@ -10,7 +10,7 @@ use crate::utils::parser::{ParseResult, RespParser};
 use super::dispatch::dispatch;
 use super::subscription::do_full_unsubscribe;
 
-const SUB_WRITE_BATCH_BYTES: usize = 256 * 1024;
+pub(crate) const SUB_WRITE_BATCH_BYTES: usize = 256 * 1024;
 const RETAINED_WRITE_BUFFER: usize = 32 * 1024;
 
 pub enum ConnMode {
@@ -116,6 +116,16 @@ impl<'a> Conn<'a> {
                     let raw_ptr = self.parser.parts_raw.as_ptr();
                     let raw_len = self.parser.parts_raw.len();
                     let raw = unsafe { std::slice::from_raw_parts(raw_ptr, raw_len) };
+                    if self.authenticated
+                        && !self.store.cluster.enabled
+                        && !self.store.at_key_capacity()
+                        && is_coalescible_queue(raw)
+                    {
+                        match dispatch_queue_run(self, raw) {
+                            QueueRunOutcome::Done => continue,
+                            QueueRunOutcome::ConnError => return false,
+                        }
+                    }
                     dispatch_raw(self, raw);
                 }
                 ParseResult::Incomplete => break,
@@ -395,6 +405,28 @@ fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
                 return;
             }
         }
+    } else if cmd_len == 6 && cmd.eq_ignore_ascii_case(b"EXPIRE") && raw.len() == 3 {
+        let out = &mut conn.parser.wbuf;
+        let Some(key) = part_str(out, raw[1]) else {
+            return;
+        };
+        let Some(secs) = part_str(out, raw[2]) else {
+            return;
+        };
+        // Bad input and out-of-range overflow produce the same error the
+        // generic path reports, so the fast arm stays protocol-identical.
+        let reply = match secs.parse::<u64>().ok().and_then(crate::storage::value::expiry_from_secs) {
+            Some(exp) => {
+                let ok = conn.store.expire_ms(key, exp);
+                if conn.store.has_replication() {
+                    conn.store.record_current_value(key);
+                }
+                if ok { crate::utils::resp::ONE } else { crate::utils::resp::ZERO }
+            }
+            None => b"-ERR invalid expire time in 'expire' command\r\n" as &[u8],
+        };
+        conn.parser.wbuf.extend_from_slice(reply);
+        return;
     } else if cmd_len == 5 && cmd.eq_ignore_ascii_case(b"LPUSH") && raw.len() == 3 {
         let out = &mut conn.parser.wbuf;
         let Some(key) = part_str(out, raw[1]) else {
@@ -538,4 +570,241 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
         diff |= x ^ y;
     }
     diff == 0
+}
+
+/// Upper bound on how many same-key single-element queue commands one
+/// coalesced run may batch under one entry-lock acquisition.
+///
+/// Bigger runs amortize the lock handoff further but make one reply burst
+/// larger; 512 matches the parser's per-command part budget feel while
+/// staying far above any realistic pipeline depth per key.
+const QUEUE_RUN_MAX: usize = 512;
+
+/// A queue command eligible for run coalescing.
+#[derive(Clone, Copy, PartialEq)]
+enum QueueOp {
+    PushFront,
+    PushBack,
+    PopFront,
+    PopBack,
+}
+
+impl QueueOp {
+    #[inline(always)]
+    fn parse(cmd: &[u8]) -> Option<QueueOp> {
+        if cmd.len() != 5 {
+            return None;
+        }
+        match cmd {
+            b"LPUSH" => Some(QueueOp::PushFront),
+            b"RPUSH" => Some(QueueOp::PushBack),
+            _ => None,
+        }
+    }
+
+    #[inline(always)]
+    fn parse_pop(cmd: &[u8]) -> Option<QueueOp> {
+        if cmd.len() != 4 {
+            return None;
+        }
+        match cmd {
+            b"LPOP" => Some(QueueOp::PopFront),
+            b"RPOP" => Some(QueueOp::PopBack),
+            _ => None,
+        }
+    }
+
+    #[inline(always)]
+    fn is_pop(self) -> bool {
+        matches!(self, QueueOp::PopFront | QueueOp::PopBack)
+    }
+}
+
+/// Does the first parsed command open a coalescible run? (Fast pre-filter:
+/// exact uppercase 3-arg LPUSH/RPUSH or 2-arg LPOP/RPOP.)
+#[inline(always)]
+fn is_coalescible_queue(raw: &[(*const u8, usize)]) -> bool {
+    if raw.len() != 3 && raw.len() != 2 {
+        return false;
+    }
+    let cmd = unsafe { part_bytes(raw[0]) };
+    if let Some(op) = QueueOp::parse(cmd) {
+        return !op.is_pop() && raw.len() == 3;
+    }
+    QueueOp::parse_pop(cmd).is_some() && raw.len() == 2
+}
+
+enum QueueRunOutcome {
+    /// The run executed coalesced and every consumed command's reply is in
+    /// `wbuf` (including a trailing non-run command, dispatched normally).
+    Done,
+    /// The connection must be closed (invalid UTF-8 in a key or member).
+    ConnError,
+}
+
+/// Execute a run of consecutive same-key single-element queue commands with
+/// one entry-lock acquisition per run instead of one per command.
+///
+/// The command stream (`LPUSH k v`, `LPUSH k v`, …, `RPOP k`, `RPOP k`, …)
+/// is exactly what pipelined producers and consumers emit, and on a shared
+/// queue key every command pays a full entry-lock handoff. Coalescing turns
+/// a batch of pushes into one variadic push under one lock (each reply is
+/// the list length after that prefix of values, synthesizable without
+/// re-locking) and a batch of pops into one count-pop (each single-pop
+/// reply is the next element of the popped run). Semantics preserved:
+/// identical replies in identical order, WRONGTYPE on a non-list stored
+/// value, replication capture per command, and runs never span a mid-stream
+/// other command or a different key — any non-matching command ends the run
+/// and falls back to single dispatch.
+fn dispatch_queue_run(conn: &mut Conn<'_>, first: &[(*const u8, usize)]) -> QueueRunOutcome {
+    let first_cmd = unsafe { part_bytes(first[0]) };
+    let op = QueueOp::parse(first_cmd)
+        .or_else(|| QueueOp::parse_pop(first_cmd))
+        .expect("is_coalescible_queue checked the first command");
+
+    // Key must be validated for UTF-8 the same way the single-command path
+    // would; a bad key closes the connection either way.
+    let key_bytes: &[u8] = unsafe { part_bytes(first[1]) };
+    let Some(key) = std::str::from_utf8(key_bytes).ok() else {
+        crate::utils::resp::write_err(&mut conn.parser.wbuf, "invalid UTF-8 in request");
+        return QueueRunOutcome::ConnError;
+    };
+
+    // Pushes collect value parts; pops only need a count. One command is
+    // already consumed (the caller's parsed one).
+    let mut parts: Vec<(*const u8, usize)> = if op.is_pop() {
+        Vec::new()
+    } else {
+        vec![first[2]]
+    };
+    let mut cmds = 1usize;
+
+    while cmds < QUEUE_RUN_MAX {
+        match conn.parser.parse_one() {
+            ParseResult::Complete => {
+                let raw_ptr = conn.parser.parts_raw.as_ptr();
+                let raw_len = conn.parser.parts_raw.len();
+                let raw = unsafe { std::slice::from_raw_parts(raw_ptr, raw_len) };
+                let cmd = unsafe { part_bytes(raw[0]) };
+                let same_shape = match op {
+                    QueueOp::PushFront | QueueOp::PushBack => {
+                        raw.len() == 3 && QueueOp::parse(cmd) == Some(op)
+                    }
+                    QueueOp::PopFront | QueueOp::PopBack => {
+                        raw.len() == 2 && QueueOp::parse_pop(cmd) == Some(op)
+                    }
+                };
+                // Same operation AND same key, or the run ends here. The
+                // non-matching command is already parsed; dispatch it
+                // directly — returning to the caller's parse loop would
+                // re-parse past it and drop it.
+                if !same_shape || unsafe { part_bytes(raw[1]) } != key_bytes {
+                    let outcome = match execute_queue_run(conn, key, op, cmds, &parts) {
+                        Ok(()) => QueueRunOutcome::Done,
+                        Err(()) => QueueRunOutcome::ConnError,
+                    };
+                    if matches!(outcome, QueueRunOutcome::Done) {
+                        dispatch_raw(conn, raw);
+                    }
+                    return outcome;
+                }
+                if !op.is_pop() {
+                    parts.push(raw[2]);
+                }
+                cmds += 1;
+            }
+            // Stream drained: execute what was collected.
+            ParseResult::Incomplete => break,
+            // Corrupt from here on: flush the valid prefix's replies, then
+            // let the caller's parse loop hit the error and close.
+            ParseResult::Error => {
+                return match execute_queue_run(conn, key, op, cmds, &parts) {
+                    Ok(()) => QueueRunOutcome::Done,
+                    Err(()) => QueueRunOutcome::ConnError,
+                };
+            }
+        }
+    }
+
+    match execute_queue_run(conn, key, op, cmds, &parts) {
+        Ok(()) => QueueRunOutcome::Done,
+        Err(()) => QueueRunOutcome::ConnError,
+    }
+}
+
+/// Run one coalesced batch against the store and synthesize per-command
+/// replies. `Err(())` means invalid UTF-8 in a member — the connection
+/// must close (matching the single-command path's behavior).
+fn execute_queue_run(
+    conn: &mut Conn<'_>,
+    key: &str,
+    op: QueueOp,
+    cmds: usize,
+    parts: &[(*const u8, usize)],
+) -> Result<(), ()> {
+    let out = &mut conn.parser.wbuf;
+    let store = conn.store;
+
+    match op {
+        QueueOp::PushFront | QueueOp::PushBack => {
+            let mut values: Vec<&str> = Vec::with_capacity(parts.len());
+            for &part in parts {
+                let Some(v) = part_str(out, part) else {
+                    return Err(());
+                };
+                values.push(v);
+            }
+            let result = if op == QueueOp::PushFront {
+                store.lpush(key, &values)
+            } else {
+                store.rpush(key, &values)
+            };
+            match result {
+                Ok(final_len) => {
+                    // Each single-push reply is the list length after that
+                    // prefix of values.
+                    let start = final_len.saturating_sub(values.len());
+                    for i in 0..values.len() {
+                        crate::utils::resp::write_integer(out, (start + i + 1) as i64);
+                    }
+                }
+                Err(_) => {
+                    for _ in values {
+                        crate::utils::resp::write_wrong_type(out);
+                    }
+                }
+            }
+        }
+        QueueOp::PopFront | QueueOp::PopBack => {
+            let popped = if op == QueueOp::PopFront {
+                store.lpop(key, cmds)
+            } else {
+                store.rpop(key, cmds)
+            };
+            match popped {
+                Ok(values) => {
+                    for i in 0..cmds {
+                        match values.get(i) {
+                            Some(v) => crate::utils::resp::write_bulk(out, v),
+                            None => out.extend_from_slice(b"$-1\r\n"),
+                        }
+                    }
+                }
+                // Single-pop semantics on a wrong-type key: one error per
+                // command, not nils.
+                Err(_) => {
+                    for _ in 0..cmds {
+                        crate::utils::resp::write_wrong_type(out);
+                    }
+                }
+            }
+        }
+    }
+
+    if conn.store.has_replication() {
+        for _ in 0..cmds {
+            conn.store.record_current_value(key);
+        }
+    }
+    Ok(())
 }

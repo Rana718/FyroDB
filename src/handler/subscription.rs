@@ -23,6 +23,7 @@ pub fn handle_subscribe(conn: &mut Conn<'_>, parts: &[&str]) {
     };
     for ch in &to_register {
         conn.pubsub.subscribe(ch, Arc::clone(&slot));
+        conn.notifier.register_local(ch, conn.token);
     }
 
     let total = sub_total(conn);
@@ -53,6 +54,7 @@ pub fn handle_unsubscribe(conn: &mut Conn<'_>, parts: &[&str]) {
     for ch in &targets {
         if channels.remove(ch) {
             pubsub.unsubscribe(ch, &*slot);
+            conn.notifier.unregister_local(ch, conn.token);
             removed.insert(ch.clone());
         }
     }
@@ -155,6 +157,7 @@ pub fn do_full_unsubscribe(conn: &mut Conn<'_>) {
     };
     for ch in &channels {
         pubsub.unsubscribe(ch, &slot);
+        conn.notifier.unregister_local(ch, conn.token);
     }
     for pat in &patterns {
         pubsub.punsubscribe(pat, &slot);

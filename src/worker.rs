@@ -46,7 +46,7 @@ pub fn run_worker(
         .unwrap();
 
     let waker = Arc::new(Waker::new(poll.registry(), WAKER_TOKEN).unwrap());
-    let notifier = WorkerNotifier::new(waker);
+    let notifier = WorkerNotifier::new(waker, worker_index);
 
     // A Conn is large (socket, parser buffers, auth and pub/sub state). Reserving
     // 4096 slots per worker commits a sizeable idle allocation on high-core
@@ -56,6 +56,8 @@ pub fn run_worker(
     let mut free: Vec<usize> = Vec::new();
     let mut dirty: Vec<usize> = Vec::with_capacity(32);
     let mut sub_dirty: Vec<usize> = Vec::with_capacity(16);
+    let mut fanout_scratch: Vec<crate::pubsub::FanEntry> = Vec::new();
+    let mut fanout_seen: Vec<bool> = Vec::new();
 
     loop {
         if SHUTDOWN.load(Ordering::Acquire) {
@@ -119,6 +121,17 @@ pub fn run_worker(
 
                 WAKER_TOKEN => {
                     notifier.drain_pending_into(&mut sub_dirty);
+                    fanout_seen.resize(conns.len(), false);
+                    for seen in fanout_seen.iter_mut() {
+                        *seen = false;
+                    }
+                    deliver_fanout(
+                        &notifier,
+                        &mut conns,
+                        &mut sub_dirty,
+                        &mut fanout_scratch,
+                        &mut fanout_seen,
+                    );
                     sub_dirty.sort_unstable();
                     sub_dirty.dedup();
                 }
@@ -193,6 +206,70 @@ fn is_slow_subscriber(conn: &Conn) -> bool {
     } else {
         false
     }
+}
+
+/// Copy each queued fan-out frame into this worker's subscriber reply
+/// buffers.
+///
+/// Healthy connections get the frame appended straight to `wbuf` (plain
+/// memcpy, no atomics). A connection whose buffer is already at the write
+/// batch cap spills into its per-connection slot queue instead, where the
+/// existing backlog drain and slow-subscriber shedding take over.
+fn deliver_fanout(
+    notifier: &Arc<crate::pubsub::WorkerNotifier>,
+    conns: &mut [Option<Conn>],
+    sub_dirty: &mut Vec<usize>,
+    scratch: &mut Vec<crate::pubsub::FanEntry>,
+    seen: &mut [bool],
+) {
+    // `scratch` is caller-owned and reused across wakeups: one allocation
+    // per worker, not per batch. The local subscription map is borrowed
+    // under a single lock for the whole batch, so draining is allocation
+    // free per frame.
+    scratch.clear();
+    notifier.drain_fanout(|entry| scratch.push(entry));
+    if scratch.is_empty() {
+        return;
+    }
+    notifier.with_local_subs(|subs| {
+        for entry in scratch.iter() {
+            let Some(tokens) = subs.get(entry.channel.as_ref()) else {
+                continue;
+            };
+            for &token in tokens {
+                let Some(Some(conn)) = conns.get_mut(token) else {
+                    continue;
+                };
+                // The conn's own subscription set is the delivery authority:
+                // tokens are reused after close, so the local map alone could
+                // route an in-flight frame to an unrelated new connection.
+                let subscribed = matches!(
+                    &conn.mode,
+                    crate::handler::conn::ConnMode::Subscribed { channels, .. }
+                        if channels.contains(entry.channel.as_ref())
+                );
+                if !subscribed {
+                    continue;
+                }
+                if conn.parser.wbuf.len() + entry.frame.len()
+                    <= crate::handler::conn::SUB_WRITE_BATCH_BYTES
+                {
+                    conn.parser.wbuf.extend_from_slice(&entry.frame);
+                } else if let crate::handler::conn::ConnMode::Subscribed { slot, .. } = &conn.mode
+                {
+                    slot.push(Arc::clone(&entry.frame));
+                }
+                // One sub_dirty entry per connection per batch, not per
+                // frame: the frame loop can touch a connection thousands of
+                // times per wakeup, and the sort/dedup downstream of this
+                // queue would otherwise process every one of them.
+                if !seen[token] {
+                    seen[token] = true;
+                    sub_dirty.push(token);
+                }
+            }
+        }
+    });
 }
 
 fn make_listener(addr: SocketAddr) -> TcpListener {
