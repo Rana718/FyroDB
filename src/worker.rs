@@ -251,18 +251,23 @@ fn deliver_fanout(
                 if !subscribed {
                     continue;
                 }
-                if conn.parser.wbuf.len() + entry.frame.len()
-                    <= crate::handler::conn::SUB_WRITE_BATCH_BYTES
-                {
-                    conn.parser.wbuf.extend_from_slice(&entry.frame);
-                } else if let crate::handler::conn::ConnMode::Subscribed { slot, .. } = &conn.mode
-                {
-                    slot.push(Arc::clone(&entry.frame));
+                // A batched entry carries a run of frames; the batch cap
+                // applies per frame so overflow spills frame-by-frame into
+                // the slot queue exactly like unbatched delivery.
+                let mut spilled = false;
+                for frame in entry.frames() {
+                    if !spilled
+                        && conn.parser.wbuf.len() + frame.len()
+                            <= crate::handler::conn::SUB_WRITE_BATCH_BYTES
+                    {
+                        conn.parser.wbuf.extend_from_slice(frame);
+                    } else if let crate::handler::conn::ConnMode::Subscribed { slot, .. } =
+                        &conn.mode
+                    {
+                        slot.push(Arc::clone(frame));
+                        spilled = true;
+                    }
                 }
-                // One sub_dirty entry per connection per batch, not per
-                // frame: the frame loop can touch a connection thousands of
-                // times per wakeup, and the sort/dedup downstream of this
-                // queue would otherwise process every one of them.
                 if !seen[token] {
                     seen[token] = true;
                     sub_dirty.push(token);

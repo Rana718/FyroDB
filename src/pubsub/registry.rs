@@ -9,29 +9,9 @@ use crate::utils::util::glob_match_bytes;
 use super::frame::{encode_message, encode_pmessage};
 use super::slot::{FanEntry, SubSlot, WorkerNotifier};
 
-/// Route one channel's frame to every worker hosting at least one subscriber.
-///
-/// One queue entry per worker instead of one per subscriber: the publishing
-/// worker used to perform every subscriber push itself, which scaled publish
-/// cost linearly with subscriber count even though the recipients are spread
-/// across workers. Each target worker resolves its own subscribers locally
-/// and copies the frame bytes out — no per-subscriber atomics on the
-/// publisher.
-///
-/// Pattern subscribers stay on the per-slot path: their frames carry a
-/// per-pattern payload, and pattern matching is publish-time work.
-/// Above this many subscribers per distinct worker, grouping the fan-out per
-/// worker beats pushing to each subscriber's queue. Measured break-even on
-/// 12 workers: per-slot wins through ~4 subscribers/worker, ties at 4-8, and
-/// grouping is ~26% faster at 8+. The margin absorbs machine variance.
 const FANOUT_GROUP_RATIO: usize = 8;
 
 fn fan_out(ch: &ChannelData, encode: &dyn Fn() -> Arc<[u8]>) {
-    // Distinct workers among the channel's subscribers. Worker indices fit
-    // in a 64-bit mask on every supported machine; beyond that, fall back
-    // to a linear scan (still correct, just slower). Both live on the stack:
-    // this runs once per publish, and a heap allocation here would cost
-    // more than the queue pushes it saves.
     let mut reps: [Option<&Arc<WorkerNotifier>>; 64] = [const { None }; 64];
     let mut overflow: Vec<&Arc<WorkerNotifier>> = Vec::new();
     for slot in &ch.slots {
@@ -48,9 +28,6 @@ fn fan_out(ch: &ChannelData, encode: &dyn Fn() -> Arc<[u8]>) {
     let distinct = reps.iter().flatten().count() + overflow.len();
 
     if ch.slots.len() <= FANOUT_GROUP_RATIO * distinct {
-        // Small fan-out relative to the worker count: a queue push per
-        // subscriber is already the cheapest route, and the per-worker
-        // indirection would only add a hop.
         let frame = encode();
         for slot in &ch.slots {
             slot.push(Arc::clone(&frame));
@@ -63,12 +40,48 @@ fn fan_out(ch: &ChannelData, encode: &dyn Fn() -> Arc<[u8]>) {
         notifier.notify_fanout(FanEntry {
             channel: Arc::clone(&ch.name),
             frame: Arc::clone(&frame),
+            extra: Vec::new(),
         });
     }
     for notifier in overflow {
         notifier.notify_fanout(FanEntry {
             channel: Arc::clone(&ch.name),
             frame: Arc::clone(&frame),
+            extra: Vec::new(),
+        });
+    }
+}
+
+fn fan_out_multi(ch: &ChannelData, frames: &[Arc<[u8]>]) {
+    let mut reps: [Option<&Arc<WorkerNotifier>>; 64] = [const { None }; 64];
+    let mut overflow: Vec<&Arc<WorkerNotifier>> = Vec::new();
+    for slot in &ch.slots {
+        let notifier = slot.notifier();
+        let idx = notifier.worker_index();
+        if idx < 64 {
+            if reps[idx].is_none() {
+                reps[idx] = Some(notifier);
+            }
+        } else if !overflow.iter().any(|&n| Arc::ptr_eq(n, notifier)) {
+            overflow.push(notifier);
+        }
+    }
+
+    let (first, rest) = frames
+        .split_first()
+        .expect("publish_batch checked non-empty");
+    for notifier in reps.iter().flatten() {
+        notifier.notify_fanout(FanEntry {
+            channel: Arc::clone(&ch.name),
+            frame: Arc::clone(first),
+            extra: rest.iter().map(Arc::clone).collect(),
+        });
+    }
+    for notifier in overflow {
+        notifier.notify_fanout(FanEntry {
+            channel: Arc::clone(&ch.name),
+            frame: Arc::clone(first),
+            extra: rest.iter().map(Arc::clone).collect(),
         });
     }
 }
@@ -117,15 +130,8 @@ impl ChannelShard {
         Arc::clone(unsafe { &*ptr })
     }
 
-    /// Borrow the snapshot under the caller's EBR pin, without touching the
-    /// Arc refcount.
-    ///
-    /// Retiring hands the boxed Arc to EBR, so the pointed-to snapshot
-    /// outlives any pin held across this borrow. The hot publish path used to
-    /// pay a contended clone-and-drop pair (two refcount RMWs on one cache
-    /// line shared by every publisher thread) for a guard it already held.
     #[inline(always)]
-    fn with_snapshot<R>(&self, f: impl FnOnce(&[ChannelData]) -> R) -> R {
+    pub(crate) fn with_snapshot<R>(&self, f: impl FnOnce(&[ChannelData]) -> R) -> R {
         let _guard = customhash::pin();
         let ptr = self.snapshot.load(Ordering::Acquire);
         let snap = unsafe { &*ptr };
@@ -391,6 +397,43 @@ impl PubSub {
         }
 
         count
+    }
+
+    /// Pattern subscribers keep the single-publish path per message: their
+    pub fn publish_batch(&self, channel: &str, messages: &[&str]) -> usize {
+        if messages.is_empty() {
+            return 0;
+        }
+        if !self
+            .patterns
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_empty()
+        {
+            let mut n = 0;
+            for message in messages {
+                n = n.max(self.publish(channel, message));
+            }
+            return n;
+        }
+
+        let frames: Vec<Arc<[u8]>> = messages
+            .iter()
+            .map(|m| encode_message(channel, m))
+            .collect();
+        let mut n = 0;
+        self.shard_for(channel).with_snapshot(|snap| {
+            for ch in snap {
+                if ch.name.as_ref() == channel {
+                    n = ch.slots.len();
+                    if n != 0 {
+                        fan_out_multi(ch, &frames);
+                    }
+                    return;
+                }
+            }
+        });
+        n
     }
 
     pub fn active_channels(&self, pattern: Option<&str>) -> Vec<String> {

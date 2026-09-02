@@ -46,8 +46,6 @@ impl RespParser {
                 self.pos = 0;
             }
             if self.rbuf.len() - self.filled < 1024 {
-                // `len * 2` cannot grow an empty buffer, so the first read has
-                // to establish the idle size.
                 let grown = (self.rbuf.len() * 2).max(Self::IDLE_READ_BUFFER);
                 self.rbuf.resize(grown, 0);
             }
@@ -58,6 +56,13 @@ impl RespParser {
     #[inline]
     pub fn did_fill(&mut self, n: usize) {
         self.filled += n;
+    }
+
+    #[inline]
+    pub fn peek_remaining(&self, max: usize) -> &[u8] {
+        let avail = self.filled - self.pos;
+        let n = avail.min(max);
+        &self.rbuf[self.pos..self.pos + n]
     }
 
     pub fn parse_one(&mut self) -> ParseResult {
@@ -113,10 +118,6 @@ impl RespParser {
     }
 
     /// Return an oversized read buffer to its idle size.
-    ///
-    /// `parts_raw` holds raw pointers into `rbuf`, so this must only run once
-    /// the caller is done dispatching the parsed command — shrinking here
-    /// reallocates and would leave those pointers covering freed memory.
     pub fn release_read_buffer(&mut self) {
         if self.pos == self.filled && self.rbuf.len() > 16 * 1024 {
             self.parts_raw.clear();
@@ -186,12 +187,14 @@ mod tests {
 
     /// Regression: `parts_raw` pointers must remain valid after `parse_one`
     /// returns `Complete` — `rbuf` must not be reallocated until dispatch is
-    /// done.
     #[test]
     fn large_command_parts_stay_inside_the_live_read_buffer() {
         let mut parser = RespParser::new();
         let value = "x".repeat(20_000);
-        let command = format!("*3\r\n$3\r\nSET\r\n$1\r\nk\r\n${}\r\n{value}\r\n", value.len());
+        let command = format!(
+            "*3\r\n$3\r\nSET\r\n$1\r\nk\r\n${}\r\n{value}\r\n",
+            value.len()
+        );
         feed(&mut parser, command.as_bytes());
 
         assert!(matches!(parser.parse_one(), ParseResult::Complete));
@@ -227,7 +230,6 @@ mod tests {
         assert_eq!(parser.filled, 0);
     }
 
-    /// An accepted-but-silent connection should not commit buffer memory.
     #[test]
     fn a_fresh_parser_allocates_nothing() {
         let parser = RespParser::new();
@@ -236,8 +238,6 @@ mod tests {
         assert_eq!(parser.parts_raw.capacity(), 0);
     }
 
-    /// The first read still has to produce a usable buffer; doubling an empty
-    /// one would loop forever at zero length.
     #[test]
     fn the_first_read_establishes_the_idle_buffer_size() {
         let mut parser = RespParser::new();

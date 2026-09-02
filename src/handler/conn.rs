@@ -126,6 +126,23 @@ impl<'a> Conn<'a> {
                             QueueRunOutcome::ConnError => return false,
                         }
                     }
+                    if self.authenticated
+                        && !self.store.cluster.enabled
+                        && !self.store.at_key_capacity()
+                        && is_set_expire_pair(raw)
+                    {
+                        match dispatch_set_expire_pair(self, raw) {
+                            PairOutcome::Done => continue,
+                            PairOutcome::FallThrough => {}
+                            PairOutcome::ConnError => return false,
+                        }
+                    }
+                    if self.authenticated && !self.store.cluster.enabled && is_publish_run(raw) {
+                        match dispatch_publish_run(self, raw) {
+                            QueueRunOutcome::Done => continue,
+                            QueueRunOutcome::ConnError => return false,
+                        }
+                    }
                     dispatch_raw(self, raw);
                 }
                 ParseResult::Incomplete => break,
@@ -415,13 +432,21 @@ fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
         };
         // Bad input and out-of-range overflow produce the same error the
         // generic path reports, so the fast arm stays protocol-identical.
-        let reply = match secs.parse::<u64>().ok().and_then(crate::storage::value::expiry_from_secs) {
+        let reply = match secs
+            .parse::<u64>()
+            .ok()
+            .and_then(crate::storage::value::expiry_from_secs)
+        {
             Some(exp) => {
                 let ok = conn.store.expire_ms(key, exp);
                 if conn.store.has_replication() {
                     conn.store.record_current_value(key);
                 }
-                if ok { crate::utils::resp::ONE } else { crate::utils::resp::ZERO }
+                if ok {
+                    crate::utils::resp::ONE
+                } else {
+                    crate::utils::resp::ZERO
+                }
             }
             None => b"-ERR invalid expire time in 'expire' command\r\n" as &[u8],
         };
@@ -580,6 +605,188 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 /// staying far above any realistic pipeline depth per key.
 const QUEUE_RUN_MAX: usize = 512;
 
+enum PairOutcome {
+    Done,
+    FallThrough,
+    ConnError,
+}
+
+/// Is `raw` a plain `SET key value` that could open a coalesced
+/// `SET k v` + `EXPIRE k t` pair?
+#[inline(always)]
+fn is_set_expire_pair(raw: &[(*const u8, usize)]) -> bool {
+    raw.len() == 3
+        && unsafe { part_bytes(raw[0]) }.len() == 3
+        && unsafe { part_bytes(raw[0]) }.eq_ignore_ascii_case(b"SET")
+}
+
+fn dispatch_set_expire_pair(conn: &mut Conn<'_>, set: &[(*const u8, usize)]) -> PairOutcome {
+    let (key, value): (&str, &str);
+    {
+        let out = &mut conn.parser.wbuf;
+        let Some(k) = part_str(out, set[1]) else {
+            return PairOutcome::ConnError;
+        };
+        let Some(v) = part_str(out, set[2]) else {
+            return PairOutcome::ConnError;
+        };
+        key = k;
+        value = v;
+    }
+
+    // Peek at the buffered bytes for the EXPIRE header without consuming:
+    // "*3\r\n$6\r\nEXPIRE\r\n" is fixed-width, so its presence is a pure
+    // prefix check on the unparsed remainder.
+    const EXPIRE_PREFIX: &[u8] = b"*3\r\n$6\r\nEXPIRE\r\n";
+    if !conn
+        .parser
+        .peek_remaining(EXPIRE_PREFIX.len())
+        .starts_with(EXPIRE_PREFIX)
+    {
+        return PairOutcome::FallThrough;
+    }
+
+    // Consume and parse the EXPIRE command.
+    match conn.parser.parse_one() {
+        ParseResult::Complete => {}
+        _ => return PairOutcome::FallThrough,
+    }
+    let raw_ptr = conn.parser.parts_raw.as_ptr();
+    let raw_len = conn.parser.parts_raw.len();
+    let expire = unsafe { std::slice::from_raw_parts(raw_ptr, raw_len) };
+    if expire.len() != 3 || !unsafe { part_bytes(expire[0]) }.eq_ignore_ascii_case(b"EXPIRE") {
+        conn.store.set_string(key, value, 0);
+        if conn.store.has_replication() {
+            conn.store.record_current_value(key);
+        }
+        conn.parser.wbuf.extend_from_slice(b"+OK\r\n");
+        dispatch_raw(conn, expire);
+        return PairOutcome::Done;
+    }
+    if unsafe { part_bytes(expire[1]) } != key.as_bytes() {
+        // EXPIRE for a different key: both go through normal dispatch.
+        conn.store.set_string(key, value, 0);
+        if conn.store.has_replication() {
+            conn.store.record_current_value(key);
+        }
+        conn.parser.wbuf.extend_from_slice(b"+OK\r\n");
+        dispatch_raw(conn, expire);
+        return PairOutcome::Done;
+    }
+    let secs_str: &str;
+    {
+        let out = &mut conn.parser.wbuf;
+        let Some(s) = part_str(out, expire[2]) else {
+            return PairOutcome::ConnError;
+        };
+        secs_str = s;
+    }
+    let Some(exp) = secs_str
+        .parse::<u64>()
+        .ok()
+        .and_then(crate::storage::value::expiry_from_secs)
+    else {
+        // Invalid TTL: the generic path reports the error identically.
+        conn.store.set_string(key, value, 0);
+        if conn.store.has_replication() {
+            conn.store.record_current_value(key);
+        }
+        conn.parser.wbuf.extend_from_slice(b"+OK\r\n");
+        dispatch_raw(conn, expire);
+        return PairOutcome::Done;
+    };
+
+    // The pair: one lock, atomic value+TTL.
+    conn.store.set_string(key, value, exp);
+    if conn.store.has_replication() {
+        conn.store.record_current_value(key);
+    }
+    conn.parser.wbuf.extend_from_slice(b"+OK\r\n:1\r\n");
+    PairOutcome::Done
+}
+
+/// Is `raw` a `PUBLISH channel message` that could open a batched run?
+#[inline(always)]
+fn is_publish_run(raw: &[(*const u8, usize)]) -> bool {
+    raw.len() == 3
+        && unsafe { part_bytes(raw[0]) }.len() == 7
+        && unsafe { part_bytes(raw[0]) }.eq_ignore_ascii_case(b"PUBLISH")
+}
+
+fn dispatch_publish_run(conn: &mut Conn<'_>, first: &[(*const u8, usize)]) -> QueueRunOutcome {
+    // Validate the channel the same way the single-command path would.
+    let out = &mut conn.parser.wbuf;
+    let Some(channel) = part_str(out, first[1]) else {
+        return QueueRunOutcome::ConnError;
+    };
+    let channel_bytes = channel.as_bytes();
+
+    // Message parts of the run; the first command is already parsed.
+    let mut parts: Vec<(*const u8, usize)> = Vec::with_capacity(QUEUE_RUN_MAX);
+    parts.push(first[2]);
+    let mut cmds = 1usize;
+
+    while cmds < QUEUE_RUN_MAX {
+        match conn.parser.parse_one() {
+            ParseResult::Complete => {
+                let raw_ptr = conn.parser.parts_raw.as_ptr();
+                let raw_len = conn.parser.parts_raw.len();
+                let raw = unsafe { std::slice::from_raw_parts(raw_ptr, raw_len) };
+                let cmd = unsafe { part_bytes(raw[0]) };
+                let same = raw.len() == 3
+                    && cmd.len() == 7
+                    && cmd.eq_ignore_ascii_case(b"PUBLISH")
+                    && unsafe { part_bytes(raw[1]) } == channel_bytes;
+                if !same {
+                    let outcome = match execute_publish_run(conn, channel, cmds, &parts) {
+                        Ok(()) => QueueRunOutcome::Done,
+                        Err(()) => QueueRunOutcome::ConnError,
+                    };
+                    if matches!(outcome, QueueRunOutcome::Done) {
+                        dispatch_raw(conn, raw);
+                    }
+                    return outcome;
+                }
+                parts.push(raw[2]);
+                cmds += 1;
+            }
+            ParseResult::Incomplete => break,
+            ParseResult::Error => {
+                return match execute_publish_run(conn, channel, cmds, &parts) {
+                    Ok(()) => QueueRunOutcome::Done,
+                    Err(()) => QueueRunOutcome::ConnError,
+                };
+            }
+        }
+    }
+
+    match execute_publish_run(conn, channel, cmds, &parts) {
+        Ok(()) => QueueRunOutcome::Done,
+        Err(()) => QueueRunOutcome::ConnError,
+    }
+}
+
+fn execute_publish_run(
+    conn: &mut Conn<'_>,
+    channel: &str,
+    cmds: usize,
+    parts: &[(*const u8, usize)],
+) -> Result<(), ()> {
+    let out = &mut conn.parser.wbuf;
+    let mut messages: Vec<&str> = Vec::with_capacity(parts.len());
+    for &part in parts {
+        let Some(m) = part_str(out, part) else {
+            return Err(());
+        };
+        messages.push(m);
+    }
+    let n = conn.pubsub.publish_batch(channel, &messages);
+    for _ in 0..cmds {
+        crate::utils::resp::write_integer(out, n as i64);
+    }
+    Ok(())
+}
+
 /// A queue command eligible for run coalescing.
 #[derive(Clone, Copy, PartialEq)]
 enum QueueOp {
@@ -635,35 +842,16 @@ fn is_coalescible_queue(raw: &[(*const u8, usize)]) -> bool {
 }
 
 enum QueueRunOutcome {
-    /// The run executed coalesced and every consumed command's reply is in
-    /// `wbuf` (including a trailing non-run command, dispatched normally).
     Done,
-    /// The connection must be closed (invalid UTF-8 in a key or member).
     ConnError,
 }
 
-/// Execute a run of consecutive same-key single-element queue commands with
-/// one entry-lock acquisition per run instead of one per command.
-///
-/// The command stream (`LPUSH k v`, `LPUSH k v`, …, `RPOP k`, `RPOP k`, …)
-/// is exactly what pipelined producers and consumers emit, and on a shared
-/// queue key every command pays a full entry-lock handoff. Coalescing turns
-/// a batch of pushes into one variadic push under one lock (each reply is
-/// the list length after that prefix of values, synthesizable without
-/// re-locking) and a batch of pops into one count-pop (each single-pop
-/// reply is the next element of the popped run). Semantics preserved:
-/// identical replies in identical order, WRONGTYPE on a non-list stored
-/// value, replication capture per command, and runs never span a mid-stream
-/// other command or a different key — any non-matching command ends the run
-/// and falls back to single dispatch.
 fn dispatch_queue_run(conn: &mut Conn<'_>, first: &[(*const u8, usize)]) -> QueueRunOutcome {
     let first_cmd = unsafe { part_bytes(first[0]) };
     let op = QueueOp::parse(first_cmd)
         .or_else(|| QueueOp::parse_pop(first_cmd))
         .expect("is_coalescible_queue checked the first command");
 
-    // Key must be validated for UTF-8 the same way the single-command path
-    // would; a bad key closes the connection either way.
     let key_bytes: &[u8] = unsafe { part_bytes(first[1]) };
     let Some(key) = std::str::from_utf8(key_bytes).ok() else {
         crate::utils::resp::write_err(&mut conn.parser.wbuf, "invalid UTF-8 in request");
@@ -694,10 +882,6 @@ fn dispatch_queue_run(conn: &mut Conn<'_>, first: &[(*const u8, usize)]) -> Queu
                         raw.len() == 2 && QueueOp::parse_pop(cmd) == Some(op)
                     }
                 };
-                // Same operation AND same key, or the run ends here. The
-                // non-matching command is already parsed; dispatch it
-                // directly — returning to the caller's parse loop would
-                // re-parse past it and drop it.
                 if !same_shape || unsafe { part_bytes(raw[1]) } != key_bytes {
                     let outcome = match execute_queue_run(conn, key, op, cmds, &parts) {
                         Ok(()) => QueueRunOutcome::Done,
@@ -713,10 +897,7 @@ fn dispatch_queue_run(conn: &mut Conn<'_>, first: &[(*const u8, usize)]) -> Queu
                 }
                 cmds += 1;
             }
-            // Stream drained: execute what was collected.
             ParseResult::Incomplete => break,
-            // Corrupt from here on: flush the valid prefix's replies, then
-            // let the caller's parse loop hit the error and close.
             ParseResult::Error => {
                 return match execute_queue_run(conn, key, op, cmds, &parts) {
                     Ok(()) => QueueRunOutcome::Done,
@@ -761,8 +942,6 @@ fn execute_queue_run(
             };
             match result {
                 Ok(final_len) => {
-                    // Each single-push reply is the list length after that
-                    // prefix of values.
                     let start = final_len.saturating_sub(values.len());
                     for i in 0..values.len() {
                         crate::utils::resp::write_integer(out, (start + i + 1) as i64);
