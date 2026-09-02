@@ -181,11 +181,20 @@ impl ZSetData {
         true
     }
 
-    pub fn remove(&mut self, member: &str) -> Option<f64> {
-        let pos = self
-            .entries
+    /// Index of `member` in the sorted entries, or `None`.
+    ///
+    /// Shared implementation behind `get_score`, `rank`, `contains`,
+    /// `remove`, and `incr` — they differ only in what they do with the
+    /// position.
+    #[inline]
+    fn position_of(&self, member: &str) -> Option<usize> {
+        self.entries
             .iter()
-            .position(|e| e.member.as_str() == member)?;
+            .position(|e| e.member.as_str() == member)
+    }
+
+    pub fn remove(&mut self, member: &str) -> Option<f64> {
+        let pos = self.position_of(member)?;
         let score = self.entries[pos].score;
         self.entries.remove(pos);
         self.reclaim_capacity();
@@ -194,16 +203,11 @@ impl ZSetData {
 
     #[inline]
     pub fn get_score(&self, member: &str) -> Option<f64> {
-        self.entries
-            .iter()
-            .find(|e| e.member.as_str() == member)
-            .map(|e| e.score)
+        self.position_of(member).map(|pos| self.entries[pos].score)
     }
 
     pub fn rank(&self, member: &str) -> Option<usize> {
-        self.entries
-            .iter()
-            .position(|e| e.member.as_str() == member)
+        self.position_of(member)
     }
 
     pub fn rev_rank(&self, member: &str) -> Option<usize> {
@@ -263,7 +267,7 @@ impl ZSetData {
     }
 
     pub fn contains(&self, member: &str) -> bool {
-        self.entries.iter().any(|e| e.member.as_str() == member)
+        self.position_of(member).is_some()
     }
 
     pub fn members(&self) -> impl Iterator<Item = &SmallStr> {
@@ -393,11 +397,7 @@ impl ZSetData {
     }
 
     pub fn incr(&mut self, member: &str, increment: f64) -> f64 {
-        if let Some(pos) = self
-            .entries
-            .iter()
-            .position(|e| e.member.as_str() == member)
-        {
+        if let Some(pos) = self.position_of(member) {
             let new_score = self.entries[pos].score + increment;
             let stays = (pos == 0
                 || self.entries[pos - 1].score < new_score

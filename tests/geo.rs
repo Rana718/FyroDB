@@ -1,6 +1,6 @@
 mod common;
 use common::*;
-use fyro_db::storage::geo::{GeoCenter, GeoShape, GeoUnit};
+use fyro_db::storage::geo::{GeoCenter, GeoSearchQuery, GeoShape, GeoUnit};
 
 #[test]
 fn geoadd_creates_key() {
@@ -117,12 +117,12 @@ fn geosearch_by_radius() {
     let results = s
         .geosearch(
             "k",
-            GeoCenter::LonLat(15.0, 37.0),
-            GeoShape::Radius(200.0, GeoUnit::Km),
-            true,
-            0,
-            false,
-            false,
+            GeoSearchQuery {
+                center: GeoCenter::LonLat(15.0, 37.0),
+                shape: GeoShape::Radius(200.0, GeoUnit::Km),
+                asc: true,
+                count: 0,
+            },
         )
         .unwrap();
     let members: Vec<&str> = results.iter().map(|r| r.member.as_str()).collect();
@@ -143,12 +143,12 @@ fn geosearch_by_radius_with_count() {
     let results = s
         .geosearch(
             "k",
-            GeoCenter::LonLat(14.0, 37.8),
-            GeoShape::Radius(500.0, GeoUnit::Km),
-            true,
-            1,
-            false,
-            false,
+            GeoSearchQuery {
+                center: GeoCenter::LonLat(14.0, 37.8),
+                shape: GeoShape::Radius(500.0, GeoUnit::Km),
+                asc: true,
+                count: 1,
+            },
         )
         .unwrap();
     assert_eq!(results.len(), 1);
@@ -165,15 +165,15 @@ fn geosearch_from_member() {
     let results = s
         .geosearch(
             "k",
-            GeoCenter::Member("Palermo".to_string()),
-            GeoShape::Radius(200.0, GeoUnit::Km),
-            true,
-            0,
-            false,
-            false,
+            GeoSearchQuery {
+                center: GeoCenter::Member("Palermo".to_string()),
+                shape: GeoShape::Radius(200.0, GeoUnit::Km),
+                asc: true,
+                count: 0,
+            },
         )
         .unwrap();
-    assert!(results.len() >= 1);
+    assert!(!results.is_empty());
 }
 
 #[test]
@@ -188,10 +188,12 @@ fn geosearchstore_stores_results() {
         .geosearchstore(
             "dst",
             "k",
-            GeoCenter::LonLat(15.0, 37.5),
-            GeoShape::Radius(200.0, GeoUnit::Km),
-            true,
-            0,
+            GeoSearchQuery {
+                center: GeoCenter::LonLat(15.0, 37.5),
+                shape: GeoShape::Radius(200.0, GeoUnit::Km),
+                asc: true,
+                count: 0,
+            },
             false,
         )
         .unwrap();

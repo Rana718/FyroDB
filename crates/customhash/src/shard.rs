@@ -221,12 +221,6 @@ fn hash_tag(hash: u64) -> usize {
 pub(crate) struct TaggedSlot<V>(AtomicPtr<Entry<V>>);
 
 impl<V> TaggedSlot<V> {
-    #[inline(always)]
-    #[allow(dead_code)]
-    fn null() -> Self {
-        TaggedSlot(AtomicPtr::new(ptr::null_mut()))
-    }
-
     /// Combine a pointer with its tag, or return it verbatim when it already
     /// occupies the reserved bits.
     #[inline(always)]

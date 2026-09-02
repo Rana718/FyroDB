@@ -563,11 +563,11 @@ impl Store {
                         } else {
                             (stop as usize).min(arr.len())
                         };
-                        #[allow(clippy::needless_range_loop)]
-                        for i in s..e_idx {
-                            if json_values_equal(&arr[i], &search) {
-                                return Ok(i as i64);
-                            }
+                        if let Some(i) = arr[s..e_idx]
+                            .iter()
+                            .position(|v| json_values_equal(v, &search))
+                        {
+                            return Ok((s + i) as i64);
                         }
                         Ok(-1)
                     }

@@ -57,7 +57,14 @@ pub fn zadd(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
 
     resp::write_integer(
         out,
-        store_ok!(out, store.zadd(key, &members, nx, xx, gt, lt, ch)) as i64,
+        store_ok!(
+            out,
+            store.zadd(
+                key,
+                &members,
+                crate::storage::zset::ZAddOptions { nx, xx, gt, lt, ch }
+            )
+        ) as i64,
     );
 }
 

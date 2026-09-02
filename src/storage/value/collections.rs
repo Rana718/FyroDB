@@ -62,23 +62,7 @@ impl HashInner {
     /// `String` temporaries the owned path pays.
     #[inline]
     pub fn insert_ref(&mut self, field: &str, value: &str) -> bool {
-        match self {
-            Self::Compact(v) => {
-                let mut i = 0;
-                while i < v.len() {
-                    if v[i] == field {
-                        v[i + 1] = SmallStr::new(value);
-                        return false;
-                    }
-                    i += 2;
-                }
-                self.insert_small(SmallStr::new(field), SmallStr::new(value));
-                true
-            }
-            Self::Full(m) => m
-                .insert(SmallStr::new(field), SmallStr::new(value))
-                .is_none(),
-        }
+        self.insert_small(SmallStr::new(field), SmallStr::new(value))
     }
 
     #[inline]

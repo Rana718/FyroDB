@@ -1,86 +1,39 @@
-//! Memory control layer using mimalloc as the backing allocator.
+//! Memory control layer wrapping a pluggable backing allocator.
 //!
 //! Provides a `GlobalAlloc` implementation with lightweight memory tracking,
 //! RSS reporting, purge support, and raw allocation helpers for EBR-managed
-//! data structures.
+//! data structures. The backend is selected at compile time: mimalloc by
+//! default, glibc malloc with the `system` feature, jemalloc with the
+//! `jemalloc` feature.
 
 use std::alloc::{GlobalAlloc, Layout};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-static MIMALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
-
-#[cfg(feature = "jemalloc")]
-static JEMALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
-
-#[cfg(feature = "system")]
-static SYSTEM: std::alloc::System = std::alloc::System;
-
-#[inline(always)]
 #[cfg(not(any(feature = "jemalloc", feature = "system")))]
-fn backend_alloc(layout: Layout) -> *mut u8 {
-    unsafe { MIMALLOC.alloc(layout) }
-}
-
-#[inline(always)]
+const BACKEND: mimalloc::MiMalloc = mimalloc::MiMalloc;
 #[cfg(feature = "jemalloc")]
-fn backend_alloc(layout: Layout) -> *mut u8 {
-    unsafe { JEMALLOC.alloc(layout) }
-}
-
-#[inline(always)]
+const BACKEND: jemallocator::Jemalloc = jemallocator::Jemalloc;
 #[cfg(feature = "system")]
+const BACKEND: std::alloc::System = std::alloc::System;
+
+#[inline(always)]
 fn backend_alloc(layout: Layout) -> *mut u8 {
-    unsafe { SYSTEM.alloc(layout) }
+    unsafe { BACKEND.alloc(layout) }
 }
 
 #[inline(always)]
-#[cfg(not(any(feature = "jemalloc", feature = "system")))]
 fn backend_dealloc(ptr: *mut u8, layout: Layout) {
-    unsafe { MIMALLOC.dealloc(ptr, layout) }
-}
-
-#[inline(always)]
-#[cfg(feature = "jemalloc")]
-fn backend_dealloc(ptr: *mut u8, layout: Layout) {
-    unsafe { JEMALLOC.dealloc(ptr, layout) }
-}
-
-#[inline(always)]
-#[cfg(feature = "system")]
-fn backend_dealloc(ptr: *mut u8, layout: Layout) {
-    unsafe { SYSTEM.dealloc(ptr, layout) }
+    unsafe { BACKEND.dealloc(ptr, layout) }
 }
 
 #[inline(always)]
 fn backend_alloc_zeroed(layout: Layout) -> *mut u8 {
-    #[cfg(not(any(feature = "jemalloc", feature = "system")))]
-    {
-        unsafe { MIMALLOC.alloc_zeroed(layout) }
-    }
-    #[cfg(feature = "jemalloc")]
-    {
-        unsafe { JEMALLOC.alloc_zeroed(layout) }
-    }
-    #[cfg(feature = "system")]
-    {
-        unsafe { SYSTEM.alloc_zeroed(layout) }
-    }
+    unsafe { BACKEND.alloc_zeroed(layout) }
 }
 
 #[inline(always)]
 fn backend_realloc(ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-    #[cfg(not(any(feature = "jemalloc", feature = "system")))]
-    {
-        unsafe { MIMALLOC.realloc(ptr, layout, new_size) }
-    }
-    #[cfg(feature = "jemalloc")]
-    {
-        unsafe { JEMALLOC.realloc(ptr, layout, new_size) }
-    }
-    #[cfg(feature = "system")]
-    {
-        unsafe { SYSTEM.realloc(ptr, layout, new_size) }
-    }
+    unsafe { BACKEND.realloc(ptr, layout, new_size) }
 }
 
 /// Number of independent counters used to track live allocated bytes.
@@ -93,11 +46,7 @@ const STRIPES: usize = 64;
 #[repr(align(128))]
 struct Stripe(std::sync::atomic::AtomicI64);
 
-static ALLOCATED: [Stripe; STRIPES] = {
-    #[allow(clippy::declare_interior_mutable_const)]
-    const ZERO: Stripe = Stripe(std::sync::atomic::AtomicI64::new(0));
-    [ZERO; STRIPES]
-};
+static ALLOCATED: [Stripe; STRIPES] = [const { Stripe(std::sync::atomic::AtomicI64::new(0)) }; STRIPES];
 
 /// Pick a stripe without allocating.
 ///
@@ -199,22 +148,19 @@ pub fn stats() -> Stats {
 }
 
 /// Force the backing allocator to collect and return unused pages to the OS.
-#[cfg(not(any(feature = "jemalloc", feature = "system")))]
+///
+/// Only mimalloc exposes a forced collection (`mi_collect`); the other
+/// backends return dirty pages via their own decay policies, where this is a
+/// no-op.
 pub fn purge() {
-    unsafe extern "C" {
-        fn mi_collect(force: bool);
+    #[cfg(not(any(feature = "jemalloc", feature = "system")))]
+    {
+        unsafe extern "C" {
+            fn mi_collect(force: bool);
+        }
+        unsafe { mi_collect(true) };
     }
-    unsafe { mi_collect(true) };
 }
-
-#[cfg(any(feature = "jemalloc", feature = "system"))]
-pub fn purge() {
-    // jemalloc returns dirty pages via decay; there is no portable force
-    // equivalent exposed through the Rust crate, so this is best-effort.
-}
-
-#[inline]
-pub fn refresh_epoch() {}
 
 /// Resident bytes per byte the application actually asked for. Above 1.0 means
 /// allocator or page-level fragmentation; Redis reports the same quantity as
@@ -253,16 +199,6 @@ pub unsafe fn dealloc_raw(ptr: *mut u8, layout: Layout) {
         record(-(layout.size() as i64));
         backend_dealloc(ptr, layout);
     }
-}
-
-#[inline]
-pub unsafe fn alloc_raw_no_tcache(layout: Layout) -> *mut u8 {
-    unsafe { alloc_raw(layout) }
-}
-
-#[inline]
-pub unsafe fn dealloc_raw_no_tcache(ptr: *mut u8, layout: Layout) {
-    unsafe { dealloc_raw(ptr, layout) }
 }
 
 fn rss_bytes_inner() -> usize {

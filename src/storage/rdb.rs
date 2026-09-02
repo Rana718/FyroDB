@@ -69,22 +69,7 @@ pub fn load_cluster_metadata(path: &str) -> io::Result<Option<(String, u64)>> {
     Ok(Some((id, u64::from_le_bytes(epoch))))
 }
 
-#[cfg(test)]
-mod cluster_metadata_tests {
-    use super::*;
 
-    #[test]
-    fn cluster_metadata_round_trip_is_strict() {
-        let path = std::env::temp_dir().join(format!("fyrodb-cluster-meta-{}", std::process::id()));
-        let path = path.to_str().unwrap();
-        save_cluster_metadata(path, "node-a", 42).unwrap();
-        assert_eq!(
-            load_cluster_metadata(path).unwrap(),
-            Some(("node-a".into(), 42))
-        );
-        let _ = std::fs::remove_file(path);
-    }
-}
 
 pub fn save_replication_metadata(path: &str, epoch: u64, offset: u64) -> io::Result<()> {
     let tmp = format!("{path}.tmp");
@@ -744,4 +729,21 @@ fn skip_string(r: &mut impl Read) -> io::Result<()> {
         remaining -= chunk as u64;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod cluster_metadata_tests {
+    use super::*;
+
+    #[test]
+    fn cluster_metadata_round_trip_is_strict() {
+        let path = std::env::temp_dir().join(format!("fyrodb-cluster-meta-{}", std::process::id()));
+        let path = path.to_str().unwrap();
+        save_cluster_metadata(path, "node-a", 42).unwrap();
+        assert_eq!(
+            load_cluster_metadata(path).unwrap(),
+            Some(("node-a".into(), 42))
+        );
+        let _ = std::fs::remove_file(path);
+    }
 }

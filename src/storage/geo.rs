@@ -25,7 +25,16 @@ impl Store {
             .map(|(score, member)| (*score, member.as_str()))
             .collect();
 
-        self.zadd(key, &members, nx, xx, false, false, ch)
+        self.zadd(
+            key,
+            &members,
+            crate::storage::zset::ZAddOptions {
+                nx,
+                xx,
+                ch,
+                ..Default::default()
+            },
+        )
     }
 
     pub fn geopos(
@@ -104,18 +113,12 @@ impl Store {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub fn geosearch(
         &self,
         key: &str,
-        center: GeoCenter,
-        shape: GeoShape,
-        asc: bool,
-        count: usize,
-        _withcoord: bool,
-        _withdist: bool,
+        query: GeoSearchQuery,
     ) -> Result<Vec<GeoResult>, &'static str> {
-        let (clon, clat) = match &center {
+        let (clon, clat) = match &query.center {
             GeoCenter::LonLat(lon, lat) => (*lon, *lat),
             GeoCenter::Member(m) => {
                 let positions = self.geopos(key, &[m])?;
@@ -135,7 +138,7 @@ impl Store {
                     for entry in z.iter() {
                         let (lon, lat) = geohash_decode(entry.score.to_bits());
                         let dist = haversine(clat, clon, lat, lon);
-                        let in_range = match &shape {
+                        let in_range = match &query.shape {
                             GeoShape::Radius(r, unit) => dist <= unit.to_meters(*r),
                             GeoShape::Box(w, h, unit) => {
                                 let half_w = unit.to_meters(*w) / 2.0;
@@ -155,7 +158,7 @@ impl Store {
                             });
                         }
                     }
-                    if asc {
+                    if query.asc {
                         results.sort_by(|a, b| {
                             a.dist
                                 .partial_cmp(&b.dist)
@@ -168,8 +171,8 @@ impl Store {
                                 .unwrap_or(std::cmp::Ordering::Equal)
                         });
                     }
-                    if count > 0 && results.len() > count {
-                        results.truncate(count);
+                    if query.count > 0 && results.len() > query.count {
+                        results.truncate(query.count);
                     }
                     Ok(results)
                 }
@@ -178,18 +181,14 @@ impl Store {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub fn geosearchstore(
         &self,
         dst: &str,
         src: &str,
-        center: GeoCenter,
-        shape: GeoShape,
-        asc: bool,
-        count: usize,
+        query: GeoSearchQuery,
         storedist: bool,
     ) -> Result<usize, &'static str> {
-        let results = self.geosearch(src, center, shape, asc, count, false, false)?;
+        let results = self.geosearch(src, query)?;
         let mut z = ZSetData::new();
         for r in &results {
             let score = if storedist {
@@ -215,6 +214,17 @@ pub enum GeoCenter {
 pub enum GeoShape {
     Radius(f64, GeoUnit),
     Box(f64, f64, GeoUnit),
+}
+
+/// One GEOSEARCH specification: what to search around, within which shape,
+/// and how to order/limit the results. Reply-shaping flags (WITHCOORD /
+/// WITHDIST) belong to the command layer, not the search itself.
+#[derive(Clone)]
+pub struct GeoSearchQuery {
+    pub center: GeoCenter,
+    pub shape: GeoShape,
+    pub asc: bool,
+    pub count: usize,
 }
 
 #[derive(Clone, Copy)]

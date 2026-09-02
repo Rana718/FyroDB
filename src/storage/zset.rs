@@ -1,18 +1,29 @@
 use crate::storage::store::Store;
 use crate::storage::value::{FyroDB, SmallStr, StoreValue, ZSetData};
 
+/// ZADD modifiers, bundled so the flag set has one name at every call site.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ZAddOptions {
+    /// Only add new members.
+    pub nx: bool,
+    /// Only update existing members.
+    pub xx: bool,
+    /// Only update existing members when the new score is greater.
+    pub gt: bool,
+    /// Only update existing members when the new score is lower.
+    pub lt: bool,
+    /// Count changed members (updated + added) in the reply instead of adds only.
+    pub ch: bool,
+}
+
 impl Store {
-    #[allow(clippy::too_many_arguments)]
     pub fn zadd(
         &self,
         key: &str,
         members: &[(f64, &str)],
-        nx: bool,
-        xx: bool,
-        gt: bool,
-        lt: bool,
-        ch: bool,
+        opts: ZAddOptions,
     ) -> Result<usize, &'static str> {
+        let ZAddOptions { nx, xx, gt, lt, ch } = opts;
         let result = self.data.update_with(key, |val| {
             if val.is_expired() {
                 let mut z = ZSetData::new();

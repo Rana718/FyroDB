@@ -279,17 +279,13 @@ pub fn start_peer_manager(config: &ClusterConfig, state: ClusterState) -> PeerMa
             .name(format!("fyrodb-cluster-out-{}", node.id))
             .stack_size(64 * 1024)
             .spawn(move || {
-                run_peer_worker(
-                    receiver,
-                    requests,
-                    health,
-                    &local_id,
-                    local_epoch,
-                    &node,
+                let ctx = PeerWorkerContext {
+                    local_id: &local_id,
+                    epoch: local_epoch,
                     heartbeat_interval,
-                    auth_token.as_deref(),
-                    worker_reconnect_count,
-                )
+                    auth_token: auth_token.as_deref(),
+                };
+                run_peer_worker(receiver, requests, health, &ctx, &node, worker_reconnect_count)
             })
         {
             workers.push(worker);
@@ -609,16 +605,21 @@ pub fn start_health_monitor(
         });
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Local-node identity the outbound worker needs: who we are, the topology
+/// epoch we speak, how often to heartbeat, and how to authenticate.
+struct PeerWorkerContext<'a> {
+    local_id: &'a str,
+    epoch: u64,
+    heartbeat_interval: Duration,
+    auth_token: Option<&'a str>,
+}
+
 fn run_peer_worker(
     receiver: mpsc::Receiver<Frame>,
     requests: RequestRegistry,
     health: PeerHealth,
-    local_id: &str,
-    epoch: u64,
+    ctx: &PeerWorkerContext<'_>,
     node: &NodeInfo,
-    heartbeat_interval: Duration,
-    auth_token: Option<&str>,
     reconnect_count: Arc<AtomicU64>,
 ) {
     let mut peer = None;
@@ -629,16 +630,16 @@ fn run_peer_worker(
     let mut scratch: Vec<[u8; 48]> = Vec::new();
     loop {
         batch.clear();
-        let first = match receiver.recv_timeout(heartbeat_interval) {
+        let first = match receiver.recv_timeout(ctx.heartbeat_interval) {
             Ok(frame) => frame,
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 let frame = Frame {
                     message_type: MessageType::Ping,
                     flags: 0,
                     request_id,
-                    source_id: stable_id(local_id),
+                    source_id: stable_id(ctx.local_id),
                     target_id: stable_id(&node.id),
-                    epoch,
+                    epoch: ctx.epoch,
                     payload: Vec::new(),
                 };
                 request_id = request_id.wrapping_add(1).max(1);
@@ -672,7 +673,7 @@ fn run_peer_worker(
                 // and dual-stack service names commonly resolve to an IPv6
                 // address ahead of the IPv4 one the peer is actually bound to.
                 let attempt = candidates.iter().find_map(|&address| {
-                    connect_and_handshake(address, local_id, node, epoch, auth_token).ok()
+                    connect_and_handshake(address, ctx.local_id, node, ctx.epoch, ctx.auth_token).ok()
                 });
                 match attempt {
                     Some(connection) => {

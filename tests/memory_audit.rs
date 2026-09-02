@@ -132,7 +132,7 @@ fn audit_struct_sizes() {
     // inline capacity. The resulting entry is 8 bytes smaller than before.
     let store_val = mem::size_of::<StoreValue>();
     let entry_fields = 8 + 16 + 8 + store_val;
-    let entry_size = (entry_fields + 7) / 8 * 8; // align 8
+    let entry_size = entry_fields.div_ceil(8) * 8; // align 8
     println!("\n  Theoretical per-key cost (inline key+value, no heap):");
     println!("    StoreValue           = {:>3} bytes", store_val);
     println!("    Entry fields sum     = {:>3} bytes", entry_fields);
@@ -276,11 +276,7 @@ fn audit_zset_members() {
                 let _ = store.zadd(
                     &key,
                     &[(score, ms.as_str())],
-                    false,
-                    false,
-                    false,
-                    false,
-                    false,
+                    fyro_db::storage::zset::ZAddOptions::default(),
                 );
             }
         }

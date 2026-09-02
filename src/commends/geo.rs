@@ -193,7 +193,15 @@ pub fn geosearch(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
 
     let results = store_ok!(
         out,
-        store.geosearch(key, c, s, asc, count, withcoord, withdist)
+        store.geosearch(
+            key,
+            crate::storage::geo::GeoSearchQuery {
+                center: c,
+                shape: s,
+                asc,
+                count,
+            },
+        )
     );
 
     resp::write_array_header(out, results.len());
@@ -304,7 +312,17 @@ pub fn geosearchstore(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
         out,
         store_ok!(
             out,
-            store.geosearchstore(dst, src, c, s, asc, count, storedist)
+            store.geosearchstore(
+                dst,
+                src,
+                crate::storage::geo::GeoSearchQuery {
+                    center: c,
+                    shape: s,
+                    asc,
+                    count,
+                },
+                storedist,
+            )
         ) as i64,
     );
 }

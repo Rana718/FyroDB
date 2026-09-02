@@ -32,7 +32,7 @@ fn pfcount_basic() {
     let s = store();
     s.pfadd("k", &["a", "b", "c", "d", "e"]).unwrap();
     let count = s.pfcount(&["k"]).unwrap();
-    assert!(count >= 4 && count <= 6);
+    assert!((4..=6).contains(&count));
 }
 
 #[test]
@@ -42,7 +42,7 @@ fn pfcount_large_cardinality() {
     let refs: Vec<&str> = elements.iter().map(|s| s.as_str()).collect();
     s.pfadd("k", &refs).unwrap();
     let count = s.pfcount(&["k"]).unwrap();
-    assert!(count >= 900 && count <= 1100);
+    assert!((900..=1100).contains(&count));
 }
 
 #[test]
@@ -51,7 +51,7 @@ fn pfcount_multiple_keys() {
     s.pfadd("a", &["1", "2", "3"]).unwrap();
     s.pfadd("b", &["3", "4", "5"]).unwrap();
     let count = s.pfcount(&["a", "b"]).unwrap();
-    assert!(count >= 4 && count <= 6);
+    assert!((4..=6).contains(&count));
 }
 
 #[test]
@@ -61,7 +61,7 @@ fn pfmerge_combines() {
     s.pfadd("b", &["4", "5", "6"]).unwrap();
     s.pfmerge("dst", &["a", "b"]).unwrap();
     let count = s.pfcount(&["dst"]).unwrap();
-    assert!(count >= 5 && count <= 7);
+    assert!((5..=7).contains(&count));
 }
 
 #[test]
@@ -71,7 +71,7 @@ fn pfmerge_with_overlap() {
     s.pfadd("b", &["2", "3", "4"]).unwrap();
     s.pfmerge("dst", &["a", "b"]).unwrap();
     let count = s.pfcount(&["dst"]).unwrap();
-    assert!(count >= 3 && count <= 5);
+    assert!((3..=5).contains(&count));
 }
 
 #[test]
