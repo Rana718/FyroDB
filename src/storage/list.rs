@@ -34,8 +34,8 @@ impl Store {
                     l.push_front(crate::storage::value::SmallStr::new(v));
                 }
                 let len = l.len();
-                self.data.insert(
-                    key.to_string(),
+                self.data.insert_str(
+                    key,
                     StoreValue {
                         value: FyroDB::List(Box::new(ListInner::Compact(l))),
                         expires_ms: 0,
@@ -77,7 +77,7 @@ impl Store {
                     l.push_back(v.to_string());
                 }
                 let len = l.len();
-                self.data.insert(key.to_string(), StoreValue::list(l));
+                self.data.insert_str(key, StoreValue::list(l));
                 Ok(len)
             }
         }
@@ -141,32 +141,20 @@ impl Store {
         }
     }
 
-    /// Capacity below which an emptied list keeps its buffer.
-    ///
-    /// A queue workload drains to empty constantly, and calling
-    /// `shrink_to_fit` every time turns each drain into a free plus a
-    /// reallocation inside the entry lock. Only oversized buffers are worth
-    /// releasing.
+/// shrink_to_fit on every drain turns each into free+realloc inside the
+/// lock; only oversized buffers are released.
     const LIST_KEEP_CAPACITY: usize = 64;
 
-    /// Pop one element and write it straight into the reply buffer.
-    ///
-    /// The `Vec<String>`-returning form allocates a vector *and* a string per
-    /// popped element, both inside the entry lock, then the caller copies the
-    /// bytes out and drops them. For the single-element pops that dominate queue
-    /// traffic none of that is needed.
-    ///
-    /// `Ok(true)` means an element was written, `Ok(false)` that the list was
-    /// missing, expired or empty.
+/// Ok(true) = element written; Ok(false) = missing, expired or empty.
+/// Reply is serialized outside the lock.
     pub fn pop_one_to_buf(
         &self,
         key: &str,
         from_back: bool,
         out: &mut Vec<u8>,
     ) -> Result<bool, &'static str> {
-        // The entry lock is the serialization point of a contended queue
-        // key: every nanosecond of hold time is paid by every waiter. Pop
-        // under the lock, serialize the reply after releasing it.
+// Every nanosecond of lock hold is paid by all waiters: pop under the
+// lock, serialize after releasing it.
         enum Popped {
             Empty,
             WrongType,
@@ -322,9 +310,8 @@ impl Store {
         }
     }
 
-    /// Zero-alloc LRANGE: bulk elements stream straight into `out`; the
-    /// closure truncates back to its entry length so seqlock retries stay
-    /// idempotent.
+/// Bulk elements stream into `out`; truncation keeps seqlock retries
+/// idempotent.
     pub fn lrange_to_buf(
         &self,
         key: &str,

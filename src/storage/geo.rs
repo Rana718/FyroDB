@@ -216,9 +216,7 @@ pub enum GeoShape {
     Box(f64, f64, GeoUnit),
 }
 
-/// One GEOSEARCH specification: what to search around, within which shape,
-/// and how to order/limit the results. Reply-shaping flags (WITHCOORD /
-/// WITHDIST) belong to the command layer, not the search itself.
+/// Center + shape + order/limit; reply flags belong to the command layer.
 #[derive(Clone)]
 pub struct GeoSearchQuery {
     pub center: GeoCenter,

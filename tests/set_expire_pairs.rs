@@ -1,9 +1,5 @@
-//! End-to-end tests for dispatch-level `SET k v` + `EXPIRE k t` pair
-//! coalescing. A pipelined cache-TTL pattern executes as one atomic
-//! set-with-TTL under one entry lock, with byte-identical replies
-//! (`+OK` then `:1`) and correct TTL persistence. All non-matching
-//! sequences (lone SET, different-key EXPIRE, invalid TTL, arity changes)
-//! fall through to normal dispatch with identical behavior.
+//! E2E: SET+EXPIRE pairs execute as one atomic set-with-TTL with
+//! byte-identical replies and correct TTL persistence.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
@@ -180,9 +176,8 @@ fn set_with_extra_args_not_coalesced() {
     let mut wire = cmd(&["SET", "optk", "v", "XX"]);
     wire.extend_from_slice(&cmd(&["EXPIRE", "optk", "60"]));
     s.write_all(&wire).unwrap();
-    // SET XX on a missing key is a no-op (nil reply from the options path),
-    // so the following EXPIRE correctly reports :0 — the pair path must not
-    // have force-created the key.
+// SET XX no-ops on a missing key, so EXPIRE reports :0 — the pair path
+// must not force-create the key.
     let first = read_reply(&mut r);
     assert!(!first.is_empty(), "SET reply: {first:?}");
     assert_eq!(read_reply(&mut r), b":0\r\n");

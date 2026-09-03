@@ -17,6 +17,45 @@ pub struct ZAddOptions {
 }
 
 impl Store {
+/// Plain single-member ZADDs under one lock, per-command added flags;
+/// flag variants change replies and stay un-coalesced.
+    pub fn zadd_added_flags(
+        &self,
+        key: &str,
+        members: &[(f64, &str)],
+    ) -> Result<Vec<bool>, &'static str> {
+        let result = self.data.update_with(key, |val| {
+            if val.is_expired() {
+                let mut z = ZSetData::new();
+                let flags: Vec<bool> =
+                    members.iter().map(|(s, m)| z.insert(*s, m)).collect();
+                val.value = FyroDB::ZSet(Box::new(z));
+                val.expires_ms = 0;
+                return Ok(flags);
+            }
+            match val.value.as_zset_mut() {
+                Some(z) => Ok(members.iter().map(|(s, m)| z.insert(*s, m)).collect()),
+                None => Err("WRONGTYPE"),
+            }
+        });
+
+        match result {
+            Some(r) => r,
+            None => {
+                let mut z = ZSetData::new();
+                let flags: Vec<bool> = members.iter().map(|(s, m)| z.insert(*s, m)).collect();
+                self.data.insert_str(
+                    key,
+                    StoreValue {
+                        value: FyroDB::ZSet(Box::new(z)),
+                        expires_ms: 0,
+                    },
+                );
+                Ok(flags)
+            }
+        }
+    }
+
     pub fn zadd(
         &self,
         key: &str,
@@ -102,7 +141,7 @@ impl Store {
                     z.insert(*score, member);
                     added += 1;
                 }
-                self.data.insert(key.to_string(), StoreValue::zset(z));
+                self.data.insert_str(key, StoreValue::zset(z));
                 Ok(added)
             }
         }
@@ -148,9 +187,7 @@ impl Store {
         }
     }
 
-    /// Zero-alloc ZMSCORE: one element per member streams straight into `out`,
-    /// with nil for missing members. The closure truncates back to its entry
-    /// length first, so a seqlock retry never leaves a torn attempt's bytes behind.
+/// Nil for missing members; truncation keeps seqlock retries idempotent.
     pub fn zmscore_to_buf(
         &self,
         key: &str,
@@ -261,7 +298,7 @@ impl Store {
             None => {
                 let mut z = ZSetData::new();
                 z.insert(increment, member);
-                self.data.insert(key.to_string(), StoreValue::zset(z));
+                self.data.insert_str(key, StoreValue::zset(z));
                 Ok(increment)
             }
         }

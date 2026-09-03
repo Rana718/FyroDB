@@ -187,7 +187,7 @@ impl Store {
                 }
                 let id_s = actual.to_string();
                 self.data
-                    .insert(key.to_string(), StoreValue::stream(stream));
+                    .insert_str(key, StoreValue::stream(stream));
                 Ok(Some(id_s))
             }
         }
@@ -405,7 +405,7 @@ impl Store {
                     },
                 );
                 self.data
-                    .insert(key.to_string(), StoreValue::stream(stream));
+                    .insert_str(key, StoreValue::stream(stream));
                 Ok(true)
             }
         }

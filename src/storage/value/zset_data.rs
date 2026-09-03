@@ -22,19 +22,11 @@ fn member_hash(member: &str) -> u64 {
     h
 }
 
-/// Bits probed per member.
-///
-/// The filter keeps 8–16 bits per entry, where the optimal probe count is
-/// `m/n * ln2` ≈ 6–11. Two probes left the false-positive rate around 3–5%, and
-/// every false positive costs a full linear scan of the member list — the
-/// dominant cost of `ZADD` into a large sorted set. Five probes cut that rate by
-/// roughly 4x for the same memory and a handful of extra bit tests.
+/// 5 probes cut the false-positive rate ~4x vs 2; each false positive
+/// costs a full linear scan of the member list.
 const BLOOM_PROBES: u32 = 5;
 
-/// Split one hash into the pair used for double hashing.
-///
-/// `h2` is forced odd so successive probes stride the whole bit space instead of
-/// cycling through a subset.
+/// `h2` forced odd so probes stride the whole bit space.
 #[inline(always)]
 fn bloom_seeds(h: u64) -> (u64, u64) {
     (h, h.rotate_left(31) | 1)
@@ -127,9 +119,8 @@ impl ZSetData {
         let h = member_hash(member);
         // Fast check: if bloom says "definitely not here", skip membership scan
         if self.bloom_maybe_contains(h) {
-            // Same-score re-add: the (score, member) ordering makes an exact
-            // hit findable by binary search instead of a linear scan, which
-            // otherwise makes re-populating large zsets quadratic.
+// Exact (score, member) hits are binary-searchable; the old linear scan
+// made re-populating large zsets quadratic.
             let pos = self.find_insert_pos(score, member);
             if pos < self.entries.len()
                 && self.entries[pos].score == score
@@ -181,11 +172,7 @@ impl ZSetData {
         true
     }
 
-    /// Index of `member` in the sorted entries, or `None`.
-    ///
-    /// Shared implementation behind `get_score`, `rank`, `contains`,
-    /// `remove`, and `incr` — they differ only in what they do with the
-    /// position.
+/// Shared by get_score/rank/contains/remove/incr.
     #[inline]
     fn position_of(&self, member: &str) -> Option<usize> {
         self.entries
@@ -491,9 +478,8 @@ mod bloom_tests {
         );
     }
 
-    /// The filter must never report a member absent when it is present, and its
-    /// false-positive rate has to stay low enough that `insert` avoids the
-    /// linear membership scan.
+/// No false negatives; false positives must stay rare enough to keep
+/// insert off the linear scan.
     #[test]
     fn no_false_negatives_and_a_low_false_positive_rate() {
         let mut zset = ZSetData::new();
@@ -543,9 +529,7 @@ mod bloom_tests {
         }
     }
 
-    /// Same-score re-adds must stay off the linear membership scan, which made
-    /// re-populating large zsets (e.g. replaying an RDB or re-running a
-    /// workload against a warm server) quadratic in the zset size.
+/// Guards against the quadratic same-score re-add scan.
     #[test]
     fn same_score_re_add_is_not_quadratic() {
         const N: usize = 50_000;
@@ -558,9 +542,7 @@ mod bloom_tests {
             assert!(!zset.insert(i as f64, &format!("m{i}")));
         }
         let elapsed = start.elapsed();
-        // Binary search: ~N * log2(N) comparisons. The linear scan this guards
-        // against is ~N^2/2 comparisons — at N=50_000 that is >1s, while the
-        // binary-search path is a few ms.
+// Binary search is O(N log N); the linear scan is O(N^2) (>1s at 50k).
         assert!(
             elapsed.as_millis() < 100,
             "re-adding {N} members took {elapsed:?}, membership check regressed to a linear scan"

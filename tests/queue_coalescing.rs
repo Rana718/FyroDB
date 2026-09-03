@@ -1,12 +1,5 @@
-//! End-to-end tests for dispatch-level queue-command coalescing.
-//!
-//! A pipelined stream of same-key single-element LPUSH/RPUSH/LPOP/RPOP
-//! commands executes as one lock-acquiring batch per run. These tests drive
-//! real worker event loops over TCP and assert the client-visible behavior
-//! is byte-identical to un-coalesced single-command dispatch: reply counts,
-//! reply order, synthesized cumulative-length replies for pushes, per-value
-//! bulks for pops, WRONGTYPE on wrong container, nils on exhaustion, run
-//! breaks on key/op/arity changes, and >512-command run continuation.
+//! E2E: same-key queue-command runs execute as one lock-acquiring batch,
+//! client-visible behavior byte-identical to single dispatch.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
@@ -165,9 +158,8 @@ fn run_breaks_on_key_op_and_arity_change() {
     let server = spawn_server();
     let (mut s, mut r) = conn(server.port);
 
-    // LPUSH k1, LPUSH k2 (different key: run must end, then k1 push
-    // resumes), RPOP (different op: own run), then a 2-arg LPUSH (arity
-    // mismatch: normal dispatch wrong-args error).
+// Key change ends the run; op change starts its own; arity mismatch
+// takes normal dispatch.
     let mut wire = Vec::new();
     wire.extend_from_slice(&cmd_lp("k1", "a"));
     wire.extend_from_slice(&cmd_lp("k2", "b"));
@@ -176,9 +168,7 @@ fn run_breaks_on_key_op_and_arity_change() {
     // Replies must be exactly as un-coalesced: 1, 1, 2.
     assert_eq!(read_ints(&mut r, 3), vec![1, 1, 2]);
 
-    // Trailing non-run command (GET) after a pop run: must still execute —
-    // this is the dropped-trailing-command regression guard. GET on a list
-    // key returns nil in FyroDB's semantics (as_string() is None).
+// Trailing-command regression guard; GET on a list returns nil here.
     let mut wire = Vec::new();
     wire.extend_from_slice(&cmd_rpop("k2"));
     wire.extend_from_slice(&cmd_get("k2"));
@@ -193,9 +183,7 @@ fn wrong_type_replies_per_command_not_nils() {
     let server = spawn_server();
     let (mut s, mut r) = conn(server.port);
 
-    // Seed a string value, then run single RPOPs against it: each reply
-    // must be WRONGTYPE (never a nil — the pop-run arm must propagate the
-    // error per command).
+// Each reply must be WRONGTYPE, never nil.
     s.write_all(b"*3\r\n$3\r\nSET\r\n$4\r\nstrk\r\n$1\r\nx\r\n")
         .unwrap();
     assert_eq!(read_reply(&mut r), b"+OK\r\n");
@@ -254,6 +242,4 @@ fn single_command_streams_are_unchanged() {
     assert_eq!(read_ints(&mut r, 1)[0], 2);
 }
 
-// Workers of every spawned test server block in poll(); they exit with the
-// test process. No explicit shutdown needed (same pattern as the pubsub
-// e2e test).
+// Workers exit with the test process.

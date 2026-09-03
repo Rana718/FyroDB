@@ -1,10 +1,5 @@
-//! Memory control layer wrapping a pluggable backing allocator.
-//!
-//! Provides a `GlobalAlloc` implementation with lightweight memory tracking,
-//! RSS reporting, purge support, and raw allocation helpers for EBR-managed
-//! data structures. The backend is selected at compile time: mimalloc by
-//! default, glibc malloc with the `system` feature, jemalloc with the
-//! `jemalloc` feature.
+//! GlobalAlloc wrapper with memory tracking, RSS reporting, purge, and
+//! raw helpers for EBR. Backend: mimalloc (default), `system`, `jemalloc`.
 
 use std::alloc::{GlobalAlloc, Layout};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -36,11 +31,8 @@ fn backend_realloc(ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
     unsafe { BACKEND.realloc(ptr, layout, new_size) }
 }
 
-/// Number of independent counters used to track live allocated bytes.
-///
-/// Striped by CPU to keep updates uncontended. A block freed on a different
-/// CPU than it was allocated on moves debt between stripes; the *sum* stays
-/// exact.
+/// Striped by CPU; cross-CPU frees move debt between stripes, the sum
+/// stays exact.
 const STRIPES: usize = 64;
 
 #[repr(align(128))]
@@ -48,11 +40,8 @@ struct Stripe(std::sync::atomic::AtomicI64);
 
 static ALLOCATED: [Stripe; STRIPES] = [const { Stripe(std::sync::atomic::AtomicI64::new(0)) }; STRIPES];
 
-/// Pick a stripe without allocating.
-///
-/// This runs inside `GlobalAlloc`, so it must not touch anything that could
-/// allocate — notably `thread_local!`, whose lazy initialization would recurse
-/// back into the allocator. `sched_getcpu` is a vDSO call with no such risk.
+/// Runs inside GlobalAlloc: thread_local! lazy init would recurse;
+/// sched_getcpu (vDSO) is safe.
 #[inline(always)]
 fn stripe() -> &'static std::sync::atomic::AtomicI64 {
     #[cfg(target_os = "linux")]
@@ -118,10 +107,7 @@ pub fn used_memory() -> usize {
     total.max(0) as usize
 }
 
-/// Resident bytes the process holds from the OS.
-///
-/// Reads `/proc/self/statm`, which is cheap enough for the maintenance-thread
-/// and `INFO` cadences that use it. Not for hot paths.
+/// Reads /proc/self/statm; maintenance/INFO cadences only.
 pub fn resident_memory() -> usize {
     rss_bytes_inner()
 }
@@ -147,11 +133,7 @@ pub fn stats() -> Stats {
     }
 }
 
-/// Force the backing allocator to collect and return unused pages to the OS.
-///
-/// Only mimalloc exposes a forced collection (`mi_collect`); the other
-/// backends return dirty pages via their own decay policies, where this is a
-/// no-op.
+/// Only mimalloc exposes forced collection; others decay on their own.
 pub fn purge() {
     #[cfg(not(any(feature = "jemalloc", feature = "system")))]
     {
@@ -162,9 +144,7 @@ pub fn purge() {
     }
 }
 
-/// Resident bytes per byte the application actually asked for. Above 1.0 means
-/// allocator or page-level fragmentation; Redis reports the same quantity as
-/// `mem_fragmentation_ratio`.
+/// >1.0 means fragmentation; Redis calls this mem_fragmentation_ratio.
 pub fn fragmentation_ratio() -> f64 {
     let allocated = used_memory();
     if allocated == 0 {

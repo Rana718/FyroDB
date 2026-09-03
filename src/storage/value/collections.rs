@@ -57,9 +57,7 @@ impl HashInner {
         self.insert_small(SmallStr::from_string(field), SmallStr::from_string(value))
     }
 
-    /// Borrowing insert: one scan finds the field for overwrite without the
-    /// caller pre-checking `contains_key`, and overwrites avoid the two
-    /// `String` temporaries the owned path pays.
+/// One scan finds-or-inserts; overwrites avoid two String temporaries.
     #[inline]
     pub fn insert_ref(&mut self, field: &str, value: &str) -> bool {
         self.insert_small(SmallStr::new(field), SmallStr::new(value))

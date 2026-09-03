@@ -29,7 +29,7 @@ impl Store {
             value: crate::storage::value::FyroDB::String(SmallStr::new(value)),
             expires_ms,
         };
-        self.data.set(key, store_val, || key.to_owned());
+        self.data.set_str(key, store_val);
         if expires_ms != 0 {
             self.add_ttl();
         }
@@ -41,7 +41,7 @@ impl Store {
             value: crate::storage::value::FyroDB::String(SmallStr::new(value)),
             expires_ms,
         };
-        self.data.try_set(key, store_val, || key.to_owned())?;
+        self.data.try_set_str(key, store_val)?;
         if expires_ms != 0 {
             self.add_ttl();
         }
@@ -112,8 +112,8 @@ impl Store {
         match result {
             Some(old) => old,
             None => {
-                self.data.insert(
-                    key.to_string(),
+                self.data.insert_str(
+                    key,
                     StoreValue::string(new_value.to_string()),
                 );
                 None
@@ -181,7 +181,7 @@ impl Store {
             None => {
                 let len = suffix.len();
                 self.data
-                    .insert(key.to_string(), StoreValue::string(suffix.to_string()));
+                    .insert_str(key, StoreValue::string(suffix.to_string()));
                 Ok(len)
             }
         }
@@ -317,8 +317,8 @@ impl Store {
             }
             // Absent: lock-free create. Losing the insert race just means the
             // key now exists, so the loop retries the in-place update.
-            if self.data.insert_if_absent(
-                key.to_string(),
+            if self.data.insert_if_absent_str(
+                key,
                 StoreValue::string_small(SmallStr::from_int(delta)),
             ) {
                 return Ok(delta);
@@ -364,7 +364,7 @@ impl Store {
             Some(r) => r,
             None => {
                 self.data
-                    .insert(key.to_string(), StoreValue::string(format_float(by)));
+                    .insert_str(key, StoreValue::string(format_float(by)));
                 Ok(by)
             }
         }

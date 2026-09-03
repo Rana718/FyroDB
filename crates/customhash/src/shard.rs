@@ -98,25 +98,17 @@ pub(crate) fn state_lock(state: &AtomicU64) {
     }
 }
 
-/// Spin iterations before a waiter stops burning its timeslice and yields.
-///
-/// Workers each serve many connections, so a worker spinning on one hot entry
-/// is a worker not serving anything else. Backing off and then yielding turns
-/// contention back into latency instead of lost throughput.
+/// A spinning worker serves no other connections; back off to yield.
 const MAX_SPIN_BACKOFF: u32 = 64;
 
 #[cold]
 fn state_lock_slow(state: &AtomicU64) {
-    // Test-and-test-and-set with exponential backoff. Without the backoff every
-    // waiter observes the unlock in the same instant and issues a
-    // compare-exchange against the same cache line, so one handoff between N
-    // contenders costs N exclusive-ownership transfers. On a single hot key that
-    // inverted scaling outright: twelve workers ran ~2x slower than one.
+// TTAS with exponential backoff: without it N contenders hammer the same
+// line with CAS and one handoff costs N ownership transfers.
     let mut backoff = 1u32;
     loop {
-        // Spin on a plain load. The line can stay shared in this core's cache
-        // until the holder writes, whereas a CAS takes it exclusively on every
-        // attempt and invalidates every other waiter.
+// Plain load keeps the line shared; a CAS takes it exclusively and
+// invalidates every other waiter.
         while state.load(Ordering::Relaxed) & STATE_LOCK != 0 {
             for _ in 0..backoff {
                 std::hint::spin_loop();
@@ -124,9 +116,7 @@ fn state_lock_slow(state: &AtomicU64) {
             if backoff < MAX_SPIN_BACKOFF {
                 backoff <<= 1;
             } else {
-                // More runnable threads than cores is the normal case here, so
-                // the holder may not even be scheduled. Hand the CPU over
-                // rather than spinning against a descheduled owner.
+// The holder may be descheduled; hand the CPU over.
                 std::thread::yield_now();
             }
         }
@@ -151,13 +141,8 @@ pub(crate) fn state_unlock(state: &AtomicU64) {
     state.fetch_and(!STATE_LOCK, Ordering::Release);
 }
 
-/// Open a seqlock write window on an entry whose `STATE_LOCK` the caller
-/// already holds.
-///
-/// Uses a plain store (no RMW) since no other writer can race. The release
-/// fence prevents value writes from being reordered ahead of the odd sequence
-/// number, which would let a `read_consistent` reader see a half-written value
-/// on a weakly-ordered target.
+/// Plain store (no RMW): caller holds the lock. The release fence keeps
+/// value writes behind the odd sequence number for seqlock readers.
 #[inline(always)]
 pub(crate) fn write_begin(state: &AtomicU64) {
     let current = state.load(Ordering::Relaxed);
@@ -165,9 +150,7 @@ pub(crate) fn write_begin(state: &AtomicU64) {
     std::sync::atomic::fence(Ordering::Release);
 }
 
-/// Close the write window, publish the occupied flag, and release the lock in
-/// a single release store, replacing four separate read-modify-write ops on
-/// the same cache line.
+/// Publishes occupied flag and releases the lock in one release store.
 #[inline(always)]
 pub(crate) fn write_end(state: &AtomicU64, occupied: bool) {
     let current = state.load(Ordering::Relaxed);
@@ -187,16 +170,8 @@ pub(crate) struct SlotTable<V> {
     pub(crate) threshold: usize,
 }
 
-/// Bits of a slot word reserved for a hash tag.
-///
-/// Userspace pointers leave bits 48..63 clear on x86-64 (4-level paging) and
-/// AArch64 (39/48-bit VA), so a tag rides in the slot array itself. Probing
-/// rejects non-matching entries without dereferencing them, turning each probe
-/// step from a dependent cache miss into a register compare.
-///
-/// Bit 63 marks tag presence. On 5-level x86-64 or AArch64 LVA a pointer may
-/// use bits 49..62; storing verbatim and masking only when TAG_FLAG is set
-/// avoids silently truncating it.
+/// Userspace pointers leave bits 48..63 clear (x86-64/AArch64 4-level),
+/// so the tag rides in the slot word; bit 63 marks presence.
 const TAG_FLAG: usize = 1 << 63;
 const TAG_BITS: usize = 14;
 const TAG_SHIFT: u32 = 49;
@@ -204,19 +179,15 @@ const TAG_MAX: usize = (1 << TAG_BITS) - 1;
 const TAG_MASK: usize = TAG_MAX << TAG_SHIFT;
 const RESERVED_MASK: usize = TAG_MASK | TAG_FLAG;
 
-/// Derive a slot tag from a key hash.
-///
-/// Uses bits 32..45, which neither the shard selector (top `log2(shards)`
-/// bits) nor the slot index (low `log2(capacity)` bits) consumes, so the tag
-/// keeps its full entropy inside a shard.
+/// Bits 32..45: consumed by neither the shard selector nor the slot
+/// index, so the tag keeps full entropy in-shard.
 #[inline(always)]
 fn hash_tag(hash: u64) -> usize {
     ((hash >> 32) as usize) & TAG_MAX
 }
 
-/// A slot holding an `Entry` pointer with an optional hash tag in its high
-/// bits. The tag makes the raw word non-dereferenceable, so this type deposits
-/// and strips it rather than exposing the word.
+/// The tag makes the raw word non-dereferenceable; this type deposits
+/// and strips it.
 #[repr(transparent)]
 pub(crate) struct TaggedSlot<V>(AtomicPtr<Entry<V>>);
 
@@ -247,10 +218,7 @@ impl<V> TaggedSlot<V> {
         Self::decode(self.0.load(order) as usize)
     }
 
-    /// Load the entry pointer only if the slot's tag can match `hash`.
-    ///
-    /// Returns `Err(())` when the slot holds an entry whose tag rules out a
-    /// match — the caller must keep probing without touching the entry.
+/// Err(()) means the tag rules out a match: keep probing untouched.
     #[inline(always)]
     pub(crate) fn load_if_tag_matches(
         &self,
@@ -433,12 +401,14 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
 
     #[inline(always)]
     pub(crate) fn insert_hashed(&self, key: String, value: V, hash: u64) -> bool {
+        self.insert_hashed_key(CompactKey::from_string(key), value, hash)
+    }
+
+    pub(crate) fn insert_hashed_key(&self, key: CompactKey, value: V, hash: u64) -> bool {
         let _guard = ebr::pin();
-        if let Some(existing) = self.find(&key, hash) {
+        if let Some(existing) = self.find(key.as_str(), hash) {
             state_lock(&existing.state);
-            // Re-check under the lock: a concurrent remove between the probe
-            // and the lock would otherwise lead to dropping an already-dropped
-            // value.
+// Re-check under the lock: racing a remove would drop twice.
             let was_occupied = state_occupied(&existing.state, Ordering::Relaxed);
             write_begin(&existing.state);
             if was_occupied {
@@ -448,13 +418,23 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
             write_end(&existing.state, true);
             return !was_occupied;
         }
-        self.insert_new(key, value, hash, true)
+        self.insert_new_key(key, value, hash, true)
     }
 
     pub(crate) fn insert_new(&self, key: String, value: V, hash: u64, overwrite: bool) -> bool {
+        self.insert_new_key(CompactKey::from_string(key), value, hash, overwrite)
+    }
+
+    pub(crate) fn insert_new_key(
+        &self,
+        key: CompactKey,
+        value: V,
+        hash: u64,
+        overwrite: bool,
+    ) -> bool {
         let entry: *mut Entry<V> = alloc_entry(Entry {
             hash,
-            key: CompactKey::from_string(key),
+            key,
             state: AtomicU64::new(STATE_OCCUPIED),
             value: UnsafeCell::new(std::mem::MaybeUninit::new(value)),
         });
@@ -689,9 +669,8 @@ mod tests {
         unsafe { drop(Box::from_raw(value)) };
     }
 
-    /// A pointer that genuinely occupies bits 49..62 — possible under x86-64
-    /// 5-level paging or AArch64 LVA — must be stored and read back verbatim.
-    /// Masking it unconditionally would hand out a truncated address.
+/// 5-level/LVA pointers may use those bits: stored verbatim, never
+/// masked unconditionally.
     #[test]
     fn addresses_using_reserved_bits_survive_untagged() {
         let high = ((1usize << TAG_SHIFT) | 0x40) as *mut Entry<u64>;

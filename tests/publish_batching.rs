@@ -1,8 +1,5 @@
-//! End-to-end tests for dispatch-level PUBLISH run batching. A pipelined
-//! run of same-channel `PUBLISH ch msg` commands executes as one
-//! `publish_batch` (single snapshot scan, one grouped fan-out per worker)
-//! while replies and delivery stay byte-identical: one integer per PUBLISH
-//! (the subscriber count) and in-order frame delivery to every subscriber.
+//! E2E: same-channel PUBLISH runs batch into one publish_batch while
+//! replies and in-order delivery stay byte-identical.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;

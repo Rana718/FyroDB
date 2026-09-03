@@ -219,9 +219,8 @@ impl PeerManager {
             ),
             timeout,
         )?;
-        // Only remove the source copy after every key and the finish marker
-        // have been acknowledged. A failed partial transfer leaves the source
-        // authoritative and can be retried without data loss.
+// Remove the source only after full ack: a failed partial transfer stays
+// authoritative and retryable.
         store.remove_slot_values(slot);
         if let Some(topology) = state.commit_slot_migration(slot) {
             let _ = store.install_cluster_topology(topology.clone());
@@ -301,9 +300,8 @@ pub fn start_peer_manager(config: &ClusterConfig, state: ClusterState) -> PeerMa
     }
 }
 
-/// Start one bounded, ACK-driven replication stream for every replica of the
-/// local primary. Only one mutation is held outside the retained log per
-/// stream, keeping memory independent of replication lag.
+/// One bounded ACK-driven stream per replica; one mutation outside the
+/// retained log, so memory is independent of lag.
 pub fn start_replication_streams(
     config: &ClusterConfig,
     manager: Arc<PeerManager>,
@@ -359,10 +357,7 @@ pub fn start_replication_streams(
                             continue;
                         }
                         Err(_) => {
-                            // Retention passed the requested offset. The
-                            // snapshot protocol is not optional: pause the
-                            // stream and make the condition observable rather
-                            // than skipping data and creating silent loss.
+// Pausing and surfacing beats skipping data and losing silently.
                             eprintln!(
                                 "[cluster] replica {replica_id} requires snapshot catch-up (requested {}, retained from {})",
                                 next_offset,
@@ -534,9 +529,7 @@ pub fn start_health_monitor(
                                 reporter_id: config.local_id.clone(),
                                 epoch: config.topology.epoch,
                             };
-                            // Count this node's own observation before forwarding
-                            // evidence. Without this, every voter only sees one
-                            // remote report and quorum can never be reached.
+// Count own observation first, or quorum can never be reached.
                             let confirmed = state.record_failure(report.clone());
                             let promoted = if confirmed {
                                 state.promote_replica(&report.target_id, report.epoch)
@@ -545,9 +538,7 @@ pub fn start_health_monitor(
                             };
                             let payload =
                                 crate::cluster::encode_failure_report(&report).unwrap_or_default();
-                            // Reports must reach the other voters. Sending to
-                            // the failed target itself can never establish a
-                            // quorum when that target is disconnected.
+// Voters need the reports; the failed target cannot help form quorum.
                             for voter_id in manager
                                 .peer_ids()
                                 .into_iter()
@@ -659,9 +650,7 @@ fn run_peer_worker(
         loop {
             if peer.is_none() {
                 health.connecting();
-                // Resolved per attempt, not once at startup: a peer's address
-                // may be a hostname whose DNS record changes when that node
-                // restarts (container orchestration reassigns IPs).
+// Per-attempt resolution: hostnames can change IP on node restart.
                 let candidates = resolve_peer_address(&node.cluster_address, &node.id);
                 if candidates.is_empty() {
                     health.disconnected(None);
@@ -669,9 +658,7 @@ fn run_peer_worker(
                     backoff = backoff.saturating_mul(2).min(MAX_BACKOFF);
                     continue;
                 }
-                // Every candidate gets a try, not just the first. `localhost`
-                // and dual-stack service names commonly resolve to an IPv6
-                // address ahead of the IPv4 one the peer is actually bound to.
+// Try every candidate: dual-stack names often yield IPv6 first.
                 let attempt = candidates.iter().find_map(|&address| {
                     connect_and_handshake(address, ctx.local_id, node, ctx.epoch, ctx.auth_token).ok()
                 });
@@ -741,12 +728,8 @@ fn read_replies(
     requests.fail_pending();
 }
 
-/// Resolve a cluster-bus address into every candidate socket address.
-///
-/// Accepts hostnames (Docker Compose service names, Kubernetes DNS) in
-/// addition to bare `ip:port`. Returns all candidates because resolution
-/// order is not connectability order — dual-stack names often yield IPv6
-/// first while the node may only bind IPv4.
+/// Accepts hostnames, not just ip:port; returns all candidates because
+/// resolution order is not connectability order.
 fn resolve_peer_address(address: &str, node_id: &str) -> Vec<SocketAddr> {
     if let Ok(parsed) = address.parse::<SocketAddr>() {
         return vec![parsed];
@@ -870,9 +853,7 @@ mod tests {
         );
     }
 
-    /// Resolution order is not connectability order: `localhost` yields the
-    /// IPv6 address first on a dual-stack host while a node bound to
-    /// `127.0.0.1` only accepts IPv4, so every candidate has to be offered.
+/// Dual-stack names yield IPv6 first; the node may bind IPv4 only.
     #[test]
     fn every_resolved_candidate_is_returned() {
         let candidates = super::resolve_peer_address("localhost:19301", "node-1");

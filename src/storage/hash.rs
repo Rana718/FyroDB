@@ -3,6 +3,45 @@ use crate::storage::value::{FyroDB, HashInner, SmallStr, StoreValue};
 use crate::utils::util::format_float;
 
 impl Store {
+/// Single-field HSET run under one lock, per-command added flags;
+/// hset cannot recover per-command flags from a total.
+    pub fn hset_added_flags(
+        &self,
+        key: &str,
+        fields: &[(&str, &str)],
+    ) -> Result<Vec<bool>, &'static str> {
+        let result = self.data.update_with(key, |val| {
+            if val.is_expired() {
+                let mut h = HashInner::new();
+                let flags: Vec<bool> =
+                    fields.iter().map(|(f, v)| h.insert_ref(f, v)).collect();
+                val.value = FyroDB::Hash(Box::new(h));
+                val.expires_ms = 0;
+                return Ok(flags);
+            }
+            match val.value.as_hash_mut() {
+                Some(h) => Ok(fields.iter().map(|(f, v)| h.insert_ref(f, v)).collect()),
+                None => Err("WRONGTYPE"),
+            }
+        });
+
+        match result {
+            Some(r) => r,
+            None => {
+                let mut h = HashInner::new();
+                let flags: Vec<bool> = fields.iter().map(|(f, v)| h.insert_ref(f, v)).collect();
+                self.data.insert_str(
+                    key,
+                    StoreValue {
+                        value: FyroDB::Hash(Box::new(h)),
+                        expires_ms: 0,
+                    },
+                );
+                Ok(flags)
+            }
+        }
+    }
+
     pub fn hset(&self, key: &str, fields: &[(&str, &str)]) -> Result<usize, &'static str> {
         let result = self.data.update_with(key, |val| {
             if val.is_expired() {
@@ -39,8 +78,8 @@ impl Store {
                     v.push(SmallStr::new(f));
                     v.push(SmallStr::new(val));
                 }
-                self.data.insert(
-                    key.to_string(),
+                self.data.insert_str(
+                    key,
                     StoreValue {
                         value: FyroDB::Hash(Box::new(HashInner::Compact(v))),
                         expires_ms: 0,
@@ -76,8 +115,8 @@ impl Store {
             Some(r) => r,
             None => {
                 let v = vec![SmallStr::new(field), SmallStr::from_string(value)];
-                self.data.insert(
-                    key.to_string(),
+                self.data.insert_str(
+                    key,
                     StoreValue {
                         value: FyroDB::Hash(Box::new(HashInner::Compact(v))),
                         expires_ms: 0,
@@ -136,9 +175,7 @@ impl Store {
         }
     }
 
-    /// Zero-alloc HMGET: one element per field streams straight into `out`,
-    /// with nil for missing fields. The closure truncates back to its entry
-    /// length first, so a seqlock retry never leaves a torn attempt's bytes behind.
+/// Nil for missing fields; truncation keeps seqlock retries idempotent.
     pub fn hmget_to_buf(
         &self,
         key: &str,
@@ -200,9 +237,7 @@ impl Store {
         }
     }
 
-    /// Zero-alloc HGETALL: bulk elements stream straight into `out`. The
-    /// closure truncates back to its entry length first, so a seqlock retry
-    /// never leaves a torn attempt's bytes behind.
+/// Bulk elements stream into `out`; truncation keeps retries idempotent.
     pub fn hgetall_to_buf(&self, key: &str, out: &mut Vec<u8>) -> Result<usize, &'static str> {
         let start_len = out.len();
         let result = self.data.read_consistent(key, |val| {
@@ -350,8 +385,8 @@ impl Store {
                     SmallStr::new(field),
                     SmallStr::new(crate::storage::value::write_int_to(&mut nb, by)),
                 ];
-                if self.data.insert_if_absent(
-                    key.to_string(),
+                if self.data.insert_if_absent_str(
+                    key,
                     StoreValue {
                         value: FyroDB::Hash(Box::new(HashInner::Compact(v))),
                         expires_ms: 0,
@@ -397,8 +432,8 @@ impl Store {
             Some(r) => r,
             None => {
                 let v = vec![SmallStr::new(field), SmallStr::new(&format_float(by))];
-                self.data.insert(
-                    key.to_string(),
+                self.data.insert_str(
+                    key,
                     StoreValue {
                         value: FyroDB::Hash(Box::new(HashInner::Compact(v))),
                         expires_ms: 0,

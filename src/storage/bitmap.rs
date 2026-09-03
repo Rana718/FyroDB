@@ -39,8 +39,8 @@ impl Store {
                 if value {
                     bytes[byte_idx] |= 1 << bit_idx;
                 }
-                self.data.insert(
-                    key.to_string(),
+                self.data.insert_str(
+                    key,
                     StoreValue::string(unsafe { String::from_utf8_unchecked(bytes) }),
                 );
                 Ok(0)

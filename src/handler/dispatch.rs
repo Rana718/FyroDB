@@ -141,9 +141,8 @@ pub fn dispatch(conn: &mut Conn<'_>, parts: &[&str]) {
             } else if cmd_eq(cmd, b"PUNSUBSCRIBE") {
                 handle_punsubscribe(conn, parts);
             } else if cmd_eq(cmd, b"ASKING") {
-                //  Cluster clients send ASKING immediately before a
-                // redirected command. FyroDB's migration fence is enforced
-                // by the routing layer, so the marker itself is a no-op.
+// ASKING before a redirected command is a no-op here; the routing
+// layer enforces the migration fence.
                 conn.asking = true;
                 resp::write_simple(&mut conn.parser.wbuf, "OK");
             } else if cmd_eq(cmd, b"PING") {
@@ -178,9 +177,8 @@ fn capture_if_success(conn: &mut Conn, parts: &[&str], response_start: usize) {
     }
 }
 
-/// Returns the key index to capture for replication, or `None` if this
-/// command does not need capture. Dispatches on `(len, first_byte)` for a
-/// compiler-generated jump table.
+/// Key index to capture for replication, or None; dispatches on
+/// (len, first_byte) for a jump table.
 #[inline]
 fn mutation_key_index(command: &[u8]) -> Option<usize> {
     let first = command.first().map(|b| b.to_ascii_uppercase())?;

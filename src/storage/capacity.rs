@@ -1,13 +1,8 @@
-//! Key-capacity admission control.
-//!
-//! FyroDB caps on key count rather than bytes, mirroring Redis `denyoom`
-//! semantics: write commands that grow the keyspace are refused at the limit
-//! while memory-freeing commands remain available so a client can recover.
+//! Caps on key count (Redis denyoom semantics): keyspace-growing writes
+//! are refused at the limit; freeing commands stay available.
 
-/// Whether a command should be refused when the store is at capacity.
-///
-/// True for writes that can grow the keyspace; false for reads and for writes
-/// that only remove data, which must stay available so a client can free room.
+/// True for keyspace-growing writes; removals must stay available so a
+/// client can free room.
 pub fn is_denyoom_command(command: &[u8]) -> bool {
     crate::cluster::is_write_command(command) && !frees_memory(command)
 }

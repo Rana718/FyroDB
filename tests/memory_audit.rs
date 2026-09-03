@@ -127,9 +127,8 @@ fn audit_struct_sizes() {
         mem::size_of::<HashMap<SmallStr, f64>>()
     );
 
-    // Entry<V> is private in customhash. Packed state combines lock, occupied,
-    // and sequence into one AtomicU64; CompactKey is 16 bytes at the 15-byte
-    // inline capacity. The resulting entry is 8 bytes smaller than before.
+// Packed AtomicU64 state + 16B CompactKey: the entry is 8B smaller than
+// the previous layout.
     let store_val = mem::size_of::<StoreValue>();
     let entry_fields = 8 + 16 + 8 + store_val;
     let entry_size = entry_fields.div_ceil(8) * 8; // align 8
@@ -163,13 +162,8 @@ fn audit_slot_prealloc() {
     println!("  PHASE 2 — Slot Array Pre-allocation (the hidden baseline cost)");
     println!("═══════════════════════════════════════════════════════════════\n");
 
-    // Store::with_capacity(64, max_keys) computes per-shard cap:
-    //   per = max_keys / 64
-    //   at_limit = per * 10 / 9  (so 90% load = max_keys)
-    //   per_shard = max(at_limit, 1024)
-    //   slot_cap = per_shard.next_power_of_two()
-    // Each slot = 8 bytes (AtomicPtr)
-    // Total = 64 shards × slot_cap × 8 bytes
+// per = max_keys/64; at_limit = per*10/9; per_shard = max(at_limit,
+// 1024); slot_cap = next_pow2(per_shard); 64 shards × slot_cap × 8B.
 
     for &max_keys in &[1_000_000usize, 3_000_000, 5_000_000, 10_000_000] {
         let per = max_keys.div_ceil(64);
@@ -340,10 +334,8 @@ fn audit_ttl_overhead() {
         }
     });
 
-    // The StoreValue already has expires_ms:u64 (8 bytes) inline regardless.
-    // Setting TTL just writes a nonzero value — no allocation change.
-    // The REAL waste: keys that never get TTL still pay 8 bytes each.
-    // Redis stores TTL in a separate expires dict → 0 bytes for non-TTL keys.
+// expires_ms is inline for every key: non-TTL keys still pay 8 bytes
+// (Redis uses a separate expires dict).
     println!(
         "\n  expires_ms is inline in StoreValue ({} bytes), always present:",
         8

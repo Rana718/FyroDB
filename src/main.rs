@@ -234,18 +234,13 @@ fn expiry_loop(store: &Arc<Store>) {
             customhash::force_collect();
             rust_zmalloc::purge();
         }
-        // Reclaim allocator pages on an existing maintenance cadence;
-        // this is deliberately infrequent and does not affect hot
-        // command paths.
+// Page reclaim on the maintenance cadence; off the hot path.
         if purge_tick >= 60 {
             purge_tick = 0;
             let used = rust_zmalloc::used_memory();
             let rss = store::rss_bytes();
             if rss > used.saturating_add(used / 5) && rss.saturating_sub(used) >= 10 * 1024 * 1024 {
-                // Active defrag cycle. Values are rebuilt under their
-                // existing entry lock so lock-free readers never
-                // observe a relocated entry address. The cursor keeps
-                // each pass bounded regardless of keyspace size.
+// Values rebuilt under their entry lock; the cursor bounds each pass.
                 let (next_slot, capacity, rebuilt) =
                     store.defragment_shard_range(defrag_shard, defrag_slot, DEFRAG_BUDGET);
                 if next_slot >= capacity {

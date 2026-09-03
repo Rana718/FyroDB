@@ -1,10 +1,7 @@
 use crate::storage::store::{Store, cgroup_memory_bytes, peak_rss_bytes, rss_bytes};
 use crate::storage::value::{now_ms, tick_clock};
 
-/// High-water mark of `used_memory`, sampled whenever `INFO` is served.
-///
-/// Redis reports `used_memory_peak` as the peak of *requested* bytes, which is
-/// not the same curve as peak RSS.
+/// Peak of requested bytes — a different curve than peak RSS.
 fn record_peak_allocated(current: usize) -> usize {
     use std::sync::atomic::{AtomicUsize, Ordering};
     static PEAK: AtomicUsize = AtomicUsize::new(0);

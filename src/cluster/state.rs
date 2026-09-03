@@ -8,13 +8,11 @@ use super::{FailureReport, FailureTracker};
 pub struct ClusterState {
     failures: Arc<Mutex<FailureTracker>>,
     topology: Arc<RwLock<Arc<super::Topology>>>,
-    /// Flat slot-to-owner map for the topology above. Published under the same
-    /// write lock so the two never disagree, and handed out together so a
-    /// reader cannot pair a table with a different generation's node list.
+/// Published under the same write lock so table and node list never
+/// disagree across generations.
     routing: Arc<RwLock<Arc<super::RoutingTable>>>,
-    /// Bumped on every topology install. Lets a reader hold a cached snapshot
-    /// and revalidate with one relaxed load instead of taking the `RwLock` and
-    /// cloning the `Arc` on every command.
+/// Enables snapshot revalidation with one relaxed load instead of the
+/// RwLock + Arc clone per command.
     version: Arc<AtomicU64>,
     migrations: Arc<Mutex<std::collections::HashMap<u16, String>>>,
     imports: Arc<Mutex<std::collections::HashMap<u16, String>>>,
@@ -61,15 +59,8 @@ impl ClusterState {
         self.version.load(Ordering::Acquire)
     }
 
-    /// Fetch a fresh snapshot only when `cached` is stale.
-    ///
-    /// The version is checked *before* the lock. Taking the read lock first
-    /// defeats the entire purpose: an `RwLock` read is still an atomic
-    /// read-modify-write on one shared cache line, so every worker paid for it
-    /// on every command. Steady state is now a single `Acquire` load.
-    ///
-    /// The routing table comes along so a caller can never pair it with a
-    /// different generation's node list.
+/// Version is checked before the lock: steady state is one Acquire load.
+/// The table rides along, so generations cannot be mixed.
     pub fn topology_if_newer(
         &self,
         cached: u64,
@@ -243,16 +234,8 @@ impl ClusterState {
         self.failures.lock().unwrap().report_count(target_id, epoch)
     }
 
-    /// Move one slot to `target`, taking it from whichever primary holds it.
-    ///
-    /// `CLUSTER SETSLOT <slot> NODE <target>` has to be sent to every master to
-    /// finish a migration, but only the migration source has a pending record
-    /// for `commit_slot_migration` to consume. On the other nodes the fallback
-    /// was `add_slots`, which refuses a slot that is still recorded as owned
-    /// elsewhere — so they kept the old owner, and the slot ended up in a MOVED
-    /// loop between nodes that disagreed about it.
-    ///
-    /// Returns `None` if the target is unknown or already owns the slot.
+/// SETSLOT NODE must also land on non-source nodes; the old add_slots
+/// fallback caused MOVED loops. None if target unknown or already owner.
     pub fn assign_slot(&self, slot: super::Slot, target: &str) -> Option<super::Topology> {
         let mut topology = self.topology.write().unwrap().as_ref().clone();
         let target_index = topology.nodes.iter().position(|node| node.id == target)?;
@@ -478,9 +461,7 @@ mod tests {
         assert_eq!(committed.owner(Slot(41)).unwrap().id, "p");
     }
 
-    /// Routing caches a snapshot and revalidates against the version counter,
-    /// so every install has to move it — a missed bump would pin a connection
-    /// to a stale topology and it would keep serving slots it no longer owns.
+/// A missed bump pins a connection to a stale topology.
     #[test]
     fn every_topology_install_advances_the_version() {
         let state = ClusterState::with_topology(2, Duration::from_secs(30), topology());
@@ -529,10 +510,7 @@ mod tests {
         expect_bump("reset_slots", &state);
     }
 
-    /// `CLUSTER SETSLOT <slot> NODE` must land on nodes that were not the
-    /// migration source too. The old fallback used `add_slots`, which refuses a
-    /// slot recorded as owned elsewhere, so those nodes silently kept the
-    /// previous owner and the slot ended up in a MOVED loop.
+/// Old add_slots fallback refused still-owned slots: MOVED loops.
     #[test]
     fn assign_slot_takes_the_slot_from_its_current_owner() {
         let state = ClusterState::with_topology(2, Duration::from_secs(30), topology());

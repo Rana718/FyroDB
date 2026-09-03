@@ -490,10 +490,8 @@ impl MutationLog {
             next_offset: 1,
             capacity,
             bytes: 0,
-            // Do not reserve the configured maximum up front. A production
-            // capacity of 100k records would otherwise reserve several MiB on
-            // every cluster node before the first write. VecDeque grows only
-            // with retained replication data and remains bounded below.
+// A 100k capacity would reserve MiB before the first write;
+// VecDeque grows with retained data and stays bounded.
             records: VecDeque::new(),
         }
     }

@@ -30,11 +30,8 @@ impl ClusterMetrics {
     }
 }
 
-/// Fence coordinating bulk cluster operations against in-flight writes.
-///
-/// Slot migration and replica snapshot bootstrap require no writes to be
-/// in flight. Writers increment their own per-worker counter; a fence holder
-/// sets the flag and waits for all counters to drain before proceeding.
+/// Writers increment per-worker counters; a fence holder sets the flag
+/// and waits for all counters to drain before proceeding.
 struct WriteFence {
     /// In-flight write count per worker. Uncontended: one worker owns each.
     in_flight: Box<[CachePadded<AtomicUsize>]>,
@@ -83,11 +80,8 @@ impl Drop for WriteFenceGuard<'_> {
     }
 }
 
-/// Striped TTL bookkeeping.
-///
-/// Counters are striped by CPU so concurrent `SET ... EX` commands update
-/// independent cache lines. `adds` is monotonic and doubles as the scan
-/// generation, eliminating the need for a separate generation counter.
+/// Counters striped by CPU; `adds` is monotonic and doubles as the
+/// scan generation.
 struct TtlCounters {
     adds: Box<[CachePadded<AtomicU64>]>,
     removes: Box<[CachePadded<AtomicU64>]>,
@@ -380,10 +374,7 @@ impl Store {
         self.data.shard_count()
     }
 
-    /// Whether the configured key ceiling has been reached.
-    ///
-    /// A single relaxed load, and constant-false when no limit is configured,
-    /// so the command dispatcher can consult it on every write.
+/// Single relaxed load, constant-false with no limit configured.
     #[inline(always)]
     pub fn at_key_capacity(&self) -> bool {
         self.data.is_full()
@@ -406,11 +397,8 @@ impl Store {
         customhash::force_collect_quiescent();
     }
 
-    /// Rebuild fragmented child allocations for up to `budget` values in one
-    /// shard, resuming at `start_slot`.
-    ///
-    /// Returns `(next_slot, capacity, rebuilt)`. `next_slot == capacity` means
-    /// the shard is done and the caller should advance to the next one.
+/// Returns `(next_slot, capacity, rebuilt)`; `next_slot == capacity`
+/// means the shard is done.
     pub fn defragment_shard_range(
         &self,
         shard: usize,
@@ -454,7 +442,7 @@ impl Store {
                     }
                 } else {
                     let new_has_ttl = value.expires_ms != 0;
-                    self.data.insert(key.to_owned(), value);
+                    self.data.insert_str(key, value);
                     self.adjust_replaced_ttl(old_has_ttl, new_has_ttl);
                 }
             }
@@ -478,7 +466,7 @@ impl Store {
                         self.sub_ttl();
                     }
                 } else {
-                    self.data.set(key, store_value, || key.to_owned());
+                    self.data.set_str(key, store_value);
                     self.adjust_replaced_ttl(old_has_ttl, expires_ms != 0);
                 }
             }
@@ -704,14 +692,8 @@ impl Store {
         self.replica_installing.store(installing, Ordering::Release);
     }
 
-    /// Mark this worker as executing a write command.
-    ///
-    /// Steady state is one uncontended increment on the worker's own cache line
-    /// plus a sequentially-consistent read of the fence flag. Both that read and
-    /// the fence holder's flag write are `SeqCst`, and so are the increment and
-    /// the holder's drain scan, so the single total order guarantees at least
-    /// one side observes the other — a writer can never slip past a fence that
-    /// has already started draining.
+/// Both sides of the fence use SeqCst, so the total order guarantees
+/// writer and fence holder observe each other.
     #[inline]
     pub fn begin_write(&self, worker: usize) -> WriteTicket<'_> {
         let fence = &self.cluster_write_fence;
@@ -741,10 +723,8 @@ impl Store {
         }
     }
 
-    /// Block new writes and wait for in-flight ones to finish.
-    ///
-    /// Used by slot migration and replica snapshot bootstrap, which need a
-    /// stable keyspace rather than exclusion between writers.
+/// Slot migration and snapshot bootstrap need a stable keyspace,
+/// not writer exclusion.
     pub fn cluster_write_guard(&self) -> WriteFenceGuard<'_> {
         let fence = &self.cluster_write_fence;
         fence.engaged.store(true, Ordering::SeqCst);
@@ -777,10 +757,7 @@ impl Store {
         self.ttl.set_live(0);
     }
 
-    /// Monotonic count of TTLs ever created.
-    ///
-    /// Doubles as the scan generation: changes only when a TTL is added,
-    /// so `finish_ttl_scan` can detect a stale repair without a second atomic.
+/// Doubles as the scan generation: changes only when a TTL is added.
     #[inline]
     pub fn ttl_generation(&self) -> u64 {
         self.ttl.total_adds()
@@ -824,10 +801,8 @@ pub fn purge_allocator() {
     rust_zmalloc::purge();
 }
 
-/// Purge only when fragmentation is material.
-///
-/// `used_memory` is live requested bytes; `rss` is what the OS has mapped.
-/// The gap between them measures real allocator/page fragmentation.
+/// used_memory is live requested bytes, rss what the OS mapped; the
+/// gap is real fragmentation.
 pub fn purge_allocator_if_fragmented() {
     let used = rust_zmalloc::used_memory();
     let rss = rust_zmalloc::resident_memory();
@@ -994,9 +969,8 @@ mod tests {
         assert!(!store.has_ttl_keys());
     }
 
-    /// The fence replaced a process-wide mutex that every cluster write had to
-    /// acquire. It still has to give slot migration and snapshot bootstrap what
-    /// they actually needed: no write sections running while the guard is held.
+/// Replaced a process-wide mutex while keeping what migration and
+/// bootstrap need: no write sections while the guard is held.
     #[test]
     fn write_fence_excludes_in_flight_writes() {
         use std::sync::Arc;

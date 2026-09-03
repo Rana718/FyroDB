@@ -92,9 +92,7 @@ fn subscribers_on_one_worker_share_a_single_entry() {
     let pubsub = Arc::new(PubSub::new());
     let (notifier, first) = make_sub(3, 1);
 
-    // Nine subscribers on one worker cross the grouping threshold
-    // (8 per distinct worker): the publisher hands that worker one entry
-    // instead of nine per-subscriber pushes.
+// Nine subs on one worker cross the 8-per-worker grouping threshold.
     pubsub.subscribe("ch", Arc::clone(&first));
     for token in 2..=9 {
         let poll = Poll::new().unwrap();
@@ -370,10 +368,8 @@ fn multiple_publishes_queue_in_order() {
     assert!(s.find("second").unwrap() < s.find("third").unwrap());
 }
 
-/// Full delivery path through a real worker event loop: SUBSCRIBE over TCP,
-/// PUBLISH from a second connection, frame arriving on the subscriber's
-/// socket. Before the per-worker fan-out this path was only ever exercised
-/// by benchmarks.
+/// Full worker-loop path: SUBSCRIBE over TCP, PUBLISH, delivery on the
+/// subscriber socket.
 #[test]
 fn end_to_end_delivery_through_worker_loop() {
     use std::io::{BufRead, BufReader, Write};
@@ -511,9 +507,6 @@ fn end_to_end_delivery_through_worker_loop() {
         let _ = c;
     }
 
-    // The workers block in poll() with no timeout when idle; nothing in this
-    // test can wake them after shutdown is flagged, so joining would hang.
-    // They are intentionally left running: the test binary's process exit
-    // reclaims them.
+// Idle workers block in poll() forever; process exit reclaims them.
     fyro_db::worker::initiate_shutdown();
 }

@@ -21,7 +21,7 @@ impl Store {
                 }
             }
             self.data
-                .insert(key.to_string(), StoreValue::json_raw(value.to_owned()));
+                .insert_str(key, StoreValue::json_raw(value.to_owned()));
             return Ok(true);
         }
 
@@ -67,12 +67,12 @@ impl Store {
                     return Ok(false);
                 }
                 if path == "." || path == "$" || path.is_empty() {
-                    self.data.insert(key.to_string(), StoreValue::json(parsed));
+                    self.data.insert_str(key, StoreValue::json(parsed));
                     Ok(true)
                 } else {
                     let mut root = JsonValue::Object(Vec::new());
                     if root.set_path(path, parsed) {
-                        self.data.insert(key.to_string(), StoreValue::json(root));
+                        self.data.insert_str(key, StoreValue::json(root));
                         Ok(true)
                     } else {
                         Err("ERR path does not exist")
@@ -97,9 +97,8 @@ impl Store {
         }
     }
 
-    /// Zero-alloc JSON.GET for the common root-path case: the stored raw
-    /// document is written straight into `out`. Complex paths still build a
-    /// String. Returns Ok(true) when a reply was written.
+/// Root-path fast case writes the stored document straight to `out`.
+/// Ok(true) when a reply was written.
     pub fn json_get_to_buf(
         &self,
         key: &str,

@@ -48,9 +48,8 @@ pub fn run_worker(
     let waker = Arc::new(Waker::new(poll.registry(), WAKER_TOKEN).unwrap());
     let notifier = WorkerNotifier::new(waker, worker_index);
 
-    // A Conn is large (socket, parser buffers, auth and pub/sub state). Reserving
-    // 4096 slots per worker commits a sizeable idle allocation on high-core
-    // machines. Grow with actual connections instead.
+// A Conn is large; a fixed 4096-slot reservation is a sizeable idle
+// allocation. Grow with actual connections.
     let mut conns: Vec<Option<Conn>> = Vec::new();
     let mut next_token: usize = 1;
     let mut free: Vec<usize> = Vec::new();
@@ -143,9 +142,7 @@ pub fn run_worker(
                         if event.is_readable() && !conn.do_read() {
                             close = true;
                         }
-                        // This arm retries writes that previously hit WouldBlock;
-                        // without it a client that stops reading mid-response
-                        // never gets the rest.
+// Retry WouldBlock writes or a stopped reader never gets the rest.
                         if !close && event.is_writable() && !conn.do_write() {
                             close = true;
                         }
@@ -208,13 +205,8 @@ fn is_slow_subscriber(conn: &Conn) -> bool {
     }
 }
 
-/// Copy each queued fan-out frame into this worker's subscriber reply
-/// buffers.
-///
-/// Healthy connections get the frame appended straight to `wbuf` (plain
-/// memcpy, no atomics). A connection whose buffer is already at the write
-/// batch cap spills into its per-connection slot queue instead, where the
-/// existing backlog drain and slow-subscriber shedding take over.
+/// Frames append straight to wbuf (memcpy); a connection past the batch
+/// cap spills into its slot queue (backlog drain, shedding intact).
 fn deliver_fanout(
     notifier: &Arc<crate::pubsub::WorkerNotifier>,
     conns: &mut [Option<Conn>],
@@ -222,10 +214,8 @@ fn deliver_fanout(
     scratch: &mut Vec<crate::pubsub::FanEntry>,
     seen: &mut [bool],
 ) {
-    // `scratch` is caller-owned and reused across wakeups: one allocation
-    // per worker, not per batch. The local subscription map is borrowed
-    // under a single lock for the whole batch, so draining is allocation
-    // free per frame.
+// Caller-owned scratch reused across wakeups; the subscription map is
+// borrowed under one lock for the whole batch.
     scratch.clear();
     notifier.drain_fanout(|entry| scratch.push(entry));
     if scratch.is_empty() {
@@ -240,9 +230,8 @@ fn deliver_fanout(
                 let Some(Some(conn)) = conns.get_mut(token) else {
                     continue;
                 };
-                // The conn's own subscription set is the delivery authority:
-                // tokens are reused after close, so the local map alone could
-                // route an in-flight frame to an unrelated new connection.
+// Conn's subscription set is the authority: tokens are reused after
+// close, so the local map alone could misroute.
                 let subscribed = matches!(
                     &conn.mode,
                     crate::handler::conn::ConnMode::Subscribed { channels, .. }
@@ -251,9 +240,7 @@ fn deliver_fanout(
                 if !subscribed {
                     continue;
                 }
-                // A batched entry carries a run of frames; the batch cap
-                // applies per frame so overflow spills frame-by-frame into
-                // the slot queue exactly like unbatched delivery.
+// Batch cap applies per frame; overflow spills like unbatched delivery.
                 let mut spilled = false;
                 for frame in entry.frames() {
                     if !spilled

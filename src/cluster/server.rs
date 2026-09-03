@@ -19,9 +19,8 @@ impl Drop for PeerPermit {
     }
 }
 
-/// Start the dedicated cluster listener. The listener is intentionally
-/// separate from client workers so malformed or slow peer traffic cannot
-/// consume client connection slots.
+/// Separate listener so malformed peer traffic cannot consume client
+/// connection slots.
 pub fn start_listener(
     config: ClusterConfig,
     state: ClusterState,
@@ -95,9 +94,7 @@ pub fn start_listener(
     Ok(handle)
 }
 
-/// Local-node identity a peer connection needs for its handshake: who we are,
-/// which topology epoch we speak, how peers authenticate, and how long a
-/// silent peer may stall before the connection is dropped.
+/// Identity + auth + timeouts a peer handshake needs.
 struct PeerContext<'a> {
     local_id: &'a str,
     epoch: u64,

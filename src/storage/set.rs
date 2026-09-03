@@ -3,6 +3,40 @@ use crate::storage::value::{FyroDB, SetInner, StoreValue};
 use foldhash::{HashSet, HashSetExt};
 
 impl Store {
+/// Single-member SADD run under one lock, per-command added flags;
+/// sadd cannot recover per-command flags from a total.
+    pub fn sadd_added_flags(&self, key: &str, members: &[&str]) -> Result<Vec<bool>, &'static str> {
+        let result = self.data.update_with(key, |val| {
+            if val.is_expired() {
+                let mut set = SetInner::new();
+                let flags: Vec<bool> = members.iter().map(|m| set.insert_str(m)).collect();
+                val.value = FyroDB::Set(Box::new(set));
+                val.expires_ms = 0;
+                return Ok(flags);
+            }
+            match val.value.as_set_mut() {
+                Some(s) => Ok(members.iter().map(|m| s.insert_str(m)).collect()),
+                None => Err("WRONGTYPE"),
+            }
+        });
+
+        match result {
+            Some(r) => r,
+            None => {
+                let mut set = SetInner::new();
+                let flags: Vec<bool> = members.iter().map(|m| set.insert_str(m)).collect();
+                self.data.insert_str(
+                    key,
+                    StoreValue {
+                        value: FyroDB::Set(Box::new(set)),
+                        expires_ms: 0,
+                    },
+                );
+                Ok(flags)
+            }
+        }
+    }
+
     pub fn sadd(&self, key: &str, members: &[&str]) -> Result<usize, &'static str> {
         let result = self.data.update_with(key, |val| {
             if val.is_expired() {
@@ -31,8 +65,8 @@ impl Store {
             None => {
                 let mut set = SetInner::new();
                 let added = members.iter().filter(|m| set.insert_str(m)).count();
-                self.data.insert(
-                    key.to_string(),
+                self.data.insert_str(
+                    key,
                     StoreValue {
                         value: FyroDB::Set(Box::new(set)),
                         expires_ms: 0,
@@ -85,9 +119,7 @@ impl Store {
         }
     }
 
-    /// Zero-alloc SMISMEMBER: one integer per member streams straight into
-    /// `out`. The closure truncates back to its entry length first, so a
-    /// seqlock retry never leaves a torn attempt's bytes behind.
+/// One integer per member; truncation keeps retries idempotent.
     pub fn smismember_to_buf(
         &self,
         key: &str,
@@ -143,9 +175,7 @@ impl Store {
         }
     }
 
-    /// Zero-alloc SMEMBERS: bulk elements stream straight into `out`; the
-    /// closure truncates back to its entry length so seqlock retries stay
-    /// idempotent.
+/// Bulk elements stream into `out`; truncation keeps retries idempotent.
     pub fn smembers_to_buf(&self, key: &str, out: &mut Vec<u8>) -> Result<usize, &'static str> {
         let start_len = out.len();
         let result = self.data.read_consistent(key, |val| {
