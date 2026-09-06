@@ -1,5 +1,5 @@
 x-redis-common: &redis-common
-  image: redis:7.4-alpine
+  image: redis:8.8-alpine
   network_mode: host
   restart: "no"
   ulimits:
@@ -9,6 +9,7 @@ x-redis-common: &redis-common
 
 x-redis-args: &redis-args >
   redis-server
+  --loadmodule /usr/local/lib/redis/modules/rejson.so
   --cluster-enabled yes
   --cluster-config-file nodes.conf
   --cluster-node-timeout 5000
@@ -92,7 +93,7 @@ services:
     command: [ "sh", "-c", "exec $$0 --port 7012", *redis-args ]
 
   cluster-init:
-    image: redis:7.4-alpine
+    image: redis:8.8-alpine
     container_name: redis12-init
     network_mode: host
     restart: "no"

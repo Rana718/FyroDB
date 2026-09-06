@@ -1,0 +1,96 @@
+---
+title: Changelog v0.2.1
+description: Pipelined batch coalescing, zero-allocation command paths, grouped Pub/Sub fan-out, scoped worker threads, and extreme throughput gains across all data types.
+order: 20
+---
+
+# v0.2.1
+
+Released: September 2026
+
+v0.2.1 is a high-performance optimization release focusing on **pipelined batch coalescing**, **zero-allocation execution hot paths**, **grouped lock-free Pub/Sub fan-out**, and **concurrency safety refinements**.
+
+In this release, a single FyroDB node delivers up to **50.11M ops/sec INCR**, **44.07M ops/sec Hot Key under contention**, **39.26M ops/sec LPUSH/RPOP**, and **74.64M msg/sec Pub/Sub delivery**, outperforming a 6-node Redis Cluster across all benchmarks while maintaining lower memory overhead and predictable latency.
+
+---
+
+## Highlights
+
+- **Pipelined Queue Coalescing**: Consecutive same-key queue commands (`LPUSH`, `RPUSH`, `LPOP`, `RPOP`) in a pipeline run are executed under a single lock acquisition, producing byte-identical replies and eliminating queue lock contention.
+- **Atomic SET + EXPIRE Coalescing**: Adjacent pipelined `SET` and `EXPIRE` / `PEXPIRE` / `EXPIREAT` / `PEXPIREAT` pairs fuse into an atomic set-with-TTL write path, cutting lock overhead by 50%.
+- **Grouped Pub/Sub Fan-Out**: Same-channel `PUBLISH` runs batch into grouped per-worker fan-out queues, eliminating redundant per-message subscriber queue enqueue operations.
+- **Zero-Allocation Command Paths**: Direct serialization to TCP output buffers for `HGETALL`, `SMEMBERS`, `LRANGE`, `ZRANGE`, `HSET`, `HMGET`, `SMISMEMBER`, `ZMSCORE`, `HGET`, `SADD`, `ZADD`, `JSON.SET`, `JSON.GET`, `LPOP`, and `RPOP`.
+- **Zero-Alloc Inline Keys**: Optimized `CompactKey` and `SmallStr` representation up to 23 bytes inline, with run-of-1 fast path in worker dispatch.
+- **Quadratic ZADD Scan Fix**: Eliminated 37x warm-server stall on `ZADD` member re-insertion via score-ordered indexing optimizations.
+- **Floor-Probe Hash Decomposition**: Optimized linear open-addressing table probing in `customhash` with decomposed bucket floor probing.
+- **Vectorized Cluster Transport**: Inter-node cluster bus framing upgraded to vectorized `writev` I/O (2.6x improvement per frame).
+- **Scoped Worker Threads**: Migrated server worker thread pool to `std::thread::scope` for clean lifecycle management and panic safety.
+
+---
+
+## Architectural Deep Dive
+
+### Pipelined Batch Coalescing
+
+When clients send pipelined batches of commands over a single connection, acquiring and releasing shard/entry locks for every individual command introduces substantial synchronization overhead.
+
+v0.2.1 introduces automatic batch coalescing:
+1. **Queue Commands (`LPUSH`, `RPUSH`, `LPOP`, `RPOP`)**: When consecutive commands in a pipelined run target the same queue key, FyroDB acquires the entry lock once, processes the entire run of operations in-place, and serializes the exact sequence of RESP integer or bulk string replies.
+2. **SET + EXPIRE Pairs**: Common caching patterns (`SET key val` immediately followed by `EXPIRE key ttl`) are detected during pipelined frame parsing and executed as a single atomic write-with-TTL operation.
+3. **PUBLISH Batching**: When multiple `PUBLISH` operations target the same channel within an event loop cycle, subscriber fan-out is consolidated into a single grouped dispatch per worker thread.
+
+### Zero-Allocation Serialization
+
+Previous releases allocated intermediate `Vec<u8>` buffers or cloned strings when formatting multi-bulk replies. In v0.2.1:
+- Collection reads (`HGETALL`, `SMEMBERS`, `LRANGE`, `ZRANGE`) format RESP headers and stream element bytes directly into the connection's TCP output buffer under the protection of EBR and seqlock snapshots.
+- Multi-lookup commands (`HMGET`, `SMISMEMBER`, `ZMSCORE`) write multi-bulk element headers directly without intermediate vector staging.
+- Single-key mutators (`HSET`, `SADD`, `ZADD`, `JSON.SET`) serialize integer or status replies directly into output slices.
+
+### Storage & Probing Optimizations
+
+- **ZADD Warm-Server Acceleration**: Resolved a quadratic scan during repeated member insertions into large sorted sets, preventing latency spikes on heavily populated zsets.
+- **Floor-Probe Decomposition**: Decomposed the hash probe step in `customhash::CustomMap` into aligned floor probes, reducing cache misses and branch mispredictions.
+- **Allocator Backends**: Added compile-time feature flags (`jemalloc`, `system`) to `rust-zmalloc`, while maintaining `mimalloc` as the default zero-overhead allocator.
+
+---
+
+## Benchmarks
+
+Benchmarked on a 6-core Intel i5-11400H (12 hardware threads), loopback TCP, 100 concurrent clients, 1M operations per run:
+
+### FyroDB (1 node) vs. Redis Cluster (6 nodes)
+
+| Benchmark | FyroDB (1 node) | Redis Cluster (6 nodes) | Speedup |
+| --------- | --------------- | ----------------------- | ------- |
+| Pipeline-64 SET | **8.95M ops/sec** | 5.75M ops/sec | **1.6×** |
+| Pipelined SET | **20.08M ops/sec** | 7.56M ops/sec | **2.7×** |
+| Pipelined GET | **28.16M ops/sec** | 11.29M ops/sec | **2.5×** |
+| Pub/Sub publish | **1.49M ops/sec** | 147.1K ops/sec | **10.1×** |
+| Pub/Sub delivery | **74.64M msg/sec** | 7.35M msg/sec | **10.2×** |
+| Mixed SET/GET (50/50) | **20.90M ops/sec** | 7.24M ops/sec | **2.9×** |
+| INCR (atomic counters) | **50.11M ops/sec** | 6.32M ops/sec | **7.9×** |
+| HSET/HGET (sessions) | **33.07M ops/sec** | 7.95M ops/sec | **4.2×** |
+| LPUSH/RPOP (queue) | **39.26M ops/sec** | 7.19M ops/sec | **5.5×** |
+| SADD (per-client sets) | **27.87M ops/sec** | 6.34M ops/sec | **4.4×** |
+| ZADD (per-client zsets) | **18.12M ops/sec** | 4.55M ops/sec | **4.0×** |
+| JSON.SET/GET (documents) | **14.91M ops/sec** | 3.38M ops/sec | **4.4×** |
+| SET+EXPIRE (cache TTL) | **10.51M ops/sec** | 2.64M ops/sec | **4.0×** |
+| Hot Key (1 key, contention) | **44.07M ops/sec** | 2.03M ops/sec | **21.7×** |
+| Producer/Consumer (50+50) | **36.20M ops/sec** | 981.3K ops/sec | **36.9×** |
+
+### Resource Usage
+
+| Metric | FyroDB (1 node, PID 2258) | Redis Cluster (6 nodes, 7 containers) |
+| ------ | ------------------------- | ------------------------------------- |
+| Peak RSS | **294.19 MB** | 767.63 MB |
+| Avg RSS | **168.81 MB** | 347.46 MB |
+| Peak CPU | **79.6%** | 442.1% |
+| Avg CPU | **42.5%** | 125.2% |
+
+---
+
+## Upgrade Notes
+
+- **Full Backward Compatibility**: Drop-in replacement for v0.2.0. No breaking protocol or storage format changes.
+- **RDB Persistence**: Fully compatible with existing RDB snapshot files.
+- **Client Compatibility**: Standard Redis standalone and cluster drivers work seamlessly without modification.

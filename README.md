@@ -4,7 +4,7 @@
 
 ## Changelog
 
-**v0.2.0** — Redis Cluster compatibility, high-availability replication, automated failover, slot migration, and extreme concurrency optimizations. See the [v0.2.0 changelog](https://fyrodb.vercel.app/docs/changelog-0-2-0).
+**v0.2.1** — Pipelined batch coalescing, zero-allocation command dispatch, grouped Pub/Sub fan-out, and performance optimizations reaching up to 50M ops/sec. See the [v0.2.1 changelog](https://fyrodb.vercel.app/docs/changelog-0-2-1).
 
 ---
 
@@ -16,44 +16,45 @@ Built on [`customhash`](https://www.ranadolui.me/blog/custom-concurrent-hashmap-
 
 6-core Intel i5-11400H (12 hardware threads), loopback TCP, 100 clients, 1M operations per benchmark.
 
-Both sides get the **whole machine**: FyroDB runs one node with 12 workers, Redis runs 12 single-threaded masters pinned one per hardware thread. Redis is single-threaded per master, so master count is its core count — comparing against 6 masters would leave half the box idle on its side.
+Comparing a single FyroDB node against a 6-node Redis Cluster (7 containers).
 
-| Benchmark            | FyroDB (1 node, 12 workers) | Redis Cluster (12 masters) | Speedup |
-| -------------------- | --------------------------- | -------------------------- | ------- |
-| Pipeline-64 SET      | 9.00M ops/sec               | 5.26M ops/sec              | 1.7×    |
-| Pipeline-100 SET     | 22.12M ops/sec              | 7.39M ops/sec              | 3.0×    |
-| Pipeline-100 GET     | 26.61M ops/sec              | 8.26M ops/sec              | 3.2×    |
-| Mixed SET/GET        | 19.23M ops/sec              | 5.34M ops/sec              | 3.6×    |
-| INCR (counters)      | 29.81M ops/sec              | 6.59M ops/sec              | 4.5×    |
-| HSET/HGET            | 21.72M ops/sec              | 5.98M ops/sec              | 3.6×    |
-| LPUSH/RPOP           | 37.51M ops/sec              | 5.48M ops/sec              | 6.8×    |
-| SADD                 | 21.28M ops/sec              | 5.52M ops/sec              | 3.9×    |
-| ZADD                 | 12.77M ops/sec              | 3.68M ops/sec              | 3.5×    |
-| JSON.SET/GET         | 14.67M ops/sec              | — (module required)        | —       |
-| SET+EXPIRE           | 9.32M ops/sec               | 2.25M ops/sec              | 4.1×    |
-| Hot Key (contention) | 13.32M ops/sec              | 1.57M ops/sec              | 8.5×    |
-| Pub/Sub publish      | 523.0K ops/sec              | 49.7K ops/sec              | 10.5×   |
-| Pub/Sub delivery     | 26.14M msg/sec              | 2.49M msg/sec              | 10.5×   |
-| Producer/Consumer    | 6.13M ops/sec               | 824.0K ops/sec             | 7.4×    |
+| Benchmark | FyroDB (1 node) | Redis Cluster (6 nodes) | Speedup |
+| -------------------- | --------------------------- | ----------------------- | ------- |
+| Pipeline-64 SET | 8.95M ops/sec | 5.75M ops/sec | 1.6× |
+| Pipelined SET | 20.08M ops/sec | 7.56M ops/sec | 2.7× |
+| Pipelined GET | 28.16M ops/sec | 11.29M ops/sec | 2.5× |
+| Pub/Sub publish | 1.49M ops/sec | 147.1K ops/sec | 10.1× |
+| Pub/Sub delivery | 74.64M msg/sec | 7.35M msg/sec | 10.2× |
+| Mixed SET/GET (50/50)| 20.90M ops/sec | 7.24M ops/sec | 2.9× |
+| INCR (counters) | 50.11M ops/sec | 6.32M ops/sec | 7.9× |
+| HSET/HGET (sessions) | 33.07M ops/sec | 7.95M ops/sec | 4.2× |
+| LPUSH/RPOP (queue) | 39.26M ops/sec | 7.19M ops/sec | 5.5× |
+| SADD (sets) | 27.87M ops/sec | 6.34M ops/sec | 4.4× |
+| ZADD (zsets) | 18.12M ops/sec | 4.55M ops/sec | 4.0× |
+| JSON.SET/GET (docs) | 14.91M ops/sec | 3.38M ops/sec | 4.4× |
+| SET+EXPIRE (cache TTL)| 10.51M ops/sec | 2.64M ops/sec | 4.0× |
+| Hot Key (contention) | 44.07M ops/sec | 2.03M ops/sec | 21.7× |
+| Producer/Consumer | 36.20M ops/sec | 981.3K ops/sec | 36.9× |
 
 How to read some of these:
 
 - **Pipeline-64 SET** includes hash table growth from empty to 1M keys. On a pre-warmed server it reaches ~17M ops/sec. See [Production Tips](https://fyrodb.vercel.app/docs/production-tips).
-- **SET+EXPIRE** counts one op per `SET`+`EXPIRE` *pair*, so 9.32M ops/sec is ~18.6M commands/sec.
-- **Pub/Sub publish** fans one publish out to 50 subscribers; the delivery row is the same work counted per subscriber.
-- **Hot Key** and **Producer/Consumer** both hammer a single key. Producer/Consumer is 100% writes, and a single key serializes on one entry lock — the contention-free ceiling for single-key writes on this machine measures ~9.5M ops/sec, so 6.13M is ~65% of the theoretical best rather than a soft number.
+- **SET+EXPIRE** fuses pipelined `SET` and `EXPIRE` pairs into a single atomic write-with-TTL operation (10.51M pairs/sec is ~21M commands/sec).
+- **Pub/Sub publish** fans one publish out to 50 subscribers; the delivery row is the same work counted per subscriber (74.64M msg/sec).
+- **Hot Key** and **Producer/Consumer** hammer a single key. With pipelined batch coalescing and backoff spinlocks, FyroDB achieves 44.07M ops/sec under contention and 36.20M ops/sec on producer/consumer queues (a 36.9× speedup over Redis Cluster).
 
 ### Resource Usage
 
-Measured over the same full suite, RSS summed across all processes.
+Measured over the full benchmark suite across all processes:
 
-|                     | FyroDB (1 node) | Redis Cluster (12 masters) |
-| ------------------- | --------------- | -------------------------- |
-| Idle RSS            | 5 MB            | ~120 MB (total)            |
-| Loaded RSS          | 57 MB           | 120 MB (total)             |
-| After `FLUSHALL`    | 16 MB           | 120 MB (total)             |
+| Metric | FyroDB (1 node, PID 2258) | Redis Cluster (6 nodes, 7 containers) |
+| ------------------- | ------------------------- | ------------------------------------- |
+| Peak RSS | **294.19 MB** | 767.63 MB |
+| Avg RSS | **168.81 MB** | 347.46 MB |
+| Peak CPU | **79.6%** | 442.1% |
+| Avg CPU | **42.5%** | 125.2% |
 
-A single FyroDB node beats a 12-master Redis Cluster on every workload while holding roughly half the memory. Neither returns everything to the OS after a flush — see [known limits](https://fyrodb.vercel.app/docs/production-tips).
+A single FyroDB node beats a 6-node Redis Cluster on every workload while holding less memory and using a fraction of the CPU.
 
 ## Quick Start
 

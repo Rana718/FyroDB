@@ -22,7 +22,9 @@ FyroDB is a Redis-compatible in-memory key-value store written in Rust. It speak
 | Allocator           | libc malloc                   | mimalloc with zero-overhead hot path and periodic RSS tracking                               |
 | Memory search       | Naive byte scan               | SIMD memchr (AVX2) for newline scanning                                                      |
 | Write batching      | Per-command write             | Batched: all events read first, then flush all writes                                        |
-| Pub/Sub fan-out     | Per-message frame copy        | Single Arc allocation, shared to all subscribers                                             |
+| Pub/Sub fan-out     | Per-message frame copy        | Single Arc frame shared to all subscribers; dense fan-outs group per worker into one queue entry |
+| Pipelined hot keys  | One lock per command          | Run coalescing: a run of ≤512 consecutive same-key commands takes one entry lock               |
+| SET + EXPIRE pairs  | Two commands, two locks       | Adjacent pair fused into one atomic set-with-TTL under a single lock                          |
 | Hash probe step     | Deref entry to compare key    | 15-bit hash tag packed into the slot pointer — reject a non-match without touching the entry |
 | Lock contention     | Single-threaded, none         | Test-and-test-and-set with exponential backoff, then yield                                   |
 | Cluster slot lookup | Flat `slots[16384]` array     | Same: shared routing table, revalidated per connection with one atomic load                  |
@@ -127,7 +129,7 @@ Updates to existing keys mutate their value in place. Allocations are needed onl
 - `SmallStr` stores strings up to 23 bytes inline
 - Small hashes and lists use compact sequential storage
 - Sets use integer, compact-vector, or full hash-set representations and promote/demote with size
-- Sorted sets use one score-ordered `Vec<ZEntry>` with a bloom filter for fast negative member lookups; score-range operations use binary partition points
+- Sorted sets use one score-ordered `Vec<ZEntry>` with a bloom filter for fast negative member lookups; exact (score, member) hits are binary-searched, and score-range operations use binary partition points
 - Background maintenance can shrink collection capacity and rebuild fragmented values under the existing entry lock
 
 ### Contention Behaviour
@@ -164,15 +166,36 @@ while a write-only hot key is bounded by lock handoff latency.
 ```
 PUBLISH channel message:
   1. Hash channel → select shard
-  2. Arc::clone snapshot (single atomic increment)
-  3. Find channel in snapshot, encode message frame
-  4. Push Arc<[u8]> frame to each subscriber's lock-free queue
+  2. Pin EBR epoch, borrow the snapshot (no Arc clone, no refcount RMW)
+  3. Find channel, encode the message frame once
+  4. Fan out — hybrid by density:
+       ≤ FANOUT_GROUP_RATIO (8) subscribers per distinct worker
+         → one SegQueue push per subscriber
+       denser → one FanEntry per worker (channel + frame)
   5. Coalesced epoll wake (deduplicated)
 ```
 
+Dense fan-outs deliver per worker: the receiving worker resolves the channel's
+subscribers from its worker-local `channel → connection tokens` map (maintained
+by SUBSCRIBE/UNSUBSCRIBE, which run on that same worker) and copies frames
+straight into each connection's reply buffer — plain memcpy, no atomics. A
+connection already holding 256KB of unsent data spills into its per-subscriber
+queue instead, so slow-subscriber shedding is unchanged. The grouping threshold
+is measured, not guessed: per-subscriber pushes win below ~8 subscribers per
+worker, grouping wins above (~37% faster at 100 subscribers), so publish picks
+per message.
+
+A pipelined run of same-channel PUBLISH commands never repeats the snapshot
+scan: `publish_batch` encodes every frame up front and hands each receiving
+worker one `FanEntry` carrying the whole run. Pattern (PSUBSCRIBE) subscribers
+stay on the per-message path, since their frames embed the matched pattern.
+
 ### Subscribe/Unsubscribe (Copy-on-Write)
 
-Rebuilds the channel list under a brief mutex, then atomically swaps the Arc snapshot pointer. Publishers holding the old snapshot keep it alive until they finish.
+Rebuilds the channel list under a brief mutex, atomically swaps the Arc
+snapshot pointer, and registers the connection token in the owning worker's
+local `channel → tokens` map used by grouped fan-out delivery. Publishers
+holding the old snapshot keep it alive until they finish.
 
 ---
 
@@ -228,11 +251,55 @@ live in different reachability domains and must be set accordingly.
 ```
 Client → TCP (SO_REUSEPORT) → Per-thread epoll → Conn::do_read()
   → Zero-copy RESP parse → Inline fast path (SET/GET/INCR/DEL/LPUSH/RPOP/SADD)
+  → Run coalescing look-ahead (same-key runs, SET+EXPIRE pairs, PUBLISH batches)
   → Or: dispatch table → Storage operation → Response to write buffer
   → Conn::do_write() → Client
 ```
 
 All I/O is batched: read all ready events, then flush all responses in one pass.
+
+---
+
+## Pipelined-Run Coalescing
+
+Pipelined clients send bursts of related commands. When consecutive commands
+share a key (or channel), the dispatcher executes the whole run under **one
+entry-lock acquisition** and synthesizes each command's reply individually. A
+client that pipelined K commands has not seen any response yet, so it cannot
+observe interleaving — the run is a valid linearization and the reply stream
+is byte-identical to sequential execution.
+
+Detection is a look-ahead over already-parsed RESP parts: the collector keeps
+calling `parse_one` and matches op + key across the parsed commands (plus a
+fixed-width byte-prefix peek for the SET+EXPIRE pair). A run breaks on any
+mismatch and the breaking command dispatches normally.
+
+| Run shape                  | Executes as                              | Reply synthesis                                          |
+| -------------------------- | ---------------------------------------- | -------------------------------------------------------- |
+| Same-key LPUSH/RPUSH ×K    | one variadic push                        | cumulative list lengths                                  |
+| Same-key LPOP/RPOP ×K      | one count-pop                            | per-value bulks, nils on empty, WRONGTYPE per command    |
+| `SET k v` + `EXPIRE k t`   | one atomic `set_string(k, v, ttl)`       | `+OK`, `:1` (or the generic error, byte-identical)       |
+| Same-key SET ×K            | one store (last value wins)              | `+OK` ×K                                                 |
+| Same-key INCR ×K           | one `incrby(key, K)`                     | consecutive counter values (overflow → sequential)       |
+| Same-key HSET/SADD/ZADD ×K | one lock, per-command added flags        | `:1`/`:0` per command                                    |
+| Same-channel PUBLISH ×K    | one snapshot scan + one fan-out per worker | subscriber count per command                           |
+
+Correctness rules every collector obeys:
+
+- The first command's argument pointers are **copied to the stack before any
+  further parse** — `parts_raw` is cleared and overwritten by every
+  `parse_one`, so a deferred read would fetch the wrong command's bytes.
+- A run ends on op, key, or arity change; the already-consumed breaking
+  command is dispatched inline (returning to the parse loop would drop it).
+- Runs are bounded at `QUEUE_RUN_MAX` (512); collection memory allocates only
+  after a second matching command proves a real run, so distinct-key streams
+  (runs of one) stay allocation-free.
+- Coalescing is disabled for unauthenticated connections, in cluster mode
+  (cross-slot/MOVED must be decided per command), and at the key-capacity
+  limit where refusal is per command.
+- ZADD runs match only the plain form; NX/XX/GT/LT/CH variants change
+  per-command replies and dispatch individually, and an unparsable score
+  falls back to per-command execution so exactly that command errors.
 
 ---
 
@@ -254,7 +321,7 @@ src/
 ├── main.rs              Entry point, config, signal handling
 ├── worker.rs            Per-thread epoll loop, batched I/O
 ├── handler/
-│   ├── conn.rs          Connection state, inline SET/GET/INCR/DEL/LPUSH/RPOP/SADD
+│   ├── conn.rs          Connection state, inline fast paths, run coalescing (queue/write/publish runs, SET+EXPIRE pairs)
 │   ├── dispatch.rs      First-byte fast-path + enum fallback
 │   ├── subscription.rs  Pub/Sub state machine
 │   └── pubsub_cmds.rs   PUBSUB subcommands
@@ -293,7 +360,7 @@ src/
 │   └── rdb.rs           RDB persistence
 ├── pubsub/
 │   ├── registry.rs      Arc-snapshot pub/sub registry
-│   ├── slot.rs          Per-subscriber lock-free queue
+│   ├── slot.rs          Per-subscriber queue, worker notifier, grouped FanEntry fan-out
 │   └── frame.rs         RESP message encoding
 └── utils/
     ├── parser.rs        Zero-copy RESP parser (SIMD memchr)
@@ -343,7 +410,7 @@ src/cluster/
 | SET / DEL / EXPIRE            | O(1) average                                                                                               | Tag-filtered probe + per-entry mutation/removal                                                                                   |
 | INCR / LPUSH / SADD           | O(1)                                                                                                       | Per-key spinlock + in-place mutate                                                                                                |
 | HGETALL / SMEMBERS            | O(N)                                                                                                       | Seqlock-validated iteration                                                                                                       |
-| ZADD                          | O(1) amortized for a new member with an ascending score; O(N) when the bloom filter reports a possible hit | 5-probe bloom filter keeps the false-positive rate near 0.5%, so the linear membership scan is rarely reached                     |
+| ZADD                          | O(1) amortized new member with ascending score; O(log N) same-score re-add; O(N) different-score update | 5-probe bloom filter (≈0.5% false positives) guards the scan; an exact (score, member) hit is binary-searched in the sorted Vec |
 | ZRANGE                        | O(K)                                                                                                       | Contiguous sorted Vec slice                                                                                                       |
 | ZRANGEBYSCORE                 | O(log N + K)                                                                                               | Binary partition points + slice iteration                                                                                         |
 | ZRANK / ZSCORE                | O(N)                                                                                                       | Linear member lookup                                                                                                              |
@@ -363,7 +430,10 @@ src/cluster/
 | XRANGE                        | O(log N + K)                                                                                               | BTreeMap range query                                                                                                              |
 | BITCOUNT                      | O(N)                                                                                                       | Byte-level popcount                                                                                                               |
 | PFADD / PFCOUNT               | O(1)                                                                                                       | HyperLogLog register update/estimate                                                                                              |
-| PUBLISH                       | O(S)                                                                                                       | S = subscriber count, lock-free                                                                                                   |
+| PUBLISH                       | O(S) sparse fan-out, O(W) dense                                                                           | W = workers; above ~8 subscribers/worker one queue entry per worker, delivery is a memcpy at the worker                         |
+| PUBLISH pipelined run of K    | O(K·S) encode + O(W) enqueue                                                                              | One snapshot scan and one grouped fan-out for the whole run                                                                     |
+| Same-key pipelined run of K   | O(K) work under 1 lock, O(1) amortized per command                                                        | Queue/write-run coalescing; per-command replies synthesized exactly                                                             |
+| SET+EXPIRE adjacent pair      | O(1)                                                                                                       | Fused into one atomic set-with-TTL under a single entry lock                                                                    |
 | SCAN                          | O(COUNT)                                                                                                   | Hash-based cursor, stable across mutations                                                                                        |
 | KEYS pattern                  | O(N)                                                                                                       | Full scan with per-slot EBR pin                                                                                                   |
 | SORT                          | O(N log N)                                                                                                 | Vec collect + sort                                                                                                                |
@@ -397,7 +467,8 @@ src/cluster/
 | HyperLogLog            | 16384-register byte array                                                 | Fixed 16KB, probabilistic counting                                                                        |
 | Geospatial             | ZSet with geohash-encoded scores                                          | Reuses sorted set, haversine filtering                                                                    |
 | Pub/Sub channels       | Arc-snapshot Vec per shard                                                | Lock-free publish, copy-on-write subscribe                                                                |
-| Subscriber queue       | `crossbeam::SegQueue`                                                     | Lock-free MPMC, bounded backpressure                                                                      |
+| Worker-local subs      | `HashMap<String, Vec<usize>>` per worker                                  | Grouped fan-out resolves recipients without atomics; only the owning worker touches it                     |
+| Subscriber queue       | `crossbeam::SegQueue`                                                     | Lock-free MPMC, bounded backpressure; also carries per-worker `FanEntry` frame batches                      |
 | EBR garbage            | Thread-local `Vec<Garbage>`                                               | Batched collection every 512 retires                                                                      |
 | Allocator accounting   | `rust-zmalloc` + mimalloc                                                 | Zero-overhead allocator; RSS tracked periodically via /proc, explicit page release via mi_collect         |
 | Shard selection        | Bit shift + mask (foldhash)                                               | Single instruction, no modulo                                                                             |

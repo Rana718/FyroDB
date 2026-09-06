@@ -66,6 +66,7 @@ const sections = [
    {
       title: "Changelog",
       items: [
+         { label: "v0.2.1", slug: "changelog-0-2-1", icon: FiFileText },
          { label: "v0.2.0", slug: "changelog-0-2-0", icon: FiFileText },
          { label: "v0.1.2", slug: "changelog-0-1-2", icon: FiFileText },
          { label: "v0.1.1", slug: "changelog-0-1-1", icon: FiFileText },
