@@ -219,9 +219,8 @@ impl PeerManager {
             ),
             timeout,
         )?;
-        // Only remove the source copy after every key and the finish marker
-        // have been acknowledged. A failed partial transfer leaves the source
-        // authoritative and can be retried without data loss.
+// Remove the source only after full ack: a failed partial transfer stays
+// authoritative and retryable.
         store.remove_slot_values(slot);
         if let Some(topology) = state.commit_slot_migration(slot) {
             let _ = store.install_cluster_topology(topology.clone());
@@ -279,17 +278,13 @@ pub fn start_peer_manager(config: &ClusterConfig, state: ClusterState) -> PeerMa
             .name(format!("fyrodb-cluster-out-{}", node.id))
             .stack_size(64 * 1024)
             .spawn(move || {
-                run_peer_worker(
-                    receiver,
-                    requests,
-                    health,
-                    &local_id,
-                    local_epoch,
-                    &node,
+                let ctx = PeerWorkerContext {
+                    local_id: &local_id,
+                    epoch: local_epoch,
                     heartbeat_interval,
-                    auth_token.as_deref(),
-                    worker_reconnect_count,
-                )
+                    auth_token: auth_token.as_deref(),
+                };
+                run_peer_worker(receiver, requests, health, &ctx, &node, worker_reconnect_count)
             })
         {
             workers.push(worker);
@@ -305,9 +300,8 @@ pub fn start_peer_manager(config: &ClusterConfig, state: ClusterState) -> PeerMa
     }
 }
 
-/// Start one bounded, ACK-driven replication stream for every replica of the
-/// local primary. Only one mutation is held outside the retained log per
-/// stream, keeping memory independent of replication lag.
+/// One bounded ACK-driven stream per replica; one mutation outside the
+/// retained log, so memory is independent of lag.
 pub fn start_replication_streams(
     config: &ClusterConfig,
     manager: Arc<PeerManager>,
@@ -363,10 +357,7 @@ pub fn start_replication_streams(
                             continue;
                         }
                         Err(_) => {
-                            // Retention passed the requested offset. The
-                            // snapshot protocol is not optional: pause the
-                            // stream and make the condition observable rather
-                            // than skipping data and creating silent loss.
+// Pausing and surfacing beats skipping data and losing silently.
                             eprintln!(
                                 "[cluster] replica {replica_id} requires snapshot catch-up (requested {}, retained from {})",
                                 next_offset,
@@ -538,9 +529,7 @@ pub fn start_health_monitor(
                                 reporter_id: config.local_id.clone(),
                                 epoch: config.topology.epoch,
                             };
-                            // Count this node's own observation before forwarding
-                            // evidence. Without this, every voter only sees one
-                            // remote report and quorum can never be reached.
+// Count own observation first, or quorum can never be reached.
                             let confirmed = state.record_failure(report.clone());
                             let promoted = if confirmed {
                                 state.promote_replica(&report.target_id, report.epoch)
@@ -549,9 +538,7 @@ pub fn start_health_monitor(
                             };
                             let payload =
                                 crate::cluster::encode_failure_report(&report).unwrap_or_default();
-                            // Reports must reach the other voters. Sending to
-                            // the failed target itself can never establish a
-                            // quorum when that target is disconnected.
+// Voters need the reports; the failed target cannot help form quorum.
                             for voter_id in manager
                                 .peer_ids()
                                 .into_iter()
@@ -609,33 +596,41 @@ pub fn start_health_monitor(
         });
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Local-node identity the outbound worker needs: who we are, the topology
+/// epoch we speak, how often to heartbeat, and how to authenticate.
+struct PeerWorkerContext<'a> {
+    local_id: &'a str,
+    epoch: u64,
+    heartbeat_interval: Duration,
+    auth_token: Option<&'a str>,
+}
+
 fn run_peer_worker(
     receiver: mpsc::Receiver<Frame>,
     requests: RequestRegistry,
     health: PeerHealth,
-    local_id: &str,
-    epoch: u64,
+    ctx: &PeerWorkerContext<'_>,
     node: &NodeInfo,
-    heartbeat_interval: Duration,
-    auth_token: Option<&str>,
     reconnect_count: Arc<AtomicU64>,
 ) {
     let mut peer = None;
     let mut backoff = MIN_BACKOFF;
     let mut request_id = 1u64;
     let mut connected_once = false;
+    let mut batch: Vec<Frame> = Vec::with_capacity(64);
+    let mut scratch: Vec<[u8; 48]> = Vec::new();
     loop {
-        let frame = match receiver.recv_timeout(heartbeat_interval) {
+        batch.clear();
+        let first = match receiver.recv_timeout(ctx.heartbeat_interval) {
             Ok(frame) => frame,
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 let frame = Frame {
                     message_type: MessageType::Ping,
                     flags: 0,
                     request_id,
-                    source_id: stable_id(local_id),
+                    source_id: stable_id(ctx.local_id),
                     target_id: stable_id(&node.id),
-                    epoch,
+                    epoch: ctx.epoch,
                     payload: Vec::new(),
                 };
                 request_id = request_id.wrapping_add(1).max(1);
@@ -643,12 +638,19 @@ fn run_peer_worker(
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         };
+        batch.push(first);
+        // Drain everything already queued so a replication burst leaves in
+        // one writev instead of one syscall per frame.
+        while batch.len() < 256 {
+            match receiver.try_recv() {
+                Ok(frame) => batch.push(frame),
+                Err(_) => break,
+            }
+        }
         loop {
             if peer.is_none() {
                 health.connecting();
-                // Resolved per attempt, not once at startup: a peer's address
-                // may be a hostname whose DNS record changes when that node
-                // restarts (container orchestration reassigns IPs).
+// Per-attempt resolution: hostnames can change IP on node restart.
                 let candidates = resolve_peer_address(&node.cluster_address, &node.id);
                 if candidates.is_empty() {
                     health.disconnected(None);
@@ -656,11 +658,9 @@ fn run_peer_worker(
                     backoff = backoff.saturating_mul(2).min(MAX_BACKOFF);
                     continue;
                 }
-                // Every candidate gets a try, not just the first. `localhost`
-                // and dual-stack service names commonly resolve to an IPv6
-                // address ahead of the IPv4 one the peer is actually bound to.
+// Try every candidate: dual-stack names often yield IPv6 first.
                 let attempt = candidates.iter().find_map(|&address| {
-                    connect_and_handshake(address, local_id, node, epoch, auth_token).ok()
+                    connect_and_handshake(address, ctx.local_id, node, ctx.epoch, ctx.auth_token).ok()
                 });
                 match attempt {
                     Some(connection) => {
@@ -693,7 +693,7 @@ fn run_peer_worker(
             }
             if peer
                 .as_mut()
-                .is_some_and(|connection| connection.send(&frame).is_ok())
+                .is_some_and(|connection| connection.send_batch(&batch, &mut scratch).is_ok())
             {
                 break;
             }
@@ -728,12 +728,8 @@ fn read_replies(
     requests.fail_pending();
 }
 
-/// Resolve a cluster-bus address into every candidate socket address.
-///
-/// Accepts hostnames (Docker Compose service names, Kubernetes DNS) in
-/// addition to bare `ip:port`. Returns all candidates because resolution
-/// order is not connectability order — dual-stack names often yield IPv6
-/// first while the node may only bind IPv4.
+/// Accepts hostnames, not just ip:port; returns all candidates because
+/// resolution order is not connectability order.
 fn resolve_peer_address(address: &str, node_id: &str) -> Vec<SocketAddr> {
     if let Ok(parsed) = address.parse::<SocketAddr>() {
         return vec![parsed];
@@ -857,9 +853,7 @@ mod tests {
         );
     }
 
-    /// Resolution order is not connectability order: `localhost` yields the
-    /// IPv6 address first on a dual-stack host while a node bound to
-    /// `127.0.0.1` only accepts IPv4, so every candidate has to be offered.
+/// Dual-stack names yield IPv6 first; the node may bind IPv4 only.
     #[test]
     fn every_resolved_candidate_is_returned() {
         let candidates = super::resolve_peer_address("localhost:19301", "node-1");

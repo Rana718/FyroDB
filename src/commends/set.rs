@@ -30,21 +30,17 @@ pub fn sismember(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
 pub fn smismember(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     match parts {
         [_, key, members @ ..] if !members.is_empty() => {
-            let results = wt!(out, store.smismember(key, members));
-            resp::write_array_header(out, results.len());
-            for r in results {
-                resp::write_integer(out, if r { 1 } else { 0 });
-            }
+            wt!(out, store.smismember_to_buf(key, members, out));
         }
         _ => resp::write_wrong_args(out, "smismember"),
     }
 }
 
 pub fn smembers(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
-    match parts {
-        [_, key] => resp::write_array(out, &wt!(out, store.smembers(key))),
-        _ => resp::write_wrong_args(out, "smembers"),
-    }
+    let [_, key] = parts else {
+        return resp::write_wrong_args(out, "smembers");
+    };
+    wt!(out, store.smembers_to_buf(key, out));
 }
 
 pub fn scard(parts: &[&str], store: &Store, out: &mut Vec<u8>) {

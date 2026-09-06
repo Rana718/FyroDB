@@ -28,11 +28,11 @@ pub fn initiate_shutdown() {
 }
 
 pub fn run_worker(
-    store: Arc<Store>,
-    pubsub: Arc<PubSub>,
+    store: &Arc<Store>,
+    pubsub: &PubSub,
     port: u16,
-    bind: String,
-    auth: Option<Arc<String>>,
+    bind: &str,
+    auth: Option<&str>,
     worker_index: usize,
 ) {
     let addr: SocketAddr = format!("{}:{}", bind, port).parse().unwrap();
@@ -46,16 +46,17 @@ pub fn run_worker(
         .unwrap();
 
     let waker = Arc::new(Waker::new(poll.registry(), WAKER_TOKEN).unwrap());
-    let notifier = WorkerNotifier::new(waker);
+    let notifier = WorkerNotifier::new(waker, worker_index);
 
-    // A Conn is large (socket, parser buffers, auth and pub/sub state). Reserving
-    // 4096 slots per worker commits a sizeable idle allocation on high-core
-    // machines. Grow with actual connections instead.
+// A Conn is large; a fixed 4096-slot reservation is a sizeable idle
+// allocation. Grow with actual connections.
     let mut conns: Vec<Option<Conn>> = Vec::new();
     let mut next_token: usize = 1;
     let mut free: Vec<usize> = Vec::new();
     let mut dirty: Vec<usize> = Vec::with_capacity(32);
     let mut sub_dirty: Vec<usize> = Vec::with_capacity(16);
+    let mut fanout_scratch: Vec<crate::pubsub::FanEntry> = Vec::new();
+    let mut fanout_seen: Vec<bool> = Vec::new();
 
     loop {
         if SHUTDOWN.load(Ordering::Acquire) {
@@ -104,11 +105,11 @@ pub fn run_worker(
                                 .unwrap();
                             conns[id] = Some(Conn::new(
                                 stream,
-                                Arc::clone(&store),
-                                Arc::clone(&pubsub),
+                                store,
+                                pubsub,
                                 id,
-                                Arc::clone(&notifier),
-                                auth.clone(),
+                                &notifier,
+                                auth,
                                 worker_index,
                             ));
                         }
@@ -119,6 +120,17 @@ pub fn run_worker(
 
                 WAKER_TOKEN => {
                     notifier.drain_pending_into(&mut sub_dirty);
+                    fanout_seen.resize(conns.len(), false);
+                    for seen in fanout_seen.iter_mut() {
+                        *seen = false;
+                    }
+                    deliver_fanout(
+                        &notifier,
+                        &mut conns,
+                        &mut sub_dirty,
+                        &mut fanout_scratch,
+                        &mut fanout_seen,
+                    );
                     sub_dirty.sort_unstable();
                     sub_dirty.dedup();
                 }
@@ -130,9 +142,7 @@ pub fn run_worker(
                         if event.is_readable() && !conn.do_read() {
                             close = true;
                         }
-                        // This arm retries writes that previously hit WouldBlock;
-                        // without it a client that stops reading mid-response
-                        // never gets the rest.
+// Retry WouldBlock writes or a stopped reader never gets the rest.
                         if !close && event.is_writable() && !conn.do_write() {
                             close = true;
                         }
@@ -195,6 +205,65 @@ fn is_slow_subscriber(conn: &Conn) -> bool {
     }
 }
 
+/// Frames append straight to wbuf (memcpy); a connection past the batch
+/// cap spills into its slot queue (backlog drain, shedding intact).
+fn deliver_fanout(
+    notifier: &Arc<crate::pubsub::WorkerNotifier>,
+    conns: &mut [Option<Conn>],
+    sub_dirty: &mut Vec<usize>,
+    scratch: &mut Vec<crate::pubsub::FanEntry>,
+    seen: &mut [bool],
+) {
+// Caller-owned scratch reused across wakeups; the subscription map is
+// borrowed under one lock for the whole batch.
+    scratch.clear();
+    notifier.drain_fanout(|entry| scratch.push(entry));
+    if scratch.is_empty() {
+        return;
+    }
+    notifier.with_local_subs(|subs| {
+        for entry in scratch.iter() {
+            let Some(tokens) = subs.get(entry.channel.as_ref()) else {
+                continue;
+            };
+            for &token in tokens {
+                let Some(Some(conn)) = conns.get_mut(token) else {
+                    continue;
+                };
+// Conn's subscription set is the authority: tokens are reused after
+// close, so the local map alone could misroute.
+                let subscribed = matches!(
+                    &conn.mode,
+                    crate::handler::conn::ConnMode::Subscribed { channels, .. }
+                        if channels.contains(entry.channel.as_ref())
+                );
+                if !subscribed {
+                    continue;
+                }
+// Batch cap applies per frame; overflow spills like unbatched delivery.
+                let mut spilled = false;
+                for frame in entry.frames() {
+                    if !spilled
+                        && conn.parser.wbuf.len() + frame.len()
+                            <= crate::handler::conn::SUB_WRITE_BATCH_BYTES
+                    {
+                        conn.parser.wbuf.extend_from_slice(frame);
+                    } else if let crate::handler::conn::ConnMode::Subscribed { slot, .. } =
+                        &conn.mode
+                    {
+                        slot.push(Arc::clone(frame));
+                        spilled = true;
+                    }
+                }
+                if !seen[token] {
+                    seen[token] = true;
+                    sub_dirty.push(token);
+                }
+            }
+        }
+    });
+}
+
 fn make_listener(addr: SocketAddr) -> TcpListener {
     let socket = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP)).unwrap();
     socket.set_reuse_address(true).unwrap();
@@ -230,12 +299,6 @@ fn close_conn(conns: &mut [Option<Conn>], poll: &mut Poll, free: &mut Vec<usize>
     }
 }
 
-/// Keep the poll registration in step with whether a reply is still buffered.
-///
-/// Connections are registered `READABLE` at accept time. If a write stops
-/// short, the remainder can only be flushed once the socket reports writable,
-/// so `WRITABLE` has to be added — and removed again once drained, otherwise
-/// every idle connection spins the event loop.
 fn sync_write_interest(conns: &mut [Option<Conn>], poll: &mut Poll, id: usize) {
     let Some(Some(conn)) = conns.get_mut(id) else {
         return;

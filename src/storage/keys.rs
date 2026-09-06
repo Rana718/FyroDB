@@ -24,31 +24,33 @@ impl Store {
     }
 
     pub fn expire(&self, key: &str, duration: Duration) -> bool {
-        let ok = self
-            .data
-            .update_with(key, |val| {
-                if val.is_expired() {
-                    return false;
-                }
-                let was_persistent = val.expires_ms == 0;
-                val.expires_ms = now_ms() + duration.as_millis() as u64;
-                was_persistent
-            })
-            .unwrap_or(false);
-        if ok {
-            self.add_ttl();
-            if let Some(log) = &self.replication {
-                let _ = log.append(crate::cluster::MutationRecord {
-                    offset: 0,
-                    slot: crate::cluster::hash_slot(key.as_bytes()),
-                    kind: crate::cluster::MutationKind::Expire,
-                    key: key.as_bytes().to_vec(),
-                    value: Vec::new(),
-                    expire_at_ms: self.data.get_ref(key).map(|value| value.expires_ms),
-                });
+        // The closure returns the new deadline so the replication payload
+        // needs no second hash lookup to read it back.
+        let result = self.data.update_with(key, |val| {
+            if val.is_expired() {
+                return None;
             }
+            let was_persistent = val.expires_ms == 0;
+            val.expires_ms = now_ms() + duration.as_millis() as u64;
+            Some((was_persistent, val.expires_ms))
+        });
+        let Some((was_persistent, expires_ms)) = result.flatten() else {
+            return false;
+        };
+        if was_persistent {
+            self.add_ttl();
         }
-        ok
+        if let Some(log) = &self.replication {
+            let _ = log.append(crate::cluster::MutationRecord {
+                offset: 0,
+                slot: crate::cluster::hash_slot(key.as_bytes()),
+                kind: crate::cluster::MutationKind::Expire,
+                key: key.as_bytes().to_vec(),
+                value: Vec::new(),
+                expire_at_ms: Some(expires_ms),
+            });
+        }
+        was_persistent
     }
 
     pub fn expire_ms(&self, key: &str, abs_ms: u64) -> bool {

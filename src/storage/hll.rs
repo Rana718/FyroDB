@@ -138,7 +138,7 @@ impl Store {
                 }
                 let encoded = encode_hll(&hll);
                 self.data
-                    .insert(key.to_string(), StoreValue::string(encoded));
+                    .insert_str(key, StoreValue::string(encoded));
                 Ok(changed)
             }
         }

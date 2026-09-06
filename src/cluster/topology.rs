@@ -95,13 +95,8 @@ mod tests {
     }
 }
 
-/// Flat slot-to-owner map, resolved once per published topology.
-///
-/// `Topology::owner` scans primaries and their range lists on every lookup,
-/// which lands on the command path. Redis keeps a flat `slots[16384]` array for
-/// exactly this reason; `RoutingTable` is that array. One 32 KiB allocation is
-/// shared by every connection through an `Arc`, so the cost does not scale with
-/// client count.
+/// Redis-style flat slots[16384] (32 KiB) shared via Arc: owner lookups
+/// do not scan range lists on the command path.
 pub struct RoutingTable {
     /// Index into `Topology::nodes`, or `UNASSIGNED`.
     owners: Box<[u16]>,

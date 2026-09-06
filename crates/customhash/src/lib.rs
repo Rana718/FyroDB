@@ -3,7 +3,7 @@ mod key;
 mod ops;
 mod shard;
 
-pub use ebr::{force_collect, force_collect_quiescent};
+pub use ebr::{Guard, force_collect, force_collect_quiescent, pin, retire_raw};
 
 use std::marker::PhantomData;
 use std::ops::Deref;
@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crossbeam_utils::CachePadded;
 use foldhash::fast::RandomState;
+use key::CompactKey;
 use std::hash::BuildHasher;
 
 use shard::*;
@@ -59,9 +60,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
 
     pub fn with_capacity(shard_count: usize, expected_keys: usize) -> Self {
         let n = shard_count.next_power_of_two().max(1);
-        // `expected_keys` is a capacity limit, not a reason to reserve the
-        // complete table up front. Lazy growth keeps idle RSS small and still
-        // uses the same lock-free shard growth path under load.
+// A capacity limit, not a reservation: lazy growth keeps idle RSS small.
         let _ = expected_keys;
         Self::build(n, INITIAL_SHARD_CAPACITY, expected_keys)
     }
@@ -155,6 +154,23 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
         is_new
     }
 
+    /// `insert` for borrowed keys: no key allocation for inline (≤15 byte)
+    /// keys, one boxed allocation for longer ones.
+    #[inline]
+    pub fn insert_str(&self, key: &str, value: V) -> bool {
+        let (h, idx) = self.locate(key);
+        let is_new =
+            unsafe { self.shards.get_unchecked(idx) }.insert_hashed_key(
+                CompactKey::from_str(key),
+                value,
+                h,
+            );
+        if is_new {
+            self.key_count.fetch_add(1, Ordering::Relaxed);
+        }
+        is_new
+    }
+
     #[inline]
     pub fn try_insert(&self, key: String, value: V) -> Result<bool, Full> {
         if self.key_count.load(Ordering::Relaxed) >= self.max_keys {
@@ -173,14 +189,28 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
 
     #[inline]
     pub fn set(&self, key: &str, value: V, key_owned: impl FnOnce() -> String) -> bool {
+        self.set_compact(key, value, || CompactKey::from_string(key_owned()))
+    }
+
+/// Borrowed-key `set`: no key allocation for inline (≤15B) keys,
+/// and only when actually absent.
+    #[inline]
+    pub fn set_str(&self, key: &str, value: V) -> bool {
+        self.set_compact(key, value, || CompactKey::from_str(key))
+    }
+
+    fn set_compact(
+        &self,
+        key: &str,
+        value: V,
+        key_owned: impl FnOnce() -> CompactKey,
+    ) -> bool {
         let (h, idx) = self.locate(key);
         let _guard = ebr::pin();
         let shard = unsafe { self.shards.get_unchecked(idx) };
         if let Some(existing) = shard.find(key, h) {
             state_lock(&existing.state);
-            // Re-check under the lock: the pre-lock occupancy test can race a
-            // concurrent remove, and dropping an already-dropped value would
-            // be a double free.
+// Re-check under the lock: racing a remove would drop twice.
             let was_occupied = state_occupied(&existing.state, Ordering::Relaxed);
             write_begin(&existing.state);
             if was_occupied {
@@ -194,7 +224,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
             self.key_count.fetch_add(1, Ordering::Relaxed);
             return true;
         }
-        let is_new = shard.insert_new(key_owned(), value, h);
+        let is_new = shard.insert_new_key(key_owned(), value, h, true);
         if is_new {
             self.key_count.fetch_add(1, Ordering::Relaxed);
         }
@@ -220,6 +250,24 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
             }
         }
         Ok(self.set(key, value, key_owned))
+    }
+
+    /// `try_set` for borrowed keys: no key allocation for inline (≤15
+    /// byte) keys.
+    #[inline]
+    pub fn try_set_str(&self, key: &str, value: V) -> Result<bool, Full> {
+        if self.key_count.load(Ordering::Relaxed) >= self.max_keys {
+            let (h, idx) = self.locate(key);
+            let exists = ebr::with_pin(|_| {
+                unsafe { self.shards.get_unchecked(idx) }
+                    .find(key, h)
+                    .is_some_and(|e| state_occupied(&e.state, Ordering::Acquire))
+            });
+            if !exists {
+                return Err(Full);
+            }
+        }
+        Ok(self.set_str(key, value))
     }
 
     #[inline]
@@ -367,7 +415,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
     }
 
     #[inline]
-    pub fn read_consistent<R>(&self, key: &str, f: impl Fn(&V) -> R) -> Option<R> {
+    pub fn read_consistent<R>(&self, key: &str, mut f: impl FnMut(&V) -> R) -> Option<R> {
         let (h, idx) = self.locate(key);
         let _guard = ebr::pin();
         let entry = unsafe { self.shards.get_unchecked(idx) }.find(key, h)?;
@@ -410,7 +458,36 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
             self.key_count.fetch_add(1, Ordering::Relaxed);
             return true;
         }
-        let is_new = shard.insert_new(key, value, h);
+        let is_new = shard.insert_new(key, value, h, false);
+        if is_new {
+            self.key_count.fetch_add(1, Ordering::Relaxed);
+        }
+        is_new
+    }
+
+    /// `insert_if_absent` for borrowed keys: no key allocation for inline
+    /// (≤15 byte) keys, one boxed allocation for longer ones.
+    #[inline]
+    pub fn insert_if_absent_str(&self, key: &str, value: V) -> bool {
+        let (h, idx) = self.locate(key);
+        let _guard = ebr::pin();
+        let shard = unsafe { self.shards.get_unchecked(idx) };
+        if let Some(entry) = shard.find(key, h) {
+            if state_occupied(&entry.state, Ordering::Acquire) {
+                return false;
+            }
+            state_lock(&entry.state);
+            if state_occupied(&entry.state, Ordering::Relaxed) {
+                state_unlock(&entry.state);
+                return false;
+            }
+            write_begin(&entry.state);
+            unsafe { (*entry.value.get()).write(value) };
+            write_end(&entry.state, true);
+            self.key_count.fetch_add(1, Ordering::Relaxed);
+            return true;
+        }
+        let is_new = shard.insert_new_key(CompactKey::from_str(key), value, h, false);
         if is_new {
             self.key_count.fetch_add(1, Ordering::Relaxed);
         }
@@ -422,10 +499,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
         self.key_count.load(Ordering::Relaxed)
     }
 
-    /// Whether the configured key ceiling has been reached.
-    ///
-    /// Costs a single relaxed load, and is trivially false when no limit is
-    /// configured, so callers can gate every write on it.
+/// One relaxed load; trivially false with no limit configured.
     #[inline(always)]
     pub fn is_full(&self) -> bool {
         self.max_keys != usize::MAX && self.key_count.load(Ordering::Relaxed) >= self.max_keys
@@ -480,6 +554,41 @@ mod tests {
         for i in 0..16 {
             assert_eq!(map.contains_key(&format!("key-{i}")), i % 2 == 0);
         }
+    }
+
+    #[test]
+    fn insert_if_absent_never_overwrites_a_won_race() {
+        let map = Arc::new(CustomMap::with_capacity(1, 16));
+        std::thread::scope(|scope| {
+            for t in 0..8 {
+                let map = Arc::clone(&map);
+                scope.spawn(move || {
+                    for _ in 0..20_000 {
+                        // update-then-create-if-missing, the INCR pattern
+                        if map.update_with("counter", |v: &mut i64| *v += 1).is_none() {
+                            let mut i = 1i64;
+                            let created = map.insert_if_absent("counter".into(), {
+                                i += 1;
+                                1
+                            });
+                            if !created {
+                                // Lost the create race; the increment still
+                                // must happen via a retried update.
+                                let mut spins = 0;
+                                while map.update_with("counter", |v| *v += 1).is_none() {
+                                    spins += 1;
+                                    if spins > 1_000_000 {
+                                        panic!("update never succeeded after lost race");
+                                    }
+                                }
+                            }
+                        }
+                        let _ = t;
+                    }
+                });
+            }
+        });
+        assert_eq!(map.get("counter"), Some(160_000));
     }
 
     #[test]
@@ -561,8 +670,6 @@ mod tests {
         }
     }
 
-    /// Regression: concurrent remove during overwrite must not double-free.
-    ///
     /// Values own a heap allocation so the allocator will catch a double-free.
     #[test]
     fn concurrent_overwrite_and_remove_never_double_frees() {

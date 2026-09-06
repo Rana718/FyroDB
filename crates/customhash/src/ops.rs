@@ -24,12 +24,8 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
         }
     }
 
-    /// Rebuild fragmented child allocations in place under their entry locks.
-    ///
-    /// Entry addresses never move, so lock-free readers remain valid.
-    /// Reclaimed memory is deferred to EBR. Walks one shard from `start_slot`,
-    /// stopping after `budget` rebuilds. Returns `(next_slot, capacity,
-    /// rebuilt)`; `next_slot == capacity` means the shard is done.
+/// Entry addresses never move (readers stay valid); reclaimed memory goes
+/// to EBR. Returns (next_slot, capacity, rebuilt).
     pub fn defragment_shard_range(
         &self,
         shard_idx: usize,

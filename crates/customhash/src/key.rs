@@ -38,6 +38,21 @@ impl CompactKey {
         }
     }
 
+/// No allocation for inline (≤15B) keys; one box for longer ones.
+    #[inline]
+    pub(crate) fn from_str(s: &str) -> Self {
+        if s.len() <= INLINE_CAP {
+            let mut data = [0u8; INLINE_CAP];
+            data[..s.len()].copy_from_slice(s.as_bytes());
+            Self {
+                data,
+                tag: s.len() as u8,
+            }
+        } else {
+            Self::from_string(String::from(s))
+        }
+    }
+
     #[inline(always)]
     pub(crate) fn as_str(&self) -> &str {
         if self.tag != 0xFF {

@@ -34,8 +34,8 @@ impl Store {
                     l.push_front(crate::storage::value::SmallStr::new(v));
                 }
                 let len = l.len();
-                self.data.insert(
-                    key.to_string(),
+                self.data.insert_str(
+                    key,
                     StoreValue {
                         value: FyroDB::List(Box::new(ListInner::Compact(l))),
                         expires_ms: 0,
@@ -77,7 +77,7 @@ impl Store {
                     l.push_back(v.to_string());
                 }
                 let len = l.len();
-                self.data.insert(key.to_string(), StoreValue::list(l));
+                self.data.insert_str(key, StoreValue::list(l));
                 Ok(len)
             }
         }
@@ -141,28 +141,62 @@ impl Store {
         }
     }
 
-    /// Capacity below which an emptied list keeps its buffer.
-    ///
-    /// A queue workload drains to empty constantly, and calling
-    /// `shrink_to_fit` every time turns each drain into a free plus a
-    /// reallocation inside the entry lock. Only oversized buffers are worth
-    /// releasing.
+/// shrink_to_fit on every drain turns each into free+realloc inside the
+/// lock; only oversized buffers are released.
     const LIST_KEEP_CAPACITY: usize = 64;
 
-    /// Pop one element and write it straight into the reply buffer.
-    ///
-    /// The `Vec<String>`-returning form allocates a vector *and* a string per
-    /// popped element, both inside the entry lock, then the caller copies the
-    /// bytes out and drops them. For the single-element pops that dominate queue
-    /// traffic none of that is needed.
-    ///
-    /// `Ok(true)` means an element was written, `Ok(false)` that the list was
-    /// missing, expired or empty.
+/// Ok(true) = element written; Ok(false) = missing, expired or empty.
+/// Reply is serialized outside the lock.
     pub fn pop_one_to_buf(
         &self,
         key: &str,
         from_back: bool,
         out: &mut Vec<u8>,
+    ) -> Result<bool, &'static str> {
+// Every nanosecond of lock hold is paid by all waiters: pop under the
+// lock, serialize after releasing it.
+        enum Popped {
+            Empty,
+            WrongType,
+            Value(crate::storage::value::SmallStr),
+        }
+        let result = self.data.update_with(key, |val| {
+            if val.is_expired() {
+                return Popped::Empty;
+            }
+            let Some(list) = val.value.as_list_mut() else {
+                return Popped::WrongType;
+            };
+            let popped = if from_back {
+                list.pop_back()
+            } else {
+                list.pop_front()
+            };
+            let Some(value) = popped else {
+                return Popped::Empty;
+            };
+            if list.is_empty() && list.capacity() > Self::LIST_KEEP_CAPACITY {
+                list.shrink_to_fit();
+            }
+            Popped::Value(value)
+        });
+        match result {
+            Some(Popped::Value(value)) => {
+                crate::utils::resp::write_bulk(out, value.as_str());
+                Ok(true)
+            }
+            Some(Popped::Empty) | None => Ok(false),
+            Some(Popped::WrongType) => Err("WRONGTYPE"),
+        }
+    }
+
+    /// Pop one element into a caller-reused String scratch: no Vec and no
+    /// fresh allocation once the scratch has been used once.
+    pub fn pop_one_to_scratch(
+        &self,
+        key: &str,
+        from_back: bool,
+        scratch: &mut String,
     ) -> Result<bool, &'static str> {
         let result = self.data.update_with(key, |val| {
             if val.is_expired() {
@@ -179,7 +213,8 @@ impl Store {
             let Some(value) = popped else {
                 return Ok(false);
             };
-            crate::utils::resp::write_bulk(out, value.as_str());
+            scratch.clear();
+            scratch.push_str(value.as_str());
             if list.is_empty() && list.capacity() > Self::LIST_KEEP_CAPACITY {
                 list.shrink_to_fit();
             }
@@ -272,6 +307,56 @@ impl Store {
         match result {
             Some(r) => r,
             None => Ok(vec![]),
+        }
+    }
+
+/// Bulk elements stream into `out`; truncation keeps seqlock retries
+/// idempotent.
+    pub fn lrange_to_buf(
+        &self,
+        key: &str,
+        start: i64,
+        stop: i64,
+        out: &mut Vec<u8>,
+    ) -> Result<usize, &'static str> {
+        let start_len = out.len();
+        let result = self.data.read_consistent(key, |val| {
+            out.truncate(start_len);
+            if val.is_expired() {
+                return Ok(0);
+            }
+            match val.value.as_list() {
+                Some(l) => {
+                    let len = l.len() as i64;
+                    let s = if start < 0 {
+                        (len + start).max(0)
+                    } else {
+                        start.min(len)
+                    } as usize;
+                    let e_idx = if stop < 0 {
+                        (len + stop).max(0)
+                    } else {
+                        stop.min(len - 1)
+                    } as usize;
+                    if s > e_idx {
+                        return Ok(0);
+                    }
+                    let n = e_idx - s + 1;
+                    crate::utils::resp::write_array_header(out, n);
+                    for v in l.iter().skip(s).take(n) {
+                        crate::utils::resp::write_bulk(out, v.as_str());
+                    }
+                    Ok(n)
+                }
+                None => Err("WRONGTYPE"),
+            }
+        });
+        match result {
+            Some(r) => r,
+            None => {
+                out.truncate(start_len);
+                Ok(0)
+            }
         }
     }
 

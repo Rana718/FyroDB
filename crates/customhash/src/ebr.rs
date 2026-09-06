@@ -6,9 +6,6 @@ use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering, fence};
 use crossbeam_utils::CachePadded;
 
 const INACTIVE: u64 = 0;
-/// Marks a participant slot whose thread has exited. Reclaimable by the next
-/// thread that registers. `collect` already ignores it: the epoch check only
-/// rejects values below the global epoch, and this is the maximum.
 const RETIRED: u64 = u64::MAX;
 const COLLECT_INTERVAL: usize = 512;
 
@@ -60,9 +57,8 @@ impl Local {
 
     #[cold]
     fn initialize(&mut self) {
-        // Participant nodes are never unlinked because `collect` walks the
-        // list lock-free. Exited threads mark their slot RETIRED so the next
-        // thread can claim it, bounding list length to peak concurrent threads.
+// Nodes are never unlinked (lock-free walk); RETIRED slots are reused,
+// bounding list length to peak thread count.
         let mut candidate = PARTICIPANTS.load(Ordering::Acquire);
         while !candidate.is_null() {
             let node = unsafe { &*candidate };
@@ -149,9 +145,8 @@ impl Local {
                 merged = true;
             }
         }
-        // `garbage` is otherwise append-ordered by a monotonic epoch, which is
-        // what the `partition_point` below relies on. Adopted garbage carries
-        // another thread's epochs, so restore the ordering before scanning.
+// Adopted garbage carries another thread's epochs: re-sort before the
+// epoch-ordered partition_point scan.
         if merged {
             self.garbage.sort_unstable_by_key(|g| g.epoch);
         }
@@ -202,10 +197,8 @@ impl Local {
 }
 
 impl Drop for Local {
-    /// A terminating thread still owns retired pointers that no reader can
-    /// reach but whose grace period may not have elapsed. Hand them to the
-    /// global orphan list so a surviving thread reclaims them; dropping the
-    /// vector alone would leak every entry and table this thread retired.
+/// Exited threads hand unreclaimed garbage to ORPHANS for survivors to
+/// reclaim; dropping the vector would leak every retired entry.
     fn drop(&mut self) {
         if !self.initialized {
             return;
@@ -246,9 +239,7 @@ impl Drop for Local {
 pub fn force_collect() {
     LOCAL.with(|c| {
         let l = unsafe { &mut *c.get() };
-        // Always register: collection also adopts garbage from exited threads,
-        // which would otherwise be stranded if the caller is a maintenance
-        // thread that only ever reads.
+// Always register: maintenance threads must adopt orphaned garbage.
         l.ensure_init();
         l.collect();
         l.collect();
@@ -258,7 +249,6 @@ pub fn force_collect() {
 
 /// Demand-driven quiescence used by destructive commands.  It never frees an
 /// object while a reader is pinned; it simply gives concurrent readers a short
-/// chance to leave their critical section before collecting retired storage.
 pub fn force_collect_quiescent() {
     for _ in 0..64 {
         force_collect();
@@ -340,10 +330,8 @@ mod tests {
         .unwrap();
     }
 
-    /// Retired pointers from exited threads are adopted and reclaimed by the
-    /// next call to `collect`. Two producer threads interleave epochs, which
-    /// requires the merged-garbage sort to be correct — `collect` relies on
-    /// `partition_point` over an epoch-sorted vector.
+/// collect() adopts exited threads' garbage; the merged sort keeps the
+/// vector epoch-ordered for partition_point.
     #[test]
     fn garbage_from_exited_threads_is_still_reclaimed() {
         let _serialize = SERIALIZE.lock().unwrap_or_else(|e| e.into_inner());
@@ -355,9 +343,7 @@ mod tests {
             retire_on_new_thread(PER_THREAD);
         }
 
-        // The exiting thread hands whatever it could not reclaim to ORPHANS;
-        // any surviving thread adopts it on its next collect. That may be a
-        // thread from another test, so allow time for it to come back around.
+// Another test's thread may be the adopter: allow time to come around.
         let target = before + THREADS * PER_THREAD;
         for _ in 0..200 {
             super::force_collect();
@@ -370,9 +356,8 @@ mod tests {
         assert_eq!(HANDOFF_DROPPED.load(Ordering::Relaxed), target);
     }
 
-    /// A slot released by an exited thread must be handed to the next thread
-    /// that registers, otherwise the participant list grows with every thread
-    /// the process ever spawns and `collect` walks all of them.
+/// Reuse of exited slots bounds the participant list; otherwise collect
+/// walks every thread ever spawned.
     #[test]
     fn participant_slots_are_reused_across_thread_lifetimes() {
         let _serialize = SERIALIZE.lock().unwrap_or_else(|e| e.into_inner());

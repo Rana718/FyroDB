@@ -114,9 +114,9 @@ FyroDB v0.2.0 implements the full suite of Redis Cluster commands:
 
 Benchmarked on a 6-core Intel i5-11400H (12 hardware threads), loopback TCP, 100 clients, 1M operations per run:
 
-### Whole-Machine: FyroDB (1 node, 12 workers) vs. Redis Cluster (12 masters)
+### Whole-Machine: FyroDB (1 node) vs. Redis Cluster (12 masters)
 
-| Benchmark | FyroDB (1 node, 12 workers) | Redis Cluster (12 masters) | Speedup |
+| Benchmark | FyroDB (1 node) | Redis Cluster (12 masters) | Speedup |
 | --------- | --------------------------- | -------------------------- | ------- |
 | Pipeline-64 SET | **9.00M ops/sec** | 5.26M ops/sec | **1.7×** |
 | Pipeline-100 SET | **22.12M ops/sec** | 7.39M ops/sec | **3.0×** |

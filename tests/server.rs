@@ -40,7 +40,7 @@ fn type_of_string_key() {
 #[test]
 fn type_of_hash_key() {
     let s = store();
-    s.hset("k", vec![("f".into(), "v".into())]).unwrap();
+    s.hset("k", &[("f", "v")]).unwrap();
     assert_eq!(s.type_of("k"), "hash");
 }
 

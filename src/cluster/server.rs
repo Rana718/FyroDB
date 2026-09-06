@@ -19,9 +19,8 @@ impl Drop for PeerPermit {
     }
 }
 
-/// Start the dedicated cluster listener. The listener is intentionally
-/// separate from client workers so malformed or slow peer traffic cannot
-/// consume client connection slots.
+/// Separate listener so malformed peer traffic cannot consume client
+/// connection slots.
 pub fn start_listener(
     config: ClusterConfig,
     state: ClusterState,
@@ -72,15 +71,18 @@ pub fn start_listener(
                             .stack_size(64 * 1024)
                             .spawn(move || {
                                 let _permit = permit;
+                                let ctx = PeerContext {
+                                    local_id: &peer_id,
+                                    epoch,
+                                    auth_token: peer_auth.as_deref(),
+                                    peer_timeout,
+                                };
                                 handle_peer(
                                     stream,
                                     peer_codec,
-                                    &peer_id,
-                                    epoch,
+                                    &ctx,
                                     peer_topology.as_ref(),
                                     &peer_state,
-                                    peer_auth.as_deref(),
-                                    peer_timeout,
                                     &peer_store,
                                 )
                             });
@@ -92,23 +94,27 @@ pub fn start_listener(
     Ok(handle)
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Identity + auth + timeouts a peer handshake needs.
+struct PeerContext<'a> {
+    local_id: &'a str,
+    epoch: u64,
+    auth_token: Option<&'a str>,
+    peer_timeout: std::time::Duration,
+}
+
 fn handle_peer(
     stream: TcpStream,
     codec: FrameCodec,
-    local_id: &str,
-    epoch: u64,
+    ctx: &PeerContext<'_>,
     topology: &super::Topology,
     state: &ClusterState,
-    auth_token: Option<&str>,
-    peer_timeout: std::time::Duration,
     store: &Store,
 ) {
     let Ok(mut peer) = PeerConnection::from_stream(stream, codec) else {
         return;
     };
-    if peer.set_read_timeout(Some(peer_timeout)).is_err()
-        || peer.set_write_timeout(Some(peer_timeout)).is_err()
+    if peer.set_read_timeout(Some(ctx.peer_timeout)).is_err()
+        || peer.set_write_timeout(Some(ctx.peer_timeout)).is_err()
     {
         return;
     }
@@ -119,20 +125,20 @@ fn handle_peer(
     let Some((remote_id, received_token)) = parse_hello(&hello.payload) else {
         return;
     };
-    if !auth_matches(auth_token, received_token) {
+    if !auth_matches(ctx.auth_token, received_token) {
         return;
     }
-    if remote_id == local_id {
+    if remote_id == ctx.local_id {
         return;
     }
     let response = Frame {
         message_type: MessageType::Hello,
         flags: 0,
         request_id: hello.request_id,
-        source_id: stable_id(local_id),
+        source_id: stable_id(ctx.local_id),
         target_id: hello.source_id,
-        epoch,
-        payload: local_id.as_bytes().to_vec(),
+        epoch: ctx.epoch,
+        payload: ctx.local_id.as_bytes().to_vec(),
     };
     if peer.send(&response).is_err() {
         return;
@@ -145,9 +151,9 @@ fn handle_peer(
             message_type: MessageType::Topology,
             flags: 0,
             request_id: hello.request_id,
-            source_id: stable_id(local_id),
+            source_id: stable_id(ctx.local_id),
             target_id: hello.source_id,
-            epoch,
+            epoch: ctx.epoch,
             payload,
         })
         .is_err()
@@ -156,10 +162,10 @@ fn handle_peer(
     }
     let mut replica_applier = ReplicaApplier::new(store.replica_applied_offset());
     let snapshot_path =
-        std::env::temp_dir().join(format!("fyrodb-replica-{local_id}-{remote_id}.rdb"));
+        std::env::temp_dir().join(format!("fyrodb-replica-{}-{remote_id}.rdb", ctx.local_id));
     let mut snapshot_file: Option<std::fs::File> = None;
     while let Ok(frame) = peer.receive() {
-        let current_epoch = state.topology().epoch.max(epoch);
+        let current_epoch = state.topology().epoch.max(ctx.epoch);
         if frame.epoch < current_epoch {
             continue;
         }
@@ -172,9 +178,9 @@ fn handle_peer(
                     message_type: MessageType::Pong,
                     flags: 0,
                     request_id: frame.request_id,
-                    source_id: stable_id(local_id),
+                    source_id: stable_id(ctx.local_id),
                     target_id: frame.source_id,
-                    epoch,
+                    epoch: ctx.epoch,
                     payload: Vec::new(),
                 });
             }
@@ -192,7 +198,7 @@ fn handle_peer(
                         .nodes
                         .iter()
                         .any(|node| node.id == report.target_id);
-                    if known_reporter && known_target && report.target_id != local_id {
+                    if known_reporter && known_target && report.target_id != ctx.local_id {
                         let confirmed = state.record_failure(report.clone());
                         if confirmed
                             && let Some(topology) =
@@ -215,7 +221,7 @@ fn handle_peer(
                     let source_allowed = topology
                         .nodes
                         .iter()
-                        .find(|node| node.id == local_id)
+                        .find(|node| node.id == ctx.local_id)
                         .and_then(|node| node.replica_of.as_deref())
                         == Some(remote_id);
                     if source_allowed
@@ -233,9 +239,9 @@ fn handle_peer(
                                     message_type: MessageType::ReplicationAck,
                                     flags: 0,
                                     request_id: frame.request_id,
-                                    source_id: stable_id(local_id),
+                                    source_id: stable_id(ctx.local_id),
                                     target_id: frame.source_id,
-                                    epoch,
+                                    epoch: ctx.epoch,
                                     payload,
                                 });
                             }
@@ -258,7 +264,7 @@ fn handle_peer(
                     message_type: MessageType::ReplicationAck,
                     flags: 0,
                     request_id: frame.request_id,
-                    source_id: stable_id(local_id),
+                    source_id: stable_id(ctx.local_id),
                     target_id: frame.source_id,
                     epoch: current_epoch,
                     payload: Vec::new(),
@@ -274,7 +280,7 @@ fn handle_peer(
                             message_type: MessageType::ReplicationAck,
                             flags: 0,
                             request_id: frame.request_id,
-                            source_id: stable_id(local_id),
+                            source_id: stable_id(ctx.local_id),
                             target_id: frame.source_id,
                             epoch: current_epoch,
                             payload: Vec::new(),
@@ -295,7 +301,7 @@ fn handle_peer(
                     message_type: MessageType::ReplicationAck,
                     flags: 0,
                     request_id: frame.request_id,
-                    source_id: stable_id(local_id),
+                    source_id: stable_id(ctx.local_id),
                     target_id: frame.source_id,
                     epoch: current_epoch,
                     payload: Vec::new(),
@@ -305,7 +311,7 @@ fn handle_peer(
                 let source_allowed = topology
                     .nodes
                     .iter()
-                    .find(|node| node.id == local_id)
+                    .find(|node| node.id == ctx.local_id)
                     .and_then(|node| node.replica_of.as_deref())
                     == Some(remote_id);
                 if !source_allowed {
@@ -319,7 +325,7 @@ fn handle_peer(
                 else {
                     continue;
                 };
-                if snapshot_epoch != epoch {
+                if snapshot_epoch != ctx.epoch {
                     continue;
                 }
                 if frame.flags & 1 != 0 {
@@ -366,9 +372,9 @@ fn handle_peer(
                         message_type: MessageType::ReplicationAck,
                         flags: 0,
                         request_id: frame.request_id,
-                        source_id: stable_id(local_id),
+                        source_id: stable_id(ctx.local_id),
                         target_id: frame.source_id,
-                        epoch,
+                        epoch: ctx.epoch,
                         payload,
                     });
                 }
@@ -395,9 +401,9 @@ fn handle_peer(
                         message_type: MessageType::ReplicationAck,
                         flags: 0,
                         request_id: frame.request_id,
-                        source_id: stable_id(local_id),
+                        source_id: stable_id(ctx.local_id),
                         target_id: frame.source_id,
-                        epoch,
+                        epoch: ctx.epoch,
                         payload,
                     });
                 }
@@ -447,8 +453,8 @@ mod tests {
     use std::thread;
 
     use super::{
-        ClusterState, Frame, FrameCodec, MessageType, PeerConnection, auth_matches, handle_peer,
-        stable_id,
+        ClusterState, Frame, FrameCodec, MessageType, PeerConnection, PeerContext,
+        auth_matches, handle_peer, stable_id,
     };
     use crate::storage::store::Store;
 
@@ -473,15 +479,18 @@ mod tests {
         let address = listener.local_addr().unwrap();
         let server = thread::spawn(move || {
             let (stream, _) = listener.accept().unwrap();
+            let ctx = PeerContext {
+                local_id: "node-a",
+                epoch: 7,
+                auth_token: None,
+                peer_timeout: std::time::Duration::from_secs(6),
+            };
             handle_peer(
                 stream,
                 FrameCodec::default(),
-                "node-a",
-                7,
+                &ctx,
                 &super::super::Topology::default(),
                 &ClusterState::new(2, std::time::Duration::from_secs(30)),
-                None,
-                std::time::Duration::from_secs(6),
                 &Store::with_config(1, 16),
             );
         });

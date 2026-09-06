@@ -29,7 +29,7 @@ impl Store {
             value: crate::storage::value::FyroDB::String(SmallStr::new(value)),
             expires_ms,
         };
-        self.data.set(key, store_val, || key.to_owned());
+        self.data.set_str(key, store_val);
         if expires_ms != 0 {
             self.add_ttl();
         }
@@ -41,7 +41,7 @@ impl Store {
             value: crate::storage::value::FyroDB::String(SmallStr::new(value)),
             expires_ms,
         };
-        self.data.try_set(key, store_val, || key.to_owned())?;
+        self.data.try_set_str(key, store_val)?;
         if expires_ms != 0 {
             self.add_ttl();
         }
@@ -99,20 +99,23 @@ impl Store {
     }
 
     pub fn getset(&self, key: &str, new_value: &str) -> Option<String> {
-        let nv = new_value.to_string();
-        let result = self.data.try_update(key, |val| {
+        let result = self.data.update_with(key, |val| {
             let old = if val.is_expired() {
                 None
             } else {
                 val.value.as_string().map(|s| s.to_string())
             };
-            Some((StoreValue::string(nv.clone()), old))
+            val.value = crate::storage::value::FyroDB::String(SmallStr::new(new_value));
+            val.expires_ms = 0;
+            old
         });
         match result {
             Some(old) => old,
             None => {
-                self.data
-                    .insert(key.to_string(), StoreValue::string(new_value.to_string()));
+                self.data.insert_str(
+                    key,
+                    StoreValue::string(new_value.to_string()),
+                );
                 None
             }
         }
@@ -178,7 +181,7 @@ impl Store {
             None => {
                 let len = suffix.len();
                 self.data
-                    .insert(key.to_string(), StoreValue::string(suffix.to_string()));
+                    .insert_str(key, StoreValue::string(suffix.to_string()));
                 Ok(len)
             }
         }
@@ -292,53 +295,33 @@ impl Store {
     }
 
     fn int_op(&self, key: &str, delta: i64) -> Result<i64, &'static str> {
-        let result = self
-            .data
-            .update_with(key, |val| match val.value.as_string() {
-                Some(s) => {
-                    let n = match s.parse::<i64>() {
-                        Ok(n) => n,
-                        Err(_) => return Err("value is not an integer or out of range"),
-                    };
-                    let Some(new) = n.checked_add(delta) else {
-                        return Err("increment or decrement would overflow");
-                    };
-                    val.value = crate::storage::value::FyroDB::String(SmallStr::from_string(
-                        new.to_string(),
-                    ));
-                    Ok(new)
-                }
-                None => Err("WRONGTYPE"),
-            });
-
-        match result {
-            Some(r) => r,
-            None => {
-                let _guard = self
-                    .int_create_lock
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner());
-                if let Some(r) = self
-                    .data
-                    .update_with(key, |val| match val.value.as_string() {
-                        Some(s) => {
-                            let n = s.parse::<i64>().unwrap_or(0);
-                            let Some(new) = n.checked_add(delta) else {
-                                return Err("increment or decrement would overflow");
-                            };
-                            val.value = crate::storage::value::FyroDB::String(
-                                SmallStr::from_string(new.to_string()),
-                            );
-                            Ok(new)
-                        }
-                        None => Err("WRONGTYPE"),
-                    })
-                {
-                    return r;
-                }
-                self.data
-                    .insert(key.to_string(), StoreValue::string(delta.to_string()));
-                Ok(delta)
+        loop {
+            let result = self
+                .data
+                .update_with(key, |val| match val.value.as_string() {
+                    Some(s) => {
+                        let n = match s.parse::<i64>() {
+                            Ok(n) => n,
+                            Err(_) => return Err("value is not an integer or out of range"),
+                        };
+                        let Some(new) = n.checked_add(delta) else {
+                            return Err("increment or decrement would overflow");
+                        };
+                        val.value = crate::storage::value::FyroDB::String(SmallStr::from_int(new));
+                        Ok(new)
+                    }
+                    None => Err("WRONGTYPE"),
+                });
+            if let Some(r) = result {
+                return r;
+            }
+            // Absent: lock-free create. Losing the insert race just means the
+            // key now exists, so the loop retries the in-place update.
+            if self.data.insert_if_absent_str(
+                key,
+                StoreValue::string_small(SmallStr::from_int(delta)),
+            ) {
+                return Ok(delta);
             }
         }
     }
@@ -381,7 +364,7 @@ impl Store {
             Some(r) => r,
             None => {
                 self.data
-                    .insert(key.to_string(), StoreValue::string(format_float(by)));
+                    .insert_str(key, StoreValue::string(format_float(by)));
                 Ok(by)
             }
         }

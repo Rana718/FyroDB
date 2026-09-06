@@ -1,21 +1,17 @@
 mod common;
 use common::*;
-use fyro_db::storage::zset::ZAggregate;
+use fyro_db::storage::zset::{ZAddOptions, ZAggregate};
 
 fn zadd_simple(s: &fyro_db::storage::store::Store, key: &str, members: &[(f64, &str)]) {
-    let m: Vec<(f64, String)> = members
-        .iter()
-        .map(|(sc, mb)| (*sc, mb.to_string()))
-        .collect();
-    s.zadd(key, &m, false, false, false, false, false).unwrap();
+    s.zadd(key, members, ZAddOptions::default()).unwrap();
 }
 
 #[test]
 fn zadd_creates_zset() {
     let s = store();
-    let members = vec![(1.0, "a".into()), (2.0, "b".into()), (3.0, "c".into())];
+    let members = vec![(1.0, "a"), (2.0, "b"), (3.0, "c")];
     assert_eq!(
-        s.zadd("k", &members, false, false, false, false, false),
+        s.zadd("k", &members, ZAddOptions::default()),
         Ok(3)
     );
     assert_eq!(s.zcard("k"), Ok(3));
@@ -34,8 +30,8 @@ fn zadd_updates_score() {
 fn zadd_nx_does_not_update() {
     let s = store();
     zadd_simple(&s, "k", &[(1.0, "a")]);
-    let m = vec![(5.0, "a".into())];
-    s.zadd("k", &m, true, false, false, false, false).unwrap();
+    let m = vec![(5.0, "a")];
+    s.zadd("k", &m, ZAddOptions { nx: true, ..Default::default() }).unwrap();
     assert_eq!(s.zscore("k", "a"), Ok(Some(1.0)));
 }
 
@@ -43,8 +39,8 @@ fn zadd_nx_does_not_update() {
 fn zadd_xx_only_updates_existing() {
     let s = store();
     zadd_simple(&s, "k", &[(1.0, "a")]);
-    let m = vec![(5.0, "a".into()), (3.0, "b".into())];
-    let added = s.zadd("k", &m, false, true, false, false, false).unwrap();
+    let m = vec![(5.0, "a"), (3.0, "b")];
+    let added = s.zadd("k", &m, ZAddOptions { xx: true, ..Default::default() }).unwrap();
     assert_eq!(added, 0);
     assert_eq!(s.zscore("k", "a"), Ok(Some(5.0)));
     assert_eq!(s.zscore("k", "b"), Ok(None));
@@ -54,11 +50,11 @@ fn zadd_xx_only_updates_existing() {
 fn zadd_gt_only_increases() {
     let s = store();
     zadd_simple(&s, "k", &[(5.0, "a")]);
-    let m = vec![(3.0, "a".into())];
-    s.zadd("k", &m, false, false, true, false, false).unwrap();
+    let m = vec![(3.0, "a")];
+    s.zadd("k", &m, ZAddOptions { gt: true, ..Default::default() }).unwrap();
     assert_eq!(s.zscore("k", "a"), Ok(Some(5.0)));
-    let m2 = vec![(10.0, "a".into())];
-    s.zadd("k", &m2, false, false, true, false, false).unwrap();
+    let m2 = vec![(10.0, "a")];
+    s.zadd("k", &m2, ZAddOptions { gt: true, ..Default::default() }).unwrap();
     assert_eq!(s.zscore("k", "a"), Ok(Some(10.0)));
 }
 
@@ -66,11 +62,11 @@ fn zadd_gt_only_increases() {
 fn zadd_lt_only_decreases() {
     let s = store();
     zadd_simple(&s, "k", &[(5.0, "a")]);
-    let m = vec![(10.0, "a".into())];
-    s.zadd("k", &m, false, false, false, true, false).unwrap();
+    let m = vec![(10.0, "a")];
+    s.zadd("k", &m, ZAddOptions { lt: true, ..Default::default() }).unwrap();
     assert_eq!(s.zscore("k", "a"), Ok(Some(5.0)));
-    let m2 = vec![(2.0, "a".into())];
-    s.zadd("k", &m2, false, false, false, true, false).unwrap();
+    let m2 = vec![(2.0, "a")];
+    s.zadd("k", &m2, ZAddOptions { lt: true, ..Default::default() }).unwrap();
     assert_eq!(s.zscore("k", "a"), Ok(Some(2.0)));
 }
 
@@ -92,9 +88,9 @@ fn zrem_missing_returns_zero() {
 #[test]
 fn zscore_existing() {
     let s = store();
-    zadd_simple(&s, "k", &[(3.14, "pi")]);
+    zadd_simple(&s, "k", &[(std::f64::consts::PI, "pi")]);
     let score = s.zscore("k", "pi").unwrap().unwrap();
-    assert!((score - 3.14).abs() < 0.001);
+    assert!((score - std::f64::consts::PI).abs() < 0.001);
 }
 
 #[test]
@@ -118,6 +114,31 @@ fn zmscore_mixed() {
     assert_eq!(scores[0], Some(1.0));
     assert_eq!(scores[1], None);
     assert_eq!(scores[2], Some(2.0));
+}
+
+#[test]
+fn zmscore_to_buf_matches_zmscore() {
+    let s = store();
+    zadd_simple(&s, "k", &[(1.5, "a"), (2.5, "b")]);
+    let mut out = Vec::new();
+    s.zmscore_to_buf("k", &["a", "z", "b"], &mut out).unwrap();
+    assert_eq!(out, b"*3\r\n$3\r\n1.5\r\n$-1\r\n$3\r\n2.5\r\n");
+
+    let mut out = Vec::new();
+    s.zmscore_to_buf("nope", &["a"], &mut out).unwrap();
+    assert_eq!(out, b"*1\r\n$-1\r\n");
+}
+
+#[test]
+fn zmscore_to_buf_wrongtype_errors_without_leaking_bytes() {
+    let s = store();
+    s.set_string("strk", "x", 0);
+    let mut out = Vec::new();
+    assert_eq!(
+        s.zmscore_to_buf("strk", &["a"], &mut out),
+        Err("WRONGTYPE")
+    );
+    assert!(out.is_empty());
 }
 
 #[test]
@@ -323,9 +344,9 @@ fn zunionstore_aggregate_max() {
 fn zadd_wrong_type() {
     let s = store();
     set_str(&s, "k", "val");
-    let m = vec![(1.0, "a".into())];
+    let m = vec![(1.0, "a")];
     assert_eq!(
-        s.zadd("k", &m, false, false, false, false, false),
+        s.zadd("k", &m, ZAddOptions::default()),
         Err("WRONGTYPE")
     );
 }

@@ -22,19 +22,11 @@ fn member_hash(member: &str) -> u64 {
     h
 }
 
-/// Bits probed per member.
-///
-/// The filter keeps 8–16 bits per entry, where the optimal probe count is
-/// `m/n * ln2` ≈ 6–11. Two probes left the false-positive rate around 3–5%, and
-/// every false positive costs a full linear scan of the member list — the
-/// dominant cost of `ZADD` into a large sorted set. Five probes cut that rate by
-/// roughly 4x for the same memory and a handful of extra bit tests.
+/// 5 probes cut the false-positive rate ~4x vs 2; each false positive
+/// costs a full linear scan of the member list.
 const BLOOM_PROBES: u32 = 5;
 
-/// Split one hash into the pair used for double hashing.
-///
-/// `h2` is forced odd so successive probes stride the whole bit space instead of
-/// cycling through a subset.
+/// `h2` forced odd so probes stride the whole bit space.
 #[inline(always)]
 fn bloom_seeds(h: u64) -> (u64, u64) {
     (h, h.rotate_left(31) | 1)
@@ -125,25 +117,19 @@ impl ZSetData {
 
     pub fn insert(&mut self, score: f64, member: &str) -> bool {
         let h = member_hash(member);
-        // Fast check: if bloom says "definitely not here", skip linear scan
+        // Fast check: if bloom says "definitely not here", skip membership scan
         if self.bloom_maybe_contains(h) {
-            // Check last entry first (ascending pattern)
-            if let Some(last) = self.entries.last()
-                && last.member.as_str() == member
+// Exact (score, member) hits are binary-searchable; the old linear scan
+// made re-populating large zsets quadratic.
+            let pos = self.find_insert_pos(score, member);
+            if pos < self.entries.len()
+                && self.entries[pos].score == score
+                && self.entries[pos].member.as_str() == member
             {
-                if (last.score - score).abs() > f64::EPSILON {
-                    self.entries.pop();
-                    let insert_pos = self.find_insert_pos(score, member);
-                    self.entries.insert(
-                        insert_pos,
-                        ZEntry {
-                            score,
-                            member: SmallStr::new(member),
-                        },
-                    );
-                }
                 return false;
             }
+            // Different-score update: the old entry sits elsewhere in the
+            // ordering, so fall back to a positional scan.
             if let Some(pos) = self
                 .entries
                 .iter()
@@ -186,11 +172,16 @@ impl ZSetData {
         true
     }
 
-    pub fn remove(&mut self, member: &str) -> Option<f64> {
-        let pos = self
-            .entries
+/// Shared by get_score/rank/contains/remove/incr.
+    #[inline]
+    fn position_of(&self, member: &str) -> Option<usize> {
+        self.entries
             .iter()
-            .position(|e| e.member.as_str() == member)?;
+            .position(|e| e.member.as_str() == member)
+    }
+
+    pub fn remove(&mut self, member: &str) -> Option<f64> {
+        let pos = self.position_of(member)?;
         let score = self.entries[pos].score;
         self.entries.remove(pos);
         self.reclaim_capacity();
@@ -199,16 +190,11 @@ impl ZSetData {
 
     #[inline]
     pub fn get_score(&self, member: &str) -> Option<f64> {
-        self.entries
-            .iter()
-            .find(|e| e.member.as_str() == member)
-            .map(|e| e.score)
+        self.position_of(member).map(|pos| self.entries[pos].score)
     }
 
     pub fn rank(&self, member: &str) -> Option<usize> {
-        self.entries
-            .iter()
-            .position(|e| e.member.as_str() == member)
+        self.position_of(member)
     }
 
     pub fn rev_rank(&self, member: &str) -> Option<usize> {
@@ -268,7 +254,7 @@ impl ZSetData {
     }
 
     pub fn contains(&self, member: &str) -> bool {
-        self.entries.iter().any(|e| e.member.as_str() == member)
+        self.position_of(member).is_some()
     }
 
     pub fn members(&self) -> impl Iterator<Item = &SmallStr> {
@@ -398,11 +384,7 @@ impl ZSetData {
     }
 
     pub fn incr(&mut self, member: &str, increment: f64) -> f64 {
-        if let Some(pos) = self
-            .entries
-            .iter()
-            .position(|e| e.member.as_str() == member)
-        {
+        if let Some(pos) = self.position_of(member) {
             let new_score = self.entries[pos].score + increment;
             let stays = (pos == 0
                 || self.entries[pos - 1].score < new_score
@@ -496,9 +478,8 @@ mod bloom_tests {
         );
     }
 
-    /// The filter must never report a member absent when it is present, and its
-    /// false-positive rate has to stay low enough that `insert` avoids the
-    /// linear membership scan.
+/// No false negatives; false positives must stay rare enough to keep
+/// insert off the linear scan.
     #[test]
     fn no_false_negatives_and_a_low_false_positive_rate() {
         let mut zset = ZSetData::new();
@@ -546,5 +527,45 @@ mod bloom_tests {
         for i in 0..2000 {
             assert_eq!(zset.get_score(&format!("m{i}")), Some(i as f64));
         }
+    }
+
+/// Guards against the quadratic same-score re-add scan.
+    #[test]
+    fn same_score_re_add_is_not_quadratic() {
+        const N: usize = 50_000;
+        let mut zset = ZSetData::new();
+        for i in 0..N {
+            zset.insert(i as f64, &format!("m{i}"));
+        }
+        let start = std::time::Instant::now();
+        for i in 0..N {
+            assert!(!zset.insert(i as f64, &format!("m{i}")));
+        }
+        let elapsed = start.elapsed();
+// Binary search is O(N log N); the linear scan is O(N^2) (>1s at 50k).
+        assert!(
+            elapsed.as_millis() < 100,
+            "re-adding {N} members took {elapsed:?}, membership check regressed to a linear scan"
+        );
+        assert_eq!(zset.len(), N);
+    }
+
+    /// Different-score updates must still relocate the member and preserve the
+    /// (score, member) ordering.
+    #[test]
+    fn changed_score_re_add_moves_the_member() {
+        let mut zset = ZSetData::new();
+        for i in 0..1000 {
+            zset.insert(i as f64, &format!("m{i}"));
+        }
+        for i in 0..1000 {
+            // New score lands past the tail for most members.
+            assert!(!zset.insert(i as f64 + 2000.0, &format!("m{i}")));
+            assert_eq!(zset.get_score(&format!("m{i}")), Some(i as f64 + 2000.0));
+        }
+        assert_eq!(zset.len(), 1000);
+        // Ordering invariant: scores ascending.
+        let scores: Vec<f64> = zset.iter().map(|e| e.score).collect();
+        assert!(scores.windows(2).all(|w| w[0] <= w[1]));
     }
 }

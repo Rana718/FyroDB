@@ -7,7 +7,84 @@ use std::hash::BuildHasher;
 use crate::utils::util::glob_match_bytes;
 
 use super::frame::{encode_message, encode_pmessage};
-use super::slot::SubSlot;
+use super::slot::{FanEntry, SubSlot, WorkerNotifier};
+
+const FANOUT_GROUP_RATIO: usize = 8;
+
+fn fan_out(ch: &ChannelData, encode: &dyn Fn() -> Arc<[u8]>) {
+    let mut reps: [Option<&Arc<WorkerNotifier>>; 64] = [const { None }; 64];
+    let mut overflow: Vec<&Arc<WorkerNotifier>> = Vec::new();
+    for slot in &ch.slots {
+        let notifier = slot.notifier();
+        let idx = notifier.worker_index();
+        if idx < 64 {
+            if reps[idx].is_none() {
+                reps[idx] = Some(notifier);
+            }
+        } else if !overflow.iter().any(|&n| Arc::ptr_eq(n, notifier)) {
+            overflow.push(notifier);
+        }
+    }
+    let distinct = reps.iter().flatten().count() + overflow.len();
+
+    if ch.slots.len() <= FANOUT_GROUP_RATIO * distinct {
+        let frame = encode();
+        for slot in &ch.slots {
+            slot.push(Arc::clone(&frame));
+        }
+        return;
+    }
+
+    let frame = encode();
+    for notifier in reps.iter().flatten() {
+        notifier.notify_fanout(FanEntry {
+            channel: Arc::clone(&ch.name),
+            frame: Arc::clone(&frame),
+            extra: Vec::new(),
+        });
+    }
+    for notifier in overflow {
+        notifier.notify_fanout(FanEntry {
+            channel: Arc::clone(&ch.name),
+            frame: Arc::clone(&frame),
+            extra: Vec::new(),
+        });
+    }
+}
+
+fn fan_out_multi(ch: &ChannelData, frames: &[Arc<[u8]>]) {
+    let mut reps: [Option<&Arc<WorkerNotifier>>; 64] = [const { None }; 64];
+    let mut overflow: Vec<&Arc<WorkerNotifier>> = Vec::new();
+    for slot in &ch.slots {
+        let notifier = slot.notifier();
+        let idx = notifier.worker_index();
+        if idx < 64 {
+            if reps[idx].is_none() {
+                reps[idx] = Some(notifier);
+            }
+        } else if !overflow.iter().any(|&n| Arc::ptr_eq(n, notifier)) {
+            overflow.push(notifier);
+        }
+    }
+
+    let (first, rest) = frames
+        .split_first()
+        .expect("publish_batch checked non-empty");
+    for notifier in reps.iter().flatten() {
+        notifier.notify_fanout(FanEntry {
+            channel: Arc::clone(&ch.name),
+            frame: Arc::clone(first),
+            extra: rest.iter().map(Arc::clone).collect(),
+        });
+    }
+    for notifier in overflow {
+        notifier.notify_fanout(FanEntry {
+            channel: Arc::clone(&ch.name),
+            frame: Arc::clone(first),
+            extra: rest.iter().map(Arc::clone).collect(),
+        });
+    }
+}
 
 struct PatternEntry {
     pattern: String,
@@ -15,6 +92,10 @@ struct PatternEntry {
 }
 
 const CHANNEL_SHARDS: usize = 64;
+
+unsafe fn drop_snapshot_box(ptr: *mut u8) {
+    unsafe { drop(Box::from_raw(ptr.cast::<Snapshot>())) };
+}
 
 struct ChannelData {
     name: Arc<str>,
@@ -40,11 +121,21 @@ impl ChannelShard {
         }
     }
 
-    /// Load the current Arc snapshot.
+    /// Lock-free snapshot load. The boxed slot is EBR-retired on swap, so the
+    /// Arc stays alive while this guard is held.
     #[inline(always)]
     fn load_snapshot(&self) -> Snapshot {
-        let _lock = self.mu.lock().unwrap_or_else(|e| e.into_inner());
-        self.load_snapshot_locked()
+        let _guard = customhash::pin();
+        let ptr = self.snapshot.load(Ordering::Acquire);
+        Arc::clone(unsafe { &*ptr })
+    }
+
+    #[inline(always)]
+    pub(crate) fn with_snapshot<R>(&self, f: impl FnOnce(&[ChannelData]) -> R) -> R {
+        let _guard = customhash::pin();
+        let ptr = self.snapshot.load(Ordering::Acquire);
+        let snap = unsafe { &*ptr };
+        f(&snap[..])
     }
 
     #[inline(always)]
@@ -57,22 +148,24 @@ impl ChannelShard {
     fn store_snapshot_locked(&self, new_snap: Snapshot) {
         let new_ptr = Box::into_raw(Box::new(new_snap));
         let old_ptr = self.snapshot.swap(new_ptr, Ordering::AcqRel);
-        unsafe { drop(Box::from_raw(old_ptr)) };
+        unsafe { customhash::retire_raw(old_ptr.cast::<u8>(), drop_snapshot_box) };
     }
 
     #[inline(always)]
-    fn publish(&self, channel: &str, frame: &Arc<[u8]>) -> usize {
-        let snap = self.load_snapshot();
-        for ch in snap.iter() {
-            if ch.name.as_ref() == channel {
-                let n = ch.slots.len();
-                for slot in &ch.slots {
-                    slot.push(Arc::clone(frame));
+    pub fn publish(&self, channel: &str, frame: &dyn Fn() -> Arc<[u8]>) -> usize {
+        let mut n = 0;
+        self.with_snapshot(|snap| {
+            for ch in snap {
+                if ch.name.as_ref() == channel {
+                    n = ch.slots.len();
+                    if n != 0 {
+                        fan_out(ch, frame);
+                    }
+                    return;
                 }
-                return n;
             }
-        }
-        0
+        });
+        n
     }
 
     fn subscribe(&self, channel: &str, slot: Arc<SubSlot>) {
@@ -137,16 +230,6 @@ impl ChannelShard {
         self.store_snapshot_locked(Arc::new(new_vec));
     }
 
-    fn count_for(&self, channel: &str) -> usize {
-        let snap = self.load_snapshot();
-        for ch in snap.iter() {
-            if ch.name.as_ref() == channel {
-                return ch.slots.len();
-            }
-        }
-        0
-    }
-
     fn active_channels(&self, pattern: Option<&str>) -> Vec<String> {
         let snap = self.load_snapshot();
         let mut result = Vec::new();
@@ -159,11 +242,23 @@ impl ChannelShard {
         }
         result
     }
+
+    fn count_for(&self, channel: &str) -> usize {
+        let snap = self.load_snapshot();
+        for ch in snap.iter() {
+            if ch.name.as_ref() == channel {
+                return ch.slots.len();
+            }
+        }
+        0
+    }
 }
 
+// Final teardown frees the boxed snapshot directly: no concurrent readers can
+// exist once the whole registry is dropping.
 impl Drop for ChannelShard {
     fn drop(&mut self) {
-        let ptr = self.snapshot.load(Ordering::Relaxed);
+        let ptr = *self.snapshot.get_mut();
         if !ptr.is_null() {
             unsafe { drop(Box::from_raw(ptr)) };
         }
@@ -270,8 +365,9 @@ impl PubSub {
     pub fn publish(&self, channel: &str, message: &str) -> usize {
         let mut count = 0usize;
 
-        let frame: Arc<[u8]> = encode_message(channel, message);
-        count += self.shard_for(channel).publish(channel, &frame);
+        count += self
+            .shard_for(channel)
+            .publish(channel, &|| encode_message(channel, message));
 
         let guard = self.patterns.read().unwrap_or_else(|e| e.into_inner());
         if !guard.is_empty() {
@@ -301,6 +397,43 @@ impl PubSub {
         }
 
         count
+    }
+
+    /// Pattern subscribers keep the single-publish path per message: their
+    pub fn publish_batch(&self, channel: &str, messages: &[&str]) -> usize {
+        if messages.is_empty() {
+            return 0;
+        }
+        if !self
+            .patterns
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_empty()
+        {
+            let mut n = 0;
+            for message in messages {
+                n = n.max(self.publish(channel, message));
+            }
+            return n;
+        }
+
+        let frames: Vec<Arc<[u8]>> = messages
+            .iter()
+            .map(|m| encode_message(channel, m))
+            .collect();
+        let mut n = 0;
+        self.shard_for(channel).with_snapshot(|snap| {
+            for ch in snap {
+                if ch.name.as_ref() == channel {
+                    n = ch.slots.len();
+                    if n != 0 {
+                        fan_out_multi(ch, &frames);
+                    }
+                    return;
+                }
+            }
+        });
+        n
     }
 
     pub fn active_channels(&self, pattern: Option<&str>) -> Vec<String> {

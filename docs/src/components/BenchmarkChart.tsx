@@ -19,8 +19,8 @@ const CHARTS: Record<string, { title: string; unit: string; bars: Bar[] }> = {
       title: "SET throughput · pipeline 100",
       unit: "ops/sec",
       bars: [
-         { label: "FyroDB",          value: 17.43, detail: "17.43M" },
-         { label: "Redis Cluster",   value: 7.9,   detail: "7.9M"   },
+         { label: "FyroDB",          value: 20.08, detail: "20.08M" },
+         { label: "Redis Cluster",   value: 7.56,  detail: "7.56M"  },
          { label: "DragonflyDB",     value: 3.78,  detail: "3.78M"  },
          { label: "DiceDB (1 node)", value: 1.62,  detail: "1.62M"  },
       ],
@@ -29,8 +29,8 @@ const CHARTS: Record<string, { title: string; unit: string; bars: Bar[] }> = {
       title: "GET throughput · pipeline 100",
       unit: "ops/sec",
       bars: [
-         { label: "FyroDB",          value: 21.14, detail: "21.14M" },
-         { label: "Redis Cluster",   value: 8.3,   detail: "8.3M"   },
+         { label: "FyroDB",          value: 28.16, detail: "28.16M" },
+         { label: "Redis Cluster",   value: 11.29, detail: "11.29M" },
          { label: "DragonflyDB",     value: 3.97,  detail: "3.97M"  },
          { label: "DiceDB (1 node)", value: 1.88,  detail: "1.88M"  },
       ],
@@ -39,10 +39,10 @@ const CHARTS: Record<string, { title: string; unit: string; bars: Bar[] }> = {
       title: "Pub/Sub delivery throughput",
       unit: "msg/sec",
       bars: [
-         { label: "FyroDB",          value: 30.52, detail: "30.52M" },
+         { label: "FyroDB",          value: 74.64, detail: "74.64M" },
          { label: "DragonflyDB",     value: 12.78, detail: "12.78M" },
          { label: "DiceDB (1 node)", value: 8.39,  detail: "8.39M"  },
-         { label: "Redis Cluster",   value: 6.03,  detail: "6.03M"  },
+         { label: "Redis Cluster",   value: 7.35,  detail: "7.35M"  },
       ],
    },
 };

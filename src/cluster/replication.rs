@@ -175,7 +175,7 @@ const MAX_LOG_BYTES: usize = 64 * 1024 * 1024;
 pub fn encode_replication_message(
     message: &ReplicationMessage,
 ) -> Result<Vec<u8>, ReplicationCodecError> {
-    let mut out = Vec::new();
+    let mut out = Vec::with_capacity(48);
     match message {
         ReplicationMessage::Begin {
             epoch,
@@ -342,10 +342,12 @@ impl ReplicationCoordinator {
             if let Some(payload) = journal_payload
                 && let Some(journal) = self.journal.lock().unwrap().as_mut()
             {
-                let _ = journal
-                    .file
-                    .write_all(&(payload.len() as u32).to_le_bytes());
-                let _ = journal.file.write_all(&payload);
+                let len_bytes = (payload.len() as u32).to_le_bytes();
+                let mut slices = [
+                    std::io::IoSlice::new(&len_bytes),
+                    std::io::IoSlice::new(&payload),
+                ];
+                let _ = super::transport::codec::write_all_slices(&mut journal.file, &mut slices);
             }
         }
         result
@@ -488,10 +490,8 @@ impl MutationLog {
             next_offset: 1,
             capacity,
             bytes: 0,
-            // Do not reserve the configured maximum up front. A production
-            // capacity of 100k records would otherwise reserve several MiB on
-            // every cluster node before the first write. VecDeque grows only
-            // with retained replication data and remains bounded below.
+// A 100k capacity would reserve MiB before the first write;
+// VecDeque grows with retained data and stays bounded.
             records: VecDeque::new(),
         }
     }

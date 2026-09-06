@@ -84,9 +84,8 @@ impl ClusterConfig {
         let nodes_config_file = std::env::var("FYRODB_CLUSTER_CONFIG_FILE")
             .unwrap_or_else(|_| "fyrodb-nodes.conf".to_string());
 
-        // Load topology from nodes.conf if it exists, otherwise start as
-        // a single unconfigured node — use CLUSTER MEET + CLUSTER ADDSLOTS
-        // (or redis-cli --cluster create) to wire the cluster together.
+// Without nodes.conf, start unconfigured; wire via CLUSTER MEET /
+// ADDSLOTS.
         let topology = if let Some(t) = load_nodes_conf(&nodes_config_file, &local_id) {
             t
         } else {
@@ -188,9 +187,8 @@ fn default_node_id() -> String {
     format!("{nanos:040x}")
 }
 
-/// Load topology from a nodes.conf file (Redis-style auto-save format).
-/// Each line: `<id> <addr>@<cluster_addr> <flags> <master> <epoch> connected <slots...>`
-/// Returns None if the file doesn't exist or is unparseable.
+/// Redis-style lines: `<id> <addr>@<caddr> <flags> <master> <epoch>
+/// connected <slots...>`; None if missing or unparseable.
 pub fn load_nodes_conf(path: &str, local_id: &str) -> Option<Topology> {
     let content = std::fs::read_to_string(path).ok()?;
     let mut nodes = Vec::new();

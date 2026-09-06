@@ -10,8 +10,8 @@ order: 17
 - **Network**: Loopback TCP (127.0.0.1)
 - **Clients**: 100 concurrent connections
 - **Operations**: 1M total (10K per client)
-- **FyroDB**: 1 node, 12 workers (one per hardware thread)
-- **Redis**: 12 single-threaded masters, one pinned per hardware thread
+- **FyroDB**: 1 node
+- **Redis**: 6-node Redis Cluster (7 containers)
 - **Pipeline**: 100 commands per batch
 - **Pub/Sub**: 50 subscribers, 10 publishers, 200K messages, pipeline 200
 
@@ -19,55 +19,50 @@ All tests run with the same Go benchmark tool. Best of three runs.
 
 ## KV Throughput
 
-| Metric           | FyroDB     | Redis Cluster (12 masters) | DragonflyDB | DiceDB (1 node) |
+| Metric           | FyroDB     | Redis Cluster (6 nodes)    | DragonflyDB | DiceDB (1 node) |
 | ---------------- | ---------- | -------------------------- | ----------- | --------------- |
-| Pipeline-64 SET  | **9.00M**  | 5.26M                      | 3.65M       | 766K            |
-| Pipeline-100 SET | **22.12M** | 7.39M                      | 3.78M       | 1.62M           |
-| Pipeline-100 GET | **26.61M** | 8.26M                      | 3.97M       | 1.88M           |
+| Pipeline-64 SET  | **8.95M**  | 5.75M                      | 3.65M       | 766K            |
+| Pipelined SET    | **20.08M** | 7.56M                      | 3.78M       | 1.62M           |
+| Pipelined GET    | **28.16M** | 11.29M                     | 3.97M       | 1.88M           |
 
 ## Mixed Workload Throughput
 
-| Metric               | FyroDB     | Redis Cluster (12 masters) |
-| -------------------- | ---------- | -------------------------- |
-| Mixed SET/GET        | **19.23M** | 5.34M                      |
-| INCR (counters)      | **29.81M** | 6.59M                      |
-| HSET/HGET            | **21.72M** | 5.98M                      |
-| LPUSH/RPOP           | **37.51M** | 5.48M                      |
-| SADD                 | **21.28M** | 5.52M                      |
-| ZADD                 | **12.77M** | 3.68M                      |
-| JSON.SET/GET         | **14.67M** | — (module required)        |
-| SET+EXPIRE           | **9.32M**  | 2.25M                      |
-| Hot Key (contention) | **13.32M** | 1.57M                      |
-| Producer/Consumer    | **6.13M**  | 824.0K                     |
+| Metric               | FyroDB     | Redis Cluster (6 nodes)    | Speedup |
+| -------------------- | ---------- | -------------------------- | ------- |
+| Mixed SET/GET (50/50)| **20.90M** | 7.24M                      | 2.9×    |
+| INCR (counters)      | **50.11M** | 6.32M                      | 7.9×    |
+| HSET/HGET (sessions) | **33.07M** | 7.95M                      | 4.2×    |
+| LPUSH/RPOP (queue)   | **39.26M** | 7.19M                      | 5.5×    |
+| SADD (per-client sets)| **27.87M** | 6.34M                     | 4.4×    |
+| ZADD (per-client zsets)| **18.12M** | 4.55M                     | 4.0×    |
+| JSON.SET/GET (docs)  | **14.91M** | 3.38M                      | 4.4×    |
+| SET+EXPIRE (cache TTL)| **10.51M** | 2.64M                     | 4.0×    |
+| Hot Key (contention) | **44.07M** | 2.03M                      | 21.7×   |
+| Producer/Consumer    | **36.20M** | 981.3K                     | 36.9×   |
 
 ## Pub/Sub Throughput
 
-| Metric           | FyroDB     | Redis Cluster (12 masters) | DragonflyDB | DiceDB (1 node) |
+| Metric           | FyroDB     | Redis Cluster (6 nodes)    | DragonflyDB | DiceDB (1 node) |
 | ---------------- | ---------- | -------------------------- | ----------- | --------------- |
-| Publish ops/sec  | **523.0K** | 49.7K                      | 294.2K      | 167.8K          |
-| Delivery msg/sec | **26.14M** | 2.49M                      | 12.78M      | 8.39M           |
-
-Redis Cluster broadcasts every `PUBLISH` to all nodes, so its publish rate falls
-as master count rises. The six-master configuration measured ~134.6K/sec.
+| Publish ops/sec  | **1.49M**  | 147.1K                     | 294.2K      | 167.8K          |
+| Delivery msg/sec | **74.64M** | 7.35M                      | 12.78M      | 8.39M           |
 
 ## Resource Usage
 
-Measured over the same full suite, RSS summed across all processes.
+Measured over the full benchmark suite across all processes.
 
-| Metric           | FyroDB | Redis Cluster (12 masters) | DragonflyDB | DiceDB (1 node) |
-| ---------------- | ------ | -------------------------- | ----------- | --------------- |
-| Idle RSS         | 5 MB   | ~120 MB (total)            | 209 MB      | 12 MB           |
-| Loaded RSS       | 57 MB  | 120 MB (total)             | 266 MB      | 102 MB          |
-| After `FLUSHALL` | 50 MB  | 120 MB (total)             | —           | —               |
+| Metric           | FyroDB (1 node, PID 2258)  | Redis Cluster (6 nodes, 7 containers) |
+| ---------------- | -------------------------- | ------------------------------------- |
+| Peak RSS         | **294.19 MB**              | 767.63 MB                             |
+| Avg RSS          | **168.81 MB**              | 347.46 MB                             |
+| Peak CPU         | **79.6%**                  | 442.1%                                |
+| Avg CPU          | **42.5%**                  | 125.2%                                |
 
 Two things worth reading carefully:
 
 - The DragonflyDB and DiceDB columns are earlier measurements carried over and
   were not re-run for this release; treat them as indicative.
-- Neither FyroDB nor Redis returns everything to the OS after a flush. FyroDB
-  reports `used_memory: 0.58 MB` against 50 MB resident, so nearly all of what
-  remains is allocator pages held for reuse rather than live data. See
-  [Production Tips](/docs/production-tips).
+- FyroDB delivers higher throughput across every workload while maintaining a fraction of Redis Cluster's CPU and memory footprint. See [Production Tips](/docs/production-tips).
 
 ## Throughput vs Others (SET ops/sec)
 

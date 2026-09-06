@@ -7,7 +7,6 @@ use std::fs::{self, File};
 use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::os::unix::io::AsRawFd;
 use std::path::Path;
-use std::sync::Arc;
 use std::time::Duration;
 
 const MAGIC: &[u8; 4] = b"FLDB";
@@ -70,22 +69,7 @@ pub fn load_cluster_metadata(path: &str) -> io::Result<Option<(String, u64)>> {
     Ok(Some((id, u64::from_le_bytes(epoch))))
 }
 
-#[cfg(test)]
-mod cluster_metadata_tests {
-    use super::*;
 
-    #[test]
-    fn cluster_metadata_round_trip_is_strict() {
-        let path = std::env::temp_dir().join(format!("fyrodb-cluster-meta-{}", std::process::id()));
-        let path = path.to_str().unwrap();
-        save_cluster_metadata(path, "node-a", 42).unwrap();
-        assert_eq!(
-            load_cluster_metadata(path).unwrap(),
-            Some(("node-a".into(), 42))
-        );
-        let _ = std::fs::remove_file(path);
-    }
-}
 
 pub fn save_replication_metadata(path: &str, epoch: u64, offset: u64) -> io::Result<()> {
     let tmp = format!("{path}.tmp");
@@ -650,23 +634,17 @@ pub fn decode_single_value(bytes: &[u8]) -> io::Result<StoreValue> {
     Ok(StoreValue { value, expires_ms })
 }
 
-pub fn start_background_save(store: Arc<Store>, path: String, interval: Duration) {
-    std::thread::Builder::new()
-        .name("fyrodb-rdb-saver".into())
-        .stack_size(64 * 1024)
-        .spawn(move || {
-            loop {
-                std::thread::sleep(interval);
-                match save(&store, &path) {
-                    Ok(()) => {}
-                    Err(e) => eprintln!("[rdb] background save error: {e}"),
-                }
-                if let Some(log) = store.replication_coordinator() {
-                    log.flush_journal();
-                }
-            }
-        })
-        .expect("failed to spawn RDB saver thread");
+pub fn background_save_loop(store: &Store, path: &str, interval: Duration) {
+    loop {
+        std::thread::sleep(interval);
+        match save(store, path) {
+            Ok(()) => {}
+            Err(e) => eprintln!("[rdb] background save error: {e}"),
+        }
+        if let Some(log) = store.replication_coordinator() {
+            log.flush_journal();
+        }
+    }
 }
 
 #[inline]
@@ -751,4 +729,21 @@ fn skip_string(r: &mut impl Read) -> io::Result<()> {
         remaining -= chunk as u64;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod cluster_metadata_tests {
+    use super::*;
+
+    #[test]
+    fn cluster_metadata_round_trip_is_strict() {
+        let path = std::env::temp_dir().join(format!("fyrodb-cluster-meta-{}", std::process::id()));
+        let path = path.to_str().unwrap();
+        save_cluster_metadata(path, "node-a", 42).unwrap();
+        assert_eq!(
+            load_cluster_metadata(path).unwrap(),
+            Some(("node-a".into(), 42))
+        );
+        let _ = std::fs::remove_file(path);
+    }
 }

@@ -77,12 +77,8 @@ pub fn route_command_with_state_import<'a>(
     )
 }
 
-/// How much of a command's argument list routing has to look at.
-///
-/// The dispatcher materializes `&[&[u8]]` argument slices only when routing
-/// actually needs more than the first key. Most commands — and every keyless
-/// one — do not, and building a 32-slot slice array for them was pure cost on
-/// the hot path.
+/// Argument slices are materialized only when routing needs more than
+/// the first key; keyless commands skip the cost entirely.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RoutingScope {
     /// No keys: always local.
@@ -102,10 +98,8 @@ pub fn routing_scope(command: &[u8]) -> RoutingScope {
     }
 }
 
-/// Route a command whose slot is decided by one key.
-///
-/// Same decisions as `route_command_with_snapshot`, without requiring the caller
-/// to build an argument slice array.
+/// Same decisions as the snapshot variant, without building an
+/// argument slice array.
 pub fn route_single_key(
     cluster: &ClusterConfig,
     state: &super::ClusterState,
@@ -169,22 +163,8 @@ fn resolve_slot(
     }
 }
 
-/// Route against a topology snapshot the caller already holds.
-///
-/// The per-command variant above has to take the topology `RwLock` and clone an
-/// `Arc` — two contended atomic read-modify-writes shared by every worker. A
-/// connection that caches its snapshot and revalidates it against
-/// `ClusterState::topology_version` can call this instead and pay one relaxed
-/// load in the steady state.
-///
-/// Everything the routing decision needs is derived once: the key pattern is
-/// matched a single time, the slot is CRC'd a single time, and the owner comes
-/// from a flat table rather than a scan over nodes and their range lists. The
-/// earlier shape recomputed the pattern twice and the slot up to three times per
-/// command.
-///
-/// Every redirect it produces owns its address, so the result borrows neither
-/// the config nor the snapshot.
+/// Avoids the RwLock + Arc clone per command: revalidate a cached snapshot
+/// with one relaxed load. Redirects own their addresses.
 pub fn route_command_with_snapshot(
     cluster: &ClusterConfig,
     state: &super::ClusterState,

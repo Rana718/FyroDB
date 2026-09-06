@@ -57,6 +57,12 @@ impl HashInner {
         self.insert_small(SmallStr::from_string(field), SmallStr::from_string(value))
     }
 
+/// One scan finds-or-inserts; overwrites avoid two String temporaries.
+    #[inline]
+    pub fn insert_ref(&mut self, field: &str, value: &str) -> bool {
+        self.insert_small(SmallStr::new(field), SmallStr::new(value))
+    }
+
     #[inline]
     pub fn insert_small(&mut self, field: SmallStr, value: SmallStr) -> bool {
         match self {
@@ -226,6 +232,11 @@ impl SetInner {
     }
 
     #[inline]
+    pub fn insert_str(&mut self, member: &str) -> bool {
+        self.insert_small(SmallStr::new(member))
+    }
+
+    #[inline]
     pub fn insert_small(&mut self, member: SmallStr) -> bool {
         match self {
             Self::Integers(v) => {
@@ -376,6 +387,19 @@ impl SetMemberRef<'_> {
         match self {
             Self::Integer(n) => canonical_i64(value) == Some(n),
             Self::String(s) => s.as_str() == value,
+        }
+    }
+
+    /// Writes the member as a RESP bulk: SmallStr directly, integers through
+    /// a stack buffer so no String temporary is needed.
+    pub fn write_bulk_to(self, out: &mut Vec<u8>) {
+        match self {
+            Self::String(s) => crate::utils::resp::write_bulk(out, s.as_str()),
+            Self::Integer(n) => {
+                let mut buf = [0u8; 20];
+                let s = crate::storage::value::write_int_to(&mut buf, n);
+                crate::utils::resp::write_bulk(out, s);
+            }
         }
     }
 }

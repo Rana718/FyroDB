@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.2.1] - 2026-09-06
+
+### Optimized
+- **Pipelined Batch Coalescing**:
+  - Pipelined same-key queue commands (`LPUSH`, `RPUSH`, `LPOP`, `RPOP`) coalesce into a single lock acquisition per run, producing byte-identical replies and slashing queue lock contention.
+  - Pipelined `SET` + `EXPIRE` / `PEXPIRE` / `EXPIREAT` / `PEXPIREAT` pairs fuse into atomic set-with-TTL operations under a single lock acquisition.
+  - Same-channel `PUBLISH` runs batch into grouped per-worker fan-out queues, eliminating redundant per-message queue pushes.
+  - Run-of-1 fast path with zero-alloc dispatch in the core connection event loop.
+- **Zero-Allocation Command Paths**:
+  - Direct output buffer serialization for `HGETALL`, `SMEMBERS`, `LRANGE`, `ZRANGE`, `HSET`, `HMGET`, `SMISMEMBER`, `ZMSCORE`, `HGET`, `SADD`, `ZADD`, `JSON.SET`, `JSON.GET`, `LPOP`, and `RPOP`.
+  - Zero-alloc inline key parsing (`CompactKey`) and SmallStr inline string storage up to 23 bytes.
+  - Dropped temporary intermediate `Vec` and heap string allocations across hash, list, set, and json command handlers.
+- **Storage & Probing Performance**:
+  - Fixed quadratic `ZADD` member re-add scan (eliminating 37x warm-server stalls) with score-ordered indexing optimizations.
+  - Floor-probe decomposition in `customhash` for accelerated linear open-addressing table probing.
+  - Feature-gated `glibc` and `jemalloc` allocator backends in `rust-zmalloc` (keeping `mimalloc` as default).
+- **Cluster Vectorized Transport**:
+  - Replaced per-frame buffer assembly with `writev` vectorized I/O for inter-node cluster bus framing (2.6x speedup per frame).
+
+### Added
+- **Performance Probes**: Standalone performance verification harnesses: `bench/expireprobe`, `bench/floorprobe`, `bench/queueprobe`, and `bench/probe`.
+- **End-to-End Test Suites**: Dedicated integration tests for pipelined queue coalescing (`queue_coalescing.rs`), atomic TTL pairs (`set_expire_pairs.rs`), grouped publish batching (`publish_batching.rs`), and write runs (`write_runs.rs`).
+- **Benchmark Flags**: Added `-f` (no-flush) flag in benchmark harness for persistent keyspace accumulation testing.
+
+### Fixed
+- **Concurrency & Safety**:
+  - Resolved `insert_if_absent` race condition in hash map shards.
+  - Fixed `SmallStr` clone double-free edge case.
+  - Fixed CRC16 table generation in benchmark cluster harness.
+- **Refactoring & Cleanliness**:
+  - Cleaned all clippy warnings across tests (`clippy --tests` clean).
+  - Bundled `zadd`, `geo`, and `cluster` arguments into named parameter structs.
+  - Refactored server worker threads to use `std::thread::scope` for clean thread lifecycle management.
+
+---
+
 ## [0.2.0] - 2026-08-28
 
 ### Added

@@ -3,11 +3,7 @@ use common::*;
 use fyro_db::storage::value::StoreValue;
 
 fn hset(s: &fyro_db::storage::store::Store, key: &str, pairs: &[(&str, &str)]) {
-    let fields = pairs
-        .iter()
-        .map(|(f, v)| (f.to_string(), v.to_string()))
-        .collect();
-    s.hset(key, fields).unwrap();
+    s.hset(key, pairs).unwrap();
 }
 
 // HSET / HGET
@@ -15,20 +11,8 @@ fn hset(s: &fyro_db::storage::store::Store, key: &str, pairs: &[(&str, &str)]) {
 #[test]
 fn hset_returns_new_field_count() {
     let s = store();
-    assert_eq!(
-        s.hset(
-            "k",
-            vec![("a".into(), "1".into()), ("b".into(), "2".into())]
-        ),
-        Ok(2)
-    );
-    assert_eq!(
-        s.hset(
-            "k",
-            vec![("a".into(), "updated".into()), ("c".into(), "3".into())]
-        ),
-        Ok(1)
-    );
+    assert_eq!(s.hset("k", &[("a", "1"), ("b", "2")]), Ok(2));
+    assert_eq!(s.hset("k", &[("a", "updated"), ("c", "3")]), Ok(1));
 }
 
 #[test]
@@ -86,6 +70,32 @@ fn hmget_missing_key_all_nil() {
     let s = store();
     let fields = vec!["a", "b"];
     assert_eq!(s.hmget("nope", &fields), Ok(vec![None, None]));
+}
+
+#[test]
+fn hmget_to_buf_matches_hmget() {
+    let s = store();
+    hset(&s, "k", &[("a", "1"), ("b", "2")]);
+    let fields = vec!["a", "missing", "b"];
+    let mut out = Vec::new();
+    s.hmget_to_buf("k", &fields, &mut out).unwrap();
+    assert_eq!(out, b"*3\r\n$1\r\n1\r\n$-1\r\n$1\r\n2\r\n");
+
+    let mut out = Vec::new();
+    s.hmget_to_buf("nope", &fields, &mut out).unwrap();
+    assert_eq!(out, b"*3\r\n$-1\r\n$-1\r\n$-1\r\n");
+}
+
+#[test]
+fn hmget_to_buf_wrongtype_errors_without_leaking_bytes() {
+    let s = store();
+    s.set_string("strk", "x", 0);
+    let fields = vec!["a", "b"];
+    let mut out = Vec::new();
+    assert_eq!(s.hmget_to_buf("strk", &fields, &mut out), Err("WRONGTYPE"));
+    // The error reply is written by the caller; the buffer must hold no
+    // partial array bytes from the aborted attempt.
+    assert!(out.is_empty());
 }
 
 // HGETALL
@@ -205,7 +215,7 @@ fn all_hash_ops_wrongtype_on_string_key() {
     let s = store();
     s.set("k".into(), StoreValue::string("hello".into()));
 
-    assert!(s.hset("k", vec![("f".into(), "v".into())]).is_err());
+    assert!(s.hset("k", &[("f", "v")]).is_err());
     assert!(s.hsetnx("k", "f", "v".into()).is_err());
     assert!(s.hget("k", "f").is_err());
     assert!(s.hmget("k", &["f"]).is_err());

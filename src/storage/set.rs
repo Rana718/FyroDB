@@ -3,14 +3,45 @@ use crate::storage::value::{FyroDB, SetInner, StoreValue};
 use foldhash::{HashSet, HashSetExt};
 
 impl Store {
+/// Single-member SADD run under one lock, per-command added flags;
+/// sadd cannot recover per-command flags from a total.
+    pub fn sadd_added_flags(&self, key: &str, members: &[&str]) -> Result<Vec<bool>, &'static str> {
+        let result = self.data.update_with(key, |val| {
+            if val.is_expired() {
+                let mut set = SetInner::new();
+                let flags: Vec<bool> = members.iter().map(|m| set.insert_str(m)).collect();
+                val.value = FyroDB::Set(Box::new(set));
+                val.expires_ms = 0;
+                return Ok(flags);
+            }
+            match val.value.as_set_mut() {
+                Some(s) => Ok(members.iter().map(|m| s.insert_str(m)).collect()),
+                None => Err("WRONGTYPE"),
+            }
+        });
+
+        match result {
+            Some(r) => r,
+            None => {
+                let mut set = SetInner::new();
+                let flags: Vec<bool> = members.iter().map(|m| set.insert_str(m)).collect();
+                self.data.insert_str(
+                    key,
+                    StoreValue {
+                        value: FyroDB::Set(Box::new(set)),
+                        expires_ms: 0,
+                    },
+                );
+                Ok(flags)
+            }
+        }
+    }
+
     pub fn sadd(&self, key: &str, members: &[&str]) -> Result<usize, &'static str> {
         let result = self.data.update_with(key, |val| {
             if val.is_expired() {
                 let mut set = SetInner::new();
-                let added = members
-                    .iter()
-                    .filter(|m| set.insert((*m).to_string()))
-                    .count();
+                let added = members.iter().filter(|m| set.insert_str(m)).count();
                 val.value = FyroDB::Set(Box::new(set));
                 val.expires_ms = 0;
                 return Ok(added);
@@ -19,7 +50,7 @@ impl Store {
                 Some(s) => {
                     let mut added = 0;
                     for m in members {
-                        if s.insert(m.to_string()) {
+                        if s.insert_str(m) {
                             added += 1;
                         }
                     }
@@ -33,12 +64,9 @@ impl Store {
             Some(r) => r,
             None => {
                 let mut set = SetInner::new();
-                let added = members
-                    .iter()
-                    .filter(|m| set.insert((*m).to_string()))
-                    .count();
-                self.data.insert(
-                    key.to_string(),
+                let added = members.iter().filter(|m| set.insert_str(m)).count();
+                self.data.insert_str(
+                    key,
                     StoreValue {
                         value: FyroDB::Set(Box::new(set)),
                         expires_ms: 0,
@@ -91,6 +119,46 @@ impl Store {
         }
     }
 
+/// One integer per member; truncation keeps retries idempotent.
+    pub fn smismember_to_buf(
+        &self,
+        key: &str,
+        members: &[&str],
+        out: &mut Vec<u8>,
+    ) -> Result<(), &'static str> {
+        let start_len = out.len();
+        let result = self.data.read_consistent(key, |val| {
+            out.truncate(start_len);
+            if val.is_expired() {
+                crate::utils::resp::write_array_header(out, members.len());
+                for _ in members {
+                    crate::utils::resp::write_integer(out, 0);
+                }
+                return Ok(());
+            }
+            match val.value.as_set() {
+                Some(s) => {
+                    crate::utils::resp::write_array_header(out, members.len());
+                    for m in members {
+                        crate::utils::resp::write_integer(out, s.contains(m) as i64);
+                    }
+                    Ok(())
+                }
+                None => Err("WRONGTYPE"),
+            }
+        });
+        match result {
+            Some(r) => r,
+            None => {
+                crate::utils::resp::write_array_header(out, members.len());
+                for _ in members {
+                    crate::utils::resp::write_integer(out, 0);
+                }
+                Ok(())
+            }
+        }
+    }
+
     pub fn smembers(&self, key: &str) -> Result<Vec<String>, &'static str> {
         let result = self.data.read_consistent(key, |val| {
             if val.is_expired() {
@@ -104,6 +172,35 @@ impl Store {
         match result {
             Some(r) => r,
             None => Ok(vec![]),
+        }
+    }
+
+/// Bulk elements stream into `out`; truncation keeps retries idempotent.
+    pub fn smembers_to_buf(&self, key: &str, out: &mut Vec<u8>) -> Result<usize, &'static str> {
+        let start_len = out.len();
+        let result = self.data.read_consistent(key, |val| {
+            out.truncate(start_len);
+            if val.is_expired() {
+                return Ok(0);
+            }
+            match val.value.as_set() {
+                Some(s) => {
+                    let n = s.len();
+                    crate::utils::resp::write_array_header(out, n);
+                    for m in s.iter() {
+                        m.write_bulk_to(out);
+                    }
+                    Ok(n)
+                }
+                None => Err("WRONGTYPE"),
+            }
+        });
+        match result {
+            Some(r) => r,
+            None => {
+                out.truncate(start_len);
+                Ok(0)
+            }
         }
     }
 

@@ -282,7 +282,7 @@ fn json_set_nx_does_not_overwrite() {
     let s = store();
     json_set(&s, "k", "$", r#"{"a":1}"#);
     let result = s.json_set("k", "$.a", "99", true, false).unwrap();
-    assert_eq!(result, false);
+    assert!(!result);
     let val = s.json_get("k", &["$.a"]).unwrap().unwrap();
     assert_eq!(val, "1");
 }
@@ -291,7 +291,7 @@ fn json_set_nx_does_not_overwrite() {
 fn json_set_xx_only_if_exists() {
     let s = store();
     let result = s.json_set("k", "$", r#"{"a":1}"#, false, true).unwrap();
-    assert_eq!(result, false);
+    assert!(!result);
     assert_eq!(s.json_get("k", &["$"]), Ok(None));
 }
 

@@ -1,25 +1,75 @@
 use crate::storage::store::Store;
 use crate::storage::value::{FyroDB, SmallStr, StoreValue, ZSetData};
 
+/// ZADD modifiers, bundled so the flag set has one name at every call site.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ZAddOptions {
+    /// Only add new members.
+    pub nx: bool,
+    /// Only update existing members.
+    pub xx: bool,
+    /// Only update existing members when the new score is greater.
+    pub gt: bool,
+    /// Only update existing members when the new score is lower.
+    pub lt: bool,
+    /// Count changed members (updated + added) in the reply instead of adds only.
+    pub ch: bool,
+}
+
 impl Store {
-    #[allow(clippy::too_many_arguments)]
+/// Plain single-member ZADDs under one lock, per-command added flags;
+/// flag variants change replies and stay un-coalesced.
+    pub fn zadd_added_flags(
+        &self,
+        key: &str,
+        members: &[(f64, &str)],
+    ) -> Result<Vec<bool>, &'static str> {
+        let result = self.data.update_with(key, |val| {
+            if val.is_expired() {
+                let mut z = ZSetData::new();
+                let flags: Vec<bool> =
+                    members.iter().map(|(s, m)| z.insert(*s, m)).collect();
+                val.value = FyroDB::ZSet(Box::new(z));
+                val.expires_ms = 0;
+                return Ok(flags);
+            }
+            match val.value.as_zset_mut() {
+                Some(z) => Ok(members.iter().map(|(s, m)| z.insert(*s, m)).collect()),
+                None => Err("WRONGTYPE"),
+            }
+        });
+
+        match result {
+            Some(r) => r,
+            None => {
+                let mut z = ZSetData::new();
+                let flags: Vec<bool> = members.iter().map(|(s, m)| z.insert(*s, m)).collect();
+                self.data.insert_str(
+                    key,
+                    StoreValue {
+                        value: FyroDB::ZSet(Box::new(z)),
+                        expires_ms: 0,
+                    },
+                );
+                Ok(flags)
+            }
+        }
+    }
+
     pub fn zadd(
         &self,
         key: &str,
-        members: &[(f64, String)],
-        nx: bool,
-        xx: bool,
-        gt: bool,
-        lt: bool,
-        ch: bool,
+        members: &[(f64, &str)],
+        opts: ZAddOptions,
     ) -> Result<usize, &'static str> {
+        let ZAddOptions { nx, xx, gt, lt, ch } = opts;
         let result = self.data.update_with(key, |val| {
             if val.is_expired() {
                 let mut z = ZSetData::new();
                 let mut added = 0;
                 for (score, member) in members {
                     if !xx {
-                        z.insert(*score, member.as_str());
+                        z.insert(*score, member);
                         added += 1;
                     }
                 }
@@ -50,7 +100,7 @@ impl Store {
                                         true
                                     };
                                     if should_update {
-                                        z.insert(*score, member.as_str());
+                                        z.insert(*score, member);
                                         changed += 1;
                                     }
                                 }
@@ -58,14 +108,14 @@ impl Store {
                                     if xx {
                                         continue;
                                     }
-                                    z.insert(*score, member.as_str());
+                                    z.insert(*score, member);
                                     added += 1;
                                 }
                             }
                         } else {
                             // Fast path: no flags, just insert directly.
                             // insert() returns true if new, false if updated.
-                            if z.insert(*score, member.as_str()) {
+                            if z.insert(*score, member) {
                                 added += 1;
                             } else {
                                 changed += 1;
@@ -88,10 +138,10 @@ impl Store {
                 let mut z = ZSetData::new();
                 let mut added = 0;
                 for (score, member) in members {
-                    z.insert(*score, member.as_str());
+                    z.insert(*score, member);
                     added += 1;
                 }
-                self.data.insert(key.to_string(), StoreValue::zset(z));
+                self.data.insert_str(key, StoreValue::zset(z));
                 Ok(added)
             }
         }
@@ -134,6 +184,52 @@ impl Store {
                 Some(z) => Ok(members.iter().map(|m| z.get_score(m)).collect()),
                 None => Err("WRONGTYPE"),
             },
+        }
+    }
+
+/// Nil for missing members; truncation keeps seqlock retries idempotent.
+    pub fn zmscore_to_buf(
+        &self,
+        key: &str,
+        members: &[&str],
+        out: &mut Vec<u8>,
+    ) -> Result<(), &'static str> {
+        let start_len = out.len();
+        let result = self.data.read_consistent(key, |val| {
+            out.truncate(start_len);
+            if val.is_expired() {
+                crate::utils::resp::write_array_header(out, members.len());
+                for _ in members {
+                    crate::utils::resp::write_nil(out);
+                }
+                return Ok(());
+            }
+            match val.value.as_zset() {
+                Some(z) => {
+                    crate::utils::resp::write_array_header(out, members.len());
+                    for m in members {
+                        match z.get_score(m) {
+                            Some(score) => crate::utils::resp::write_bulk(
+                                out,
+                                &crate::utils::util::format_float(score),
+                            ),
+                            None => crate::utils::resp::write_nil(out),
+                        }
+                    }
+                    Ok(())
+                }
+                None => Err("WRONGTYPE"),
+            }
+        });
+        match result {
+            Some(r) => r,
+            None => {
+                crate::utils::resp::write_array_header(out, members.len());
+                for _ in members {
+                    crate::utils::resp::write_nil(out);
+                }
+                Ok(())
+            }
         }
     }
 
@@ -202,7 +298,7 @@ impl Store {
             None => {
                 let mut z = ZSetData::new();
                 z.insert(increment, member);
-                self.data.insert(key.to_string(), StoreValue::zset(z));
+                self.data.insert_str(key, StoreValue::zset(z));
                 Ok(increment)
             }
         }
@@ -232,6 +328,45 @@ impl Store {
                         .map(|entry| (entry.member.to_string(), entry.score))
                         .collect();
                     Ok(items)
+                }
+                None => Err("WRONGTYPE"),
+            },
+        }
+    }
+
+    /// Zero-alloc ZRANGE: bulk elements stream straight into `out`. With
+    /// scores, each member is followed by its formatted score.
+    pub fn zrange_to_buf(
+        &self,
+        key: &str,
+        start: i64,
+        stop: i64,
+        withscores: bool,
+        out: &mut Vec<u8>,
+    ) -> Result<usize, &'static str> {
+        match self.data.get_ref(key) {
+            None => Ok(0),
+            Some(e) if e.is_expired() => Ok(0),
+            Some(e) => match e.value.as_zset() {
+                Some(z) => {
+                    let len = z.len() as i64;
+                    let s = normalize_zset_index(start, len);
+                    let e_idx = normalize_zset_index(stop, len);
+                    if s > e_idx {
+                        return Ok(0);
+                    }
+                    let n = e_idx - s + 1;
+                    crate::utils::resp::write_array_header(out, if withscores { n * 2 } else { n });
+                    for entry in z.range_by_rank(s, e_idx + 1).iter() {
+                        crate::utils::resp::write_bulk(out, entry.member.as_str());
+                        if withscores {
+                            crate::utils::resp::write_bulk(
+                                out,
+                                &crate::utils::util::format_float(entry.score),
+                            );
+                        }
+                    }
+                    Ok(n)
                 }
                 None => Err("WRONGTYPE"),
             },

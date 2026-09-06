@@ -21,7 +21,7 @@ impl Store {
                 }
             }
             self.data
-                .insert(key.to_string(), StoreValue::json_raw(value.to_owned()));
+                .insert_str(key, StoreValue::json_raw(value.to_owned()));
             return Ok(true);
         }
 
@@ -67,12 +67,12 @@ impl Store {
                     return Ok(false);
                 }
                 if path == "." || path == "$" || path.is_empty() {
-                    self.data.insert(key.to_string(), StoreValue::json(parsed));
+                    self.data.insert_str(key, StoreValue::json(parsed));
                     Ok(true)
                 } else {
                     let mut root = JsonValue::Object(Vec::new());
                     if root.set_path(path, parsed) {
-                        self.data.insert(key.to_string(), StoreValue::json(root));
+                        self.data.insert_str(key, StoreValue::json(root));
                         Ok(true)
                     } else {
                         Err("ERR path does not exist")
@@ -83,9 +83,31 @@ impl Store {
     }
 
     pub fn json_get(&self, key: &str, paths: &[&str]) -> Result<Option<String>, &'static str> {
+        let mut buf = Vec::new();
+        match self.json_get_to_buf(key, paths, &mut buf) {
+            Ok(true) => {
+                // Strip the bulk header and trailing CRLF to return the value.
+                let s = String::from_utf8_lossy(&buf).into_owned();
+                let start = s.find("\r\n").map(|i| i + 2).unwrap_or(0);
+                let end = s.len().saturating_sub(2);
+                Ok(Some(s[start..end].to_string()))
+            }
+            Ok(false) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+/// Root-path fast case writes the stored document straight to `out`.
+/// Ok(true) when a reply was written.
+    pub fn json_get_to_buf(
+        &self,
+        key: &str,
+        paths: &[&str],
+        out: &mut Vec<u8>,
+    ) -> Result<bool, &'static str> {
         match self.data.get_ref(key) {
-            None => Ok(None),
-            Some(e) if e.is_expired() => Ok(None),
+            None => Ok(false),
+            Some(e) if e.is_expired() => Ok(false),
             Some(e) => {
                 let raw = match e.value.as_json_str() {
                     Some(s) => s,
@@ -95,16 +117,20 @@ impl Store {
                     || (paths.len() == 1
                         && (paths[0] == "." || paths[0] == "$" || paths[0].is_empty()))
                 {
-                    return Ok(Some(raw.to_owned()));
+                    crate::utils::resp::write_bulk(out, raw);
+                    return Ok(true);
                 }
                 let json = match e.value.parse_json() {
                     Some(j) => j,
-                    None => return Ok(None),
+                    None => return Ok(false),
                 };
                 if paths.len() == 1 {
                     match json.get_path(paths[0]) {
-                        Some(v) => Ok(Some(v.to_resp_string())),
-                        None => Ok(None),
+                        Some(v) => {
+                            crate::utils::resp::write_bulk(out, &v.to_resp_string());
+                            Ok(true)
+                        }
+                        None => Ok(false),
                     }
                 } else {
                     let mut result = String::from("{");
@@ -121,7 +147,8 @@ impl Store {
                         }
                     }
                     result.push('}');
-                    Ok(Some(result))
+                    crate::utils::resp::write_bulk(out, &result);
+                    Ok(true)
                 }
             }
         }
@@ -535,11 +562,11 @@ impl Store {
                         } else {
                             (stop as usize).min(arr.len())
                         };
-                        #[allow(clippy::needless_range_loop)]
-                        for i in s..e_idx {
-                            if json_values_equal(&arr[i], &search) {
-                                return Ok(i as i64);
-                            }
+                        if let Some(i) = arr[s..e_idx]
+                            .iter()
+                            .position(|v| json_values_equal(v, &search))
+                        {
+                            return Ok((s + i) as i64);
                         }
                         Ok(-1)
                     }
