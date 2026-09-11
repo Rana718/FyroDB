@@ -259,7 +259,7 @@ func findServerPID(port int) int {
 	}
 
 	// 3. Scan /proc/*/comm for known binary names
-	for _, name := range []string{"fyro_db", "redis-server"} {
+	for _, name := range []string{"fyro_db", "redis-server", "dragonfly"} {
 		matches, _ := filepath.Glob("/proc/*/comm")
 		for _, m := range matches {
 			data, err := os.ReadFile(m)

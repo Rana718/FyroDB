@@ -1,0 +1,26 @@
+services:
+  dragonfly:
+    image: docker.dragonflydb.io/dragonflydb/dragonfly:latest
+    container_name: dragonfly
+    network_mode: host
+    restart: "no"
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+      memlock: -1
+    command:
+      - dragonfly
+      - --port=6379
+      - --bind=0.0.0.0
+      - --proactor_threads=12
+      - --maxmemory=0
+      - --cache_mode=false
+      - --dbfilename=
+      - --dbnum=1
+      - --tcp_nodelay=true
+      - --pipeline_squash=10
+      - --multi_exec_squash=true
+      - --primary_port_http_enabled=false
+      - --admin_nopass=true
+      - --logtostderr

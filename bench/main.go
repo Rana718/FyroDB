@@ -6,18 +6,20 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"runtime"
 	"strconv"
 	"strings"
 	"time"
 )
 
 const (
-	HOST    = "127.0.0.1"
+	HOST      = "127.0.0.1"
+	PIPE_SIZE = 100
+)
+
+var (
 	CLIENTS = 100
 
 	OPS_CLIENT = 10000
-	PIPE_SIZE  = 100
 
 	PUB_SUBSCRIBERS = 50
 	PUB_PUBLISHERS  = 10
@@ -75,8 +77,6 @@ func main() {
 	dockerName := flag.String("docker", "", "docker container name/ID to monitor (auto-detect if empty)")
 	noFlush := flag.Bool("f", false, "skip FLUSHALL between phases; keyspace accumulates so peak RSS measures true steady-state memory")
 	flag.Parse()
-
-	runtime.GOMAXPROCS(runtime.NumCPU())
 
 	// Set before any benchmark phase runs; flushServer checks it.
 	skipFlush = *noFlush

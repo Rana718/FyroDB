@@ -50,6 +50,11 @@ tasks:
       cmds:
          - cd bench && go run . -p 6379 -m key
 
+   bench-key-dragonfly:
+      desc: benchmark key operations on DragonflyDB
+      cmds:
+         - cd bench && go run . -p 6379 -m key
+
    bench-pub-fyrodb:
       desc: benchmark pub operations on FyroDB
       cmds:
@@ -57,6 +62,11 @@ tasks:
 
    bench-pub-redis:
       desc: benchmark pub operations on redis
+      cmds:
+         - cd bench && go run . -p 6379 -m pub
+
+   bench-pub-dragonfly:
+      desc: benchmark pub operations on DragonflyDB
       cmds:
          - cd bench && go run . -p 6379 -m pub
 
@@ -69,6 +79,11 @@ tasks:
       cmds:
          - cd bench && go run . -p 6379
 
+   bench-dragonfly:
+      desc: benchmark DragonflyDB
+      cmds:
+         - cd bench && go run . -p 6379
+
    bench-fyrodb-f:
       desc: "benchmark FyroDB without flushing between phases: keyspace accumulates, final RSS + key count reported"
       cmds:
@@ -76,6 +91,11 @@ tasks:
 
    bench-redis-f:
       desc: "benchmark redis without flushing between phases: keyspace accumulates, final RSS + key count reported"
+      cmds:
+         - cd bench && go run . -p 6379 -f
+
+   bench-dragonfly-f:
+      desc: "benchmark DragonflyDB without flushing between phases: keyspace accumulates, final RSS + key count reported"
       cmds:
          - cd bench && go run . -p 6379 -f
 
@@ -115,6 +135,16 @@ tasks:
       desc: Stop Redis Cluster (6 masters)
       cmds:
          - cd bench/redis-cluster && docker compose down
+
+   dragonfly-up:
+      desc: Start DragonflyDB (single node, port 6379)
+      cmds:
+         - cd bench/dragonfly && docker compose up -d
+
+   dragonfly-down:
+      desc: Stop DragonflyDB
+      cmds:
+         - cd bench/dragonfly && docker compose down
 
    redis-up-12:
       desc: Start Redis Cluster (12 masters, one per hardware thread)

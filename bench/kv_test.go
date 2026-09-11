@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"strings"
 	"testing"
 )
@@ -59,4 +60,65 @@ func TestSkipLinesRejectsRedisError(t *testing.T) {
 		}
 	}()
 	skipLines(bufio.NewReader(strings.NewReader("-ERR unsupported\r\n")), 1)
+}
+
+func TestAppendSetBytes(t *testing.T) {
+	got := appendSetBytes(nil, []byte("user:42"))
+	want := "*3\r\n$3\r\nSET\r\n$7\r\nuser:42\r\n$5\r\nvalue\r\n"
+	if string(got) != want {
+		t.Errorf("appendSetBytes = %q, want %q", got, want)
+	}
+}
+
+func TestAppendGetBytes(t *testing.T) {
+	got := appendGetBytes(nil, []byte("k"))
+	want := "*2\r\n$3\r\nGET\r\n$1\r\nk\r\n"
+	if string(got) != want {
+		t.Errorf("appendGetBytes = %q, want %q", got, want)
+	}
+}
+
+func TestAppendLen(t *testing.T) {
+	for _, c := range []struct {
+		n    int
+		want string
+	}{
+		{0, "0"}, {5, "5"}, {9, "9"}, {10, "10"}, {123, "123"}, {1234567, "1234567"},
+	} {
+		if got := string(appendLen(nil, c.n)); got != c.want {
+			t.Errorf("appendLen(%d) = %q, want %q", c.n, got, c.want)
+		}
+	}
+}
+
+func TestKeySlotRedisVectors(t *testing.T) {
+	if got := keySlot([]byte("foo")); got != 12182 {
+		t.Errorf("keySlot(foo) = %d, want 12182", got)
+	}
+	if got := keySlot([]byte("123456789")); got != 12739 {
+		t.Errorf("keySlot(123456789) = %d, want 12739", got)
+	}
+}
+
+type loopReader struct {
+	b   []byte
+	off int
+}
+
+func (l *loopReader) Read(p []byte) (int, error) {
+	n := copy(p, l.b[l.off:])
+	if n == 0 {
+		l.off = 0
+		n = copy(p, l.b)
+	}
+	l.off = (l.off + n) % len(l.b)
+	return n, nil
+}
+
+func BenchmarkSkipGetReplies(b *testing.B) {
+	src := &loopReader{b: bytes.Repeat([]byte(fastGetFrame), 8192)}
+	r := bufio.NewReaderSize(src, 64<<10)
+	for b.Loop() {
+		skipGetReplies(r, 512)
+	}
 }

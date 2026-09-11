@@ -95,11 +95,9 @@ type clusterConns [][]*net.TCPConn
 func preDialCluster(nClients int) clusterConns {
 	cc := make(clusterConns, nClients)
 	var wg sync.WaitGroup
-	for i := 0; i < nClients; i++ {
-		wg.Add(1)
-		go func(id int) {
-			defer wg.Done()
-			cc[id] = make([]*net.TCPConn, len(addrs))
+	for i := range nClients {
+		wg.Go(func() {
+			cc[i] = make([]*net.TCPConn, len(addrs))
 			for n, addr := range addrs {
 				c, err := net.Dial("tcp", addr)
 				if err != nil {
@@ -109,9 +107,9 @@ func preDialCluster(nClients int) clusterConns {
 				tc.SetNoDelay(true)
 				tc.SetWriteBuffer(1 << 18)
 				tc.SetReadBuffer(1 << 18)
-				cc[id][n] = tc
+				cc[i][n] = tc
 			}
-		}(i)
+		})
 	}
 	wg.Wait()
 	return cc
@@ -132,12 +130,10 @@ func closeCluster(cc clusterConns) {
 func preDial(n int) []*net.TCPConn {
 	conns := make([]*net.TCPConn, n)
 	var wg sync.WaitGroup
-	for i := 0; i < n; i++ {
-		wg.Add(1)
-		go func(id int) {
-			defer wg.Done()
-			conns[id] = dialTCP(id)
-		}(i)
+	for i := range n {
+		wg.Go(func() {
+			conns[i] = dialTCP(i)
+		})
 	}
 	wg.Wait()
 	return conns
@@ -147,9 +143,7 @@ func preDialTo(n, node int) []*net.TCPConn {
 	conns := make([]*net.TCPConn, n)
 	var wg sync.WaitGroup
 	for i := range conns {
-		wg.Add(1)
-		go func(id int) {
-			defer wg.Done()
+		wg.Go(func() {
 			c, err := net.Dial("tcp", addrs[node])
 			if err != nil {
 				panic(err)
@@ -158,8 +152,8 @@ func preDialTo(n, node int) []*net.TCPConn {
 			tc.SetNoDelay(true)
 			tc.SetWriteBuffer(1 << 18)
 			tc.SetReadBuffer(1 << 18)
-			conns[id] = tc
-		}(i)
+			conns[i] = tc
+		})
 	}
 	wg.Wait()
 	return conns
@@ -216,25 +210,21 @@ func runKV() {
 
 	// ── Pipeline-64 SET ──────────────────────────────────────────────────────
 	seqStart := time.Now()
-	for i := 0; i < CLIENTS; i++ {
-		wg.Add(1)
-		go func(id int, conns []*net.TCPConn) {
-			defer wg.Done()
+	for i := range CLIENTS {
+		wg.Go(func() {
+			conns := seqCC[i]
 			readers := makeReaders(conns, 128<<10)
 
 			nodeReqs := makeNodeBufs(len(conns), seqBatch*40)
 			nodeCnts := make([]int, len(conns))
 
 			var kb [32]byte
-			base := id * OPS_CLIENT
+			base := i * OPS_CLIENT
 			for sent := 0; sent < OPS_CLIENT; {
-				batch := seqBatch
-				if OPS_CLIENT-sent < batch {
-					batch = OPS_CLIENT - sent
-				}
+				batch := min(seqBatch, OPS_CLIENT-sent)
 				resetBufs(nodeReqs, nodeCnts)
-				for j := 0; j < batch; j++ {
-					kn := strconv.AppendInt(kb[:0], int64(base+sent+j), 10)
+				for j := range batch {
+					kn := appendLen(kb[:0], base+sent+j)
 					n := nodeForKey(kn)
 					nodeReqs[n] = appendSetBytes(nodeReqs[n], kn)
 					nodeCnts[n]++
@@ -245,7 +235,7 @@ func runKV() {
 				readSetReplies(readers, nodeCnts)
 				sent += batch
 			}
-		}(i, seqCC[i])
+		})
 	}
 	wg.Wait()
 	seqElapsed := time.Since(seqStart)
@@ -253,25 +243,21 @@ func runKV() {
 
 	// ── Pipelined SET ────────────────────────────────────────────────────────
 	pipeSetStart := time.Now()
-	for i := 0; i < CLIENTS; i++ {
-		wg.Add(1)
-		go func(id int, conns []*net.TCPConn) {
-			defer wg.Done()
+	for i := range CLIENTS {
+		wg.Go(func() {
+			conns := pipeSetCC[i]
 			readers := makeReaders(conns, 128<<10)
 
 			nodeReqs := makeNodeBufs(len(conns), PIPE_SIZE*40)
 			nodeCnts := make([]int, len(conns))
 
 			var kb [32]byte
-			base := id * OPS_CLIENT
+			base := i * OPS_CLIENT
 			for sent := 0; sent < OPS_CLIENT; {
-				batch := PIPE_SIZE
-				if OPS_CLIENT-sent < batch {
-					batch = OPS_CLIENT - sent
-				}
+				batch := min(PIPE_SIZE, OPS_CLIENT-sent)
 				resetBufs(nodeReqs, nodeCnts)
-				for j := 0; j < batch; j++ {
-					kn := strconv.AppendInt(kb[:0], int64(base+sent+j), 10)
+				for j := range batch {
+					kn := appendLen(kb[:0], base+sent+j)
 					n := nodeForKey(kn)
 					nodeReqs[n] = appendSetBytes(nodeReqs[n], kn)
 					nodeCnts[n]++
@@ -280,7 +266,7 @@ func runKV() {
 				readSetReplies(readers, nodeCnts)
 				sent += batch
 			}
-		}(i, pipeSetCC[i])
+		})
 	}
 	wg.Wait()
 	pipeSetElapsed := time.Since(pipeSetStart)
@@ -289,25 +275,21 @@ func runKV() {
 	// ── Pipelined GET ────────────────────────────────────────────────────────
 	// GET the exact same keys that were written in the pipelined SET phase.
 	pipeGetStart := time.Now()
-	for i := 0; i < CLIENTS; i++ {
-		wg.Add(1)
-		go func(id int, conns []*net.TCPConn) {
-			defer wg.Done()
+	for i := range CLIENTS {
+		wg.Go(func() {
+			conns := pipeGetCC[i]
 			readers := makeReaders(conns, 256<<10)
 
 			nodeReqs := makeNodeBufs(len(conns), PIPE_SIZE*32)
 			nodeCnts := make([]int, len(conns))
 
 			var kb [32]byte
-			base := id * OPS_CLIENT
+			base := i * OPS_CLIENT
 			for sent := 0; sent < OPS_CLIENT; {
-				batch := PIPE_SIZE
-				if OPS_CLIENT-sent < batch {
-					batch = OPS_CLIENT - sent
-				}
+				batch := min(PIPE_SIZE, OPS_CLIENT-sent)
 				resetBufs(nodeReqs, nodeCnts)
-				for j := 0; j < batch; j++ {
-					kn := strconv.AppendInt(kb[:0], int64(base+sent+j), 10)
+				for j := range batch {
+					kn := appendLen(kb[:0], base+sent+j)
 					n := nodeForKey(kn)
 					nodeReqs[n] = appendGetBytes(nodeReqs[n], kn)
 					nodeCnts[n]++
@@ -316,7 +298,7 @@ func runKV() {
 				readGetReplies(readers, nodeCnts)
 				sent += batch
 			}
-		}(i, pipeGetCC[i])
+		})
 	}
 	wg.Wait()
 	pipeGetElapsed := time.Since(pipeGetStart)
@@ -383,9 +365,7 @@ func runClusterPhase(conns []*net.TCPConn, tags [][]byte, batchSize int, get boo
 	start := time.Now()
 	var wg sync.WaitGroup
 	for id, conn := range conns {
-		wg.Add(1)
-		go func(id int, conn *net.TCPConn) {
-			defer wg.Done()
+		wg.Go(func() {
 			r := bufio.NewReaderSize(conn, 256<<10)
 			requests := make([]byte, 0, batchSize*48)
 			tag := tags[id%len(addrs)]
@@ -394,9 +374,8 @@ func runClusterPhase(conns []*net.TCPConn, tags [][]byte, batchSize int, get boo
 			for sent := 0; sent < OPS_CLIENT; {
 				batch := min(batchSize, OPS_CLIENT-sent)
 				requests = requests[:0]
-				for j := 0; j < batch; j++ {
-					key := append(kb[:0], tag...)
-					key = strconv.AppendInt(key, int64(base+sent+j), 10)
+				for j := range batch {
+					key := appendLen(append(kb[:0], tag...), base+sent+j)
 					if get {
 						requests = appendGetBytes(requests, key)
 					} else {
@@ -411,7 +390,7 @@ func runClusterPhase(conns []*net.TCPConn, tags [][]byte, batchSize int, get boo
 				}
 				sent += batch
 			}
-		}(id, conn)
+		})
 	}
 	wg.Wait()
 	return time.Since(start)
@@ -479,14 +458,12 @@ func warmup() {
 	conns := preDial(CLIENTS)
 	defer closeAll(conns)
 	var wg sync.WaitGroup
-	for i := range conns {
-		wg.Add(1)
-		go func(conn *net.TCPConn, id int) {
-			defer wg.Done()
+	for i, conn := range conns {
+		wg.Go(func() {
 			r := bufio.NewReaderSize(conn, 32<<10)
 			buf := make([]byte, 0, 512)
 			var kb [32]byte
-			key := strconv.AppendInt(append(kb[:0], "warmup:"...), int64(id), 10)
+			key := appendLen(append(kb[:0], "warmup:"...), i)
 			for round := 0; round < 4; round++ {
 				buf = buf[:0]
 				for j := 0; j < 50; j++ {
@@ -501,7 +478,7 @@ func warmup() {
 				writeFull(conn, buf)
 				skipGetReplies(r, 50)
 			}
-		}(conns[i], i)
+		})
 	}
 	wg.Wait()
 	flushServer()
@@ -514,13 +491,12 @@ func warmupCluster() {
 	defer closeCluster(conns)
 	var wg sync.WaitGroup
 	for i := range conns {
-		wg.Add(1)
-		go func(id int, nodeConns []*net.TCPConn) {
-			defer wg.Done()
+		wg.Go(func() {
+			nodeConns := conns[i]
 			readers := makeReaders(nodeConns, 32<<10)
 			bufs := makeNodeBufs(len(nodeConns), 512)
 			var kb [64]byte
-			key := strconv.AppendInt(append(kb[:0], "warmup:"...), int64(id), 10)
+			key := appendLen(append(kb[:0], "warmup:"...), i)
 			n := nodeForKey(key)
 			for round := 0; round < 4; round++ {
 				bufs[n] = appendSetBytes(bufs[n][:0], key)
@@ -536,7 +512,7 @@ func warmupCluster() {
 				writeFull(nodeConns[n], bufs[n])
 				skipGetReplies(readers[n], 50)
 			}
-		}(i, conns[i])
+		})
 	}
 	wg.Wait()
 	flushServer()
@@ -567,6 +543,15 @@ var (
 	crlfB   = []byte("\r\n")
 )
 
+const (
+	fastGetFrame  = "$5\r\nvalue\r\n"
+	fastPopFrame  = "$7\r\npayload\r\n"
+	fastHgetFrame = "$1\r\nv\r\n"
+	fastNilFrame  = "$-1\r\n"
+	fastOneLine   = ":1\r\n"
+	fastOKLine    = "+OK\r\n"
+)
+
 func appendSetBytes(out, key []byte) []byte {
 	out = append(out, setHdr...)
 	out = appendLen(out, len(key))
@@ -587,7 +572,7 @@ func appendLen(out []byte, n int) []byte {
 	if n < 10 {
 		return append(out, byte('0'+n))
 	}
-	var buf [5]byte
+	var buf [12]byte
 	pos := len(buf)
 	for n > 0 {
 		pos--
@@ -625,6 +610,25 @@ func discardN(r *bufio.Reader, n int) {
 
 func skipGetReplies(r *bufio.Reader, n int) {
 	for i := 0; i < n; i++ {
+		if r.Buffered() >= len(fastPopFrame) {
+			p, _ := r.Peek(len(fastPopFrame))
+			if string(p[:len(fastGetFrame)]) == fastGetFrame {
+				r.Discard(len(fastGetFrame))
+				continue
+			}
+			if string(p) == fastPopFrame {
+				r.Discard(len(fastPopFrame))
+				continue
+			}
+			if string(p[:len(fastHgetFrame)]) == fastHgetFrame {
+				r.Discard(len(fastHgetFrame))
+				continue
+			}
+			if string(p[:len(fastNilFrame)]) == fastNilFrame {
+				r.Discard(len(fastNilFrame))
+				continue
+			}
+		}
 		b, err := r.ReadByte()
 		if err != nil {
 			panic(err)
@@ -667,6 +671,17 @@ func skipGetReplies(r *bufio.Reader, n int) {
 
 func skipLines(r *bufio.Reader, n int) {
 	for i := 0; i < n; i++ {
+		if r.Buffered() >= len(fastOKLine) {
+			p, _ := r.Peek(len(fastOKLine))
+			if string(p[:len(fastOneLine)]) == fastOneLine {
+				r.Discard(len(fastOneLine))
+				continue
+			}
+			if string(p) == fastOKLine {
+				r.Discard(len(fastOKLine))
+				continue
+			}
+		}
 		first := true
 		for {
 			line, err := r.ReadSlice('\n')
@@ -682,13 +697,6 @@ func skipLines(r *bufio.Reader, n int) {
 			}
 		}
 	}
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
 
 func rate(ops int64, d time.Duration) float64 {
