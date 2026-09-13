@@ -37,7 +37,7 @@ func runPubSub(addr string) {
 	subCmd := buildSubCmd(channel)
 
 	subConns := make([]net.Conn, PUB_SUBSCRIBERS)
-	for i := 0; i < PUB_SUBSCRIBERS; i++ {
+	for i := range PUB_SUBSCRIBERS {
 		conn, err := net.Dial("tcp", addr)
 		if err != nil {
 			fmt.Printf("sub connect error: %v\n", err)
@@ -60,9 +60,7 @@ func runPubSub(addr string) {
 		}
 
 		subReady.Add(1)
-		recvDone.Add(1)
-		go func(conn net.Conn) {
-			defer recvDone.Done()
+		recvDone.Go(func() {
 			subReady.Done()
 			<-startSignal
 
@@ -72,13 +70,13 @@ func runPubSub(addr string) {
 				localCount = totalMsgs
 			}
 			atomic.AddInt64(&received, localCount)
-		}(conn)
+		})
 	}
 
 	subReady.Wait()
 
 	pubConns := make([]*net.TCPConn, PUB_PUBLISHERS)
-	for i := 0; i < PUB_PUBLISHERS; i++ {
+	for i := range PUB_PUBLISHERS {
 		conn, err := net.Dial("tcp", addr)
 		if err != nil {
 			fmt.Printf("pub connect error: %v\n", err)
@@ -99,10 +97,9 @@ func runPubSub(addr string) {
 	var published int64
 	var pubWg sync.WaitGroup
 
-	for i := 0; i < PUB_PUBLISHERS; i++ {
-		pubWg.Add(1)
-		go func(conn *net.TCPConn) {
-			defer pubWg.Done()
+	for i := range PUB_PUBLISHERS {
+		pubWg.Go(func() {
+			conn := pubConns[i]
 			defer conn.Close()
 
 			conn.SetDeadline(time.Now().Add(30 * time.Second))
@@ -111,12 +108,9 @@ func runPubSub(addr string) {
 
 			sent := 0
 			for sent < PUB_MSGS_EACH {
-				batch := PUB_PIPE_SIZE
-				if PUB_MSGS_EACH-sent < batch {
-					batch = PUB_MSGS_EACH - sent
-				}
+				batch := min(PUB_PIPE_SIZE, PUB_MSGS_EACH-sent)
 				requests = requests[:0]
-				for j := 0; j < batch; j++ {
+				for range batch {
 					requests = append(requests, pubCmd...)
 				}
 				writeFull(conn, requests)
@@ -124,7 +118,7 @@ func runPubSub(addr string) {
 				sent += batch
 			}
 			atomic.AddInt64(&published, int64(sent))
-		}(pubConns[i])
+		})
 	}
 	pubWg.Wait()
 	pubElapsed := time.Since(pubStart)

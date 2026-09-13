@@ -22,9 +22,9 @@ const benchmarks = [
    },
    {
       name: "DragonflyDB",
-      value: 3.78,
+      value: 4.16,
       color: "bg-accent-blue",
-      detail: "3.78M",
+      detail: "4.16M",
    },
    { name: "DiceDB (1 node)", value: 1.62, color: "bg-accent-yellow", detail: "1.62M" },
 ];

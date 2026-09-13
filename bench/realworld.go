@@ -10,9 +10,10 @@ import (
 	"time"
 )
 
-const (
+const MIX_PIPE = 100
+
+var (
 	MIX_OPS_CLIENT = 10000
-	MIX_PIPE       = 100
 	MIX_HOTKEY_OPS = 50000
 	MIX_QUEUE_OPS  = 10000
 )
@@ -168,29 +169,24 @@ func runBenchMixed() {
 
 	start := time.Now()
 	var wg sync.WaitGroup
-	for i := range conns {
-		wg.Add(1)
-		go func(conn *net.TCPConn, id int) {
-			defer wg.Done()
+	for i, conn := range conns {
+		wg.Go(func() {
 			r := bufio.NewReaderSize(conn, 256<<10)
 			buf := make([]byte, 0, MIX_PIPE*48)
 			var kb [32]byte
-			base := id * MIX_OPS_CLIENT
+			base := i * MIX_OPS_CLIENT
 
 			for sent := 0; sent < MIX_OPS_CLIENT; {
-				batch := MIX_PIPE
-				if MIX_OPS_CLIENT-sent < batch {
-					batch = MIX_OPS_CLIENT - sent
-				}
+				batch := min(MIX_PIPE, MIX_OPS_CLIENT-sent)
 				buf = buf[:0]
 				sets := (batch + 1) / 2
 				gets := batch / 2
-				for j := 0; j < sets; j++ {
-					kn := strconv.AppendInt(append(kb[:0], "mix:"...), int64(base+(sent/2)+j), 10)
+				for j := range sets {
+					kn := appendLen(append(kb[:0], "mix:"...), base+(sent/2)+j)
 					buf = appendSetBytes(buf, kn)
 				}
-				for j := 0; j < gets; j++ {
-					kn := strconv.AppendInt(append(kb[:0], "mix:"...), int64(base+(sent/2)+j), 10)
+				for j := range gets {
+					kn := appendLen(append(kb[:0], "mix:"...), base+(sent/2)+j)
 					buf = appendGetBytes(buf, kn)
 				}
 				writeFull(conn, buf)
@@ -198,7 +194,7 @@ func runBenchMixed() {
 				skipGetReplies(r, gets)
 				sent += batch
 			}
-		}(conns[i], i)
+		})
 	}
 	wg.Wait()
 	recordResult("Mixed SET/GET (50/50)", total, time.Since(start))
@@ -210,10 +206,9 @@ func runClusterMixed() {
 	total := int64(CLIENTS * MIX_OPS_CLIENT)
 	start := time.Now()
 	var wg sync.WaitGroup
-	for id, nodes := range conns {
-		wg.Add(1)
-		go func(id int, conns []*net.TCPConn) {
-			defer wg.Done()
+	for id, nodeConns := range conns {
+		wg.Go(func() {
+			conns := nodeConns
 			readers := makeReaders(conns, 128<<10)
 			bufs := makeNodeBufs(len(conns), MIX_PIPE*64)
 			cnts := make([]int, len(conns))
@@ -225,17 +220,15 @@ func runClusterMixed() {
 				resetBufs(bufs, cnts)
 				sets, gets := make([]int, len(conns)), make([]int, len(conns))
 				half := (batch + 1) / 2
-				for j := 0; j < half; j++ {
-					key := append(kb[:0], tags[id%len(tags)]...)
-					key = strconv.AppendInt(key, int64(base+sent/2+j), 10)
+				for j := range half {
+					key := appendLen(append(kb[:0], tags[id%len(tags)]...), base+sent/2+j)
 					n := nodeForKey(key)
 					bufs[n] = appendSetBytes(bufs[n], key)
 					cnts[n]++
 					sets[n]++
 				}
-				for j := 0; j < batch/2; j++ {
-					key := append(kb[:0], tags[id%len(tags)]...)
-					key = strconv.AppendInt(key, int64(base+sent/2+j), 10)
+				for j := range batch / 2 {
+					key := appendLen(append(kb[:0], tags[id%len(tags)]...), base+sent/2+j)
 					n := nodeForKey(key)
 					bufs[n] = appendGetBytes(bufs[n], key)
 					cnts[n]++
@@ -248,7 +241,7 @@ func runClusterMixed() {
 				}
 				sent += batch
 			}
-		}(id, nodes)
+		})
 	}
 	wg.Wait()
 	recordResult("Mixed SET/GET (50/50)", total, time.Since(start))
@@ -261,22 +254,17 @@ func runBenchIncr() {
 
 	start := time.Now()
 	var wg sync.WaitGroup
-	for i := range conns {
-		wg.Add(1)
-		go func(conn *net.TCPConn, id int) {
-			defer wg.Done()
+	for i, conn := range conns {
+		wg.Go(func() {
 			r := bufio.NewReaderSize(conn, 64<<10)
 			buf := make([]byte, 0, MIX_PIPE*28)
 			var kb [32]byte
-			key := clientKey("incr:", id%100, kb[:])
+			key := clientKey("incr:", i%100, kb[:])
 
 			for sent := 0; sent < MIX_OPS_CLIENT; {
-				batch := MIX_PIPE
-				if MIX_OPS_CLIENT-sent < batch {
-					batch = MIX_OPS_CLIENT - sent
-				}
+				batch := min(MIX_PIPE, MIX_OPS_CLIENT-sent)
 				buf = buf[:0]
-				for j := 0; j < batch; j++ {
+				for range batch {
 					buf = append(buf, incrHdr...)
 					buf = appendLen(buf, len(key))
 					buf = append(buf, crlfB...)
@@ -287,7 +275,7 @@ func runBenchIncr() {
 				skipLines(r, batch)
 				sent += batch
 			}
-		}(conns[i], i)
+		})
 	}
 	wg.Wait()
 	recordResult("INCR (atomic counters)", total, time.Since(start))
@@ -300,20 +288,15 @@ func runBenchHash() {
 
 	start := time.Now()
 	var wg sync.WaitGroup
-	for i := range conns {
-		wg.Add(1)
-		go func(conn *net.TCPConn, id int) {
-			defer wg.Done()
+	for i, conn := range conns {
+		wg.Go(func() {
 			r := bufio.NewReaderSize(conn, 128<<10)
 			buf := make([]byte, 0, MIX_PIPE*64)
 			var kb [32]byte
-			key := clientKey("sess:", id, kb[:])
+			key := clientKey("sess:", i, kb[:])
 
 			for sent := 0; sent < MIX_OPS_CLIENT; {
-				batch := MIX_PIPE
-				if MIX_OPS_CLIENT-sent < batch {
-					batch = MIX_OPS_CLIENT - sent
-				}
+				batch := min(MIX_PIPE, MIX_OPS_CLIENT-sent)
 				buf = buf[:0]
 				hsets := (batch + 1) / 2
 				hgets := batch / 2
@@ -343,7 +326,7 @@ func runBenchHash() {
 				skipGetReplies(r, hgets)
 				sent += batch
 			}
-		}(conns[i], i)
+		})
 	}
 	wg.Wait()
 	recordResult("HSET/HGET (sessions)", total, time.Since(start))
@@ -356,20 +339,15 @@ func runBenchList() {
 
 	start := time.Now()
 	var wg sync.WaitGroup
-	for i := range conns {
-		wg.Add(1)
-		go func(conn *net.TCPConn, id int) {
-			defer wg.Done()
+	for i, conn := range conns {
+		wg.Go(func() {
 			r := bufio.NewReaderSize(conn, 128<<10)
 			buf := make([]byte, 0, MIX_PIPE*48)
 			var kb [32]byte
-			qkey := clientKey("q:", id, kb[:])
+			qkey := clientKey("q:", i, kb[:])
 
 			for sent := 0; sent < MIX_OPS_CLIENT; {
-				batch := MIX_PIPE
-				if MIX_OPS_CLIENT-sent < batch {
-					batch = MIX_OPS_CLIENT - sent
-				}
+				batch := min(MIX_PIPE, MIX_OPS_CLIENT-sent)
 				buf = buf[:0]
 				pushes := (batch + 1) / 2
 				pops := batch / 2
@@ -399,7 +377,7 @@ func runBenchList() {
 				skipGetReplies(r, pops)
 				sent += batch
 			}
-		}(conns[i], i)
+		})
 	}
 	wg.Wait()
 	recordResult("LPUSH/RPOP (queue)", total, time.Since(start))
@@ -412,23 +390,18 @@ func runBenchSet() {
 
 	start := time.Now()
 	var wg sync.WaitGroup
-	for i := range conns {
-		wg.Add(1)
-		go func(conn *net.TCPConn, id int) {
-			defer wg.Done()
+	for i, conn := range conns {
+		wg.Go(func() {
 			r := bufio.NewReaderSize(conn, 128<<10)
 			buf := make([]byte, 0, MIX_PIPE*48)
 			var kb, mb [32]byte
-			setkey := clientKey("s:", id, kb[:])
+			setkey := clientKey("s:", i, kb[:])
 
 			for sent := 0; sent < MIX_OPS_CLIENT; {
-				batch := MIX_PIPE
-				if MIX_OPS_CLIENT-sent < batch {
-					batch = MIX_OPS_CLIENT - sent
-				}
+				batch := min(MIX_PIPE, MIX_OPS_CLIENT-sent)
 				buf = buf[:0]
-				for j := 0; j < batch; j++ {
-					member := strconv.AppendInt(mb[:0], int64(sent+j), 10)
+				for j := range batch {
+					member := appendLen(mb[:0], sent+j)
 					buf = append(buf, saddHdr...)
 					buf = appendLen(buf, len(setkey))
 					buf = append(buf, crlfB...)
@@ -443,7 +416,7 @@ func runBenchSet() {
 				skipLines(r, batch)
 				sent += batch
 			}
-		}(conns[i], i)
+		})
 	}
 	wg.Wait()
 	recordResult("SADD (per-client sets)", total, time.Since(start))
@@ -456,23 +429,18 @@ func runBenchZSet() {
 
 	start := time.Now()
 	var wg sync.WaitGroup
-	for i := range conns {
-		wg.Add(1)
-		go func(conn *net.TCPConn, id int) {
-			defer wg.Done()
+	for i, conn := range conns {
+		wg.Go(func() {
 			r := bufio.NewReaderSize(conn, 128<<10)
 			buf := make([]byte, 0, MIX_PIPE*64)
 			var kb, mb [32]byte
-			lbkey := clientKey("lb:", id, kb[:])
+			lbkey := clientKey("lb:", i, kb[:])
 
 			for sent := 0; sent < MIX_OPS_CLIENT; {
-				batch := MIX_PIPE
-				if MIX_OPS_CLIENT-sent < batch {
-					batch = MIX_OPS_CLIENT - sent
-				}
+				batch := min(MIX_PIPE, MIX_OPS_CLIENT-sent)
 				buf = buf[:0]
-				for j := 0; j < batch; j++ {
-					member := strconv.AppendInt(mb[:0], int64(sent+j), 10)
+				for j := range batch {
+					member := appendLen(mb[:0], sent+j)
 					buf = append(buf, zaddHdr...)
 					buf = appendLen(buf, len(lbkey))
 					buf = append(buf, crlfB...)
@@ -491,7 +459,7 @@ func runBenchZSet() {
 				skipLines(r, batch)
 				sent += batch
 			}
-		}(conns[i], i)
+		})
 	}
 	wg.Wait()
 	recordResult("ZADD (per-client zsets)", total, time.Since(start))
@@ -504,27 +472,22 @@ func runBenchExpire() {
 
 	start := time.Now()
 	var wg sync.WaitGroup
-	for i := range conns {
-		wg.Add(1)
-		go func(conn *net.TCPConn, id int) {
-			defer wg.Done()
+	for i, conn := range conns {
+		wg.Go(func() {
 			r := bufio.NewReaderSize(conn, 128<<10)
 			buf := make([]byte, 0, MIX_PIPE*80)
 			var kb [32]byte
-			base := id * MIX_OPS_CLIENT
+			base := i * MIX_OPS_CLIENT
 			prefix := []byte(nil)
 			if len(addrs) > 1 {
-				prefix = clusterHashTags()[id%len(addrs)]
+				prefix = clusterHashTags()[i%len(addrs)]
 			}
 
 			for sent := 0; sent < MIX_OPS_CLIENT; {
-				batch := MIX_PIPE
-				if MIX_OPS_CLIENT-sent < batch {
-					batch = MIX_OPS_CLIENT - sent
-				}
+				batch := min(MIX_PIPE, MIX_OPS_CLIENT-sent)
 				buf = buf[:0]
-				for j := 0; j < batch; j++ {
-					kn := strconv.AppendInt(append(kb[:0], prefix...), int64(base+sent+j), 10)
+				for j := range batch {
+					kn := appendLen(append(kb[:0], prefix...), base+sent+j)
 					buf = appendSetBytes(buf, kn)
 					buf = append(buf, expireHdr...)
 					buf = appendLen(buf, len(kn))
@@ -536,7 +499,7 @@ func runBenchExpire() {
 				skipLines(r, batch*2)
 				sent += batch
 			}
-		}(conns[i], i)
+		})
 	}
 	wg.Wait()
 	recordResult("SET+EXPIRE (cache TTL)", total, time.Since(start))
@@ -550,25 +513,20 @@ func runBenchHotKey() {
 	start := time.Now()
 	var wg sync.WaitGroup
 	hotkey := sharedClusterKey("hot")
-	for i := range conns {
-		wg.Add(1)
-		go func(conn *net.TCPConn) {
-			defer wg.Done()
+	for _, conn := range conns {
+		wg.Go(func() {
 			r := bufio.NewReaderSize(conn, 64<<10)
 			buf := make([]byte, 0, MIX_PIPE*32)
 
 			for sent := 0; sent < MIX_HOTKEY_OPS; {
-				batch := MIX_PIPE
-				if MIX_HOTKEY_OPS-sent < batch {
-					batch = MIX_HOTKEY_OPS - sent
-				}
+				batch := min(MIX_PIPE, MIX_HOTKEY_OPS-sent)
 				buf = buf[:0]
 				sets := (batch + 1) / 2
 				gets := batch / 2
-				for j := 0; j < sets; j++ {
+				for range sets {
 					buf = appendSetBytes(buf, hotkey)
 				}
-				for j := 0; j < gets; j++ {
+				for range gets {
 					buf = appendGetBytes(buf, hotkey)
 				}
 				writeFull(conn, buf)
@@ -576,7 +534,7 @@ func runBenchHotKey() {
 				skipGetReplies(r, gets)
 				sent += batch
 			}
-		}(conns[i])
+		})
 	}
 	wg.Wait()
 	recordResult("Hot Key (1 key, contention)", total, time.Since(start))
@@ -597,20 +555,16 @@ func runBenchQueue() {
 	start := time.Now()
 	var wg sync.WaitGroup
 
-	for i := 0; i < half; i++ {
-		wg.Add(1)
-		go func(conn *net.TCPConn) {
-			defer wg.Done()
+	for i := range half {
+		wg.Go(func() {
+			conn := producers[i]
 			r := bufio.NewReaderSize(conn, 64<<10)
 			buf := make([]byte, 0, MIX_PIPE*40)
 
 			for sent := 0; sent < MIX_QUEUE_OPS; {
-				batch := MIX_PIPE
-				if MIX_QUEUE_OPS-sent < batch {
-					batch = MIX_QUEUE_OPS - sent
-				}
+				batch := min(MIX_PIPE, MIX_QUEUE_OPS-sent)
 				buf = buf[:0]
-				for j := 0; j < batch; j++ {
+				for range batch {
 					buf = append(buf, lpushHdr...)
 					buf = appendLen(buf, len(qkey))
 					buf = append(buf, crlfB...)
@@ -621,23 +575,19 @@ func runBenchQueue() {
 				skipLines(r, batch)
 				sent += batch
 			}
-		}(producers[i])
+		})
 	}
 
-	for i := 0; i < half; i++ {
-		wg.Add(1)
-		go func(conn *net.TCPConn) {
-			defer wg.Done()
+	for i := range half {
+		wg.Go(func() {
+			conn := consumers[i]
 			r := bufio.NewReaderSize(conn, 64<<10)
 			buf := make([]byte, 0, MIX_PIPE*28)
 
 			for sent := 0; sent < MIX_QUEUE_OPS; {
-				batch := MIX_PIPE
-				if MIX_QUEUE_OPS-sent < batch {
-					batch = MIX_QUEUE_OPS - sent
-				}
+				batch := min(MIX_PIPE, MIX_QUEUE_OPS-sent)
 				buf = buf[:0]
-				for j := 0; j < batch; j++ {
+				for range batch {
 					buf = append(buf, rpopHdr...)
 					buf = appendLen(buf, len(qkey))
 					buf = append(buf, crlfB...)
@@ -648,7 +598,7 @@ func runBenchQueue() {
 				skipGetReplies(r, batch)
 				sent += batch
 			}
-		}(consumers[i])
+		})
 	}
 
 	wg.Wait()
@@ -695,37 +645,32 @@ func runBenchJson() {
 
 	start := time.Now()
 	var wg sync.WaitGroup
-	for i := range conns {
-		wg.Add(1)
-		go func(conn *net.TCPConn, id int) {
-			defer wg.Done()
+	for i, conn := range conns {
+		wg.Go(func() {
 			r := bufio.NewReaderSize(conn, 128<<10)
 			buf := make([]byte, 0, MIX_PIPE*96)
 			var kb [32]byte
-			base := id * MIX_OPS_CLIENT
+			base := i * MIX_OPS_CLIENT
 			prefix := []byte("json:")
 			if len(addrs) > 1 {
-				prefix = append(append([]byte(nil), clusterHashTags()[id%len(addrs)]...), prefix...)
+				prefix = append(append([]byte(nil), clusterHashTags()[i%len(addrs)]...), prefix...)
 			}
 
 			for sent := 0; sent < MIX_OPS_CLIENT; {
-				batch := MIX_PIPE
-				if MIX_OPS_CLIENT-sent < batch {
-					batch = MIX_OPS_CLIENT - sent
-				}
+				batch := min(MIX_PIPE, MIX_OPS_CLIENT-sent)
 				buf = buf[:0]
 				sets := (batch + 1) / 2
 				gets := batch / 2
-				for j := 0; j < sets; j++ {
-					kn := strconv.AppendInt(append(kb[:0], prefix...), int64(base+(sent/2)+j), 10)
+				for j := range sets {
+					kn := appendLen(append(kb[:0], prefix...), base+(sent/2)+j)
 					buf = append(buf, jsonSetHdr...)
 					buf = appendLen(buf, len(kn))
 					buf = append(buf, crlfB...)
 					buf = append(buf, kn...)
 					buf = append(buf, pathDotVal...)
 				}
-				for j := 0; j < gets; j++ {
-					kn := strconv.AppendInt(append(kb[:0], prefix...), int64(base+(sent/2)+j), 10)
+				for j := range gets {
+					kn := appendLen(append(kb[:0], prefix...), base+(sent/2)+j)
 					buf = append(buf, jsonGetHdr...)
 					buf = appendLen(buf, len(kn))
 					buf = append(buf, crlfB...)
@@ -737,7 +682,7 @@ func runBenchJson() {
 				skipGetReplies(r, gets)
 				sent += batch
 			}
-		}(conns[i], i)
+		})
 	}
 	wg.Wait()
 	recordResult("JSON.SET/GET (documents)", total, time.Since(start))

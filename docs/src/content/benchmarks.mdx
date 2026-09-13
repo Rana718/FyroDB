@@ -21,60 +21,86 @@ All tests run with the same Go benchmark tool. Best of three runs.
 
 | Metric           | FyroDB     | Redis Cluster (6 nodes)    | DragonflyDB | DiceDB (1 node) |
 | ---------------- | ---------- | -------------------------- | ----------- | --------------- |
-| Pipeline-64 SET  | **8.95M**  | 5.75M                      | 3.65M       | 766K            |
-| Pipelined SET    | **20.08M** | 7.56M                      | 3.78M       | 1.62M           |
-| Pipelined GET    | **28.16M** | 11.29M                     | 3.97M       | 1.88M           |
+| Pipeline-64 SET  | **8.95M**  | 5.75M                      | 4.09M       | 766K            |
+| Pipelined SET    | **20.08M** | 7.56M                      | 4.16M       | 1.62M           |
+| Pipelined GET    | **28.16M** | 11.29M                     | 4.09M       | 1.88M           |
+
+<BenchmarkChart id="pipeline64" />
+
+<BenchmarkChart id="set" />
+
+<BenchmarkChart id="get" />
 
 ## Mixed Workload Throughput
 
-| Metric               | FyroDB     | Redis Cluster (6 nodes)    | Speedup |
-| -------------------- | ---------- | -------------------------- | ------- |
-| Mixed SET/GET (50/50)| **20.90M** | 7.24M                      | 2.9×    |
-| INCR (counters)      | **50.11M** | 6.32M                      | 7.9×    |
-| HSET/HGET (sessions) | **33.07M** | 7.95M                      | 4.2×    |
-| LPUSH/RPOP (queue)   | **39.26M** | 7.19M                      | 5.5×    |
-| SADD (per-client sets)| **27.87M** | 6.34M                     | 4.4×    |
-| ZADD (per-client zsets)| **18.12M** | 4.55M                     | 4.0×    |
-| JSON.SET/GET (docs)  | **14.91M** | 3.38M                      | 4.4×    |
-| SET+EXPIRE (cache TTL)| **10.51M** | 2.64M                     | 4.0×    |
-| Hot Key (contention) | **44.07M** | 2.03M                      | 21.7×   |
-| Producer/Consumer    | **36.20M** | 981.3K                     | 36.9×   |
+| Metric               | FyroDB     | Redis Cluster (6 nodes)    | DragonflyDB | Speedup |
+| -------------------- | ---------- | -------------------------- | ----------- | ------- |
+| Mixed SET/GET (50/50)| **20.90M** | 7.24M                      | 5.15M       | 2.9×    |
+| INCR (counters)      | **50.11M** | 6.32M                      | 6.84M       | 7.9×    |
+| HSET/HGET (sessions) | **33.07M** | 7.95M                      | 5.81M       | 4.2×    |
+| LPUSH/RPOP (queue)   | **39.26M** | 7.19M                      | 6.23M       | 5.5×    |
+| SADD (per-client sets)| **27.87M** | 6.34M                     | 5.00M       | 4.4×    |
+| ZADD (per-client zsets)| **18.12M** | 4.55M                     | 4.36M       | 4.0×    |
+| JSON.SET/GET (docs)  | **14.91M** | 3.38M                      | 151.5K      | 4.4×    |
+| SET+EXPIRE (cache TTL)| **10.51M** | 2.64M                     | 2.41M       | 4.0×    |
+| Hot Key (contention) | **44.07M** | 2.03M                      | 2.15M       | 21.7×   |
+| Producer/Consumer    | **36.20M** | 981.3K                     | 1.75M       | 36.9×   |
+
+<BenchmarkChart id="mixed" />
+
+<BenchmarkChart id="incr" />
+
+<BenchmarkChart id="hash" />
+
+<BenchmarkChart id="list" />
+
+<BenchmarkChart id="sadd" />
+
+<BenchmarkChart id="zadd" />
+
+<BenchmarkChart id="json" />
+
+<BenchmarkChart id="expire" />
+
+<BenchmarkChart id="hotkey" />
+
+<BenchmarkChart id="prodcons" />
 
 ## Pub/Sub Throughput
 
 | Metric           | FyroDB     | Redis Cluster (6 nodes)    | DragonflyDB | DiceDB (1 node) |
 | ---------------- | ---------- | -------------------------- | ----------- | --------------- |
-| Publish ops/sec  | **1.49M**  | 147.1K                     | 294.2K      | 167.8K          |
-| Delivery msg/sec | **74.64M** | 7.35M                      | 12.78M      | 8.39M           |
+| Publish ops/sec  | **1.49M**  | 147.1K                     | 315.5K      | 167.8K          |
+| Delivery msg/sec | **74.64M** | 7.35M                      | 15.43M      | 8.39M           |
+
+<BenchmarkChart id="pubsub-publish" />
+
+<BenchmarkChart id="pubsub" />
 
 ## Resource Usage
 
 Measured over the full benchmark suite across all processes.
 
-| Metric           | FyroDB (1 node, PID 2258)  | Redis Cluster (6 nodes, 7 containers) |
-| ---------------- | -------------------------- | ------------------------------------- |
-| Peak RSS         | **294.19 MB**              | 767.63 MB                             |
-| Avg RSS          | **168.81 MB**              | 347.46 MB                             |
-| Peak CPU         | **79.6%**                  | 442.1%                                |
-| Avg CPU          | **42.5%**                  | 125.2%                                |
+| Metric           | FyroDB (1 node, PID 2258)  | Redis Cluster (6 nodes, 7 containers) | DragonflyDB (1 node) |
+| ---------------- | -------------------------- | ------------------------------------- | -------------------- |
+| Peak RSS         | **294.19 MB**              | 767.63 MB                             | 235.80 MB            |
+| Avg RSS          | 168.81 MB                  | 347.46 MB                             | **171.86 MB**        |
+| Peak CPU         | **79.6%**                  | 442.1%                                | 957.5%               |
+| Avg CPU          | **42.5%**                  | 125.2%                                | 430.6%               |
+
+<BenchmarkChart id="rss-peak" />
+
+<BenchmarkChart id="cpu-avg" />
 
 Two things worth reading carefully:
 
-- The DragonflyDB and DiceDB columns are earlier measurements carried over and
-  were not re-run for this release; treat them as indicative.
-- FyroDB delivers higher throughput across every workload while maintaining a fraction of Redis Cluster's CPU and memory footprint. See [Production Tips](/docs/production-tips).
-
-## Throughput vs Others (SET ops/sec)
-
-<BenchmarkChart id="set" />
-
-## Throughput vs Others (GET ops/sec)
-
-<BenchmarkChart id="get" />
-
-## Pub/Sub Delivery (msg/sec)
-
-<BenchmarkChart id="pubsub" />
+- The DragonflyDB numbers are freshly measured for this release as a single
+  multi-threaded node on the same 6-core/12-thread machine; the DiceDB column is
+  an earlier measurement carried over and was not re-run, so treat it as indicative.
+- DragonflyDB is a single multi-threaded process, so it is the closest
+  single-node comparison to a single FyroDB node. It uses every core at once
+  (peak CPU 957.5%) yet FyroDB still delivers higher throughput on every workload
+  while using a fraction of the CPU. See [Production Tips](/docs/production-tips).
 
 ## Why FyroDB Is Faster
 
