@@ -16,25 +16,27 @@ Built on [`customhash`](https://www.ranadolui.me/blog/custom-concurrent-hashmap-
 
 6-core Intel i5-11400H (12 hardware threads), loopback TCP, 100 clients, 1M operations per benchmark.
 
-Comparing a single FyroDB node against a 6-node Redis Cluster (7 containers).
+Comparing a single FyroDB node against a 6-node Redis Cluster (7 containers) and a single multi-threaded DragonflyDB node.
 
-| Benchmark | FyroDB (1 node) | Redis Cluster (6 nodes) | Speedup |
-| -------------------- | --------------------------- | ----------------------- | ------- |
-| Pipeline-64 SET | 8.95M ops/sec | 5.75M ops/sec | 1.6× |
-| Pipelined SET | 20.08M ops/sec | 7.56M ops/sec | 2.7× |
-| Pipelined GET | 28.16M ops/sec | 11.29M ops/sec | 2.5× |
-| Pub/Sub publish | 1.49M ops/sec | 147.1K ops/sec | 10.1× |
-| Pub/Sub delivery | 74.64M msg/sec | 7.35M msg/sec | 10.2× |
-| Mixed SET/GET (50/50)| 20.90M ops/sec | 7.24M ops/sec | 2.9× |
-| INCR (counters) | 50.11M ops/sec | 6.32M ops/sec | 7.9× |
-| HSET/HGET (sessions) | 33.07M ops/sec | 7.95M ops/sec | 4.2× |
-| LPUSH/RPOP (queue) | 39.26M ops/sec | 7.19M ops/sec | 5.5× |
-| SADD (sets) | 27.87M ops/sec | 6.34M ops/sec | 4.4× |
-| ZADD (zsets) | 18.12M ops/sec | 4.55M ops/sec | 4.0× |
-| JSON.SET/GET (docs) | 14.91M ops/sec | 3.38M ops/sec | 4.4× |
-| SET+EXPIRE (cache TTL)| 10.51M ops/sec | 2.64M ops/sec | 4.0× |
-| Hot Key (contention) | 44.07M ops/sec | 2.03M ops/sec | 21.7× |
-| Producer/Consumer | 36.20M ops/sec | 981.3K ops/sec | 36.9× |
+| Benchmark | FyroDB (1 node) | Redis Cluster (6 nodes) | DragonflyDB (1 node) | Speedup vs Redis |
+| -------------------- | --------------------------- | ----------------------- | -------------------- | ------- |
+| Pipeline-64 SET | 8.95M ops/sec | 5.75M ops/sec | 4.09M ops/sec | 1.6× |
+| Pipelined SET | 20.08M ops/sec | 7.56M ops/sec | 4.16M ops/sec | 2.7× |
+| Pipelined GET | 28.16M ops/sec | 11.29M ops/sec | 4.09M ops/sec | 2.5× |
+| Pub/Sub publish | 1.49M ops/sec | 147.1K ops/sec | 315.5K ops/sec | 10.1× |
+| Pub/Sub delivery | 74.64M msg/sec | 7.35M msg/sec | 15.43M msg/sec | 10.2× |
+| Mixed SET/GET (50/50)| 20.90M ops/sec | 7.24M ops/sec | 5.15M ops/sec | 2.9× |
+| INCR (counters) | 50.11M ops/sec | 6.32M ops/sec | 6.84M ops/sec | 7.9× |
+| HSET/HGET (sessions) | 33.07M ops/sec | 7.95M ops/sec | 5.81M ops/sec | 4.2× |
+| LPUSH/RPOP (queue) | 39.26M ops/sec | 7.19M ops/sec | 6.23M ops/sec | 5.5× |
+| SADD (sets) | 27.87M ops/sec | 6.34M ops/sec | 5.00M ops/sec | 4.4× |
+| ZADD (zsets) | 18.12M ops/sec | 4.55M ops/sec | 4.36M ops/sec | 4.0× |
+| JSON.SET/GET (docs) | 14.91M ops/sec | 3.38M ops/sec | 151.5K ops/sec | 4.4× |
+| SET+EXPIRE (cache TTL)| 10.51M ops/sec | 2.64M ops/sec | 2.41M ops/sec | 4.0× |
+| Hot Key (contention) | 44.07M ops/sec | 2.03M ops/sec | 2.15M ops/sec | 21.7× |
+| Producer/Consumer | 36.20M ops/sec | 981.3K ops/sec | 1.75M ops/sec | 36.9× |
+
+DragonflyDB is a single multi-threaded process, so it is the closest single-node comparison to a single FyroDB node — it uses every core at once, yet FyroDB is faster on every workload.
 
 How to read some of these:
 
@@ -47,12 +49,12 @@ How to read some of these:
 
 Measured over the full benchmark suite across all processes:
 
-| Metric | FyroDB (1 node, PID 2258) | Redis Cluster (6 nodes, 7 containers) |
-| ------------------- | ------------------------- | ------------------------------------- |
-| Peak RSS | **294.19 MB** | 767.63 MB |
-| Avg RSS | **168.81 MB** | 347.46 MB |
-| Peak CPU | **79.6%** | 442.1% |
-| Avg CPU | **42.5%** | 125.2% |
+| Metric | FyroDB (1 node, PID 2258) | Redis Cluster (6 nodes, 7 containers) | DragonflyDB (1 node) |
+| ------------------- | ------------------------- | ------------------------------------- | -------------------- |
+| Peak RSS | **294.19 MB** | 767.63 MB | 235.80 MB |
+| Avg RSS | 168.81 MB | 347.46 MB | 171.86 MB |
+| Peak CPU | **79.6%** | 442.1% | 957.5% |
+| Avg CPU | **42.5%** | 125.2% | 430.6% |
 
 A single FyroDB node beats a 6-node Redis Cluster on every workload while holding less memory and using a fraction of the CPU.
 
