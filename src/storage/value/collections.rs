@@ -1,6 +1,5 @@
 use super::small_str::SmallStr;
 use foldhash::{HashMap, HashMapExt, HashSet};
-use std::collections::VecDeque;
 
 pub(crate) const COMPACT_THRESHOLD: usize = 64;
 
@@ -8,12 +7,6 @@ pub(crate) const COMPACT_THRESHOLD: usize = 64;
 pub enum HashInner {
     Compact(Vec<SmallStr>),
     Full(Box<HashMap<SmallStr, SmallStr>>),
-}
-
-#[derive(Clone)]
-pub enum ListInner {
-    Compact(VecDeque<SmallStr>),
-    Full(Box<VecDeque<SmallStr>>),
 }
 
 #[derive(Clone)]
@@ -64,6 +57,10 @@ impl HashInner {
     }
 
     #[inline]
+    pub fn insert_bytes(&mut self, field: &str, value: &[u8]) -> bool {
+        self.insert_small(SmallStr::new(field), SmallStr::from_bytes(value.to_vec()))
+    }
+
     pub fn insert_small(&mut self, field: SmallStr, value: SmallStr) -> bool {
         match self {
             Self::Compact(v) => {
@@ -418,113 +415,3 @@ pub fn canonical_i64(value: &str) -> Option<i64> {
     (n.to_string() == value).then_some(n)
 }
 
-impl Default for ListInner {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl ListInner {
-    #[inline]
-    pub fn new() -> Self {
-        Self::Compact(VecDeque::new())
-    }
-
-    #[inline]
-    pub fn push_front(&mut self, value: String) {
-        let value = SmallStr::from_string(value);
-        match self {
-            Self::Compact(v) => {
-                v.push_front(value);
-                if v.len() > COMPACT_THRESHOLD {
-                    self.promote_list();
-                }
-            }
-            Self::Full(v) => v.push_front(value),
-        }
-    }
-
-    #[inline]
-    pub fn push_back(&mut self, value: String) {
-        let value = SmallStr::from_string(value);
-        match self {
-            Self::Compact(v) => {
-                v.push_back(value);
-                if v.len() > COMPACT_THRESHOLD {
-                    self.promote_list();
-                }
-            }
-            Self::Full(v) => v.push_back(value),
-        }
-    }
-
-    #[inline]
-    pub fn pop_front(&mut self) -> Option<String> {
-        match self {
-            Self::Compact(v) => v.pop_front().map(SmallStr::into_string),
-            Self::Full(v) => {
-                let out = v.pop_front().map(SmallStr::into_string);
-                if v.len() <= COMPACT_THRESHOLD / 2 {
-                    self.demote_list();
-                }
-                out
-            }
-        }
-    }
-
-    #[inline]
-    pub fn pop_back(&mut self) -> Option<String> {
-        match self {
-            Self::Compact(v) => v.pop_back().map(SmallStr::into_string),
-            Self::Full(v) => {
-                let out = v.pop_back().map(SmallStr::into_string);
-                if v.len() <= COMPACT_THRESHOLD / 2 {
-                    self.demote_list();
-                }
-                out
-            }
-        }
-    }
-
-    #[inline]
-    pub fn len(&self) -> usize {
-        match self {
-            Self::Compact(v) => v.len(),
-            Self::Full(v) => v.len(),
-        }
-    }
-
-    #[inline]
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    pub fn deque(&self) -> &VecDeque<SmallStr> {
-        match self {
-            Self::Compact(v) => v,
-            Self::Full(v) => v,
-        }
-    }
-
-    pub fn deque_mut(&mut self) -> &mut VecDeque<SmallStr> {
-        match self {
-            Self::Compact(v) => v,
-            Self::Full(v) => v,
-        }
-    }
-
-    fn promote_list(&mut self) {
-        if let Self::Compact(v) = self {
-            let boxed = Box::new(std::mem::take(v));
-            *self = Self::Full(boxed);
-        }
-    }
-
-    fn demote_list(&mut self) {
-        let Self::Full(v) = self else { return };
-        if v.len() > COMPACT_THRESHOLD / 2 {
-            return;
-        }
-        *self = Self::Compact(std::mem::take(v));
-    }
-}

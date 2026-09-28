@@ -1,9 +1,27 @@
-pub(crate) const SMALL_STR_CAP: usize = 15;
+pub(crate) const SMALL_STR_CAP: usize = 23;
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(u8)]
+#[allow(dead_code)]
+pub(crate) enum Tag {
+    L0, L1, L2, L3, L4, L5, L6, L7, L8, L9, L10, L11,
+    L12, L13, L14, L15, L16, L17, L18, L19, L20, L21, L22, L23,
+    Heap = 0xFF,
+}
+
+impl Tag {
+    #[inline(always)]
+    pub(crate) fn inline(n: usize) -> Tag {
+        assert!(n <= 23);
+        unsafe { std::mem::transmute::<u8, Tag>(n as u8) }
+    }
+}
+
 
 #[repr(C)]
 pub struct SmallStr {
     data: [u8; SMALL_STR_CAP],
-    len: u8,
+    len: Tag,
 }
 
 impl SmallStr {
@@ -59,7 +77,7 @@ impl SmallStr {
             data[..s.len()].copy_from_slice(s.as_bytes());
             Self {
                 data,
-                len: s.len() as u8,
+                len: Tag::inline(s.len()),
             }
         } else {
             let ptr = Box::into_raw(s.to_owned().into_boxed_str());
@@ -67,7 +85,7 @@ impl SmallStr {
             let bytes = (ptr as *const u8 as usize).to_ne_bytes();
             data[..8].copy_from_slice(&bytes);
             Self::store_heap_len(&mut data, s.len());
-            Self { data, len: 0xFF }
+            Self { data, len: Tag::Heap }
         }
     }
 
@@ -76,7 +94,7 @@ impl SmallStr {
         if s.len() <= SMALL_STR_CAP {
             let mut data = [0u8; SMALL_STR_CAP];
             data[..s.len()].copy_from_slice(s.as_bytes());
-            let len = s.len() as u8;
+            let len = Tag::inline(s.len());
             drop(s);
             Self { data, len }
         } else {
@@ -85,13 +103,13 @@ impl SmallStr {
             let bytes = (ptr as *const u8 as usize).to_ne_bytes();
             data[..8].copy_from_slice(&bytes);
             Self::store_heap_len(&mut data, unsafe { &*ptr }.len());
-            Self { data, len: 0xFF }
+            Self { data, len: Tag::Heap }
         }
     }
 
     #[inline(always)]
     pub fn as_str(&self) -> &str {
-        if self.len != 0xFF {
+        if self.len != Tag::Heap {
             unsafe { std::str::from_utf8_unchecked(&self.data[..self.len as usize]) }
         } else {
             let ptr_val = usize::from_ne_bytes(self.data[..8].try_into().unwrap());
@@ -105,7 +123,7 @@ impl SmallStr {
 
     #[inline]
     pub fn len(&self) -> usize {
-        if self.len != 0xFF {
+        if self.len != Tag::Heap {
             self.len as usize
         } else {
             Self::read_heap_len(&self.data)
@@ -119,7 +137,7 @@ impl SmallStr {
 
     #[inline]
     pub fn into_string(self) -> String {
-        if self.len != 0xFF {
+        if self.len != Tag::Heap {
             let s = self.as_str().to_owned();
             std::mem::forget(self);
             s
@@ -139,9 +157,9 @@ impl SmallStr {
     #[inline]
     pub fn push_str(&mut self, s: &str) {
         let cur = self.len();
-        if self.len != 0xFF && cur + s.len() <= SMALL_STR_CAP {
+        if self.len != Tag::Heap && cur + s.len() <= SMALL_STR_CAP {
             self.data[cur..cur + s.len()].copy_from_slice(s.as_bytes());
-            self.len = (cur + s.len()) as u8;
+            self.len = Tag::inline(cur + s.len());
             return;
         }
         let mut owned = self.as_str().to_owned();
@@ -151,7 +169,7 @@ impl SmallStr {
 
     #[inline]
     pub fn as_bytes_mut(&mut self) -> &mut [u8] {
-        if self.len != 0xFF {
+        if self.len != Tag::Heap {
             &mut self.data[..self.len as usize]
         } else {
             let ptr_val = usize::from_ne_bytes(self.data[..8].try_into().unwrap());
@@ -182,7 +200,7 @@ impl SmallStr {
 
 impl Drop for SmallStr {
     fn drop(&mut self) {
-        if self.len == 0xFF {
+        if self.len == Tag::Heap {
             let ptr_val = usize::from_ne_bytes(self.data[..8].try_into().unwrap());
             let len_val = Self::read_heap_len(&self.data);
             unsafe {
@@ -199,7 +217,7 @@ impl Drop for SmallStr {
 impl Clone for SmallStr {
     #[inline]
     fn clone(&self) -> Self {
-        if self.len != 0xFF {
+        if self.len != Tag::Heap {
             Self {
                 data: self.data,
                 len: self.len,
@@ -222,7 +240,7 @@ impl Default for SmallStr {
     fn default() -> Self {
         Self {
             data: [0u8; SMALL_STR_CAP],
-            len: 0,
+            len: Tag::L0,
         }
     }
 }
@@ -289,7 +307,7 @@ mod tests {
 
     #[test]
     fn clone_is_an_independent_copy() {
-        let long = "0123456789abcdefghij";
+        let long = "0123456789abcdefghijklmnopqrstuvwxyz";
         let a = SmallStr::new(long);
         let b = a.clone();
         assert_eq!(a.as_str(), long);
@@ -305,7 +323,18 @@ mod tests {
         let mut c = a.clone();
         c.push_str("x");
         assert_eq!(a.as_str(), long);
-        assert_eq!(c.as_str(), "0123456789abcdefghijx");
+        assert_eq!(c.as_str(), "0123456789abcdefghijklmnopqrstuvwxyzx");
+    }
+
+    #[test]
+    fn layout_is_24_bytes_with_23_inline() {
+        assert_eq!(std::mem::size_of::<SmallStr>(), 24);
+        let s = SmallStr::new("01234567890123456789012");
+        assert_eq!(s.len(), 23);
+        assert_ne!(s.len, super::Tag::Heap);
+        let h = SmallStr::new("012345678901234567890123");
+        assert_eq!(h.len, super::Tag::Heap);
+        assert_eq!(h.as_str().len(), 24);
     }
 
     #[test]

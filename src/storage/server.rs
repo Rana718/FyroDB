@@ -38,23 +38,16 @@ impl Store {
         }
         tick_clock();
         let now = now_ms();
-        let mut live_ttls = 0usize;
-        let mut removed = 0usize;
-        let (next_slot, capacity) = self
-            .data
-            .retain_shard_range(shard, start_slot, max_slots, |_, entry| {
-                if entry.expires_ms != 0 && entry.expires_ms <= now {
-                    self.sub_ttl();
-                    removed += 1;
-                    false
-                } else {
-                    if entry.expires_ms != 0 {
-                        live_ttls += 1;
-                    }
-                    true
-                }
+        let Some((next_slot, capacity, removed, live_ttls)) =
+            self.data.expire_shard_range(shard, start_slot, max_slots, |entry| {
+                (entry.expires_ms != 0).then_some(entry.expires_ms <= now)
             })
-            .unwrap_or((start_slot, 0));
+        else {
+            return (0, start_slot, 0, 0);
+        };
+        for _ in 0..removed {
+            self.sub_ttl();
+        }
         (live_ttls, next_slot, capacity, removed)
     }
 
@@ -134,6 +127,7 @@ impl Store {
 
         format!(
             "# Server\r\n\
+             redis_version:8.2.0\r\n\
              fyrodb_version:{version}\r\n\
              os:{os}\r\n\
              arch:{arch}\r\n\
@@ -171,7 +165,11 @@ impl Store {
     }
 
     pub fn flush(&self) {
+        if let Some(aof) = crate::storage::persistence::aof::get() {
+            aof.record_flush();
+        }
         self.data.clear();
+        self.search.invalidate_graphs();
         self.reset_ttl_count();
         // Give EBR multiple rounds to advance epochs and reclaim retired
         // entries before asking the allocator to return pages to the OS.
@@ -187,9 +185,15 @@ impl Store {
         self.data.len()
     }
 
+    /// Keyspace mutation counter; lazy indexers stamp against it to decide
+    /// fresh vs stale without scanning (see `GraphEntry::gen`).
+    pub fn generation(&self) -> u64 {
+        self.data.generation()
+    }
+
     pub fn type_of(&self, key: &str) -> &'static str {
         match self.data.get_ref(key) {
-            Some(e) if !e.is_expired_precise() => e.value.type_name(),
+            Some(e) if !e.is_expired_precise() && !e.value.is_drained_collection() => e.value.type_name(),
             _ => "none",
         }
     }

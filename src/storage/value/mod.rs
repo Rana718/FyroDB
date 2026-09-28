@@ -1,9 +1,12 @@
 mod collections;
 mod json_value;
+mod quicklist;
 mod small_str;
 mod zset_data;
 
-pub use collections::{HashInner, HashIter, ListInner, SetInner, SetIter, SetMemberRef};
+pub use collections::{HashInner, HashIter, SetInner, SetIter, SetMemberRef};
+pub use quicklist::QuickList;
+pub type ListInner = QuickList;
 pub use json_value::JsonValue;
 pub use small_str::SmallStr;
 pub use zset_data::{ZEntry, ZSetData};
@@ -18,7 +21,7 @@ pub enum FyroDB {
     List(Box<ListInner>),
     Set(Box<SetInner>),
     ZSet(Box<ZSetData>),
-    Json(SmallStr),
+    Json(Box<SmallStr>),
     Stream(Box<crate::storage::stream::StreamData>),
 }
 
@@ -29,10 +32,7 @@ impl FyroDB {
                 HashInner::Compact(v) => v.shrink_to_fit(),
                 HashInner::Full(m) => m.shrink_to_fit(),
             },
-            FyroDB::List(inner) => match inner.as_mut() {
-                ListInner::Compact(v) => v.shrink_to_fit(),
-                ListInner::Full(v) => v.shrink_to_fit(),
-            },
+            FyroDB::List(inner) => inner.shrink_to_fit(),
             FyroDB::Set(inner) => match inner.as_mut() {
                 SetInner::Integers(v) => v.shrink_to_fit(),
                 SetInner::Compact(v) => v.shrink_to_fit(),
@@ -86,16 +86,23 @@ impl FyroDB {
         }
     }
 
-    pub fn as_list(&self) -> Option<&VecDeque<SmallStr>> {
+    /// A drained list is kept allocated for queue reuse but is logically
+    /// absent (Redis deletes a list when its last element is popped).
+    #[inline]
+    pub fn is_drained_collection(&self) -> bool {
+        matches!(self, Self::List(l) if l.is_empty())
+    }
+
+    pub fn as_list(&self) -> Option<&ListInner> {
         match self {
-            Self::List(l) => Some(l.deque()),
+            Self::List(l) => Some(l),
             _ => None,
         }
     }
 
-    pub fn as_list_mut(&mut self) -> Option<&mut VecDeque<SmallStr>> {
+    pub fn as_list_mut(&mut self) -> Option<&mut ListInner> {
         match self {
-            Self::List(l) => Some(l.deque_mut()),
+            Self::List(l) => Some(l),
             _ => None,
         }
     }
@@ -143,11 +150,11 @@ impl FyroDB {
     }
 
     pub fn set_json(&mut self, val: JsonValue) {
-        *self = Self::Json(SmallStr::from_string(val.to_resp_string()));
+        *self = Self::Json(Box::new(SmallStr::from_string(val.to_resp_string())));
     }
 
     pub fn set_json_str(&mut self, s: String) {
-        *self = Self::Json(SmallStr::from_string(s));
+        *self = Self::Json(Box::new(SmallStr::from_string(s)));
     }
 
     pub fn as_stream(&self) -> Option<&crate::storage::stream::StreamData> {
@@ -168,13 +175,11 @@ impl FyroDB {
         match self {
             Self::String(s) => s.len(),
             Self::Hash(h) => h.iter().map(|(k, v)| k.len() + v.len()).sum(),
-            Self::List(l) => {
-                l.deque().iter().map(|s| s.len()).sum::<usize>() + l.deque().len() * 24
-            }
+            Self::List(l) => l.memory_bytes(),
             Self::Set(s) => s.iter().map(|m| m.len() + 24).sum(),
             Self::ZSet(z) => z.iter().map(|e| e.member.len() + 32).sum(),
             Self::Json(_) => 256,
-            Self::Stream(s) => s.entries.len() * 128,
+            Self::Stream(s) => s.memory_bytes(),
         }
     }
 }
@@ -300,9 +305,8 @@ impl StoreValue {
 
     #[inline]
     pub fn list(l: VecDeque<String>) -> Self {
-        let l = l.into_iter().map(SmallStr::from_string).collect();
         Self {
-            value: FyroDB::List(Box::new(ListInner::Full(Box::new(l)))),
+            value: FyroDB::List(Box::new(QuickList::from_strs(l.iter().map(String::as_str)))),
             expires_ms: 0,
         }
     }
@@ -326,7 +330,7 @@ impl StoreValue {
     #[inline]
     pub fn json(j: JsonValue) -> Self {
         Self {
-            value: FyroDB::Json(SmallStr::from_string(j.to_resp_string())),
+            value: FyroDB::Json(Box::new(SmallStr::from_string(j.to_resp_string()))),
             expires_ms: 0,
         }
     }
@@ -334,7 +338,7 @@ impl StoreValue {
     #[inline]
     pub fn json_raw(s: String) -> Self {
         Self {
-            value: FyroDB::Json(SmallStr::from_string(s)),
+            value: FyroDB::Json(Box::new(SmallStr::from_string(s))),
             expires_ms: 0,
         }
     }
@@ -370,3 +374,8 @@ impl StoreValue {
         }
     }
 }
+
+const _: () = assert!(std::mem::size_of::<SmallStr>() == 24);
+const _: () = assert!(std::mem::size_of::<FyroDB>() == 24);
+const _: () = assert!(std::mem::size_of::<StoreValue>() == 32);
+const _: () = assert!(customhash::entry_size::<StoreValue>() == 64);

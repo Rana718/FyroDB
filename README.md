@@ -94,14 +94,32 @@ Full setup, `nodes.conf` format, slot migration, and client examples: [Cluster d
 
 - **String** — GET, SET, INCR, APPEND, GETRANGE, MSET, MGET, LCS, and more
 - **Hash** — HSET, HGET, HGETALL, HINCRBY, HRANDFIELD, HSCAN
-- **List** — LPUSH, RPUSH, LPOP, RPOP, LRANGE, LMOVE, BLPOP, BRPOP
+- **List** — LPUSH, RPUSH, LPOP, RPOP, LRANGE, LMOVE, BLPOP, BRPOP, BLMOVE, BRPOPLPUSH
 - **Set** — SADD, SREM, SMEMBERS, SINTER, SUNION, SDIFF, SSCAN
-- **Sorted Set** — ZADD, ZRANGE, ZRANGEBYSCORE, ZPOPMIN, ZUNIONSTORE, ZSCAN
+- **Sorted Set** — ZADD, ZRANGE, ZRANGEBYSCORE, ZPOPMIN, BZPOPMIN, BZPOPMAX, ZUNIONSTORE, ZSCAN
 - **JSON** — JSON.SET, JSON.GET, JSON.DEL, JSON.ARRAPPEND, JSON.OBJKEYS
-- **Stream** — XADD, XREAD, XRANGE, XGROUP, XACK, XTRIM
+- **Stream** — XADD, XREAD (BLOCK), XRANGE, XREVRANGE, XTRIM (MAXLEN/MINID, `~`), XDEL, consumer groups: XGROUP, XREADGROUP (BLOCK, NOACK), XACK, XPENDING, XCLAIM, XAUTOCLAIM, XINFO
 - **Bitmap** — SETBIT, GETBIT, BITCOUNT, BITOP, BITFIELD
 - **HyperLogLog** — PFADD, PFCOUNT, PFMERGE
 - **Geospatial** — GEOADD, GEODIST, GEOSEARCH, GEOSEARCHSTORE
+- **Search** — FT.CREATE, FT.SEARCH (KNN, VECTOR_RANGE, filters, BM25 text), FT.AGGREGATE (GROUPBY/REDUCE, cursors), FT.HYBRID (RRF / LINEAR fusion), FT.INFO, FT.ALTER, FT.DROPINDEX, aliases
+
+## Vector and Hybrid Search
+
+FT.* commands index plain hashes. HNSW and FLAT vector fields support FLOAT32, FLOAT16, BFLOAT16, INT8 and UINT8 elements, with COSINE, L2 and IP metrics.
+
+- **Off-worker execution** — queries run on a persistent, optionally pinned thread pool while the network workers keep serving
+- **Quantization** — `QUANTIZATION INT8` (default for HNSW fields of 256 dims or more) or `RABITQ`, with exact rerank from the stored vector
+- **Filtered KNN** — bitset allow-lists; the strategy (brute force, ACORN-1, in-traversal) follows filter selectivity
+- **Incremental indexes** — a write hook marks dirty keys, and queries apply only those keys
+- **Persistence** — graphs and index settings persist in the RDB, so restarts skip the rebuild
+- **Hybrid** — BM25 text and KNN legs run in parallel and fuse with RRF or a linear blend
+
+```bash
+redis-cli -p 8000 FT.CREATE idx ON HASH PREFIX 1 doc: SCHEMA title TEXT tag TAG \
+  vec VECTOR HNSW 6 TYPE FLOAT32 DIM 768 DISTANCE_METRIC COSINE
+redis-cli -p 8000 FT.SEARCH idx "(@tag:{news})=>[KNN 10 @vec $v AS score]" PARAMS 2 v "<blob>" DIALECT 2
+```
 
 ## Supported Commands
 
@@ -117,6 +135,8 @@ Full Redis command compatibility including:
 
 **Transactions:** MULTI, EXEC, DISCARD, WATCH, UNWATCH
 
+**Search:** FT.CREATE, FT.SEARCH, FT.AGGREGATE, FT.CURSOR, FT.HYBRID, FT.INFO, FT.ALTER, FT.DROPINDEX, FT._LIST, FT.ALIASADD, FT.ALIASUPDATE, FT.ALIASDEL, FT.ALIASLIST, FT.CONFIG
+
 ## Design
 
 - **Lock-free reads** — epoch-based reclamation with seqlock validation for iteration safety
@@ -127,7 +147,10 @@ Full Redis command compatibility including:
 - **Zero-copy GET** — writes directly from stored value to TCP buffer
 - **Allocation-free pops** — `LPOP`/`RPOP` write the reply straight into the output buffer
 - **Inline fast path** — SET, GET, INCR, LPUSH, LPOP, RPOP, SADD, DEL dispatched from raw RESP bytes
-- **Compact storage** — short keys and values stay inline; small hashes, lists, and sets avoid full hash-table overhead
+- **Compact storage** — keys and values up to 23 bytes stay inline in a 64-byte entry; lists are packed quicklist chunks, sorted sets are chunked with a member index, streams are varint-packed nodes
+- **Pipeline prefetch** — queued commands' slots and entries are prefetched in two stages so their cache misses overlap
+- **Parked connections** — blocking commands and heavy searches park the connection instead of stalling the worker; waiters wake only on writes to their keys
+- **Adaptive expiry** — a 10 Hz budgeted expire cycle that keeps going while expired keys are dense
 - **Adaptive memory reclaim** — lazy shard growth, EBR collection, allocator purging, shard compaction, cursor-based value defragmentation
 - **Lazy connection buffers** — an accepted-but-idle connection commits no read or write buffer
 - **Batched I/O** — all epoll events processed before flushing, reducing syscall count
@@ -136,13 +159,23 @@ Full Redis command compatibility including:
 
 ## Persistence
 
-RDB snapshots, same model as Redis:
+RDB snapshots, same trigger model as Redis:
 
 - Loads `fyrodb.rdb` on startup
 - Auto-saves every 5 minutes (configurable)
 - Saves on SIGTERM/Ctrl+C
-- `BGSAVE` for manual trigger
+- `SAVE` / `BGSAVE` for manual trigger
 - Atomic write (temp file → fsync → rename)
+- **Forkless and point-in-time** — no `fork()`, no copy-on-write memory spike. A per-entry snapshot bit lets writers hand over pre-images, so the file reflects the moment the save started
+- Streams keep their consumer groups and pending lists; search indexes keep their HNSW graphs
+
+Optional append-only log for crash durability between snapshots:
+
+```bash
+FYRODB_AOF=1 FYRODB_AOF_FSYNC=everysec ./target/release/fyro_db
+```
+
+Each worker appends to its own file (no shared lock). Records are sequence-numbered state updates, merged on startup after the RDB loads, and rewritten after every snapshot.
 
 ## Benchmarking
 
@@ -166,11 +199,25 @@ task redis-up && task bench-redis-cluster && task redis-down
 task fyro-up && task bench-fyro-cluster
 ```
 
-| Flag        | Default | Description                       |
-| ----------- | ------- | --------------------------------- |
-| `-p`        | `8000`  | Server port                       |
-| `-m`        | `all`   | Mode: `all`, `key`, `pub`, `mix`  |
-| `--cluster` |         | Comma-separated cluster addresses |
+| Flag        | Default | Description                                                        |
+| ----------- | ------- | ------------------------------------------------------------------ |
+| `-p`        | `8000`  | Server port                                                        |
+| `-m`        | `all`   | Mode: `all`, `key`, `pub`, `mix`, `lat`, `mem`, `ann`, `vector`    |
+| `-json`     |         | Write results as JSON (for `scripts/bench_compare.py`)             |
+| `--cluster` |         | Comma-separated cluster addresses                                  |
+
+Latency, memory and ANN recall runs against a throwaway server:
+
+```bash
+task bench-lat          # closed-loop latency percentiles
+task bench-lat-open     # open-loop (fixed arrival rate), no coordinated omission
+task bench-mem          # bytes per key for each data type
+task bench-ann          # recall@k / QPS on a synthetic clustered corpus
+task bench-ann-sift     # same on SIFT1M (task sift-download first)
+task bench-rust         # criterion micro-benchmarks
+```
+
+Build variants: `task build-avx` (x86-64-v3), `task pgo` (profile-guided, needs `cargo-pgo`), `task build-uring` (experimental io_uring sends). The Docker image targets x86-64-v3 on amd64; `task docker-build-portable` builds a baseline image.
 
 ## Configuration
 
@@ -185,6 +232,17 @@ task fyro-up && task bench-fyro-cluster
 | `FYRODB_AUTH`         | (none)         | Password for AUTH (empty = no auth)               |
 | `FYRODB_RDB_PATH`     | `fyrodb.rdb`   | Snapshot file path                                |
 | `FYRODB_RDB_INTERVAL` | `300`          | Auto-save interval in seconds                     |
+| `FYRODB_AOF`          | off            | `1` enables the per-thread append-only log        |
+| `FYRODB_AOF_DIR`      | `<rdb dir>/aof`| AOF directory                                     |
+| `FYRODB_AOF_FSYNC`    | `everysec`     | `always`, `everysec` or `no`                      |
+| `FYRODB_SEARCH_THREADS` | CPU cores    | Search / vector pool size                         |
+| `FYRODB_SEARCH_CORES` | (unpinned)     | CPU list for the search pool, e.g. `6-11`         |
+| `FYRODB_WORKER_CORES` | (unpinned)     | CPU list for network workers, e.g. `0-5`          |
+| `FYRODB_AFFINITY`     | (off)          | `auto` pins workers and the pool to disjoint cores |
+| `FYRODB_BUSY_POLL_US` | `0`            | Busy-poll window after activity, in microseconds  |
+| `FYRODB_SEARCH_INLINE`| `0`            | `1` runs FT.* on the network worker               |
+| `FYRODB_DISABLE_AVX512` | `0`          | `1` forces the AVX2 kernels                       |
+| `FYRODB_IO_URING`     | `0`            | `1` enables batched io_uring sends (feature build) |
 
 Cluster variables are documented in the [Cluster docs](https://fyrodb.vercel.app/docs/cluster).
 

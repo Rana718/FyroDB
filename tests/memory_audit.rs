@@ -85,7 +85,7 @@ fn audit_struct_sizes() {
         mem::size_of::<SetInner>()
     );
     println!(
-        "    ListInner            = {:>3} bytes  (enum: VecDeque | Box<VecDeque>)",
+        "    ListInner            = {:>3} bytes  (chunked quicklist)",
         mem::size_of::<ListInner>()
     );
     println!(

@@ -52,6 +52,25 @@ pub fn hmset(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     }
 }
 
+pub fn hset_raw(
+    conn_key: &str,
+    raw_pairs: &[(&[u8], &[u8])],
+    store: &Store,
+    out: &mut Vec<u8>,
+) {
+    if raw_pairs.is_empty() {
+        return resp::write_wrong_args(out, "hset");
+    }
+    let mut fields: Vec<(&str, &[u8])> = Vec::with_capacity(raw_pairs.len());
+    for &(f, v) in raw_pairs {
+        let Some(name) = std::str::from_utf8(f).ok() else {
+            return resp::write_err(out, "invalid field name encoding");
+        };
+        fields.push((name, v));
+    }
+    resp::write_integer(out, wt!(out, store.hset_bytes(conn_key, &fields)) as i64);
+}
+
 pub fn hgetall(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     let [_, key] = parts else {
         return resp::write_wrong_args(out, "hgetall");

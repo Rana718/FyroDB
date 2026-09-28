@@ -4,6 +4,16 @@ pub struct RespParser {
     pub pos: usize,
     pub wbuf: Vec<u8>,
     pub parts_raw: Vec<(*const u8, usize)>,
+    /// Progress through a large command that arrived across several reads.
+    /// Offsets are relative to the command start, which survives the
+    /// compaction in `read_buf` (it only ever shifts the unparsed tail).
+    partial: Option<Partial>,
+}
+
+struct Partial {
+    count: usize,
+    next: usize,
+    parts: Vec<(usize, usize)>,
 }
 
 unsafe impl Send for RespParser {}
@@ -14,8 +24,16 @@ pub enum ParseResult {
     Error,
 }
 
-const MAX_ARRAY_ELEMENTS: usize = 1024;
+/// Redis accepts multibulk headers up to INT_MAX; 16M elements covers any
+/// real HSET/MSET/SADD batch while bounding a hostile header.
+const MAX_ARRAY_ELEMENTS: usize = 1 << 24;
 const MAX_BULK_BYTES: usize = 512 * 1024 * 1024;
+/// Upfront reservation cap: the header's count is untrusted until the
+/// elements actually arrive.
+const MAX_PREALLOC_PARTS: usize = 1024;
+/// Commands with more elements than this save progress on `Incomplete`
+/// instead of re-parsing from the start on every read.
+const RESUME_THRESHOLD: usize = 64;
 
 impl Default for RespParser {
     fn default() -> Self {
@@ -35,6 +53,7 @@ impl RespParser {
             pos: 0,
             wbuf: Vec::new(),
             parts_raw: Vec::new(),
+            partial: None,
         }
     }
 
@@ -67,6 +86,9 @@ impl RespParser {
 
     pub fn parse_one(&mut self) -> ParseResult {
         self.parts_raw.clear();
+        if self.partial.is_some() {
+            return self.resume();
+        }
 
         let start_pos = self.pos;
 
@@ -86,40 +108,98 @@ impl RespParser {
             None => return ParseResult::Error,
         };
 
-        self.parts_raw.reserve(count);
+        self.parts_raw.reserve(count.min(MAX_PREALLOC_PARTS));
 
-        for _ in 0..count {
-            let (bs, be) = match self.scan_line() {
-                Some(r) => r,
-                None => {
+        for i in 0..count {
+            let elem_start = self.pos;
+            match self.parse_bulk() {
+                Ok(Some(part)) => self.parts_raw.push(part),
+                Ok(None) => {
+                    if count > RESUME_THRESHOLD {
+                        self.save_partial(start_pos, count, i, elem_start);
+                    }
                     self.pos = start_pos;
                     return ParseResult::Incomplete;
                 }
-            };
-            if self.rbuf.get(bs) != Some(&b'$') {
-                return ParseResult::Error;
+                Err(()) => return ParseResult::Error,
             }
-            let len = match parse_usize(&self.rbuf[bs + 1..be], MAX_BULK_BYTES) {
-                Some(l) => l,
-                None => return ParseResult::Error,
-            };
-
-            if self.filled - self.pos < len + 2 {
-                self.pos = start_pos;
-                return ParseResult::Incomplete;
-            }
-
-            let ptr = self.rbuf[self.pos..].as_ptr();
-            self.parts_raw.push((ptr, len));
-            self.pos += len + 2;
         }
 
         ParseResult::Complete
     }
 
+    /// One `$len\r\n<bytes>\r\n` element at `self.pos`; `Ok(None)` when it
+    /// has not fully arrived.
+    #[inline(always)]
+    fn parse_bulk(&mut self) -> Result<Option<(*const u8, usize)>, ()> {
+        let Some((bs, be)) = self.scan_line() else {
+            return Ok(None);
+        };
+        if self.rbuf.get(bs) != Some(&b'$') {
+            return Err(());
+        }
+        let len = parse_usize(&self.rbuf[bs + 1..be], MAX_BULK_BYTES).ok_or(())?;
+        if self.filled - self.pos < len + 2 {
+            return Ok(None);
+        }
+        let ptr = self.rbuf[self.pos..].as_ptr();
+        self.pos += len + 2;
+        Ok(Some((ptr, len)))
+    }
+
+    fn save_partial(&mut self, start: usize, count: usize, next: usize, resume_at: usize) {
+        let base = self.rbuf.as_ptr() as usize + start;
+        let mut parts = Vec::with_capacity(self.parts_raw.len());
+        for &(p, len) in &self.parts_raw {
+            parts.push((p as usize - base, len));
+        }
+        parts.push((resume_at - start, usize::MAX));
+        self.parts_raw.clear();
+        self.partial = Some(Partial { count, next, parts });
+    }
+
+    /// Continue a large command from its saved element index. `self.pos`
+    /// is the command start (reset on every `Incomplete`).
+    fn resume(&mut self) -> ParseResult {
+        let start = self.pos;
+        let mut p = self.partial.take().expect("resume without partial state");
+        let (resume_rel, _) = p.parts.pop().expect("partial carries a resume marker");
+        self.pos = start + resume_rel;
+        for i in p.next..p.count {
+            let elem_start = self.pos;
+            match self.parse_bulk() {
+                Ok(Some((ptr, len))) => {
+                    p.parts.push((ptr as usize - (self.rbuf.as_ptr() as usize + start), len))
+                }
+                Ok(None) => {
+                    p.next = i;
+                    p.parts.push((elem_start - start, usize::MAX));
+                    self.partial = Some(p);
+                    self.pos = start;
+                    return ParseResult::Incomplete;
+                }
+                Err(()) => return ParseResult::Error,
+            }
+        }
+        let base = self.rbuf[start..].as_ptr();
+        self.parts_raw.reserve(p.parts.len());
+        for (off, len) in p.parts {
+            // SAFETY: every offset was produced from a live element inside
+            // `rbuf[start..self.pos]`, which has not moved since this call
+            // began and will not move until the next `read_buf`.
+            self.parts_raw.push((unsafe { base.add(off) }, len));
+        }
+        ParseResult::Complete
+    }
+
     /// Return an oversized read buffer to its idle size.
+    #[inline(always)]
+    pub fn in_partial(&self) -> bool {
+        self.partial.is_some()
+    }
+
     pub fn release_read_buffer(&mut self) {
-        if self.pos == self.filled && self.rbuf.len() > 16 * 1024 {
+        if self.pos == self.filled && self.partial.is_none() && self.rbuf.len() > 16 * 1024 {
             self.parts_raw.clear();
             self.rbuf.truncate(Self::IDLE_READ_BUFFER);
             self.rbuf.shrink_to(Self::IDLE_READ_BUFFER);
@@ -248,6 +328,84 @@ mod tests {
             buf.len()
         );
         assert_eq!(parser.rbuf.len(), RespParser::IDLE_READ_BUFFER);
+    }
+
+    fn big_hset(fields: usize) -> (Vec<u8>, Vec<String>) {
+        let mut args = vec!["HSET".to_string(), "h".to_string()];
+        for i in 0..fields {
+            args.push(format!("field:{i}"));
+            args.push(format!("value-{i}"));
+        }
+        let mut wire = format!("*{}\r\n", args.len()).into_bytes();
+        for a in &args {
+            wire.extend_from_slice(format!("${}\r\n{a}\r\n", a.len()).as_bytes());
+        }
+        (wire, args)
+    }
+
+    fn parts_of(parser: &RespParser) -> Vec<String> {
+        parser
+            .parts_raw
+            .iter()
+            .map(|&(p, l)| {
+                String::from_utf8(unsafe { std::slice::from_raw_parts(p, l) }.to_vec()).unwrap()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn commands_beyond_1024_elements_parse() {
+        let (wire, args) = big_hset(5000);
+        let mut parser = RespParser::new();
+        feed(&mut parser, &wire);
+        assert!(matches!(parser.parse_one(), ParseResult::Complete));
+        assert_eq!(parts_of(&parser), args);
+    }
+
+    /// A large command trickling in over many reads resumes from its saved
+    /// element index and still yields every part intact, including when
+    /// `read_buf` compacts or grows the buffer between reads.
+    #[test]
+    fn a_fragmented_large_command_resumes_across_reads() {
+        let (mut wire, args) = big_hset(3000);
+        wire.extend_from_slice(b"*2\r\n$3\r\nGET\r\n$1\r\nk\r\n");
+        let mut parser = RespParser::new();
+        let mut offset = 0;
+        let mut done = false;
+        for chunk in [7usize, 1, 333, 4096, 17, 10_000].iter().cycle() {
+            if offset >= wire.len() {
+                break;
+            }
+            let buf = parser.read_buf();
+            let n = (*chunk).min(buf.len()).min(wire.len() - offset);
+            buf[..n].copy_from_slice(&wire[offset..offset + n]);
+            parser.did_fill(n);
+            offset += n;
+            if !done {
+                match parser.parse_one() {
+                    ParseResult::Complete => {
+                        assert_eq!(parts_of(&parser), args);
+                        done = true;
+                    }
+                    ParseResult::Incomplete => {}
+                    ParseResult::Error => panic!("parse error mid-stream"),
+                }
+            }
+        }
+        if !done {
+            assert!(matches!(parser.parse_one(), ParseResult::Complete));
+            assert_eq!(parts_of(&parser), args);
+        }
+        assert!(matches!(parser.parse_one(), ParseResult::Complete));
+        assert_eq!(parts_of(&parser), vec!["GET", "k"]);
+    }
+
+    #[test]
+    fn a_hostile_array_header_does_not_preallocate() {
+        let mut parser = RespParser::new();
+        feed(&mut parser, b"*16000000\r\n$3\r\nSET\r\n");
+        assert!(matches!(parser.parse_one(), ParseResult::Incomplete));
+        assert!(parser.parts_raw.capacity() <= 1024);
     }
 
     #[test]

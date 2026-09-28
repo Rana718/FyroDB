@@ -9,7 +9,7 @@ use fyro_db::{
 use rust_zmalloc::Zmalloc;
 use std::env;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[global_allocator]
 static GLOBAL: Zmalloc = Zmalloc;
@@ -26,6 +26,8 @@ fn main() {
     }
 
     let workers = config.workers;
+    let affinity = fyro_db::utils::affinity::from_env(workers);
+    fyro_db::search::configure_pool(affinity.search.clone());
     let store = Arc::new(Store::with_config_workers(
         config.shards,
         config.max_keys,
@@ -38,6 +40,10 @@ fn main() {
     if let Err(e) = rdb::load(&store, &config.rdb_path) {
         eprintln!("fyrodb: failed to load snapshot: {e}");
     }
+    open_aof(&store, &config.rdb_path);
+    // Vector fields without a persisted graph (or from a v2 snapshot)
+    // rebuild in the background; FT.INFO reports progress meanwhile.
+    store.search_state().rebuild_missing(&store);
     store.load_replication_metadata(&config.rdb_path);
     store.load_cluster_metadata(&config.rdb_path);
 
@@ -128,11 +134,19 @@ fn main() {
         let auth: Option<&str> = config.auth.as_deref();
         let port = config.port;
         let bind: &str = &config.bind;
+        let worker_cores = affinity.workers.clone();
+        if let Some(c) = &worker_cores {
+            println!("  worker_cores={c:?} search_cores={:?}", affinity.search);
+        }
         for worker_index in 0..workers {
+            let core = worker_cores.as_ref().map(|c| c[worker_index % c.len()]);
             std::thread::Builder::new()
                 .name("fyrodb-worker".into())
                 .stack_size(128 * 1024)
                 .spawn_scoped(scope, move || {
+                    if let Some(core) = core {
+                        fyro_db::utils::affinity::pin_current(core);
+                    }
                     run_worker(store_ref, pubsub_ref, port, bind, auth, worker_index)
                 })
                 .expect("failed to spawn worker");
@@ -205,10 +219,39 @@ fn env_u64(key: &str, default: u64) -> u64 {
         .unwrap_or(default)
 }
 
+fn open_aof(store: &Store, rdb_path: &str) {
+    use fyro_db::storage::persistence::aof;
+    let on = env::var("FYRODB_AOF").is_ok_and(|v| matches!(v.as_str(), "1" | "yes" | "true"));
+    if !on {
+        return;
+    }
+    let dir = env::var("FYRODB_AOF_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| {
+            std::path::Path::new(rdb_path)
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .unwrap_or(std::path::Path::new("."))
+                .join("aof")
+        });
+    let fsync = match env::var("FYRODB_AOF_FSYNC").as_deref() {
+        Ok("always") => aof::Fsync::Always,
+        Ok("no") => aof::Fsync::No,
+        _ => aof::Fsync::EverySec,
+    };
+    match aof::open(store, &dir, fsync) {
+        Ok(n) => eprintln!("fyrodb: aof enabled at {} ({fsync:?}), replayed {n} records", dir.display()),
+        Err(e) => {
+            eprintln!("fyrodb: failed to open aof at {}: {e}", dir.display());
+            std::process::exit(1);
+        }
+    }
+}
+
 fn expiry_loop(store: &Arc<Store>) {
-    const SCAN_SLOTS_PER_TICK: usize = 262_144;
-    /// Values rebuilt per defrag tick. Bounded so a large keyspace is covered
-    /// over successive ticks instead of in one stop-the-shard pass.
+    const TICK: Duration = Duration::from_millis(100);
+    const TICK_BUDGET: Duration = Duration::from_millis(25);
+    const CHUNK_SLOTS: usize = 32_768;
     const DEFRAG_BUDGET: usize = 512;
 
     let shards = store.map_shard_count();
@@ -218,29 +261,31 @@ fn expiry_loop(store: &Arc<Store>) {
     let mut shard_removed = 0usize;
     let mut generation = store.ttl_generation();
     let mut capacities = vec![0usize; shards];
-    let mut collect_tick = 0u8;
-    let mut purge_tick = 0u8;
-    let mut compact_tick = 0u16;
     let mut defrag_shard = 0usize;
     let mut defrag_slot = 0usize;
     let mut last_key_count = store.dbsize();
+    let mut tick = 0u64;
+    let compact_if_shrunk = |last: &mut usize| {
+        let cur = store.dbsize();
+        if cur < *last {
+            for s in 0..shards {
+                store.compact_shard(s);
+            }
+            customhash::force_collect();
+        }
+        *last = cur;
+    };
     loop {
-        std::thread::sleep(Duration::from_secs(1));
-        collect_tick += 1;
-        purge_tick = purge_tick.saturating_add(1);
-        compact_tick = compact_tick.saturating_add(1);
-        if collect_tick >= 10 {
-            collect_tick = 0;
+        std::thread::sleep(TICK);
+        tick += 1;
+        if tick.is_multiple_of(100) {
             customhash::force_collect();
             rust_zmalloc::purge();
         }
-// Page reclaim on the maintenance cadence; off the hot path.
-        if purge_tick >= 60 {
-            purge_tick = 0;
+        if tick.is_multiple_of(600) {
             let used = rust_zmalloc::used_memory();
             let rss = store::rss_bytes();
             if rss > used.saturating_add(used / 5) && rss.saturating_sub(used) >= 10 * 1024 * 1024 {
-// Values rebuilt under their entry lock; the cursor bounds each pass.
                 let (next_slot, capacity, rebuilt) =
                     store.defragment_shard_range(defrag_shard, defrag_slot, DEFRAG_BUDGET);
                 if next_slot >= capacity {
@@ -255,14 +300,24 @@ fn expiry_loop(store: &Arc<Store>) {
             }
             store::purge_allocator_if_fragmented();
         }
-        if compact_tick >= 120 {
-            compact_tick = 0;
+        if tick.is_multiple_of(1200) {
             store.compact_underutilized();
             store::purge_allocator_if_fragmented();
         }
-        if store.has_ttl_keys() {
-            let (chunk_live_ttls, next_slot, capacity, removed) =
-                store.cleanup_expired_shard(shard, slot, SCAN_SLOTS_PER_TICK);
+        if !store.has_ttl_keys() {
+            shard = 0;
+            slot = 0;
+            live_ttls = 0;
+            generation = store.ttl_generation();
+            if tick.is_multiple_of(10) {
+                compact_if_shrunk(&mut last_key_count);
+            }
+            continue;
+        }
+        let started = Instant::now();
+        loop {
+            let (chunk_live, next_slot, capacity, removed) =
+                store.cleanup_expired_shard(shard, slot, CHUNK_SLOTS);
             shard_removed += removed;
             if slot == 0 {
                 capacities[shard] = capacity;
@@ -271,49 +326,33 @@ fn expiry_loop(store: &Arc<Store>) {
                 slot = 0;
                 live_ttls = 0;
                 generation = store.ttl_generation();
-                continue;
+                break;
             }
-            live_ttls += chunk_live_ttls;
+            live_ttls += chunk_live;
             if next_slot < capacity {
                 slot = next_slot;
-                continue;
-            }
-
-            if shard_removed != 0 {
-                store.compact_shard(shard);
-                customhash::force_collect_quiescent();
-                store::purge_allocator_if_fragmented();
-                shard_removed = 0;
-            }
-            slot = 0;
-            shard += 1;
-            if shard >= shards {
-                shard = 0;
-                store.finish_ttl_scan(generation, live_ttls);
-                let cur_keys = store.dbsize();
-                if cur_keys < last_key_count {
-                    for s in 0..shards {
-                        store.compact_shard(s);
-                    }
-                    customhash::force_collect();
+            } else {
+                if shard_removed != 0 {
+                    store.compact_shard(shard);
+                    customhash::force_collect_quiescent();
+                    store::purge_allocator_if_fragmented();
+                    shard_removed = 0;
                 }
-                last_key_count = cur_keys;
-                live_ttls = 0;
-                generation = store.ttl_generation();
-            }
-        } else {
-            shard = 0;
-            slot = 0;
-            live_ttls = 0;
-            generation = store.ttl_generation();
-            let cur_keys = store.dbsize();
-            if cur_keys < last_key_count {
-                for s in 0..shards {
-                    store.compact_shard(s);
+                slot = 0;
+                shard += 1;
+                if shard >= shards {
+                    shard = 0;
+                    store.finish_ttl_scan(generation, live_ttls);
+                    compact_if_shrunk(&mut last_key_count);
+                    live_ttls = 0;
+                    generation = store.ttl_generation();
                 }
-                customhash::force_collect();
             }
-            last_key_count = cur_keys;
+            let seen = chunk_live + removed;
+            let hot = seen > 0 && removed * 10 > seen;
+            if !hot || started.elapsed() >= TICK_BUDGET || !store.has_ttl_keys() {
+                break;
+            }
         }
     }
 }
@@ -340,4 +379,3 @@ fn signal_loop(store: &Arc<Store>, rdb_path: &str) {
 mod libc {
     pub use ::libc::*;
 }
-

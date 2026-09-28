@@ -57,6 +57,18 @@ pub fn run_worker(
     let mut sub_dirty: Vec<usize> = Vec::with_capacity(16);
     let mut fanout_scratch: Vec<crate::pubsub::FanEntry> = Vec::new();
     let mut fanout_seen: Vec<bool> = Vec::new();
+    let mut completions: Vec<crate::pubsub::Completion> = Vec::new();
+    let mut expired: Vec<(usize, u64)> = Vec::new();
+    let busy_window = std::env::var("FYRODB_BUSY_POLL_US")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|&us| us > 0)
+        .map(std::time::Duration::from_micros);
+    let mut last_active = std::time::Instant::now();
+    #[cfg(feature = "io-uring")]
+    let mut send_ring = crate::handler::uring::SendRing::from_env();
+    #[cfg(feature = "io-uring")]
+    let mut sent: Vec<(u64, i32)> = Vec::new();
 
     loop {
         if SHUTDOWN.load(Ordering::Acquire) {
@@ -68,11 +80,22 @@ pub fn run_worker(
             return;
         }
 
-        let timeout = if sub_dirty.is_empty() {
+        let mut timeout = if sub_dirty.is_empty() {
             None
         } else {
             Some(std::time::Duration::from_micros(50))
         };
+        // Wake for the earliest blocked-command deadline.
+        if let Some(deadline) = crate::handler::conn::park::next_deadline() {
+            let until = deadline.saturating_duration_since(std::time::Instant::now());
+            timeout = Some(timeout.map_or(until, |t| t.min(until)));
+        }
+
+        if let Some(window) = busy_window
+            && last_active.elapsed() < window
+        {
+            timeout = Some(std::time::Duration::ZERO);
+        }
 
         match poll.poll(&mut events, timeout) {
             Ok(_) => {}
@@ -81,6 +104,9 @@ pub fn run_worker(
         }
 
         tick_clock();
+        if busy_window.is_some() && !events.is_empty() {
+            last_active = std::time::Instant::now();
+        }
 
         for event in events.iter() {
             match event.token() {
@@ -119,6 +145,22 @@ pub fn run_worker(
                 },
 
                 WAKER_TOKEN => {
+                    notifier.drain_completions(&mut completions);
+                    for c in completions.drain(..) {
+                        let token = match &c {
+                            crate::pubsub::Completion::Reply { token, .. }
+                            | crate::pubsub::Completion::Retry { token, .. } => *token,
+                        };
+                        let keep = match conns.get_mut(token).and_then(|s| s.as_mut()) {
+                            Some(conn) => conn.on_completion(c),
+                            None => continue,
+                        };
+                        if keep {
+                            dirty.push(token);
+                        } else {
+                            close_conn(&mut conns, &mut poll, &mut free, token);
+                        }
+                    }
                     notifier.drain_pending_into(&mut sub_dirty);
                     fanout_seen.resize(conns.len(), false);
                     for seen in fanout_seen.iter_mut() {
@@ -156,6 +198,52 @@ pub fn run_worker(
             }
         }
 
+        if crate::handler::conn::park::next_deadline().is_some() {
+            let now = std::time::Instant::now();
+            crate::handler::conn::park::take_expired(now, &mut expired);
+            for (token, uid) in expired.drain(..) {
+                let keep = match conns.get_mut(token).and_then(|s| s.as_mut()) {
+                    Some(conn) => conn.on_timeout(uid, now),
+                    None => continue,
+                };
+                if keep {
+                    dirty.push(token);
+                } else {
+                    close_conn(&mut conns, &mut poll, &mut free, token);
+                }
+            }
+        }
+
+        crate::storage::persistence::aof::flush_local();
+        dirty.sort_unstable();
+        dirty.dedup();
+        #[cfg(feature = "io-uring")]
+        if let Some(ring) = send_ring.as_mut() {
+            sent.clear();
+            for &id in &dirty {
+                if let Some(Some(conn)) = conns.get_mut(id)
+                    && let Some((fd, ptr, len)) = conn.prepare_send()
+                {
+                    ring.push(fd, ptr, len, id as u64, &mut sent);
+                }
+            }
+            ring.complete(&mut sent);
+            for &(id, res) in &sent {
+                let id = id as usize;
+                let keep = conns
+                    .get_mut(id)
+                    .and_then(|s| s.as_mut())
+                    .is_some_and(|conn| conn.finish_send(res));
+                if !keep {
+                    close_conn(&mut conns, &mut poll, &mut free, id);
+                }
+            }
+            for id in dirty.drain(..) {
+                if conns.get(id).is_some_and(|s| s.is_some()) {
+                    sync_write_interest(&mut conns, &mut poll, id);
+                }
+            }
+        }
         for id in dirty.drain(..) {
             let close = match conns.get_mut(id).and_then(|s| s.as_mut()) {
                 Some(conn) => !conn.do_write(),

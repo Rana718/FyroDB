@@ -20,10 +20,9 @@ impl Store {
             let shard_len = self.shard_slot_count(shard_idx);
 
             while slot_idx < shard_len {
-                if let Some((key, val)) = self.peek_slot(shard_idx, slot_idx)
-                    && !val.is_expired()
-                    && pattern.is_none_or(|p| glob_match(p, &key))
-                {
+                if let Some(Some(key)) = self.data.peek_slot_with(shard_idx, slot_idx, |k, v| {
+                    (!v.is_expired() && pattern.is_none_or(|p| glob_match(p, k))).then(|| k.to_string())
+                }) {
                     keys.push(key);
                 }
                 slot_idx += 1;
@@ -56,14 +55,5 @@ impl Store {
     #[inline]
     fn shard_slot_count(&self, shard: usize) -> usize {
         self.data.shard_slot_count(shard)
-    }
-
-    #[inline]
-    fn peek_slot(
-        &self,
-        shard: usize,
-        slot: usize,
-    ) -> Option<(String, crate::storage::value::StoreValue)> {
-        self.data.peek_slot(shard, slot)
     }
 }

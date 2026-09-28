@@ -607,7 +607,7 @@ pub fn hello(_parts: &[&str], out: &mut Vec<u8>) {
         resp::write_bulk(out, "server");
         resp::write_bulk(out, "fyrodb");
         resp::write_bulk(out, "version");
-        resp::write_bulk(out, env!("CARGO_PKG_VERSION"));
+        resp::write_bulk(out, "8.2.0");
         resp::write_bulk(out, "proto");
         resp::write_integer(out, 2);
         resp::write_bulk(out, "id");
@@ -801,7 +801,7 @@ pub fn sort_cmd(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
         Some(e) if e.is_expired() => vec![],
         Some(e) => match &e.value {
             crate::storage::value::FyroDB::List(l) => {
-                l.deque().iter().map(|v| v.to_string()).collect()
+                l.iter().map(|v| v.to_string()).collect()
             }
             crate::storage::value::FyroDB::Set(s) => s.iter().map(|m| m.to_string()).collect(),
             crate::storage::value::FyroDB::ZSet(z) => z.members().map(|m| m.to_string()).collect(),

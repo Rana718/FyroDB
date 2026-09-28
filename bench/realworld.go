@@ -119,6 +119,14 @@ func runMix() {
 	flushServer()
 	runBenchQueue()
 	flushServer()
+	runBenchStream()
+	flushServer()
+	runBenchBitmap()
+	flushServer()
+	runBenchHLL()
+	flushServer()
+	runBenchGeo()
+	flushServer()
 }
 
 func runMixCluster() {
@@ -144,6 +152,14 @@ func runMixCluster() {
 	runBenchHotKey()
 	flushServer()
 	runBenchQueue()
+	flushServer()
+	runBenchStream()
+	flushServer()
+	runBenchBitmap()
+	flushServer()
+	runBenchHLL()
+	flushServer()
+	runBenchGeo()
 	flushServer()
 }
 
@@ -686,4 +702,305 @@ func runBenchJson() {
 	}
 	wg.Wait()
 	recordResult("JSON.SET/GET (documents)", total, time.Since(start))
+}
+
+// ── Stream (XADD) ─────────────────────────────────────────────────────────────
+// Each client pipelined-appends MIX_OPS_CLIENT entries to its own stream key.
+// XADD returns a variable-length bulk string entry-ID (e.g. "1748000000000-0")
+// so we use skipBulkReply instead of skipGetReplies' fast-path matchers.
+
+var xaddHdr = []byte("*5\r\n$4\r\nXADD\r\n$")
+
+func appendXADD(out, key []byte, seq int) []byte {
+	// XADD <key> * f <seq>
+	out = append(out, xaddHdr...)
+	out = appendLen(out, len(key))
+	out = append(out, crlfB...)
+	out = append(out, key...)
+	out = append(out, "\r\n$1\r\n*\r\n$1\r\nf\r\n$"...)
+	sv := strconv.AppendInt(nil, int64(seq), 10)
+	out = appendLen(out, len(sv))
+	out = append(out, crlfB...)
+	out = append(out, sv...)
+	out = append(out, crlfB...)
+	return out
+}
+
+// skipBulkReply drains n RESP bulk-string replies ($<len>\r\n<data>\r\n).
+// Used for XADD which returns a variable-length entry-ID bulk string.
+func skipBulkReply(r *bufio.Reader, n int) {
+	for i := 0; i < n; i++ {
+		// Read the type byte
+		b, err := r.ReadByte()
+		if err != nil {
+			panic(err)
+		}
+		switch b {
+		case '$':
+			// Read length line
+			line, err := r.ReadSlice('\n')
+			if err != nil {
+				panic(err)
+			}
+			vlen := 0
+			for _, c := range line {
+				if c >= '0' && c <= '9' {
+					vlen = vlen*10 + int(c-'0')
+				} else {
+					break
+				}
+			}
+			if vlen < 0 {
+				// null bulk string ($-1\r\n) — nothing more to read
+				continue
+			}
+			// Discard value bytes + trailing \r\n
+			discardN(r, vlen+2)
+		case '+', ':', '-':
+			// Simple string, integer, or error — read to end of line
+			for {
+				line, e := r.ReadSlice('\n')
+				if e != bufio.ErrBufferFull {
+					if b == '-' {
+						panic("Redis error: " + string(line))
+					}
+					break
+				}
+			}
+		default:
+			panic("unexpected RESP type byte: " + string([]byte{b}))
+		}
+	}
+}
+
+func runBenchStream() {
+	conns := preDial(CLIENTS)
+	defer closeAll(conns)
+	total := int64(CLIENTS * MIX_OPS_CLIENT)
+
+	start := time.Now()
+	var wg sync.WaitGroup
+	for i, conn := range conns {
+		wg.Go(func() {
+			r := bufio.NewReaderSize(conn, 256<<10)
+			buf := make([]byte, 0, MIX_PIPE*80)
+			var kb [32]byte
+			skey := clientKey("stream:", i, kb[:])
+
+			for sent := 0; sent < MIX_OPS_CLIENT; {
+				batch := min(MIX_PIPE, MIX_OPS_CLIENT-sent)
+				buf = buf[:0]
+				for j := range batch {
+					buf = appendXADD(buf, skey, sent+j)
+				}
+				writeFull(conn, buf)
+				// XADD replies with a bulk string entry-id, e.g. $15\r\n1748...-0\r\n
+				skipBulkReply(r, batch)
+				sent += batch
+			}
+		})
+	}
+	wg.Wait()
+	recordResult("XADD (streams)", total, time.Since(start))
+}
+
+// ── Bitmap (SETBIT / BITCOUNT) ────────────────────────────────────────────────
+// Each client sets MIX_OPS_CLIENT bits on its own bitmap key, then issues one
+// BITCOUNT to verify. Ops counted = SETBIT calls.
+
+var (
+	setbitHdr  = []byte("*4\r\n$6\r\nSETBIT\r\n$")
+	bitcountHdr = []byte("*2\r\n$8\r\nBITCOUNT\r\n$")
+)
+
+func runBenchBitmap() {
+	conns := preDial(CLIENTS)
+	defer closeAll(conns)
+	total := int64(CLIENTS * MIX_OPS_CLIENT)
+
+	start := time.Now()
+	var wg sync.WaitGroup
+	for i, conn := range conns {
+		wg.Go(func() {
+			r := bufio.NewReaderSize(conn, 256<<10)
+			buf := make([]byte, 0, MIX_PIPE*64)
+			var kb [32]byte
+			bkey := clientKey("bmap:", i, kb[:])
+
+			// Phase 1: SETBIT <key> <offset> 1
+			for sent := 0; sent < MIX_OPS_CLIENT; {
+				batch := min(MIX_PIPE, MIX_OPS_CLIENT-sent)
+				buf = buf[:0]
+				for j := range batch {
+					offset := strconv.AppendInt(nil, int64(sent+j), 10)
+					buf = append(buf, setbitHdr...)
+					buf = appendLen(buf, len(bkey))
+					buf = append(buf, crlfB...)
+					buf = append(buf, bkey...)
+					buf = append(buf, "\r\n$"...)
+					buf = appendLen(buf, len(offset))
+					buf = append(buf, crlfB...)
+					buf = append(buf, offset...)
+					buf = append(buf, "\r\n$1\r\n1\r\n"...)
+				}
+				writeFull(conn, buf)
+				skipLines(r, batch) // SETBIT returns :0 or :1
+				sent += batch
+			}
+
+			// Phase 2: BITCOUNT <key>
+			buf = buf[:0]
+			buf = append(buf, bitcountHdr...)
+			buf = appendLen(buf, len(bkey))
+			buf = append(buf, crlfB...)
+			buf = append(buf, bkey...)
+			buf = append(buf, crlfB...)
+			writeFull(conn, buf)
+			skipLines(r, 1)
+		})
+	}
+	wg.Wait()
+	recordResult("SETBIT/BITCOUNT (bitmap)", total, time.Since(start))
+}
+
+// ── HyperLogLog (PFADD / PFCOUNT) ────────────────────────────────────────────
+// Each client adds MIX_OPS_CLIENT distinct elements to its own HLL key, then
+// reads back the approximate count. Ops counted = PFADD calls.
+
+var (
+	pfaddHdr  = []byte("*3\r\n$5\r\nPFADD\r\n$")
+	pfcountHdr = []byte("*2\r\n$7\r\nPFCOUNT\r\n$")
+)
+
+func runBenchHLL() {
+	conns := preDial(CLIENTS)
+	defer closeAll(conns)
+	total := int64(CLIENTS * MIX_OPS_CLIENT)
+
+	start := time.Now()
+	var wg sync.WaitGroup
+	for i, conn := range conns {
+		wg.Go(func() {
+			r := bufio.NewReaderSize(conn, 128<<10)
+			buf := make([]byte, 0, MIX_PIPE*56)
+			var kb, mb [32]byte
+			hkey := clientKey("hll:", i, kb[:])
+
+			// Phase 1: PFADD <key> <element>
+			for sent := 0; sent < MIX_OPS_CLIENT; {
+				batch := min(MIX_PIPE, MIX_OPS_CLIENT-sent)
+				buf = buf[:0]
+				for j := range batch {
+					elem := appendLen(mb[:0], sent+j)
+					buf = append(buf, pfaddHdr...)
+					buf = appendLen(buf, len(hkey))
+					buf = append(buf, crlfB...)
+					buf = append(buf, hkey...)
+					buf = append(buf, "\r\n$"...)
+					buf = appendLen(buf, len(elem))
+					buf = append(buf, crlfB...)
+					buf = append(buf, elem...)
+					buf = append(buf, crlfB...)
+				}
+				writeFull(conn, buf)
+				skipLines(r, batch) // PFADD returns :0 or :1
+				sent += batch
+			}
+
+			// Phase 2: PFCOUNT <key>
+			buf = buf[:0]
+			buf = append(buf, pfcountHdr...)
+			buf = appendLen(buf, len(hkey))
+			buf = append(buf, crlfB...)
+			buf = append(buf, hkey...)
+			buf = append(buf, crlfB...)
+			writeFull(conn, buf)
+			skipLines(r, 1)
+		})
+	}
+	wg.Wait()
+	recordResult("PFADD/PFCOUNT (HyperLogLog)", total, time.Since(start))
+}
+
+// ── Geospatial (GEOADD / GEODIST) ────────────────────────────────────────────
+// Each client adds MIX_OPS_CLIENT members to its own geo key using synthetic
+// (lon, lat) coordinates, then queries GEODIST between the first and last member.
+// Ops counted = GEOADD calls.
+
+var geoadd5Hdr = []byte("*5\r\n$6\r\nGEOADD\r\n$")
+
+func runBenchGeo() {
+	conns := preDial(CLIENTS)
+	defer closeAll(conns)
+	total := int64(CLIENTS * MIX_OPS_CLIENT)
+
+	start := time.Now()
+	var wg sync.WaitGroup
+	for i, conn := range conns {
+		wg.Go(func() {
+			r := bufio.NewReaderSize(conn, 128<<10)
+			buf := make([]byte, 0, MIX_PIPE*96)
+			var kb, mb [32]byte
+			gkey := clientKey("geo:", i, kb[:])
+
+			// Phase 1: GEOADD <key> <lon> <lat> <member>
+			// lon cycles [−180, 180) and lat [−85, 85) deterministically.
+			for sent := 0; sent < MIX_OPS_CLIENT; {
+				batch := min(MIX_PIPE, MIX_OPS_CLIENT-sent)
+				buf = buf[:0]
+				for j := range batch {
+					idx := sent + j
+					// Spread coordinates across the valid range
+					lon := float64(idx%360) - 180.0
+					lat := float64(idx%170) - 85.0
+					lonStr := strconv.AppendFloat(nil, lon, 'f', 4, 64)
+					latStr := strconv.AppendFloat(nil, lat, 'f', 4, 64)
+					member := appendLen(mb[:0], idx)
+
+					buf = append(buf, geoadd5Hdr...)
+					buf = appendLen(buf, len(gkey))
+					buf = append(buf, crlfB...)
+					buf = append(buf, gkey...)
+					buf = append(buf, "\r\n$"...)
+					buf = appendLen(buf, len(lonStr))
+					buf = append(buf, crlfB...)
+					buf = append(buf, lonStr...)
+					buf = append(buf, "\r\n$"...)
+					buf = appendLen(buf, len(latStr))
+					buf = append(buf, crlfB...)
+					buf = append(buf, latStr...)
+					buf = append(buf, "\r\n$"...)
+					buf = appendLen(buf, len(member))
+					buf = append(buf, crlfB...)
+					buf = append(buf, member...)
+					buf = append(buf, crlfB...)
+				}
+				writeFull(conn, buf)
+				skipLines(r, batch) // GEOADD returns :N
+				sent += batch
+			}
+
+			// Phase 2: GEODIST <key> 0 1 km
+			mem0 := appendLen(mb[:0], 0)
+			mem1 := appendLen(mb[:0], 1)
+			buf = buf[:0]
+			buf = append(buf, "*5\r\n$7\r\nGEODIST\r\n$"...)
+			buf = appendLen(buf, len(gkey))
+			buf = append(buf, crlfB...)
+			buf = append(buf, gkey...)
+			buf = append(buf, "\r\n$"...)
+			buf = appendLen(buf, len(mem0))
+			buf = append(buf, crlfB...)
+			buf = append(buf, mem0...)
+			buf = append(buf, "\r\n$"...)
+			buf = appendLen(buf, len(mem1))
+			buf = append(buf, crlfB...)
+			buf = append(buf, mem1...)
+			buf = append(buf, "\r\n$2\r\nkm\r\n"...)
+			writeFull(conn, buf)
+			skipGetReplies(r, 1) // GEODIST returns bulk string or nil
+		})
+	}
+	wg.Wait()
+	recordResult("GEOADD/GEODIST (geospatial)", total, time.Since(start))
 }

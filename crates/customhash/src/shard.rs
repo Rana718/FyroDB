@@ -1,3 +1,4 @@
+use std::hash::BuildHasher;
 use std::alloc::Layout;
 use std::cell::UnsafeCell;
 use std::ptr;
@@ -11,6 +12,7 @@ use super::key::CompactKey;
 pub(crate) const STATE_LOCK: u64 = 1;
 pub(crate) const STATE_OCCUPIED: u64 = 1 << 1;
 pub(crate) const STATE_SEQ_ONE: u64 = 1 << 2;
+pub(crate) const STATE_SNAP: u64 = 1 << 63;
 
 pub(crate) const LOAD_NUM: usize = 3;
 pub(crate) const LOAD_DEN: usize = 4;
@@ -20,7 +22,6 @@ pub(crate) const INITIAL_SHARD_CAPACITY: usize = 8;
 pub(crate) const GROWING: usize = 1usize << (usize::BITS - 1);
 
 pub(crate) struct Entry<V> {
-    pub(crate) hash: u64,
     pub(crate) key: CompactKey,
     pub(crate) state: AtomicU64,
     pub(crate) value: UnsafeCell<std::mem::MaybeUninit<V>>,
@@ -146,7 +147,8 @@ pub(crate) fn state_unlock(state: &AtomicU64) {
 #[inline(always)]
 pub(crate) fn write_begin(state: &AtomicU64) {
     let current = state.load(Ordering::Relaxed);
-    state.store(current.wrapping_add(STATE_SEQ_ONE), Ordering::Relaxed);
+    let next = (current.wrapping_add(STATE_SEQ_ONE) & !STATE_SNAP) | (current & STATE_SNAP);
+    state.store(next, Ordering::Relaxed);
     std::sync::atomic::fence(Ordering::Release);
 }
 
@@ -154,7 +156,7 @@ pub(crate) fn write_begin(state: &AtomicU64) {
 #[inline(always)]
 pub(crate) fn write_end(state: &AtomicU64, occupied: bool) {
     let current = state.load(Ordering::Relaxed);
-    let mut next = current.wrapping_add(STATE_SEQ_ONE) & !STATE_LOCK;
+    let mut next = (current.wrapping_add(STATE_SEQ_ONE) & !(STATE_LOCK | STATE_SNAP)) | (current & STATE_SNAP);
     if occupied {
         next |= STATE_OCCUPIED;
     } else {
@@ -192,6 +194,11 @@ fn hash_tag(hash: u64) -> usize {
 pub(crate) struct TaggedSlot<V>(AtomicPtr<Entry<V>>);
 
 impl<V> TaggedSlot<V> {
+    #[cfg(test)]
+    pub(crate) fn null() -> Self {
+        Self(AtomicPtr::new(ptr::null_mut()))
+    }
+
     /// Combine a pointer with its tag, or return it verbatim when it already
     /// occupies the reserved bits.
     #[inline(always)]
@@ -328,6 +335,8 @@ pub(crate) struct Shard<V> {
     pub(crate) len: CachePadded<AtomicUsize>,
     pub(crate) insert_gate: CachePadded<AtomicUsize>,
     pub(crate) grow_lock: std::sync::Mutex<()>,
+    pub(crate) hasher: foldhash::fast::RandomState,
+    pub(crate) snap: std::sync::Arc<crate::snap::SnapCtl<V>>,
 }
 
 pub(crate) struct InsertGuard<'a> {
@@ -342,13 +351,19 @@ impl Drop for InsertGuard<'_> {
 }
 
 impl<V: Clone + Send + Sync + 'static> Shard<V> {
-    pub(crate) fn new(cap: usize) -> Self {
+    pub(crate) fn new(
+        cap: usize,
+        hasher: foldhash::fast::RandomState,
+        snap: std::sync::Arc<crate::snap::SnapCtl<V>>,
+    ) -> Self {
         let table = alloc_table(SlotTable::new(cap));
         Shard {
             table: AtomicPtr::new(table),
             len: CachePadded::new(AtomicUsize::new(0)),
             insert_gate: CachePadded::new(AtomicUsize::new(0)),
             grow_lock: std::sync::Mutex::new(()),
+            hasher,
+            snap,
         }
     }
 
@@ -389,7 +404,7 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
                         return None;
                     }
                     let e = unsafe { &*p };
-                    if e.hash == hash && e.key == key {
+                    if e.key == key {
                         return Some(e);
                     }
                 }
@@ -410,6 +425,7 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
             state_lock(&existing.state);
 // Re-check under the lock: racing a remove would drop twice.
             let was_occupied = state_occupied(&existing.state, Ordering::Relaxed);
+            self.snap.before_write(existing);
             write_begin(&existing.state);
             if was_occupied {
                 unsafe { (*existing.value.get()).assume_init_drop() };
@@ -433,9 +449,8 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
         overwrite: bool,
     ) -> bool {
         let entry: *mut Entry<V> = alloc_entry(Entry {
-            hash,
             key,
-            state: AtomicU64::new(STATE_OCCUPIED),
+            state: AtomicU64::new(self.snap.fresh_state()),
             value: UnsafeCell::new(std::mem::MaybeUninit::new(value)),
         });
         let key_ref: &str = unsafe { (*entry).key.as_str() };
@@ -487,7 +502,7 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
                 }
 
                 let e = unsafe { &*p };
-                if e.hash == hash && e.key == key_ref {
+                if e.key == key_ref {
                     if reserved {
                         self.len.fetch_sub(1, Ordering::Relaxed);
                     }
@@ -501,6 +516,7 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
                         }
                         return false;
                     }
+                    self.snap.before_write(e);
                     write_begin(&e.state);
                     if was_occupied {
                         unsafe { (*e.value.get()).assume_init_drop() };
@@ -559,11 +575,12 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
             }
 
             live_count += 1;
-            let mut i = (e.hash as usize) & new_table.mask;
+            let h = self.hasher.hash_one(e.key.as_str());
+            let mut i = (h as usize) & new_table.mask;
             loop {
                 let new_slot = unsafe { new_table.slots().get_unchecked(i) };
                 if new_slot.load(Ordering::Relaxed).is_null() {
-                    new_slot.store(p, e.hash, Ordering::Relaxed);
+                    new_slot.store(p, h, Ordering::Relaxed);
                     break;
                 }
                 i = (i + 1) & new_table.mask;
@@ -606,7 +623,6 @@ mod tests {
     #[test]
     fn tags_round_trip_and_never_collide_with_the_pointer() {
         let mut entry = Entry::<u32> {
-            hash: 0,
             key: CompactKey::from_string("k".to_owned()),
             state: AtomicU64::new(STATE_OCCUPIED),
             value: UnsafeCell::new(std::mem::MaybeUninit::new(7)),

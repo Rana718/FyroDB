@@ -18,9 +18,19 @@ impl FanEntry {
     }
 }
 
+/// Work finished elsewhere for a connection parked on this worker.
+pub enum Completion {
+    /// Reply bytes for the off-worker command the connection waits on.
+    Reply { token: usize, uid: u64, bytes: Vec<u8> },
+    /// A key the connection's blocking command waits on was written.
+    Retry { token: usize, uid: u64 },
+}
+
 pub struct WorkerNotifier {
     pub pending: SegQueue<usize>,
     pub fanout: SegQueue<FanEntry>,
+    pub completions: SegQueue<Completion>,
+    completion_pending: AtomicBool,
     local_subs: Mutex<HashMap<String, Vec<usize>>>,
     pub waker: Arc<Waker>,
     worker_index: usize,
@@ -33,6 +43,8 @@ impl WorkerNotifier {
         Arc::new(Self {
             pending: SegQueue::new(),
             fanout: SegQueue::new(),
+            completions: SegQueue::new(),
+            completion_pending: AtomicBool::new(false),
             local_subs: Mutex::new(HashMap::new()),
             waker,
             worker_index,
@@ -53,6 +65,30 @@ impl WorkerNotifier {
         self.pending.push(token);
         if !self.wake_pending.swap(true, Ordering::AcqRel) {
             let _ = self.waker.wake();
+        }
+    }
+
+    /// Hand a finished result (or a retry) back to this worker's loop.
+    #[inline]
+    pub fn complete(&self, c: Completion) {
+        self.completions.push(c);
+        if !self.completion_pending.swap(true, Ordering::AcqRel) {
+            let _ = self.waker.wake();
+        }
+    }
+
+    /// Pop every queued completion into `out` (same re-arm protocol as
+    /// `drain_pending_into`: no wakeup is lost between the drain and the
+    /// flag reset).
+    pub fn drain_completions(&self, out: &mut Vec<Completion>) {
+        loop {
+            while let Some(c) = self.completions.pop() {
+                out.push(c);
+            }
+            self.completion_pending.store(false, Ordering::Release);
+            if self.completions.is_empty() || self.completion_pending.swap(true, Ordering::AcqRel) {
+                return;
+            }
         }
     }
 
@@ -197,5 +233,11 @@ impl SubSlot {
     #[inline]
     pub fn queue_len(&self) -> usize {
         self.queue.len()
+    }
+}
+
+impl crate::storage::blocking::Wake for WorkerNotifier {
+    fn wake_retry(&self, token: usize, uid: u64) {
+        self.complete(Completion::Retry { token, uid });
     }
 }

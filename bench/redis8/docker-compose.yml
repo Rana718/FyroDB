@@ -1,0 +1,21 @@
+services:
+  redis8:
+    # Redis 8 ships the Query Engine (FT.*) and Vector Sets (V*) built in,
+    # so this is the reference for both KV and vector benchmarks.
+    image: redis:8.2
+    container_name: redis8
+    network_mode: host
+    restart: "no"
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    command:
+      - redis-server
+      - --port 6379
+      - --bind 0.0.0.0
+      - --save ""
+      - --appendonly no
+      - --protected-mode no
+      - --io-threads 8
+      - --search-workers 8

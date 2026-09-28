@@ -71,12 +71,41 @@ func humanCount(n int64) string {
 
 func main() {
 	port := flag.Int("p", 8000, "server port (single-node mode)")
-	mode := flag.String("m", "all", "mode: all | key | pub | mix")
+	mode := flag.String("m", "all", "mode: all | key | pub | mix | vec | lat | mem | ann")
 	cluster := flag.String("cluster", "", "comma-separated list of cluster master addrs")
 	pid := flag.Int("pid", 0, "server PID for resource monitoring (auto-detect if 0)")
 	dockerName := flag.String("docker", "", "docker container name/ID to monitor (auto-detect if empty)")
 	noFlush := flag.Bool("f", false, "skip FLUSHALL between phases; keyspace accumulates so peak RSS measures true steady-state memory")
+	jsonOut := flag.String("json", "", "write all results (throughput, latency, memory) as JSON to this path")
+
+	flag.IntVar(&latCfg.rate, "rate", latCfg.rate, "lat: target total ops/sec (0 = closed loop)")
+	flag.DurationVar(&latCfg.duration, "dur", latCfg.duration, "lat: measurement duration")
+	flag.IntVar(&latCfg.conns, "conns", latCfg.conns, "lat: connections")
+	flag.IntVar(&latCfg.pipe, "pipe", latCfg.pipe, "lat: closed-loop pipeline depth")
+	flag.IntVar(&latCfg.vsize, "vsize", latCfg.vsize, "lat: value size in bytes")
+	flag.IntVar(&latCfg.keys, "keys", latCfg.keys, "lat: keyspace size")
+	flag.Float64Var(&latCfg.zipf, "zipf", latCfg.zipf, "lat: zipf exponent (>1 enables, e.g. 1.1)")
+	flag.Float64Var(&latCfg.getRatio, "get-ratio", latCfg.getRatio, "lat: share of GETs in the mix")
+
+	flag.StringVar(&annCfg.dir, "ann-dir", "", "ann: directory with *base.fvecs, *query.fvecs, optional *groundtruth.ivecs (empty = synthetic)")
+	flag.StringVar(&annCfg.metric, "ann-metric", annCfg.metric, "ann: L2 | COSINE | IP")
+	flag.StringVar(&annCfg.algo, "ann-algo", annCfg.algo, "ann: HNSW | FLAT")
+	flag.StringVar(&annCfg.quantType, "ann-type", annCfg.quantType, "ann: vector TYPE (FLOAT32 | FLOAT16 | BFLOAT16 | INT8 ...)")
+	flag.StringVar(&annCfg.quant, "ann-quant", "", "ann: HNSW QUANTIZATION (NONE | INT8 | RABITQ; empty = server default)")
+	flag.IntVar(&annCfg.n, "ann-n", 0, "ann: base vectors to load (0 = all)")
+	flag.IntVar(&annCfg.q, "ann-q", annCfg.q, "ann: queries")
+	flag.IntVar(&annCfg.k, "ann-k", annCfg.k, "ann: k")
+	flag.IntVar(&annCfg.m, "ann-m", annCfg.m, "ann: HNSW M")
+	flag.IntVar(&annCfg.efc, "ann-efc", annCfg.efc, "ann: HNSW EF_CONSTRUCTION")
+	flag.IntVar(&annCfg.synthN, "ann-synth-n", annCfg.synthN, "ann: synthetic corpus size")
+	flag.IntVar(&annCfg.synthDim, "ann-synth-dim", annCfg.synthDim, "ann: synthetic dimensionality")
+	efs := flag.String("ann-efs", "10,20,40,80,160,320", "ann: EF_RUNTIME sweep")
+	conc := flag.String("ann-conc", "1,8,32", "ann: concurrency sweep")
+	filters := flag.String("ann-filters", "1,10,50", "ann: filter selectivity sweep (percent)")
 	flag.Parse()
+	annCfg.efs = parseIntList(*efs)
+	annCfg.conc = parseIntList(*conc)
+	annCfg.filters = parseIntList(*filters)
 
 	// Set before any benchmark phase runs; flushServer checks it.
 	skipFlush = *noFlush
@@ -202,14 +231,24 @@ func main() {
 		runPubSub(addrs[0])
 	case "mix":
 		runMix()
+	case "vec":
+		runVector()
+	case "lat":
+		runLatency()
+	case "mem":
+		runMemory()
+	case "ann":
+		runANN()
 	case "all":
 		runKV()
 		fmt.Println()
 		runPubSub(addrs[0])
 		fmt.Println()
 		runMix()
+		fmt.Println()
+		runVector()
 	default:
-		fmt.Fprintf(os.Stderr, "unknown -m value %q (want: all | key | pub | mix)\n", *mode)
+		fmt.Fprintf(os.Stderr, "unknown -m value %q (want: all | key | pub | mix | vec | lat | mem | ann)\n", *mode)
 		os.Exit(1)
 	}
 
@@ -241,6 +280,9 @@ func main() {
 
 	if len(mixResults) > 0 {
 		printSummaryTable()
+	}
+	if *jsonOut != "" {
+		writeJSON(*jsonOut)
 	}
 
 	// With -f the keyspace was never flushed, so report what the server is

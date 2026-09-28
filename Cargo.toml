@@ -4,6 +4,9 @@ version = "0.2.1"
 edition = "2024"
 license = "Apache-2.0"
 
+[workspace]
+members = [".", "crates/customhash", "crates/rust-zmalloc", "crates/fyro-vector"]
+
 [profile.release]
 opt-level = 3
 lto = "fat"
@@ -16,6 +19,7 @@ overflow-checks = false
 
 [dependencies]
 customhash = { path = "crates/customhash" }
+fyro-vector = { path = "crates/fyro-vector" }
 rust-zmalloc = { path = "crates/rust-zmalloc" }
 num_cpus = "1.17.0"
 socket2 = { version = "0.6.5", features = ["all"] }
@@ -25,3 +29,20 @@ libc = "0.2.186"
 crossbeam-queue = "0.3.13"
 crossbeam-utils = "0.8.22"
 foldhash = "0.2.0"
+parking_lot = { version = "0.12", features = ["arc_lock"] }
+bytemuck = "1"
+io-uring = { version = "0.7", optional = true }
+
+[features]
+io-uring = ["dep:io-uring"]
+
+[dev-dependencies]
+criterion = { version = "0.7", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "core"
+harness = false
+
+[profile.bench]
+debug = "line-tables-only"
+strip = "none"
