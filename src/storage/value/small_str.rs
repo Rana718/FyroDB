@@ -179,13 +179,46 @@ impl SmallStr {
     }
 
     #[inline]
+    pub fn as_bytes(&self) -> &[u8] {
+        if self.len != Tag::Heap {
+            &self.data[..self.len as usize]
+        } else {
+            let ptr = usize::from_ne_bytes(self.data[..8].try_into().unwrap()) as *const u8;
+            unsafe { std::slice::from_raw_parts(ptr, Self::read_heap_len(&self.data)) }
+        }
+    }
+
+    #[inline]
     pub fn into_bytes(self) -> Vec<u8> {
-        self.into_string().into_bytes()
+        if self.len != Tag::Heap {
+            return self.as_bytes().to_vec();
+        }
+        let ptr = usize::from_ne_bytes(self.data[..8].try_into().unwrap()) as *mut u8;
+        let len = Self::read_heap_len(&self.data);
+        let bytes = unsafe { Box::from_raw(std::ptr::slice_from_raw_parts_mut(ptr, len)) };
+        std::mem::forget(self);
+        bytes.into_vec()
+    }
+
+    #[inline]
+    pub fn from_slice(bytes: &[u8]) -> Self {
+        if bytes.len() <= SMALL_STR_CAP {
+            let mut data = [0u8; SMALL_STR_CAP];
+            data[..bytes.len()].copy_from_slice(bytes);
+            Self { data, len: Tag::inline(bytes.len()) }
+        } else {
+            let len = bytes.len();
+            let ptr = Box::into_raw(bytes.to_vec().into_boxed_slice()) as *mut u8;
+            let mut data = [0u8; SMALL_STR_CAP];
+            data[..8].copy_from_slice(&(ptr as usize).to_ne_bytes());
+            Self::store_heap_len(&mut data, len);
+            Self { data, len: Tag::Heap }
+        }
     }
 
     #[inline]
     pub fn from_bytes(bytes: Vec<u8>) -> Self {
-        Self::from_string(unsafe { String::from_utf8_unchecked(bytes) })
+        Self::from_slice(&bytes)
     }
 
     #[inline]
@@ -205,7 +238,7 @@ impl Drop for SmallStr {
             let len_val = Self::read_heap_len(&self.data);
             unsafe {
                 drop(Box::from_raw(
-                    std::ptr::slice_from_raw_parts_mut(ptr_val as *mut u8, len_val) as *mut str,
+                    std::ptr::slice_from_raw_parts_mut(ptr_val as *mut u8, len_val),
                 ));
             }
         }
@@ -223,7 +256,7 @@ impl Clone for SmallStr {
                 len: self.len,
             }
         } else {
-            Self::new(self.as_str())
+            Self::from_slice(self.as_bytes())
         }
     }
 }
@@ -302,45 +335,5 @@ impl PartialEq<&str> for SmallStr {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::SmallStr;
-
-    #[test]
-    fn clone_is_an_independent_copy() {
-        let long = "0123456789abcdefghijklmnopqrstuvwxyz";
-        let a = SmallStr::new(long);
-        let b = a.clone();
-        assert_eq!(a.as_str(), long);
-        assert_eq!(b.as_str(), long);
-        // Heap variant must not alias: two owners of one box would double-free.
-        if long.len() > super::SMALL_STR_CAP {
-            assert_ne!(
-                a.as_str().as_ptr(),
-                b.as_str().as_ptr(),
-                "cloned heap variant aliases the original allocation"
-            );
-        }
-        let mut c = a.clone();
-        c.push_str("x");
-        assert_eq!(a.as_str(), long);
-        assert_eq!(c.as_str(), "0123456789abcdefghijklmnopqrstuvwxyzx");
-    }
-
-    #[test]
-    fn layout_is_24_bytes_with_23_inline() {
-        assert_eq!(std::mem::size_of::<SmallStr>(), 24);
-        let s = SmallStr::new("01234567890123456789012");
-        assert_eq!(s.len(), 23);
-        assert_ne!(s.len, super::Tag::Heap);
-        let h = SmallStr::new("012345678901234567890123");
-        assert_eq!(h.len, super::Tag::Heap);
-        assert_eq!(h.as_str().len(), 24);
-    }
-
-    #[test]
-    fn push_str_stays_inline_when_it_fits() {
-        let mut s = SmallStr::new("hello");
-        s.push_str(" world"); // 11 bytes total, fits inline
-        assert_eq!(s.as_str(), "hello world");
-    }
-}
+#[path = "../../../tests/unit/storage/small_str.rs"]
+mod tests;

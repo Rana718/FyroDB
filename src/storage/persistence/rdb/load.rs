@@ -205,7 +205,7 @@ fn load_with_policy(store: &Store, path: &str, strict: bool) -> io::Result<usize
             TYPE_JSON => {
                 let json_str = read_string_bounded(&mut r)?;
                 StoreValue {
-                    value: FyroDB::Json(Box::new(SmallStr::from_string(json_str))),
+                    value: FyroDB::Json(json_str.into_boxed_str()),
                     expires_ms: ttl_ms,
                 }
             }
@@ -281,7 +281,7 @@ pub fn decode_single_value(bytes: &[u8]) -> io::Result<StoreValue> {
             }
             FyroDB::ZSet(Box::new(zset))
         }
-        TYPE_JSON => FyroDB::Json(Box::new(SmallStr::from_string(read_string_bounded(&mut reader)?))),
+        TYPE_JSON => FyroDB::Json(read_string_bounded(&mut reader)?.into_boxed_str()),
         TYPE_STREAM => FyroDB::Stream(Box::new(read_stream_v1(&mut reader, true)?)),
         TYPE_STREAM2 => FyroDB::Stream(Box::new(read_stream(&mut reader)?)),
         _ => {

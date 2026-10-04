@@ -768,22 +768,12 @@ pub(super) fn execute_queue_run(
             }
         }
         QueueOp::PopFront | QueueOp::PopBack => {
-            let popped = if op == QueueOp::PopFront {
-                store.lpop(key, cmds)
-            } else {
-                store.rpop(key, cmds)
-            };
-            match popped {
-                Ok(values) => {
-                    for i in 0..cmds {
-                        match values.get(i) {
-                            Some(v) => crate::utils::resp::write_bulk(out, v),
-                            None => out.extend_from_slice(b"$-1\r\n"),
-                        }
+            match store.pop_many_to_buf(key, cmds, op == QueueOp::PopBack, out) {
+                Ok(n) => {
+                    for _ in n..cmds {
+                        out.extend_from_slice(b"$-1\r\n");
                     }
                 }
-                // Single-pop semantics on a wrong-type key: one error per
-                // command, not nils.
                 Err(_) => {
                     for _ in 0..cmds {
                         crate::utils::resp::write_wrong_type(out);

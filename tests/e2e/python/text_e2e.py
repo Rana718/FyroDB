@@ -4,7 +4,7 @@ import struct
 import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
-from blocking_e2e import Client, check  # noqa: E402
+from client import Client, check  # noqa: E402
 from search_e2e import start  # noqa: E402
 
 BIN = sys.argv[1] if len(sys.argv) > 1 else os.path.join(os.environ.get("CARGO_TARGET_DIR", "target"), "release", "fyro_db")

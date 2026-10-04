@@ -1,4 +1,3 @@
-use std::hash::BuildHasher;
 use std::alloc::Layout;
 use std::cell::UnsafeCell;
 use std::ptr;
@@ -12,7 +11,19 @@ use super::key::CompactKey;
 pub(crate) const STATE_LOCK: u64 = 1;
 pub(crate) const STATE_OCCUPIED: u64 = 1 << 1;
 pub(crate) const STATE_SEQ_ONE: u64 = 1 << 2;
-pub(crate) const STATE_SNAP: u64 = 1 << 63;
+pub(crate) const STATE_SEQ_MASK: u64 = ((1 << 29) - 1) << 2;
+pub(crate) const STATE_SNAP: u64 = 1 << 31;
+pub(crate) const STATE_HASH_SHIFT: u32 = 32;
+
+#[inline(always)]
+pub(crate) fn hash_bits(hash: u64) -> u64 {
+    (hash as u32 as u64) << STATE_HASH_SHIFT
+}
+
+#[inline(always)]
+pub(crate) fn stored_hash(state: u64) -> u64 {
+    state >> STATE_HASH_SHIFT
+}
 
 pub(crate) const LOAD_NUM: usize = 3;
 pub(crate) const LOAD_DEN: usize = 4;
@@ -62,7 +73,12 @@ unsafe impl<V: Send + Sync> Sync for Entry<V> {}
 
 #[inline]
 pub(crate) fn state_seq(state: u64) -> u32 {
-    (state >> 2) as u32
+    ((state & STATE_SEQ_MASK) >> 2) as u32
+}
+
+#[inline(always)]
+fn bump_seq(state: u64) -> u64 {
+    (state & !STATE_SEQ_MASK) | (state.wrapping_add(STATE_SEQ_ONE) & STATE_SEQ_MASK)
 }
 
 #[inline(always)]
@@ -147,8 +163,7 @@ pub(crate) fn state_unlock(state: &AtomicU64) {
 #[inline(always)]
 pub(crate) fn write_begin(state: &AtomicU64) {
     let current = state.load(Ordering::Relaxed);
-    let next = (current.wrapping_add(STATE_SEQ_ONE) & !STATE_SNAP) | (current & STATE_SNAP);
-    state.store(next, Ordering::Relaxed);
+    state.store(bump_seq(current), Ordering::Relaxed);
     std::sync::atomic::fence(Ordering::Release);
 }
 
@@ -156,7 +171,7 @@ pub(crate) fn write_begin(state: &AtomicU64) {
 #[inline(always)]
 pub(crate) fn write_end(state: &AtomicU64, occupied: bool) {
     let current = state.load(Ordering::Relaxed);
-    let mut next = (current.wrapping_add(STATE_SEQ_ONE) & !(STATE_LOCK | STATE_SNAP)) | (current & STATE_SNAP);
+    let mut next = bump_seq(current) & !STATE_LOCK;
     if occupied {
         next |= STATE_OCCUPIED;
     } else {
@@ -181,11 +196,9 @@ const TAG_MAX: usize = (1 << TAG_BITS) - 1;
 const TAG_MASK: usize = TAG_MAX << TAG_SHIFT;
 const RESERVED_MASK: usize = TAG_MASK | TAG_FLAG;
 
-/// Bits 32..45: consumed by neither the shard selector nor the slot
-/// index, so the tag keeps full entropy in-shard.
 #[inline(always)]
 fn hash_tag(hash: u64) -> usize {
-    ((hash >> 32) as usize) & TAG_MAX
+    ((hash >> 18) as usize) & TAG_MAX
 }
 
 /// The tag makes the raw word non-dereferenceable; this type deposits
@@ -333,9 +346,9 @@ impl<V> SlotTable<V> {
 pub(crate) struct Shard<V> {
     pub(crate) table: AtomicPtr<SlotTable<V>>,
     pub(crate) len: CachePadded<AtomicUsize>,
+    pub(crate) live: CachePadded<AtomicUsize>,
     pub(crate) insert_gate: CachePadded<AtomicUsize>,
     pub(crate) grow_lock: std::sync::Mutex<()>,
-    pub(crate) hasher: foldhash::fast::RandomState,
     pub(crate) snap: std::sync::Arc<crate::snap::SnapCtl<V>>,
 }
 
@@ -353,16 +366,15 @@ impl Drop for InsertGuard<'_> {
 impl<V: Clone + Send + Sync + 'static> Shard<V> {
     pub(crate) fn new(
         cap: usize,
-        hasher: foldhash::fast::RandomState,
         snap: std::sync::Arc<crate::snap::SnapCtl<V>>,
     ) -> Self {
         let table = alloc_table(SlotTable::new(cap));
         Shard {
             table: AtomicPtr::new(table),
             len: CachePadded::new(AtomicUsize::new(0)),
+            live: CachePadded::new(AtomicUsize::new(0)),
             insert_gate: CachePadded::new(AtomicUsize::new(0)),
             grow_lock: std::sync::Mutex::new(()),
-            hasher,
             snap,
         }
     }
@@ -404,7 +416,9 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
                         return None;
                     }
                     let e = unsafe { &*p };
-                    if e.key == key {
+                    if stored_hash(e.state.load(Ordering::Relaxed)) == hash as u32 as u64
+                        && e.key == key
+                    {
                         return Some(e);
                     }
                 }
@@ -450,7 +464,7 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
     ) -> bool {
         let entry: *mut Entry<V> = alloc_entry(Entry {
             key,
-            state: AtomicU64::new(self.snap.fresh_state()),
+            state: AtomicU64::new(self.snap.fresh_state() | hash_bits(hash)),
             value: UnsafeCell::new(std::mem::MaybeUninit::new(value)),
         });
         let key_ref: &str = unsafe { (*entry).key.as_str() };
@@ -502,7 +516,7 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
                 }
 
                 let e = unsafe { &*p };
-                if e.key == key_ref {
+                if stored_hash(e.state.load(Ordering::Relaxed)) == hash as u32 as u64 && e.key == key_ref {
                     if reserved {
                         self.len.fetch_sub(1, Ordering::Relaxed);
                     }
@@ -575,7 +589,7 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
             }
 
             live_count += 1;
-            let h = self.hasher.hash_one(e.key.as_str());
+            let h = stored_hash(e.state.load(Ordering::Relaxed));
             let mut i = (h as usize) & new_table.mask;
             loop {
                 let new_slot = unsafe { new_table.slots().get_unchecked(i) };
@@ -644,7 +658,7 @@ mod tests {
         slot.store(raw, 0, Ordering::Relaxed);
         let stored_tag = hash_tag(0);
         let other = (1..)
-            .map(|n| (n as u64) << 32)
+            .map(|n| (n as u64) << 18)
             .find(|&h| hash_tag(h) != stored_tag)
             .unwrap();
         assert_eq!(slot.load_if_tag_matches(other, Ordering::Relaxed), Err(()));
@@ -658,12 +672,10 @@ mod tests {
             assert!(hash_tag(1u64 << shift) <= TAG_MAX);
         }
         for hash in 0..4096u64 {
-            assert!(hash_tag(hash << 32) <= TAG_MAX);
+            assert!(hash_tag(hash << 18) <= TAG_MAX);
         }
-        // Distinct hashes must actually produce distinct tags, otherwise the
-        // filter buys nothing.
         let tags: std::collections::HashSet<usize> =
-            (0..1024u64).map(|n| hash_tag(n << 32)).collect();
+            (0..1024u64).map(|n| hash_tag(n << 18)).collect();
         assert_eq!(tags.len(), 1024);
     }
 

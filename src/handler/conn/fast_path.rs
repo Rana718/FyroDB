@@ -108,6 +108,7 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
 
     if cmd_len == 3 {
         if cmd.eq_ignore_ascii_case(b"SET") && raw.len() >= 3 {
+            let hint = conn.hint_for(raw[1]);
             let out = &mut conn.parser.wbuf;
             let Some(key) = part_str(out, raw[1]) else {
                 return;
@@ -116,7 +117,7 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
                 return;
             };
             if raw.len() == 3 {
-                conn.store.set_string(key, value, 0);
+                conn.store.set_string_hinted(key, hint, value, 0);
                 if conn.store.has_replication() {
                     conn.store.record_current_value(key);
                 }
@@ -124,11 +125,12 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
                 return;
             }
         } else if cmd.eq_ignore_ascii_case(b"GET") && raw.len() == 2 {
+            let hint = conn.hint_for(raw[1]);
             let out = &mut conn.parser.wbuf;
             let Some(key) = part_str(out, raw[1]) else {
                 return;
             };
-            if !conn.store.get_to_buf(key, &mut conn.parser.wbuf) {
+            if !conn.store.get_to_buf_hinted(key, hint, &mut conn.parser.wbuf) {
                 conn.parser.wbuf.extend_from_slice(b"$-1\r\n");
             }
             return;
@@ -476,7 +478,17 @@ pub(super) fn ft_search_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
         crate::commands::ft::search_dispatch(&refs, &binaries, &store, out);
     };
     if search_offloaded() {
-        conn.submit(run);
+        // Inline fast path: HNSW queries on a clean graph are so fast
+        // (~25μs) that pool submission overhead doubles the latency.
+        let inline = raw.len() >= 2 && {
+            let idx = unsafe { std::str::from_utf8_unchecked(part_bytes(raw[1])) };
+            conn.store.search_state().hnsw_graph_is_clean(idx)
+        };
+        if inline {
+            run(&mut conn.parser.wbuf);
+        } else {
+            conn.submit(run);
+        }
     } else {
         run(&mut conn.parser.wbuf);
     }

@@ -53,12 +53,43 @@ impl HashInner {
 /// One scan finds-or-inserts; overwrites avoid two String temporaries.
     #[inline]
     pub fn insert_ref(&mut self, field: &str, value: &str) -> bool {
-        self.insert_small(SmallStr::new(field), SmallStr::new(value))
+        self.insert_field(field, SmallStr::new(value))
     }
 
     #[inline]
     pub fn insert_bytes(&mut self, field: &str, value: &[u8]) -> bool {
-        self.insert_small(SmallStr::new(field), SmallStr::from_bytes(value.to_vec()))
+        self.insert_field(field, SmallStr::from_slice(value))
+    }
+
+    pub fn insert_field(&mut self, field: &str, value: SmallStr) -> bool {
+        match self {
+            Self::Compact(v) => {
+                let mut i = 0;
+                while i < v.len() {
+                    if v[i] == field {
+                        v[i + 1] = value;
+                        return false;
+                    }
+                    i += 2;
+                }
+                v.push(SmallStr::new(field));
+                v.push(value);
+                if v.len() / 2 > COMPACT_THRESHOLD {
+                    self.promote_hash();
+                }
+                true
+            }
+            Self::Full(m) => match m.get_mut(field) {
+                Some(slot) => {
+                    *slot = value;
+                    false
+                }
+                None => {
+                    m.insert(SmallStr::new(field), value);
+                    true
+                }
+            },
+        }
     }
 
     pub fn insert_small(&mut self, field: SmallStr, value: SmallStr) -> bool {

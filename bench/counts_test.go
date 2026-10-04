@@ -285,6 +285,9 @@ func (s *fakeServer) snapshot() map[string]int64 {
 	s.mu.Lock()
 	for _, cc := range s.conns {
 		for id, name := range cmdNames {
+			if id == cmdOther {
+				continue
+			}
 			if v := cc.n[id].Load(); v != 0 {
 				t[name] += v
 			}
@@ -616,8 +619,15 @@ func TestFullMixRequestCounts(t *testing.T) {
 		"EXPIRE":   ops,
 		"JSON.SET": ops/2 + 1,
 		"JSON.GET": ops / 2,
-		"FLUSHALL": 10,
-		"PING":     10,
+		"FLUSHALL": 14,
+		"PING":     14,
+		"XADD":     ops,
+		"SETBIT":   ops,
+		"BITCOUNT": int64(CLIENTS),
+		"PFADD":    ops,
+		"PFCOUNT":  int64(CLIENTS),
+		"GEOADD":   ops,
+		"GEODIST":  int64(CLIENTS),
 	}
 	var total int64
 	for cmd, n := range want {

@@ -5,13 +5,24 @@ mod shard;
 mod snap;
 pub use snap::SnapSink;
 
+#[repr(align(128))]
+#[derive(Default)]
+pub struct Flag(AtomicBool);
+
+impl Deref for Flag {
+    type Target = AtomicBool;
+    #[inline(always)]
+    fn deref(&self) -> &AtomicBool {
+        &self.0
+    }
+}
+
 pub use ebr::{Guard, force_collect, force_collect_quiescent, pin, retire_raw};
 
 use std::marker::PhantomData;
 use std::ops::Deref;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use crossbeam_utils::CachePadded;
 use foldhash::fast::RandomState;
 use key::CompactKey;
 use std::hash::BuildHasher;
@@ -57,16 +68,11 @@ pub struct CustomMap<V> {
     shift: u32,
     shard_mask: usize,
     hasher: RandomState,
-    key_count: CachePadded<AtomicUsize>,
     max_keys: usize,
-    /// Bumped by every structural or value mutation (same cache line
-    /// traffic as key_count: the fetch sites below are exactly the write
-    /// paths). Lets lazy indexers tell fresh from stale without scanning.
-    generation: AtomicU64,
     observer: std::sync::OnceLock<Box<dyn WriteObserver>>,
     /// One relaxed load on every write when nothing observes. Shared so
     /// the observer's owner can toggle it without a map reference.
-    observing: std::sync::Arc<AtomicBool>,
+    observing: std::sync::Arc<Flag>,
     snap: std::sync::Arc<snap::SnapCtl<V>>,
 }
 
@@ -81,7 +87,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
     }
 
     /// The flag gating observer calls, for the observer's owner to toggle.
-    pub fn observing_handle(&self) -> std::sync::Arc<AtomicBool> {
+    pub fn observing_handle(&self) -> std::sync::Arc<Flag> {
         std::sync::Arc::clone(&self.observing)
     }
 
@@ -93,7 +99,6 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
     /// A write to `key` completed.
     #[inline(always)]
     pub(crate) fn touched(&self, key: &str) {
-        self.generation.fetch_add(1, Ordering::Relaxed);
         if self.observing() {
             self.notify(key);
         }
@@ -129,15 +134,13 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
             shift: (u64::BITS - n.trailing_zeros()).min(63),
             shard_mask: n - 1,
             shards: (0..n)
-                .map(|_| Shard::new(per_shard, hasher.clone(), snap.clone()))
+                .map(|_| Shard::new(per_shard, snap.clone()))
                 .collect::<Vec<_>>()
                 .into_boxed_slice(),
             hasher,
-            key_count: CachePadded::new(AtomicUsize::new(0)),
             max_keys,
-            generation: AtomicU64::new(0),
             observer: std::sync::OnceLock::new(),
-            observing: std::sync::Arc::new(AtomicBool::new(false)),
+            observing: std::sync::Arc::new(Flag::default()),
             snap,
         }
     }
@@ -153,19 +156,25 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
         self.locate(key)
     }
 
-    pub fn prefetch_batch(&self, keys: &[&[u8]]) {
-        let n = keys.len().min(PREFETCH_BATCH);
+    #[inline(always)]
+    pub fn shard_of(&self, hash: u64) -> usize {
+        ((hash >> self.shift) as usize) & self.shard_mask
+    }
+
+    pub fn prefetch_batch(&self, keys: &[&[u8]], hashes: &mut [u64]) {
+        let n = keys.len().min(PREFETCH_BATCH).min(hashes.len());
         if n == 0 {
             return;
         }
         ebr::with_pin(|_| {
             let mut slots: [(*const shard::TaggedSlot<V>, u64); PREFETCH_BATCH] =
                 [(std::ptr::null(), 0); PREFETCH_BATCH];
-            for (slot, key) in slots.iter_mut().zip(&keys[..n]) {
+            for ((slot, key), out) in slots.iter_mut().zip(&keys[..n]).zip(hashes.iter_mut()) {
                 let Ok(k) = std::str::from_utf8(key) else {
                     continue;
                 };
                 let (h, idx) = self.locate(k);
+                *out = h;
                 let t = unsafe { self.shards.get_unchecked(idx) }.table();
                 let s = unsafe { t.slots.add((h as usize) & t.mask) };
                 prefetch_line(s);
@@ -244,9 +253,8 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
         let observed = self.observing().then(|| key.clone());
         let is_new = unsafe { self.shards.get_unchecked(idx) }.insert_hashed(key, value, h);
         if is_new {
-            self.key_count.fetch_add(1, Ordering::Relaxed);
+            self.bump(idx, true);
         }
-        self.generation.fetch_add(1, Ordering::Relaxed);
         if let Some(k) = observed {
             self.notify(&k);
         }
@@ -265,7 +273,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
                 h,
             );
         if is_new {
-            self.key_count.fetch_add(1, Ordering::Relaxed);
+            self.bump(idx, true);
         }
         self.touched(key);
         is_new
@@ -273,7 +281,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
 
     #[inline]
     pub fn try_insert(&self, key: String, value: V) -> Result<bool, Full> {
-        if self.key_count.load(Ordering::Relaxed) >= self.max_keys {
+        if self.is_full() {
             let (h, idx) = self.locate(&key);
             let exists = ebr::with_pin(|_| {
                 unsafe { self.shards.get_unchecked(idx) }
@@ -299,6 +307,15 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
         self.set_compact(key, value, || CompactKey::from_str(key))
     }
 
+    #[inline]
+    pub fn set_str_hinted(&self, key: &str, hash: Option<u64>, value: V) -> bool {
+        let (h, idx) = match hash {
+            Some(h) => (h, self.shard_of(h)),
+            None => self.locate(key),
+        };
+        self.set_located(key, h, idx, value, || CompactKey::from_str(key))
+    }
+
     fn set_compact(
         &self,
         key: &str,
@@ -306,6 +323,18 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
         key_owned: impl FnOnce() -> CompactKey,
     ) -> bool {
         let (h, idx) = self.locate(key);
+        self.set_located(key, h, idx, value, key_owned)
+    }
+
+    #[inline(always)]
+    fn set_located(
+        &self,
+        key: &str,
+        h: u64,
+        idx: usize,
+        value: V,
+        key_owned: impl FnOnce() -> CompactKey,
+    ) -> bool {
         let _guard = ebr::pin();
         let shard = unsafe { self.shards.get_unchecked(idx) };
         if let Some(existing) = shard.find(key, h) {
@@ -323,12 +352,12 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
             if was_occupied {
                 return false;
             }
-            self.key_count.fetch_add(1, Ordering::Relaxed);
+            self.bump(idx, true);
             return true;
         }
         let is_new = shard.insert_new_key(key_owned(), value, h, true);
         if is_new {
-            self.key_count.fetch_add(1, Ordering::Relaxed);
+            self.bump(idx, true);
         }
         self.touched(key);
         is_new
@@ -341,7 +370,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
         value: V,
         key_owned: impl FnOnce() -> String,
     ) -> Result<bool, Full> {
-        if self.key_count.load(Ordering::Relaxed) >= self.max_keys {
+        if self.is_full() {
             let (h, idx) = self.locate(key);
             let exists = ebr::with_pin(|_| {
                 unsafe { self.shards.get_unchecked(idx) }
@@ -359,7 +388,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
     /// byte) keys.
     #[inline]
     pub fn try_set_str(&self, key: &str, value: V) -> Result<bool, Full> {
-        if self.key_count.load(Ordering::Relaxed) >= self.max_keys {
+        if self.is_full() {
             let (h, idx) = self.locate(key);
             let exists = ebr::with_pin(|_| {
                 unsafe { self.shards.get_unchecked(idx) }
@@ -391,7 +420,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
         let value = unsafe { (*entry.value.get()).assume_init_ref().clone() };
         unsafe { (*entry.value.get()).assume_init_drop() };
         write_end(&entry.state, false);
-        self.key_count.fetch_sub(1, Ordering::Relaxed);
+        self.bump(idx, false);
         self.touched(key);
         Some(value)
     }
@@ -416,7 +445,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
         write_begin(&entry.state);
         unsafe { (*entry.value.get()).assume_init_drop() };
         write_end(&entry.state, false);
-        self.key_count.fetch_sub(1, Ordering::Relaxed);
+        self.bump(idx, false);
         self.touched(key);
         true
     }
@@ -439,7 +468,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
         write_begin(&entry.state);
         unsafe { (*entry.value.get()).assume_init_drop() };
         write_end(&entry.state, false);
-        self.key_count.fetch_sub(1, Ordering::Relaxed);
+        self.bump(idx, false);
         self.touched(key);
         Some(result)
     }
@@ -571,16 +600,15 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
             write_begin(&entry.state);
             unsafe { (*entry.value.get()).write(value) };
             write_end(&entry.state, true);
-            self.key_count.fetch_add(1, Ordering::Relaxed);
+            self.bump(idx, true);
             self.touched(&key);
             return true;
         }
         let observed = self.observing().then(|| key.clone());
         let is_new = shard.insert_new(key, value, h, false);
         if is_new {
-            self.key_count.fetch_add(1, Ordering::Relaxed);
+            self.bump(idx, true);
         }
-        self.generation.fetch_add(1, Ordering::Relaxed);
         if let Some(k) = observed {
             self.notify(&k);
         }
@@ -607,34 +635,41 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
             write_begin(&entry.state);
             unsafe { (*entry.value.get()).write(value) };
             write_end(&entry.state, true);
-            self.key_count.fetch_add(1, Ordering::Relaxed);
+            self.bump(idx, true);
             self.touched(key);
             return true;
         }
         let is_new = shard.insert_new_key(CompactKey::from_str(key), value, h, false);
         if is_new {
-            self.key_count.fetch_add(1, Ordering::Relaxed);
+            self.bump(idx, true);
         }
         self.touched(key);
         is_new
     }
 
-    /// Mutation counter over every structural/value write. Lazy indexers
-    /// compare against a stamp to decide fresh vs stale without scanning.
-    #[inline(always)]
-    pub fn generation(&self) -> u64 {
-        self.generation.load(Ordering::Relaxed)
-    }
-
     #[inline]
     pub fn len(&self) -> usize {
-        self.key_count.load(Ordering::Relaxed)
+        self.shards
+            .iter()
+            .map(|s| s.live.load(Ordering::Relaxed))
+            .fold(0usize, usize::wrapping_add)
+            .min(isize::MAX as usize)
+    }
+
+    #[inline(always)]
+    fn bump(&self, idx: usize, up: bool) {
+        let live = &unsafe { self.shards.get_unchecked(idx) }.live;
+        if up {
+            live.fetch_add(1, Ordering::Relaxed);
+        } else {
+            live.fetch_sub(1, Ordering::Relaxed);
+        }
     }
 
 /// One relaxed load; trivially false with no limit configured.
     #[inline(always)]
     pub fn is_full(&self) -> bool {
-        self.max_keys != usize::MAX && self.key_count.load(Ordering::Relaxed) >= self.max_keys
+        self.max_keys != usize::MAX && self.len() >= self.max_keys
     }
 
     /// The configured key ceiling, or `usize::MAX` when unlimited.
@@ -914,7 +949,7 @@ mod tests {
         assert!(map.len() <= KEYS);
     }
 
-    /// `key_count` has to stay in step with what is actually reachable, across
+    /// `len` has to stay in step with what is actually reachable, across
     /// the tombstone-revival path that `set` and `insert_if_absent` share.
     #[test]
     fn key_count_survives_insert_remove_revive_cycles() {

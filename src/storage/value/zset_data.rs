@@ -207,6 +207,12 @@ impl ZSetData {
             ix.insert(entry.member.clone(), score);
         }
         self.len += 1;
+        self.place(entry);
+        self.sync_index();
+    }
+
+    fn place(&mut self, entry: ZEntry) {
+        let (score, member) = (entry.score, entry.member.as_str());
         let Some(last) = self.chunks.last_mut() else {
             self.chunks.push(vec![entry]);
             return;
@@ -230,7 +236,6 @@ impl ZSetData {
             };
             self.chunks.insert(ci + 1, tail);
         }
-        self.sync_index();
     }
 
     fn remove_at(&mut self, ci: usize, ei: usize) -> ZEntry {
@@ -252,6 +257,29 @@ impl ZSetData {
     }
 
     pub fn insert(&mut self, score: f64, member: &str) -> bool {
+        if let Some(ix) = self.index.as_deref_mut() {
+            let placed = match ix.entry(SmallStr::new(member)) {
+                std::collections::hash_map::Entry::Occupied(o) => Err(*o.get()),
+                std::collections::hash_map::Entry::Vacant(v) => {
+                    let m = v.key().clone();
+                    v.insert(score);
+                    Ok(m)
+                }
+            };
+            return match placed {
+                Ok(member) => {
+                    self.len += 1;
+                    self.place(ZEntry { score, member });
+                    true
+                }
+                Err(old) => {
+                    if (old - score).abs() > f64::EPSILON {
+                        self.relocate(member, score);
+                    }
+                    false
+                }
+            };
+        }
         match self.score_of(member) {
             Some(old) => {
                 if (old - score).abs() > f64::EPSILON {

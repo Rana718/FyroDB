@@ -14,7 +14,7 @@ use super::SearchState;
 use super::VectorAttrs;
 use crate::storage::store::Store;
 use fyro_vector::hnsw::{GraphDump, HnswGraph};
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use std::sync::Arc;
 
 /// How many nodes to link before publishing a searchable partial graph
@@ -62,6 +62,7 @@ fn next_epoch() -> u64 {
 pub struct GraphEntry {
     pub graph: Arc<HnswGraph>,
     keys: RwLock<KeyMap>,
+    apply: Mutex<()>,
     /// Changes whenever the key map does: caches derived from it (the
     /// filter index's doc→vector-id table) compare against this.
     epoch: std::sync::atomic::AtomicU64,
@@ -72,7 +73,7 @@ pub struct GraphEntry {
 
 impl GraphEntry {
     fn new(graph: Arc<HnswGraph>, linked: bool) -> Self {
-        Self { graph, keys: RwLock::new(KeyMap::default()), epoch: next_epoch().into(), linked }
+        Self { graph, keys: RwLock::new(KeyMap::default()), apply: Mutex::new(()), epoch: next_epoch().into(), linked }
     }
 
     pub fn epoch(&self) -> u64 {
@@ -198,14 +199,17 @@ fn build_graph_entry(
     }
     {
         let mut km = entry.keys.write();
+        let mut vecs: Vec<(usize, Vec<f32>)> = Vec::with_capacity(expected);
         let mut next = 0usize;
         store.data.for_each(|k, val| {
             if let Some(v) = indexable(k, val) {
-                graph.prepare(next, &v);
                 km.insert(k.into(), next as u32);
+                vecs.push((next, v));
                 next += 1;
             }
         });
+        let items: Vec<(usize, &[f32])> = vecs.iter().map(|(id, v)| (*id, v.as_slice())).collect();
+        graph.prepare_batch(&items);
     }
     if !linked {
         return entry;
@@ -255,9 +259,8 @@ impl SearchState {
     ) -> Option<Arc<GraphEntry>> {
         let attrs = def.field(field).and_then(|f| f.vector.as_ref())?.clone();
         let key = (def.name.clone(), field.to_string());
-        let existing = self.graphs.lock().get(&key).cloned();
+        let existing = self.graphs.read().get(&key).cloned();
         if self.building.lock().contains_key(&key) {
-            // Partial graph of the running build (or None → exact scan).
             return existing;
         }
         let Some(entry) = existing else {
@@ -266,11 +269,16 @@ impl SearchState {
         };
         let dirty = self.vector_dirty(&def.name, field)?;
         let dirty_set: &DirtySet = &dirty.vectors[field];
+        // Fast path: no pending writes — skip the apply lock entirely.
         if dirty_set.is_clean() {
             return Some(entry);
         }
-        // One applier at a time; a waiter then finds the set drained.
-        let _apply = self.graph_build.lock();
+        let _apply = entry.apply.lock();
+        // Re-check under lock (another query may have drained it).
+        if dirty_set.is_clean() {
+            drop(_apply);
+            return Some(entry);
+        }
         match dirty_set.drain() {
             Drained::Rebuild => {
                 drop(_apply);
@@ -279,6 +287,7 @@ impl SearchState {
             }
             Drained::Keys(keys) => {
                 apply_keys(store, def, field, &attrs, &entry, keys);
+                drop(_apply);
                 Some(entry)
             }
         }
@@ -297,7 +306,7 @@ impl SearchState {
         }
         // A stale graph must not answer while its rebuild runs; queries use
         // the exact scan until the builder's first partial publish.
-        self.graphs.lock().remove(&key);
+        self.graphs.write().remove(&key);
         let store = Arc::clone(store);
         let def = Arc::clone(def);
         let field_o = field.to_string();
@@ -307,7 +316,7 @@ impl SearchState {
             let current = |ss: &SearchState| ss.def_arc(&key.0).is_some_and(|d| Arc::ptr_eq(&d, &def));
             let publish = |e: &Arc<GraphEntry>| {
                 if current(ss) {
-                    ss.graphs.lock().insert(key.clone(), Arc::clone(e));
+                    ss.graphs.write().insert(key.clone(), Arc::clone(e));
                 }
             };
             let entry = build_graph_entry(ss, &store, &def, &field_o, &attrs, &publish);
@@ -326,6 +335,7 @@ impl SearchState {
     /// until a field's first partial graph is published its KNN queries use
     /// the exact scan, so results are complete, just slower, meanwhile.
     pub fn prefetch_build(&self, store: &Arc<Store>, def: &Arc<IndexDef>) {
+        self.start_background_apply(store);
         for f in &def.fields {
             if let Some(v) = &f.vector {
                 self.spawn_build(store, def, &f.name, v);
@@ -336,12 +346,13 @@ impl SearchState {
     /// After a snapshot load: build every vector field that was not
     /// restored from its persisted graph.
     pub fn rebuild_missing(&self, store: &Arc<Store>) {
+        self.start_background_apply(store);
         for name in self.list_names() {
             let Some(def) = self.def_arc(&name) else { continue };
             for f in &def.fields {
                 let Some(v) = &f.vector else { continue };
                 let key = (def.name.clone(), f.name.clone());
-                if !self.graphs.lock().contains_key(&key) {
+                if !self.graphs.read().contains_key(&key) {
                     self.spawn_build(store, &def, &f.name, v);
                 }
             }
@@ -387,7 +398,7 @@ impl SearchState {
         if let Some(d) = self.vector_dirty(index, field) {
             d.vectors[field].reset();
         }
-        self.graphs.lock().insert((index.to_string(), field.to_string()), e);
+        self.graphs.write().insert((index.to_string(), field.to_string()), e);
         true
     }
 
@@ -396,7 +407,7 @@ impl SearchState {
     /// load). The dump compacts tombstones first.
     pub fn graphs_for_snapshot(&self) -> Vec<(String, String, Vec<(usize, Arc<str>)>, Option<GraphDump>)> {
         let graphs: Vec<((String, String), Arc<GraphEntry>)> =
-            self.graphs.lock().iter().map(|(k, v)| (k.clone(), Arc::clone(v))).collect();
+            self.graphs.read().iter().map(|(k, v)| (k.clone(), Arc::clone(v))).collect();
         let building = self.building.lock().clone();
         graphs
             .into_iter()
@@ -410,7 +421,7 @@ impl SearchState {
 
     /// Delete the cached graph for one index (used by drop/alter paths).
     pub(super) fn drop_graphs(&self, index: &str) {
-        self.graphs.lock().retain(|(name, _), _| name != index);
+        self.graphs.write().retain(|(name, _), _| name != index);
         self.building.lock().retain(|(name, _), _| name != index);
         self.filters.lock().remove(index);
     }
@@ -420,7 +431,7 @@ impl SearchState {
     }
 
     pub fn hnsw_entry(&self, index: &str, field: &str) -> Option<Arc<GraphEntry>> {
-        self.graphs.lock().get(&(index.to_string(), field.to_string())).cloned()
+        self.graphs.read().get(&(index.to_string(), field.to_string())).cloned()
     }
 
     /// RediSearch's `indexing` / `percent_indexed`: true while any vector
@@ -435,9 +446,7 @@ impl SearchState {
                 continue;
             }
             indexing = true;
-            // Clone out and release the registry lock before touching the
-            // graph's own lock: builders publish partials into `graphs`.
-            let entry = self.graphs.lock().get(&key).cloned();
+            let entry = self.graphs.read().get(&key).cloned();
             let done = entry.map_or(0, |e| e.graph.linked_len());
             let p = if num_docs == 0 { 0.0 } else { done as f64 / num_docs as f64 };
             percent = percent.min(p.min(1.0));
@@ -445,8 +454,82 @@ impl SearchState {
         (indexing, if indexing { percent } else { 1.0 })
     }
 
+    /// True when `index` has at least one settled HNSW graph with no
+    /// pending dirty keys — safe and cheap to query inline on the worker.
+    pub fn hnsw_graph_is_clean(&self, index: &str) -> bool {
+        let Some(def) = self.def_arc(index) else { return false };
+        let graphs = self.graphs.read();
+        let building = self.building.lock();
+        for f in def.fields.iter().filter(|f| f.vector.as_ref().is_some_and(|v| v.algorithm == "HNSW")) {
+            let key = (def.name.clone(), f.name.clone());
+            if building.contains_key(&key) {
+                return false;
+            }
+            let Some(entry) = graphs.get(&key) else { return false };
+            if !entry.is_linked() {
+                return false;
+            }
+            if let Some(dirty) = self.vector_dirty(&def.name, &f.name) {
+                if !dirty.vectors[&f.name].is_clean() {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
+    /// Launch a background periodic task that drains dirty keys for all
+    /// vector indexes every 50ms.  Reduces p99 query latency under mixed
+    /// read/write workloads by moving the apply work off the query path.
+    pub fn start_background_apply(&self, store: &Arc<Store>) {
+        if self.bg_apply_running.swap(true, std::sync::atomic::Ordering::AcqRel) {
+            return;
+        }
+        let store = Arc::clone(store);
+        std::thread::Builder::new()
+            .name("bg-apply".into())
+            .spawn(move || {
+                loop {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    let ss = store.search_state();
+                    ss.apply_pending_dirty(&store);
+                }
+            })
+            .ok();
+    }
+
+    fn apply_pending_dirty(&self, store: &Arc<Store>) {
+        let entries: Vec<((String, String), Arc<GraphEntry>)> =
+            self.graphs.read().iter().map(|(k, v)| (k.clone(), Arc::clone(v))).collect();
+        for ((index, field), entry) in entries {
+            if self.building.lock().contains_key(&(index.clone(), field.clone())) {
+                continue;
+            }
+            let Some(dirty) = self.vector_dirty(&index, &field) else { continue };
+            let dirty_set = &dirty.vectors[&field];
+            if dirty_set.is_clean() {
+                continue;
+            }
+            let Some(_apply) = entry.apply.try_lock() else { continue };
+            if dirty_set.is_clean() {
+                continue;
+            }
+            let Some(def) = self.def_arc(&index) else { continue };
+            let Some(attrs) = def.field(&field).and_then(|f| f.vector.clone()) else { continue };
+            match dirty_set.drain() {
+                Drained::Rebuild => {
+                    drop(_apply);
+                    self.spawn_build(store, &def, &field, &attrs);
+                }
+                Drained::Keys(keys) => {
+                    apply_keys(store, &def, &field, &attrs, &entry, keys);
+                }
+            }
+        }
+    }
+
     pub fn invalidate_graphs(&self) {
-        self.graphs.lock().clear();
+        self.graphs.write().clear();
         self.filters.lock().clear();
     }
 }

@@ -17,20 +17,26 @@ const FLAT_BATCH_MAX: usize = 32;
 pub(crate) struct FlatReq {
     q: Vec<f32>,
     k: usize,
-    done: Mutex<Option<Vec<(f32, usize)>>>,
+    ready: AtomicBool,
+    result: Mutex<Option<Vec<(f32, usize)>>>,
 }
 
-#[derive(Default)]
-pub(crate) struct FlatState {
-    scanning: bool,
-    queue: Vec<Arc<FlatReq>>,
-}
-
-/// Rendezvous for batched exact scans on one graph.
-#[derive(Default)]
+/// Rendezvous for batched exact scans on one graph.  Uses a lock-free
+/// MPSC queue (SegQueue) for submissions so concurrent submitters never
+/// contend on a single mutex.  One submitter wins the scanner role via
+/// an AtomicBool CAS; others spin-yield on their per-request `ready` flag.
 pub(crate) struct FlatBatch {
-    state: Mutex<FlatState>,
-    cv: parking_lot::Condvar,
+    queue: crossbeam_queue::SegQueue<Arc<FlatReq>>,
+    scanning: AtomicBool,
+}
+
+impl Default for FlatBatch {
+    fn default() -> Self {
+        Self {
+            queue: crossbeam_queue::SegQueue::new(),
+            scanning: AtomicBool::new(false),
+        }
+    }
 }
 
 impl HnswGraph {
@@ -273,6 +279,25 @@ impl HnswGraph {
         out: &mut Vec<(f32, u32)>,
     ) {
         out.clear();
+        // Small graphs: traversal overhead dominates — scan directly.
+        if g.len > 0 && g.len < 500 {
+            let mut heap: BinaryHeap<(Dist, u32)> = BinaryHeap::with_capacity(k + 1);
+            for id in 0..g.len as u32 {
+                if g.flag(id) & F_DELETED != 0 || !collect.accepts(g, id) {
+                    continue;
+                }
+                let d = Dist(self.dist(kern, g, q, id));
+                if heap.len() < k {
+                    heap.push((d, id));
+                } else if heap.peek().is_some_and(|top| d < top.0) {
+                    heap.pop();
+                    heap.push((d, id));
+                }
+            }
+            out.extend(heap.into_iter().map(|(Dist(d), id)| (d, id)));
+            out.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
+            return;
+        }
         let e = self.entry.load(Ordering::Acquire);
         if e == NO_ENTRY {
             return;
@@ -300,44 +325,53 @@ impl HnswGraph {
         if k == 0 {
             return Vec::new();
         }
-        let req = Arc::new(FlatReq { q: q.to_vec(), k, done: Mutex::new(None) });
-        let mut st = self.flat.state.lock();
-        st.queue.push(Arc::clone(&req));
+        let req = Arc::new(FlatReq {
+            q: q.to_vec(),
+            k,
+            ready: AtomicBool::new(false),
+            result: Mutex::new(None),
+        });
+        self.flat.queue.push(Arc::clone(&req));
         loop {
-            if let Some(r) = req.done.lock().take() {
-                return r;
+            if req.ready.load(Ordering::Acquire) {
+                return req.result.lock().take().unwrap_or_default();
             }
-            if st.scanning {
-                // Help the scanner with its chunks instead of idling on a
-                // pool slot; with every pool thread waiting here the scan
-                // would otherwise run single-threaded.
-                drop(st);
-                if !pool::global().try_run_ticket() {
-                    st = self.flat.state.lock();
-                    if st.scanning && req.done.lock().is_none() {
-                        self.flat.cv.wait_for(&mut st, std::time::Duration::from_micros(50));
-                    }
-                } else {
-                    st = self.flat.state.lock();
+            // Try to become the scanner.
+            if self.flat.scanning.compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed).is_ok() {
+                let mut batch = Vec::with_capacity(FLAT_BATCH_MAX);
+                while let Some(r) = self.flat.queue.pop() {
+                    batch.push(r);
+                    if batch.len() >= FLAT_BATCH_MAX { break; }
                 }
-                continue;
+                if batch.is_empty() {
+                    self.flat.scanning.store(false, Ordering::Release);
+                    if req.ready.load(Ordering::Acquire) {
+                        return req.result.lock().take().unwrap_or_default();
+                    }
+                    std::hint::spin_loop();
+                    continue;
+                }
+                let results = {
+                    let g = self.inner.read();
+                    self.exact_batch(&g, &batch)
+                };
+                for (r, res) in batch.iter().zip(results) {
+                    *r.result.lock() = Some(res);
+                    r.ready.store(true, Ordering::Release);
+                }
+                self.flat.scanning.store(false, Ordering::Release);
+            } else {
+                // Another thread is scanning — help with pool work or spin.
+                if !pool::global().try_run_ticket() {
+                    for _ in 0..32 {
+                        std::hint::spin_loop();
+                        if req.ready.load(Ordering::Acquire) {
+                            return req.result.lock().take().unwrap_or_default();
+                        }
+                    }
+                    std::thread::yield_now();
+                }
             }
-            // Become the scanner for everything queued so far (ours
-            // included), then hand the role to whoever is still waiting.
-            st.scanning = true;
-            let n = st.queue.len().min(FLAT_BATCH_MAX);
-            let batch: Vec<Arc<FlatReq>> = st.queue.drain(..n).collect();
-            drop(st);
-            let results = {
-                let g = self.inner.read();
-                self.exact_batch(&g, &batch)
-            };
-            for (r, res) in batch.iter().zip(results) {
-                *r.done.lock() = Some(res);
-            }
-            st = self.flat.state.lock();
-            st.scanning = false;
-            self.flat.cv.notify_all();
         }
     }
 
@@ -477,6 +511,10 @@ impl HnswGraph {
         hi: usize,
         ids: Option<&[usize]>,
     ) -> Vec<(f32, u32)> {
+        let span = if ids.is_some() { ids.unwrap().len() } else { hi - lo };
+        if self.quant == Quant::None && g.has_flat_int8() && ids.is_none() && span >= 2048 {
+            return self.scan_two_pass(kern, g, q, k, lo, hi);
+        }
         // Max-heap capped at k: the top is the current worst.
         let mut heap: BinaryHeap<(Dist, u32)> = BinaryHeap::with_capacity(k + 1);
         let push = |heap: &mut BinaryHeap<(Dist, u32)>, id: u32| {
@@ -511,6 +549,58 @@ impl HnswGraph {
                         push(&mut heap, id as u32);
                     }
                 }
+            }
+        }
+        heap.into_vec().into_iter().map(|(Dist(d), id)| (d, id)).collect()
+    }
+
+    /// Two-pass scan: first scan compact Int8 codes for top candidates,
+    /// then rerank against exact f32 vectors.
+    #[inline(always)]
+    fn scan_two_pass<K: Kernel>(
+        &self,
+        kern: K,
+        g: &Inner,
+        q: Query,
+        k: usize,
+        lo: usize,
+        hi: usize,
+    ) -> Vec<(f32, u32)> {
+        let rerank_k = (k * 4).max(32).min(hi - lo);
+        let q_maxabs = q.v.iter().fold(0f32, |m, x| m.max(x.abs()));
+        let q_scale = if q_maxabs > 0.0 { q_maxabs / 127.0 } else { 1.0 };
+        let q_codes: Vec<i8> = q.v.iter().map(|&x| (x / q_scale).round().clamp(-127.0, 127.0) as i8).collect();
+        // Pass 1: Int8 pre-filter.
+        let mut pre_heap: BinaryHeap<(Dist, u32)> = BinaryHeap::with_capacity(rerank_k + 1);
+        for id in lo..hi {
+            if g.flag(id as u32) & F_DELETED != 0 {
+                continue;
+            }
+            let stored = g.flat_int8_of(id as u32);
+            let dot = kern.dot_i8(&q_codes, stored);
+            let approx = match self.metric {
+                DistanceMetric::Cosine => -(dot as f32 * q_scale * g.flat_scale(id as u32)),
+                DistanceMetric::Ip => -(dot as f32 * q_scale * g.flat_scale(id as u32)),
+                DistanceMetric::L2 => -(dot as f32 * q_scale * g.flat_scale(id as u32)),
+            };
+            let d = Dist(approx);
+            if pre_heap.len() < rerank_k {
+                pre_heap.push((d, id as u32));
+            } else if pre_heap.peek().is_some_and(|top| d < top.0) {
+                pre_heap.pop();
+                pre_heap.push((d, id as u32));
+            }
+        }
+        // Pass 2: exact rerank.
+        let mut heap: BinaryHeap<(Dist, u32)> = BinaryHeap::with_capacity(k + 1);
+        for (_, id) in pre_heap.into_vec() {
+            g.prefetch(id);
+            let d = Dist(self.dist(kern, g, q, id));
+            if heap.len() < k {
+                heap.push((d, id));
+            } else if heap.peek().is_some_and(|top| d < top.0) {
+                heap.pop();
+                heap.push((d, id));
             }
         }
         heap.into_vec().into_iter().map(|(Dist(d), id)| (d, id)).collect()

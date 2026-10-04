@@ -4,6 +4,7 @@ use std::sync::{Arc, RwLock};
 
 pub type SnapSink<V> = Arc<dyn Fn(&str, &V) + Send + Sync>;
 
+#[repr(align(128))]
 pub(crate) struct SnapCtl<V> {
     active: AtomicBool,
     parity: AtomicU64,

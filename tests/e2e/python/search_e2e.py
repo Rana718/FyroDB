@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """End-to-end checks for incremental index maintenance and persistence.
 
-    python3 tests/search_e2e.py [path/to/fyro_db]
+    python3 tests/e2e/python/search_e2e.py [path/to/fyro_db]
 
 Starts its own server (twice: before and after a SAVE/restart).
 """
@@ -15,7 +15,7 @@ import tempfile
 import time
 
 sys.path.insert(0, os.path.dirname(__file__))
-from blocking_e2e import Client, check  # noqa: E402
+from client import Client, check  # noqa: E402
 
 BIN = sys.argv[1] if len(sys.argv) > 1 else os.path.join(
     os.environ.get("CARGO_TARGET_DIR", "target"), "release", "fyro_db")
@@ -27,11 +27,19 @@ def start(rdb):
     p = subprocess.Popen([BIN], env=dict(os.environ, FYRODB_RDB_PATH=rdb, FYRODB_PORT=str(PORT)),
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     for _ in range(100):
+        if p.poll() is not None:
+            raise RuntimeError("server exited before accepting connections")
         try:
             socket.create_connection(("127.0.0.1", PORT)).close()
             return p
         except OSError:
             time.sleep(0.05)
+    p.terminate()
+    try:
+        p.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        p.kill()
+        p.wait()
     raise SystemExit("server did not start")
 
 

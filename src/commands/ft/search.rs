@@ -450,7 +450,7 @@ fn knn_search(
         // top-k; large ones traverse the graph unfiltered and collect only
         // matches (hnswlib semantics). Unfilterable predicates (globs,
         // TTL/stale state) fall through to the keyspace scan.
-        let ef = knn.ef_runtime.unwrap_or(10).max(knn.k);
+        let ef = knn.ef_runtime.unwrap_or((knn.k * 2).max(40)).max(knn.k);
         let graph = &entry.graph;
         // Quantized graphs return candidates in estimated order: fetch a
         // deeper head and rerank it with the documents' exact vectors.
@@ -499,21 +499,29 @@ fn knn_search(
                 }
                 Some(vids) if vids.is_empty() => (Vec::new(), 0),
                 Some(vids) => {
-                    // Strategy by selectivity: tiny subsets scan exactly
-                    // (100% recall, no traversal); mid selectivity walks the
-                    // predicate subgraph with ACORN-1 two-hop expansion;
-                    // broad filters traverse freely and collect members,
-                    // widening ef until k results exist.
-                    let selectivity = vids.len() as f64 / entry.len().max(1) as f64;
-                    let r = if !entry.is_linked() || vids.len() <= 4096 || selectivity < 0.02 {
+                    // Cost-based strategy: estimate brute-force vs graph
+                    // traversal cost from the subset size, graph size, and
+                    // vector dimension to pick the cheapest path.
+                    let n_graph = entry.len().max(1);
+                    let selectivity = vids.len() as f64 / n_graph as f64;
+                    let dims = graph.dims();
+                    // Brute cost ∝ |subset| × dim (memory bandwidth bound).
+                    let brute_cost = vids.len() as f64 * dims as f64;
+                    // Graph cost ∝ ef × dim (compute bound, fewer nodes).
+                    let graph_ef = (ef.max(depth) as f64 * (1.0 / selectivity.max(0.01)).sqrt()).min(vids.len() as f64);
+                    let graph_cost = graph_ef * dims as f64 * 1.5;
+                    let use_brute = !entry.is_linked()
+                        || vids.len() <= 256
+                        || brute_cost < graph_cost;
+                    let r = if use_brute {
                         finish(graph.brute_search_ids(qv, depth, vids))
                     } else {
                         let set = fyro_vector::hnsw::IdSet::from_ids(vids);
                         let acorn = selectivity < 0.3;
                         let mut r = graph.search_in_set(qv, depth, ef.max(depth), &set, acorn);
                         let mut ef_try = ef.max(80);
-                        while r.len() < knn.k.min(vids.len()) && ef_try < vids.len().min(8192) {
-                            ef_try = (ef_try * 4).min(vids.len());
+                        while r.len() < knn.k.min(set.len()) && ef_try < set.len().min(8192) {
+                            ef_try = (ef_try * 4).min(set.len());
                             r = graph.search_in_set(qv, depth, ef_try.max(depth), &set, acorn);
                         }
                         finish(r)

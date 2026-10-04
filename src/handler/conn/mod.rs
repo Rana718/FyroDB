@@ -50,6 +50,9 @@ pub struct Conn<'a> {
     pub uid: u64,
     /// Set while the current command waits off-worker or on a key.
     pub park: Option<park::Parked>,
+    hints: [prefetch::Hint; customhash::PREFETCH_BATCH],
+    hint_n: u8,
+    pf_backoff: u8,
     topology_cache: Option<(
         u64,
         Arc<crate::cluster::Topology>,
@@ -85,6 +88,9 @@ impl<'a> Conn<'a> {
             worker,
             uid: park::next_uid(),
             park: None,
+            hints: [prefetch::Hint::default(); customhash::PREFETCH_BATCH],
+            hint_n: 0,
+            pf_backoff: 0,
             topology_cache: None,
         }
     }

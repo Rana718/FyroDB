@@ -1,4 +1,3 @@
-use std::hash::BuildHasher;
 use std::sync::atomic::Ordering;
 
 use super::CustomMap;
@@ -116,7 +115,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
                         write_begin(&entry.state);
                         unsafe { (*entry.value.get()).assume_init_drop() };
                         write_end(&entry.state, false);
-                        self.key_count.fetch_sub(1, Ordering::Relaxed);
+                        shard.live.fetch_sub(1, Ordering::Relaxed);
                         removed = true;
                         if self.observing.load(Ordering::Relaxed) {
                             self.notify(entry.key.as_str());
@@ -128,7 +127,6 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
             }
         }
         if removed {
-            self.generation.fetch_add(1, Ordering::Relaxed);
         }
     }
 
@@ -172,7 +170,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
                 write_begin(&entry.state);
                 unsafe { (*entry.value.get()).assume_init_drop() };
                 write_end(&entry.state, false);
-                self.key_count.fetch_sub(1, Ordering::Relaxed);
+                shard.live.fetch_sub(1, Ordering::Relaxed);
                 removed = true;
                 if self.observing.load(Ordering::Relaxed) {
                     self.notify(entry.key.as_str());
@@ -182,7 +180,6 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
             }
         }
         if removed {
-            self.generation.fetch_add(1, Ordering::Relaxed);
         }
         Some((end, capacity))
     }
@@ -226,7 +223,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
                 write_begin(&entry.state);
                 unsafe { (*entry.value.get()).assume_init_drop() };
                 write_end(&entry.state, false);
-                self.key_count.fetch_sub(1, Ordering::Relaxed);
+                shard.live.fetch_sub(1, Ordering::Relaxed);
                 removed += 1;
                 if self.observing.load(Ordering::Relaxed) {
                     self.notify(entry.key.as_str());
@@ -237,7 +234,6 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
             }
         }
         if removed > 0 {
-            self.generation.fetch_add(1, Ordering::Relaxed);
         }
         Some((end, capacity, removed, live))
     }
@@ -285,7 +281,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
                 unsafe { ebr::retire_raw(p.cast(), drop_raw_entry::<V>) };
                 continue;
             }
-            let h = shard.hasher.hash_one(e.key.as_str());
+            let h = stored_hash(e.state.load(Ordering::Relaxed));
             let mut i = (h as usize) & new_table.mask;
             loop {
                 let new_slot = unsafe { new_table.slots().get_unchecked(i) };
@@ -329,8 +325,9 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
             }
             shard.insert_gate.store(0, Ordering::Release);
         }
-        self.key_count.store(0, Ordering::Release);
-        self.generation.fetch_add(1, Ordering::Relaxed);
+        for shard in self.shards.iter() {
+            shard.live.store(0, Ordering::Release);
+        }
         if self.observing.load(Ordering::Relaxed)
             && let Some(o) = self.observer.get()
         {

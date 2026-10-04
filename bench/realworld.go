@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"fmt"
 	"net"
+	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -99,34 +101,29 @@ func runMix() {
 	fmt.Printf("── Mixed Workload Benchmark (%s) ───────────────\n", addrs[0])
 	fmt.Printf("clients=%d  ops/client=%d  pipeline=%d\n\n", CLIENTS, MIX_OPS_CLIENT, MIX_PIPE)
 
-	runBenchMixed()
-	flushServer()
-	runBenchIncr()
-	flushServer()
-	runBenchHash()
-	flushServer()
-	runBenchList()
-	flushServer()
-	runBenchSet()
-	flushServer()
-	runBenchZSet()
-	flushServer()
-	runBenchJson()
-	flushServer()
-	runBenchExpire()
-	flushServer()
-	runBenchHotKey()
-	flushServer()
-	runBenchQueue()
-	flushServer()
-	runBenchStream()
-	flushServer()
-	runBenchBitmap()
-	flushServer()
-	runBenchHLL()
-	flushServer()
-	runBenchGeo()
-	flushServer()
+	phases := []struct {
+		name string
+		run  func()
+	}{
+		{"mixed", runBenchMixed}, {"incr", runBenchIncr}, {"hash", runBenchHash}, {"list", runBenchList},
+		{"set", runBenchSet}, {"zset", runBenchZSet}, {"json", runBenchJson}, {"expire", runBenchExpire},
+		{"hotkey", runBenchHotKey}, {"queue", runBenchQueue}, {"stream", runBenchStream},
+		{"bitmap", runBenchBitmap}, {"hll", runBenchHLL}, {"geo", runBenchGeo},
+	}
+	only := os.Getenv("MIX_ONLY")
+	repeat := 1
+	if n, err := strconv.Atoi(os.Getenv("MIX_REPEAT")); err == nil && n > 1 {
+		repeat = n
+	}
+	for _, p := range phases {
+		if only != "" && !slices.Contains(strings.Split(only, ","), p.name) {
+			continue
+		}
+		for range repeat {
+			p.run()
+			flushServer()
+		}
+	}
 }
 
 func runMixCluster() {
@@ -809,7 +806,7 @@ func runBenchStream() {
 // BITCOUNT to verify. Ops counted = SETBIT calls.
 
 var (
-	setbitHdr  = []byte("*4\r\n$6\r\nSETBIT\r\n$")
+	setbitHdr   = []byte("*4\r\n$6\r\nSETBIT\r\n$")
 	bitcountHdr = []byte("*2\r\n$8\r\nBITCOUNT\r\n$")
 )
 
@@ -868,7 +865,7 @@ func runBenchBitmap() {
 // reads back the approximate count. Ops counted = PFADD calls.
 
 var (
-	pfaddHdr  = []byte("*3\r\n$5\r\nPFADD\r\n$")
+	pfaddHdr   = []byte("*3\r\n$5\r\nPFADD\r\n$")
 	pfcountHdr = []byte("*2\r\n$7\r\nPFCOUNT\r\n$")
 )
 

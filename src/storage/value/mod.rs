@@ -1,12 +1,14 @@
 mod collections;
 mod json_value;
+mod list;
 mod quicklist;
 mod small_str;
 mod zset_data;
 
 pub use collections::{HashInner, HashIter, SetInner, SetIter, SetMemberRef};
+pub use list::ListValue;
 pub use quicklist::QuickList;
-pub type ListInner = QuickList;
+pub type ListInner = ListValue;
 pub use json_value::JsonValue;
 pub use small_str::SmallStr;
 pub use zset_data::{ZEntry, ZSetData};
@@ -21,7 +23,7 @@ pub enum FyroDB {
     List(Box<ListInner>),
     Set(Box<SetInner>),
     ZSet(Box<ZSetData>),
-    Json(Box<SmallStr>),
+    Json(Box<str>),
     Stream(Box<crate::storage::stream::StreamData>),
 }
 
@@ -137,24 +139,24 @@ impl FyroDB {
 
     pub fn as_json_str(&self) -> Option<&str> {
         match self {
-            Self::Json(s) => Some(s.as_str()),
+            Self::Json(s) => Some(s),
             _ => None,
         }
     }
 
     pub fn parse_json(&self) -> Option<JsonValue> {
         match self {
-            Self::Json(s) => JsonValue::parse(s.as_str()),
+            Self::Json(s) => JsonValue::parse(s),
             _ => None,
         }
     }
 
     pub fn set_json(&mut self, val: JsonValue) {
-        *self = Self::Json(Box::new(SmallStr::from_string(val.to_resp_string())));
+        *self = Self::Json(val.to_resp_string().into_boxed_str());
     }
 
     pub fn set_json_str(&mut self, s: String) {
-        *self = Self::Json(Box::new(SmallStr::from_string(s)));
+        *self = Self::Json(s.into_boxed_str());
     }
 
     pub fn as_stream(&self) -> Option<&crate::storage::stream::StreamData> {
@@ -178,7 +180,7 @@ impl FyroDB {
             Self::List(l) => l.memory_bytes(),
             Self::Set(s) => s.iter().map(|m| m.len() + 24).sum(),
             Self::ZSet(z) => z.iter().map(|e| e.member.len() + 32).sum(),
-            Self::Json(_) => 256,
+            Self::Json(j) => j.len() + 16,
             Self::Stream(s) => s.memory_bytes(),
         }
     }
@@ -306,7 +308,7 @@ impl StoreValue {
     #[inline]
     pub fn list(l: VecDeque<String>) -> Self {
         Self {
-            value: FyroDB::List(Box::new(QuickList::from_strs(l.iter().map(String::as_str)))),
+            value: FyroDB::List(Box::new(ListValue::from_strs(l.iter().map(String::as_str)))),
             expires_ms: 0,
         }
     }
@@ -330,7 +332,15 @@ impl StoreValue {
     #[inline]
     pub fn json(j: JsonValue) -> Self {
         Self {
-            value: FyroDB::Json(Box::new(SmallStr::from_string(j.to_resp_string()))),
+            value: FyroDB::Json(j.to_resp_string().into_boxed_str()),
+            expires_ms: 0,
+        }
+    }
+
+    #[inline]
+    pub fn json_str(s: &str) -> Self {
+        Self {
+            value: FyroDB::Json(Box::from(s)),
             expires_ms: 0,
         }
     }
@@ -338,7 +348,7 @@ impl StoreValue {
     #[inline]
     pub fn json_raw(s: String) -> Self {
         Self {
-            value: FyroDB::Json(Box::new(SmallStr::from_string(s))),
+            value: FyroDB::Json(s.into_boxed_str()),
             expires_ms: 0,
         }
     }

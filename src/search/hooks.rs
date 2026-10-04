@@ -13,7 +13,7 @@ use parking_lot::{Mutex, RwLock};
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::hash::BuildHasher;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 type FxHashSet<K> = HashSet<K, foldhash::fast::RandomState>;
 
@@ -27,6 +27,7 @@ pub struct DirtySet {
     shards: Vec<Mutex<FxHashSet<Box<str>>>>,
     /// Too many keys (or a FLUSHALL): the consumer must rebuild.
     overflow: AtomicBool,
+    pending: AtomicUsize,
 }
 
 pub enum Drained {
@@ -39,6 +40,7 @@ impl Default for DirtySet {
         Self {
             shards: (0..SHARDS).map(|_| Mutex::new(FxHashSet::default())).collect(),
             overflow: AtomicBool::new(false),
+            pending: AtomicUsize::new(0),
         }
     }
 }
@@ -61,31 +63,38 @@ impl DirtySet {
         }
         if !s.contains(key) {
             s.insert(key.into());
+            self.pending.fetch_add(1, Ordering::Release);
         }
     }
 
     pub fn mark_all(&self) {
         self.overflow.store(true, Ordering::Release);
         for s in &self.shards {
-            s.lock().clear();
+            let mut keys = s.lock();
+            self.pending.fetch_sub(keys.len(), Ordering::AcqRel);
+            keys.clear();
         }
     }
 
     pub fn is_clean(&self) -> bool {
-        !self.overflow.load(Ordering::Acquire) && self.shards.iter().all(|s| s.lock().is_empty())
+        !self.overflow.load(Ordering::Acquire) && self.pending.load(Ordering::Acquire) == 0
     }
 
     /// Take everything recorded so far.
     pub fn drain(&self) -> Drained {
         if self.overflow.swap(false, Ordering::AcqRel) {
             for s in &self.shards {
-                s.lock().clear();
+                let mut keys = s.lock();
+                self.pending.fetch_sub(keys.len(), Ordering::AcqRel);
+                keys.clear();
             }
             return Drained::Rebuild;
         }
         let mut out = Vec::new();
         for s in &self.shards {
-            out.extend(s.lock().drain());
+            let mut keys = s.lock();
+            self.pending.fetch_sub(keys.len(), Ordering::AcqRel);
+            out.extend(keys.drain());
         }
         Drained::Keys(out)
     }
@@ -94,7 +103,9 @@ impl DirtySet {
     pub fn reset(&self) {
         self.overflow.store(false, Ordering::Release);
         for s in &self.shards {
-            s.lock().clear();
+            let mut keys = s.lock();
+            self.pending.fetch_sub(keys.len(), Ordering::AcqRel);
+            keys.clear();
         }
     }
 }
@@ -127,7 +138,7 @@ pub struct SearchHooks {
     indexes: RwLock<Vec<Arc<IndexDirty>>>,
     active: AtomicBool,
     /// The keyspace's observing flag: on exactly while an index exists.
-    observing: std::sync::OnceLock<Arc<AtomicBool>>,
+    observing: std::sync::OnceLock<Arc<customhash::Flag>>,
 }
 
 impl SearchHooks {
@@ -151,7 +162,7 @@ impl SearchHooks {
     }
 
     /// Attach the keyspace's observing flag (store construction).
-    pub fn attach(&self, flag: Arc<AtomicBool>) {
+    pub fn attach(&self, flag: Arc<customhash::Flag>) {
         let _ = self.observing.set(flag);
         self.set_active(!self.indexes.read().is_empty());
     }
@@ -202,6 +213,31 @@ impl customhash::WriteObserver for HookObserver {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn concurrent_marks_and_drains_preserve_pending_count() {
+        let dirty = Arc::new(DirtySet::default());
+        std::thread::scope(|scope| {
+            for worker in 0..4 {
+                let dirty = Arc::clone(&dirty);
+                scope.spawn(move || {
+                    for i in 0..1000 {
+                        dirty.mark(&format!("{worker}:{i}"));
+                    }
+                });
+            }
+            for _ in 0..100 {
+                let _ = dirty.drain();
+            }
+        });
+        let _ = dirty.drain();
+        assert!(dirty.is_clean());
+        assert_eq!(dirty.pending.load(Ordering::Acquire), 0);
+        dirty.mark("later");
+        assert!(!dirty.is_clean());
+        dirty.reset();
+        assert!(dirty.is_clean());
+    }
 
     #[test]
     fn dirty_set_drains_marked_keys_once() {

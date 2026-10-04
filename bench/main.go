@@ -274,6 +274,7 @@ func main() {
 		fmt.Printf("   avg RSS:     %s\n", fmtBytes(mon.avgRSS))
 		fmt.Printf("   peak CPU:    %.1f%%\n", mon.peakCPU)
 		fmt.Printf("   avg CPU:     %.1f%%\n", mon.avgCPU)
+		fmt.Println("   CPU scale:   100% = one logical CPU")
 	} else {
 		fmt.Println("   (no samples collected)")
 	}

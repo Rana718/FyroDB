@@ -5,7 +5,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -60,7 +59,6 @@ func (m *monitor) runMulti() {
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
 
-	numCPU := float64(runtime.NumCPU())
 	var rssSamples []int64
 	var cpuSamples []float64
 
@@ -94,8 +92,7 @@ func (m *monitor) runMulti() {
 
 			dt := now.Sub(prevTime).Seconds()
 			if dt > 0 {
-				ticksPerSec := float64(getClkTck())
-				cpuPct := (float64(totalCPUDelta) / ticksPerSec / dt) * 100.0 / numCPU
+				cpuPct := processCPUPercent(totalCPUDelta, float64(getClkTck()), dt)
 				cpuSamples = append(cpuSamples, cpuPct)
 				if cpuPct > m.peakCPU {
 					m.peakCPU = cpuPct
@@ -132,7 +129,6 @@ func (m *monitor) run() {
 	var prevCPU int64
 	var prevTime time.Time
 	var cpuSamples []float64
-	numCPU := float64(runtime.NumCPU())
 
 	first := sampleProc(m.pid)
 	prevCPU = first.cpuTotal
@@ -155,9 +151,7 @@ func (m *monitor) run() {
 
 			dt := s.timestamp.Sub(prevTime).Seconds()
 			if dt > 0 {
-				ticksPerSec := float64(getClkTck())
-				cpuDelta := float64(s.cpuTotal-prevCPU) / ticksPerSec
-				cpuPct := (cpuDelta / dt) * 100.0 / numCPU
+				cpuPct := processCPUPercent(s.cpuTotal-prevCPU, float64(getClkTck()), dt)
 				cpuSamples = append(cpuSamples, cpuPct)
 				if cpuPct > m.peakCPU {
 					m.peakCPU = cpuPct
@@ -480,4 +474,11 @@ func startDockerMonitor(containers []string) *monitor {
 		}
 	}()
 	return m
+}
+
+func processCPUPercent(ticks int64, ticksPerSecond, elapsedSeconds float64) float64 {
+	if ticks < 0 || ticksPerSecond <= 0 || elapsedSeconds <= 0 {
+		return 0
+	}
+	return float64(ticks) / ticksPerSecond / elapsedSeconds * 100
 }

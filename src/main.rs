@@ -14,8 +14,48 @@ use std::time::{Duration, Instant};
 #[global_allocator]
 static GLOBAL: Zmalloc = Zmalloc;
 
+#[cfg(feature = "profiling")]
+static PROFILER: std::sync::Mutex<Option<pprof::ProfilerGuard<'static>>> = std::sync::Mutex::new(None);
+
+#[cfg(feature = "profiling")]
+fn start_profiler() {
+    if env::var_os("FYRODB_PPROF").is_some() {
+        let guard = pprof::ProfilerGuardBuilder::default()
+            .frequency(997)
+            .blocklist(&["libc", "libgcc", "pthread", "vdso"])
+            .build();
+        *PROFILER.lock().unwrap() = guard.ok();
+    }
+}
+
+#[cfg(feature = "profiling")]
+fn write_profile() {
+    use std::io::Write;
+    let Some(guard) = PROFILER.lock().unwrap().take() else { return };
+    let Ok(path) = env::var("FYRODB_PPROF") else { return };
+    let Ok(report) = guard.report().build() else { return };
+    let Ok(mut f) = std::fs::File::create(&path) else { return };
+    for (frames, count) in report.data.iter() {
+        let mut line = frames.thread_name.clone();
+        for frame in frames.frames.iter().rev() {
+            for sym in frame.iter().rev() {
+                line.push(';');
+                line.push_str(&sym.name());
+                if let (Some(file), Some(no)) = (sym.filename.as_ref(), sym.lineno) {
+                    let file = file.to_string_lossy();
+                    let short = file.rsplit('/').take(2).collect::<Vec<_>>();
+                    line.push_str(&format!("@{}/{}:{no}", short.get(1).unwrap_or(&""), short[0]));
+                }
+            }
+        }
+        let _ = writeln!(f, "{line} {count}");
+    }
+}
+
 fn main() {
     let config = Config::from_env();
+    #[cfg(feature = "profiling")]
+    start_profiler();
 
     unsafe {
         let mut mask: libc::sigset_t = std::mem::zeroed();
@@ -265,6 +305,10 @@ fn expiry_loop(store: &Arc<Store>) {
     let mut defrag_slot = 0usize;
     let mut last_key_count = store.dbsize();
     let mut tick = 0u64;
+    let mut rest = Duration::ZERO;
+    let mut rest_until = Instant::now();
+    let mut cycle_seen = 0usize;
+    let mut cycle_removed = 0usize;
     let compact_if_shrunk = |last: &mut usize| {
         let cur = store.dbsize();
         if cur < *last {
@@ -314,6 +358,9 @@ fn expiry_loop(store: &Arc<Store>) {
             }
             continue;
         }
+        if Instant::now() < rest_until {
+            continue;
+        }
         let started = Instant::now();
         loop {
             let (chunk_live, next_slot, capacity, removed) =
@@ -329,6 +376,8 @@ fn expiry_loop(store: &Arc<Store>) {
                 break;
             }
             live_ttls += chunk_live;
+            cycle_seen += chunk_live + removed;
+            cycle_removed += removed;
             if next_slot < capacity {
                 slot = next_slot;
             } else {
@@ -342,6 +391,14 @@ fn expiry_loop(store: &Arc<Store>) {
                 shard += 1;
                 if shard >= shards {
                     shard = 0;
+                    if cycle_removed * 100 < cycle_seen {
+                        rest = (rest * 2).clamp(Duration::from_secs(1), Duration::from_secs(8));
+                        rest_until = Instant::now() + rest;
+                    } else {
+                        rest = Duration::ZERO;
+                    }
+                    cycle_seen = 0;
+                    cycle_removed = 0;
                     store.finish_ttl_scan(generation, live_ttls);
                     compact_if_shrunk(&mut last_key_count);
                     live_ttls = 0;
@@ -350,6 +407,10 @@ fn expiry_loop(store: &Arc<Store>) {
             }
             let seen = chunk_live + removed;
             let hot = seen > 0 && removed * 10 > seen;
+            if hot {
+                rest = Duration::ZERO;
+                rest_until = Instant::now();
+            }
             if !hot || started.elapsed() >= TICK_BUDGET || !store.has_ttl_keys() {
                 break;
             }
@@ -367,6 +428,11 @@ fn signal_loop(store: &Arc<Store>, rdb_path: &str) {
         libc::sigwait(&mask, &mut sig);
     }
     eprintln!("fyrodb: received signal {sig}, shutting down...");
+    #[cfg(feature = "profiling")]
+    let _ = std::thread::Builder::new()
+        .stack_size(64 << 20)
+        .spawn(write_profile)
+        .map(|h| h.join());
     initiate_shutdown();
     std::thread::sleep(Duration::from_millis(100));
     if let Err(e) = rdb::save(store, rdb_path) {

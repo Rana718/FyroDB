@@ -23,6 +23,7 @@ impl<'a> Conn<'a> {
     /// buffered until it unparks). Returns false on a protocol error.
     pub fn process_buffered(&mut self) -> bool {
         let mut prefetched = 0usize;
+        self.hint_n = 0;
         loop {
             if self.park.is_some() {
                 return true;
@@ -66,6 +67,7 @@ impl<'a> Conn<'a> {
                         && !self.store.cluster.enabled
                         && !self.store.at_key_capacity()
                         && is_write_run(raw)
+                        && self.next_is_same_write(raw)
                     {
                         match dispatch_write_run(self, raw) {
                             QueueRunOutcome::Done => continue,
@@ -79,6 +81,7 @@ impl<'a> Conn<'a> {
             }
         }
 
+        self.hint_n = 0;
         self.parser.release_read_buffer();
 
         true

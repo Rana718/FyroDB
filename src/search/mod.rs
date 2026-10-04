@@ -21,7 +21,7 @@ pub use schema::{canonical_dtype, DistanceMetric, FieldDef, FieldType, IndexDef,
 use crate::storage::store::Store;
 use parking_lot::Mutex;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 pub const SEARCH_MODULE_VERSION: i64 = 20811;
 
@@ -89,7 +89,7 @@ pub struct SearchState {
     version: AtomicU64,
     cursors: Mutex<CursorTable>,
     count_cache: Mutex<FxHashMap<String, (usize, u64)>>,
-    graphs: Mutex<FxHashMap<(String, String), Arc<GraphEntry>>>,
+    graphs: parking_lot::RwLock<FxHashMap<(String, String), Arc<GraphEntry>>>,
     /// Per-index attribute postings, keyed by index name.
     filters: Mutex<FxHashMap<String, Arc<parking_lot::RwLock<FilterIndex>>>>,
     /// Serializes filter-index rebuilds (one scan per generation change).
@@ -99,10 +99,11 @@ pub struct SearchState {
     /// Serializes delta applies: two concurrent queries on a stale entry
     /// used to race on duplicate node ids (and the split-RwLock graph could
     /// deadlock). A delta is cheap to wait for relative to its effect.
-    graph_build: Mutex<()>,
     pub cursor_seq: AtomicU64,
     /// Dirty-key tracking fed by the keyspace write observer.
     pub(crate) hooks: Arc<hooks::SearchHooks>,
+    /// Whether the background dirty-key applicator has been launched.
+    bg_apply_running: AtomicBool,
 }
 
 #[derive(Default)]
@@ -153,13 +154,13 @@ impl SearchState {
             version: AtomicU64::new(0),
             cursors: Mutex::new(CursorTable::default()),
             count_cache: Mutex::default(),
-            graphs: Mutex::default(),
+            graphs: parking_lot::RwLock::default(),
             filters: Mutex::default(),
             filter_build: Mutex::default(),
             building: Mutex::default(),
-            graph_build: Mutex::default(),
             cursor_seq: AtomicU64::new(1),
             hooks: Arc::default(),
+            bg_apply_running: AtomicBool::new(false),
         }
     }
 

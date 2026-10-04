@@ -95,7 +95,7 @@ pub(super) fn doc_fields(
             }
         }
         (FyroDB::Json(s), StorageKind::Json) => {
-            let text = s.as_str();
+            let text = &**s;
             let Some(json) = crate::storage::value::JsonValue::parse(text) else {
                 return out_fields;
             };
@@ -155,7 +155,7 @@ pub(super) fn tag_cond(val: &StoreValue, def: &IndexDef, field: &str, any: &[Str
                 .any(|t| any.iter().any(|a| tag_match(a, t)))
         }),
         (FyroDB::Json(s), StorageKind::Json) => {
-            let Some(json) = crate::storage::value::JsonValue::parse(s.as_str()) else {
+            let Some(json) = crate::storage::value::JsonValue::parse(&**s) else {
                 return !negated;
             };
             match json.get_path(&format!("$.{field}")) {
@@ -192,7 +192,7 @@ pub(super) fn text_cond(
             }),
         },
         (FyroDB::Json(s), StorageKind::Json) => {
-            let text = s.as_str();
+            let text = &**s;
             terms.iter().all(|t| text_match(t, text))
         }
         _ => false,
@@ -226,7 +226,7 @@ pub(super) fn doc_scalar(val: &StoreValue, def: &IndexDef, field: &str) -> Optio
             .and_then(|v| std::str::from_utf8(v.as_bytes()).ok())
             .and_then(|s| s.parse().ok()),
         (FyroDB::Json(s), _) => {
-            let json = crate::storage::value::JsonValue::parse(s.as_str())?;
+            let json = crate::storage::value::JsonValue::parse(&**s)?;
             let v = json.get_path(&format!("$.{field}"))?;
             match v {
                 crate::storage::value::JsonValue::Number(n) => Some(*n),

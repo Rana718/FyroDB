@@ -90,14 +90,43 @@ impl Store {
     pub fn lpop(&self, key: &str, count: usize) -> Result<Vec<String>, &'static str> {
         self.list_write(key, |l| {
             let n = count.min(l.len());
-            (0..n).filter_map(|_| l.pop_front()).collect()
+            let mut v = Vec::with_capacity(n);
+            v.extend((0..n).map_while(|_| l.pop_front()));
+            v
         })
     }
 
     pub fn rpop(&self, key: &str, count: usize) -> Result<Vec<String>, &'static str> {
         self.list_write(key, |l| {
             let n = count.min(l.len());
-            (0..n).filter_map(|_| l.pop_back()).collect()
+            let mut v = Vec::with_capacity(n);
+            v.extend((0..n).map_while(|_| l.pop_back()));
+            v
+        })
+    }
+
+    pub fn pop_many_to_buf(
+        &self,
+        key: &str,
+        count: usize,
+        from_back: bool,
+        out: &mut Vec<u8>,
+    ) -> Result<usize, &'static str> {
+        self.list_write(key, |l| {
+            let mut n = 0;
+            while n < count {
+                let write = |s: &str| crate::utils::resp::write_bulk(out, s);
+                let hit = if from_back {
+                    l.pop_back_with(write)
+                } else {
+                    l.pop_front_with(write)
+                };
+                if hit.is_none() {
+                    break;
+                }
+                n += 1;
+            }
+            n
         })
     }
 

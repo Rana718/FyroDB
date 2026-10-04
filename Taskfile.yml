@@ -66,6 +66,12 @@ tasks:
          - ./scripts/test.sh {{.CLI_ARGS}}
 
    # ── Measurement: latency, memory, ANN recall, micro-benchmarks ───────────
+   test-e2e:
+      desc: Run isolated Python end-to-end suites
+      cmds:
+         - cargo build --release
+         - python3 tests/e2e/python/run.py {{.CLI_ARGS}}
+
    bench-local:
       desc: "Start a throwaway FyroDB, run the Go bench with CLI_ARGS, stop it (e.g. task bench-local -- -m lat)"
       cmds:

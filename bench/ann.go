@@ -388,8 +388,11 @@ func ftInfoField(conn *net.TCPConn, r *bufio.Reader, idx, field string) string {
 	arr, _ := reply.([]any)
 	for i := 0; i+1 < len(arr); i += 2 {
 		if k, ok := arr[i].(string); ok && k == field {
-			if v, ok := arr[i+1].(string); ok {
+			switch v := arr[i+1].(type) {
+			case string:
 				return v
+			case int64:
+				return strconv.FormatInt(v, 10)
 			}
 		}
 	}
@@ -399,11 +402,14 @@ func ftInfoField(conn *net.TCPConn, r *bufio.Reader, idx, field string) string {
 func waitIndexed(conn *net.TCPConn, r *bufio.Reader, idx string) {
 	deadline := time.Now().Add(30 * time.Minute)
 	for time.Now().Before(deadline) {
-		if v := ftInfoField(conn, r, idx, "indexing"); v != "1" {
+		indexing := ftInfoField(conn, r, idx, "indexing")
+		pct, err := strconv.ParseFloat(ftInfoField(conn, r, idx, "percent_indexed"), 64)
+		if indexing != "1" && (err != nil || pct >= 1) {
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+	panic("indexing did not finish before the benchmark deadline: " + idx)
 }
 
 // readValue decodes one RESP2 reply into string / int64 / []any / nil.

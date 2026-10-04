@@ -185,12 +185,6 @@ impl Store {
         self.data.len()
     }
 
-    /// Keyspace mutation counter; lazy indexers stamp against it to decide
-    /// fresh vs stale without scanning (see `GraphEntry::gen`).
-    pub fn generation(&self) -> u64 {
-        self.data.generation()
-    }
-
     pub fn type_of(&self, key: &str) -> &'static str {
         match self.data.get_ref(key) {
             Some(e) if !e.is_expired_precise() && !e.value.is_drained_collection() => e.value.type_name(),

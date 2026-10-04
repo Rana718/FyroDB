@@ -27,7 +27,7 @@ use std::cell::{RefCell, UnsafeCell};
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 mod quant;
 mod search;
@@ -177,6 +177,11 @@ pub(crate) struct Inner {
     /// of a whole bulk build), so links are chosen with exact distances;
     /// released once linked — only codes stay resident.
     raw: Vec<Option<Box<[f32]>>>,
+    /// For `Quant::None` graphs with FLAT scans: packed Int8 codes and
+    /// per-vector scales for a two-pass pre-filter scan.  Lazily populated
+    /// by `prepare`/`prepare_batch` on unquantized graphs.
+    flat_int8: Vec<i8>,
+    flat_scales: Vec<f32>,
 }
 
 impl Inner {
@@ -185,6 +190,22 @@ impl Inner {
         debug_assert!((id as usize) < self.len);
         // SAFETY: ids < len; blocks hold at least len * stride words.
         unsafe { (self.blocks.as_ptr() as *mut u32).add(id as usize * self.stride) }
+    }
+
+    #[inline(always)]
+    fn flat_int8_of(&self, id: u32) -> &[i8] {
+        let off = id as usize * self.dims;
+        &self.flat_int8[off..off + self.dims]
+    }
+
+    #[inline(always)]
+    fn flat_scale(&self, id: u32) -> f32 {
+        self.flat_scales[id as usize]
+    }
+
+    #[inline]
+    fn has_flat_int8(&self) -> bool {
+        !self.flat_int8.is_empty()
     }
 
     /// The f32 vector of `id` (unquantized graphs only).
@@ -390,6 +411,12 @@ pub struct HnswGraph {
     count: AtomicUsize,
     pending: AtomicUsize,
     deleted: AtomicUsize,
+    /// Effective ef during bulk build; ramped from 32 to `ef_construction`.
+    build_ef: AtomicUsize,
+    /// Cached level-0 entry hints: up to 16 spatially diverse nodes used as
+    /// starting points for level-0 inserts, avoiding the greedy descent
+    /// through upper HNSW layers for the 99.94% of nodes at level 0.
+    entry_hints: Mutex<Vec<u32>>,
     flat: search::FlatBatch,
 }
 
@@ -481,6 +508,8 @@ impl HnswGraph {
                 upper: Vec::new(),
                 free: Vec::new(),
                 raw: Vec::new(),
+                flat_int8: Vec::new(),
+                flat_scales: Vec::new(),
             }),
             entry: AtomicU64::new(NO_ENTRY),
             entry_lock: Mutex::new(()),
@@ -488,6 +517,8 @@ impl HnswGraph {
             count: AtomicUsize::new(0),
             pending: AtomicUsize::new(0),
             deleted: AtomicUsize::new(0),
+            build_ef: AtomicUsize::new(ef_construction.clamp(1, 10_000)),
+            entry_hints: Mutex::new(Vec::new()),
             flat: search::FlatBatch::default(),
         }
     }
@@ -680,6 +711,24 @@ impl HnswGraph {
 
     /// Pre-size storage for `n` node slots so a bulk load does not pay
     /// the arena's growth slack (up to 1.5× while ids arrive one by one).
+    fn encode_flat_int8(g: &mut Inner, key_id: usize, vector: &[f32]) {
+        let dims = g.dims;
+        let needed = (key_id + 1) * dims;
+        if g.flat_int8.len() < needed {
+            g.flat_int8.resize(needed, 0);
+        }
+        if g.flat_scales.len() <= key_id {
+            g.flat_scales.resize(key_id + 1, 0.0);
+        }
+        let maxabs = vector.iter().fold(0f32, |m, x| m.max(x.abs()));
+        let scale = if maxabs > 0.0 { maxabs / 127.0 } else { 1.0 };
+        g.flat_scales[key_id] = scale;
+        let codes = &mut g.flat_int8[key_id * dims..(key_id + 1) * dims];
+        for (c, &x) in codes.iter_mut().zip(vector) {
+            *c = (x / scale).round().clamp(-127.0, 127.0) as i8;
+        }
+    }
+
     pub fn reserve(&self, n: usize) {
         let mut g = self.inner.write();
         let lines = n * g.stride / 16;
@@ -739,7 +788,9 @@ impl HnswGraph {
         // SAFETY: exclusive lock; the block belongs to `id`.
         let payload = unsafe { std::slice::from_raw_parts_mut(g.base(id), pay) };
         quant::encode(self.quant, self.rot.as_ref(), &self.book.read(), self.metric, vector, payload);
-        if self.quant != Quant::None {
+        if self.quant == Quant::None {
+            Self::encode_flat_int8(&mut g, key_id, vector);
+        } else {
             if g.raw.len() <= key_id {
                 g.raw.resize(key_id + 1, None);
             }
@@ -764,6 +815,105 @@ impl HnswGraph {
         self.count.fetch_add(1, Ordering::AcqRel);
         self.pending.fetch_add(1, Ordering::AcqRel);
         lvl
+    }
+
+    /// Batch variant of `prepare`: takes the write lock once to allocate all
+    /// slots, then encodes vectors in parallel on the thread pool.
+    pub fn prepare_batch(&self, items: &[(usize, &[f32])]) {
+        if items.is_empty() {
+            return;
+        }
+        let max_id = items.iter().map(|&(id, _)| id).max().unwrap();
+        let levels: Vec<usize> = items.iter().map(|&(id, _)| self.random_level(id)).collect();
+        {
+            let mut g = self.inner.write();
+            assert!(items.iter().all(|&(_, v)| v.len() == g.dims), "dimension mismatch");
+            self.grow(&mut g, max_id);
+            for (i, &(key_id, _)) in items.iter().enumerate() {
+                let id = key_id as u32;
+                let prev = g.flag(id);
+                let fresh = prev & F_DELETED != 0;
+                if !fresh {
+                    continue;
+                }
+                let lvl = levels[i];
+                let (cnt, _) = g.links(id, 0, self.m, self.m0);
+                cnt.store(0, Ordering::Relaxed);
+                g.levels[key_id] = lvl as u8;
+                g.upper[key_id] = (0..lvl * (self.m + 1)).map(|_| AtomicU32::new(0)).collect();
+                if prev & F_TOMB != 0 {
+                    self.deleted.fetch_sub(1, Ordering::AcqRel);
+                } else if let Some(pos) = g.free.iter().position(|&f| f == id) {
+                    g.free.swap_remove(pos);
+                }
+                g.flags[key_id].store(F_PENDING, Ordering::Release);
+                self.count.fetch_add(1, Ordering::AcqRel);
+                self.pending.fetch_add(1, Ordering::AcqRel);
+            }
+            if self.quant == Quant::None {
+                let needed = (max_id + 1) * g.dims;
+                if g.flat_int8.len() < needed {
+                    g.flat_int8.resize(needed, 0);
+                }
+                if g.flat_scales.len() <= max_id {
+                    g.flat_scales.resize(max_id + 1, 0.0);
+                }
+            } else {
+                let max = max_id + 1;
+                if g.raw.len() < max {
+                    g.raw.resize(max, None);
+                }
+                for &(key_id, v) in items {
+                    g.raw[key_id] = Some(v.into());
+                }
+            }
+        }
+        // Encode payloads in parallel under a read lock — each thread writes
+        // to non-overlapping per-node memory regions.
+        {
+            let g = self.inner.read();
+            let book = self.book.read();
+            let rot = self.rot.as_ref();
+            let quant = self.quant;
+            let metric = self.metric;
+            let pay = g.pay;
+            let dims = g.dims;
+            let next = AtomicUsize::new(0);
+            pool::global().parallel(pool::global().threads().max(1), |_| {
+                loop {
+                    let i = next.fetch_add(1, Ordering::Relaxed);
+                    if i >= items.len() {
+                        break;
+                    }
+                    let (key_id, v) = items[i];
+                    // SAFETY: each thread writes to a distinct node's payload.
+                    let payload = unsafe { std::slice::from_raw_parts_mut(g.base(key_id as u32), pay) };
+                    quant::encode(quant, rot, &book, metric, v, payload);
+                    if quant == Quant::None {
+                        // SAFETY: each thread writes to a non-overlapping range.
+                        let codes = unsafe {
+                            std::slice::from_raw_parts_mut(
+                                g.flat_int8.as_ptr() as *mut i8,
+                                g.flat_int8.len(),
+                            )
+                        };
+                        let scales = unsafe {
+                            std::slice::from_raw_parts_mut(
+                                g.flat_scales.as_ptr() as *mut f32,
+                                g.flat_scales.len(),
+                            )
+                        };
+                        let maxabs = v.iter().fold(0f32, |m, x| m.max(x.abs()));
+                        let scale = if maxabs > 0.0 { maxabs / 127.0 } else { 1.0 };
+                        scales[key_id] = scale;
+                        let slot = &mut codes[key_id * dims..(key_id + 1) * dims];
+                        for (c, &x) in slot.iter_mut().zip(v) {
+                            *c = (x / scale).round().clamp(-127.0, 127.0) as i8;
+                        }
+                    }
+                }
+            });
+        }
     }
 
     /// Link structure of every live node, for persistence. Tombstones are
@@ -999,32 +1149,49 @@ impl HnswGraph {
         let _m = self.maint.lock();
         let pool = pool::global();
         let threads = threads.clamp(1, pool.threads().max(1)).min(ids.len());
+        let ef_max = self.ef_construction;
+        // Only ramp for large bulk builds; small builds use full ef.
+        let ramp = ids.len() >= 10_000;
+        let ef_min = if ramp { (ef_max / 4).max(16) } else { ef_max };
+        const RAMP_END: usize = 5_000;
         // Seed serially: parallel inserters need a connected core to search.
         let seed = ids.len().min(threads * 32);
+        self.build_ef.store(ef_min, Ordering::Relaxed);
         {
             let g = self.inner.read();
             with_scratch(|sc| self.link_batch(&g, sc, &ids[..seed]));
+            self.refresh_entry_hints(&g);
         }
         let mut done = seed;
         progress(done);
         let chunk = (threads * 512).max(4096);
         while done < ids.len() {
+            if ramp {
+                let ef = if done >= RAMP_END {
+                    ef_max
+                } else {
+                    ef_min + (ef_max - ef_min) * done / RAMP_END
+                };
+                self.build_ef.store(ef, Ordering::Relaxed);
+            }
             let part = &ids[done..(done + chunk).min(ids.len())];
             let next = AtomicUsize::new(0);
             let g = self.inner.read();
             pool.parallel(threads, |_| {
                 with_scratch(|sc| loop {
-                    let i = next.fetch_add(8, Ordering::Relaxed);
+                    let i = next.fetch_add(64, Ordering::Relaxed);
                     if i >= part.len() {
                         break;
                     }
-                    self.link_batch(&g, sc, &part[i..(i + 8).min(part.len())]);
+                    self.link_batch(&g, sc, &part[i..(i + 64).min(part.len())]);
                 })
             });
+            self.refresh_entry_hints(&g);
             drop(g);
             done += part.len();
             progress(done);
         }
+        self.build_ef.store(ef_max, Ordering::Relaxed);
         self.release_raw(ids);
     }
 
@@ -1088,14 +1255,34 @@ impl HnswGraph {
             enc = self.encode_query(raw);
             Query { v: raw, norm: 1.0, enc: &enc }
         };
-        let mut cur_d = self.dist(k, g, q, cur);
-        for level in (lvl + 1..=top).rev() {
-            (cur, cur_d) = self.greedy(k, g, sc, q, cur, cur_d, level);
+        let mut cur_d;
+        if lvl == 0 && top > 0 {
+            let hints = self.entry_hints.lock();
+            if hints.len() >= 4 {
+                cur_d = self.dist(k, g, q, cur);
+                for &h in hints.iter() {
+                    if h != id {
+                        let d = self.dist(k, g, q, h);
+                        if d < cur_d { cur = h; cur_d = d; }
+                    }
+                }
+            } else {
+                cur_d = self.dist(k, g, q, cur);
+                for level in (1..=top).rev() {
+                    (cur, cur_d) = self.greedy(k, g, sc, q, cur, cur_d, level);
+                }
+            }
+        } else {
+            cur_d = self.dist(k, g, q, cur);
+            for level in (lvl + 1..=top).rev() {
+                (cur, cur_d) = self.greedy(k, g, sc, q, cur, cur_d, level);
+            }
         }
         let mut w = std::mem::take(&mut sc.layer);
         let mut sel = std::mem::take(&mut sc.sel);
         for level in (0..=lvl.min(top)).rev() {
-            self.search_layer(k, g, sc, q, &[(cur_d, cur)], self.ef_construction, level, Collect::Build, &mut w);
+            let ef = self.build_ef.load(Ordering::Relaxed);
+            self.search_layer(k, g, sc, q, &[(cur_d, cur)], ef, level, Collect::Build, &mut w);
             w.retain(|&(_, n)| n != id);
             if let Some(&(d, n)) = w.first() {
                 (cur_d, cur) = (d, n);
@@ -1127,6 +1314,20 @@ impl HnswGraph {
         if prev & F_PENDING != 0 {
             self.pending.fetch_sub(1, Ordering::AcqRel);
         }
+    }
+
+    fn refresh_entry_hints(&self, g: &Inner) {
+        const NUM_HINTS: usize = 16;
+        let linked: Vec<u32> = (0..g.len as u32)
+            .filter(|&id| g.flag(id) & (F_PENDING | F_DELETED) == 0)
+            .collect();
+        if linked.len() < NUM_HINTS {
+            *self.entry_hints.lock() = linked;
+            return;
+        }
+        let step = linked.len() / NUM_HINTS;
+        let hints: Vec<u32> = (0..NUM_HINTS).map(|i| linked[i * step]).collect();
+        *self.entry_hints.lock() = hints;
     }
 
     /// Add `new` to `n`'s list at `level`; on overflow re-select the list
@@ -1356,13 +1557,15 @@ impl HnswGraph {
             g.levels[id as usize] = 0;
             g.free.push(id);
         }
-        let _ = self.deleted.fetch_update(Ordering::AcqRel, Ordering::Acquire, |d| Some(d.saturating_sub(freed.len())));
+        let _ = self.deleted.try_update(Ordering::AcqRel, Ordering::Acquire, |d| Some(d.saturating_sub(freed.len())));
         // A freed entry point is replaced by the highest live node.
         let e = self.entry.load(Ordering::Acquire);
         if e != NO_ENTRY && g.flag(unpack(e).0) & F_DELETED != 0 {
             let best = (0..g.len as u32).filter(|&i| g.flag(i) == 0).max_by_key(|&i| g.levels[i as usize]);
             self.entry.store(best.map_or(NO_ENTRY, |i| pack(i, g.level(i))), Ordering::Release);
         }
+        drop(g);
+        self.refresh_entry_hints(&self.inner.read());
         freed.len()
     }
 

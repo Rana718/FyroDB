@@ -7,10 +7,71 @@ import (
 	"math"
 	"math/rand/v2"
 	"net"
+	"os"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
+
+func vecTopK(vecs []float32, q []float32, k int, keep func(int) bool) []int {
+	type hit struct {
+		id int
+		d  float32
+	}
+	var qn float32
+	for _, x := range q {
+		qn += x * x
+	}
+	hits := make([]hit, 0, len(vecs)/VEC_DIM)
+	for id := 0; id*VEC_DIM < len(vecs); id++ {
+		if keep != nil && !keep(id) {
+			continue
+		}
+		v := vecs[id*VEC_DIM : (id+1)*VEC_DIM]
+		var dot, vn float32
+		for i, x := range v {
+			dot += x * q[i]
+			vn += x * x
+		}
+		hits = append(hits, hit{id, 1 - dot/float32(math.Sqrt(float64(qn*vn)))})
+	}
+	slices.SortFunc(hits, func(a, b hit) int {
+		switch {
+		case a.d < b.d:
+			return -1
+		case a.d > b.d:
+			return 1
+		}
+		return a.id - b.id
+	})
+	out := make([]int, 0, k)
+	for _, h := range hits[:min(k, len(hits))] {
+		out = append(out, h.id)
+	}
+	return out
+}
+
+func vecReplyIDs(reply any) []int {
+	arr, _ := reply.([]any)
+	var ids []int
+	for i := 1; i < len(arr); i++ {
+		key, ok := arr[i].(string)
+		if !ok || !strings.HasPrefix(key, vecKeyPrefix) {
+			continue
+		}
+		if id, err := strconv.Atoi(key[len(vecKeyPrefix):]); err == nil {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
+func vecRecall(conn *net.TCPConn, r *bufio.Reader, cmd []byte, want []int) float64 {
+	writeFull(conn, cmd)
+	return recallAt(vecReplyIDs(readValue(r)), want, VEC_K)
+}
 
 const (
 	VEC_DIM       = 768
@@ -216,6 +277,7 @@ func runVector() {
 	// ── Vector load (pipelined HSET with binary blobs) ──────────────────────
 	var keyBuf [32]byte
 	vecBuf := make([]byte, VEC_DIM*4)
+	vecs := make([]float32, 0, VEC_DOCS*VEC_DIM)
 	loadStart := time.Now()
 	sent := 0
 	out := make([]byte, 0, VEC_LOAD_PIPE*(VEC_DIM*4+128))
@@ -227,6 +289,9 @@ func runVector() {
 			key := append(keyBuf[:0], vecKeyPrefix...)
 			key = appendLen(key, id)
 			f32bytes(rng, vecBuf)
+			for i := range VEC_DIM {
+				vecs = append(vecs, math.Float32frombits(binary.LittleEndian.Uint32(vecBuf[i*4:])))
+			}
 			out = appendArrayHdr(out, 10)
 			out = appendBulkStr(out, "HSET")
 			out = appendBulk(out, key)
@@ -257,9 +322,21 @@ func runVector() {
 
 	// ── KNN search ───────────────────────────────────────────────────────────
 	qvec := make([]byte, VEC_DIM*4)
+	qf := make([]float32, VEC_DIM)
 	for i := range VEC_DIM {
-		binary.LittleEndian.PutUint32(qvec[i*4:], math.Float32bits(rng.Float32()*2-1))
+		qf[i] = rng.Float32()*2 - 1
+		binary.LittleEndian.PutUint32(qvec[i*4:], math.Float32bits(qf[i]))
 	}
+	gtAll := vecTopK(vecs, qf, VEC_K, nil)
+	gtA := vecTopK(vecs, qf, VEC_K, func(id int) bool { return id%3 == 0 })
+	vecs = nil
+	efClause := ""
+	efLabel := "server default"
+	if ef := os.Getenv("VEC_EF"); ef != "" {
+		efClause = " EF_RUNTIME " + ef
+		efLabel = ef
+	}
+	recalls := map[string]float64{}
 	buildSearchOn := func(idx, query string) []byte {
 		out := appendArrayHdr(nil, 15)
 		out = appendBulkStr(out, "FT.SEARCH")
@@ -295,6 +372,7 @@ func runVector() {
 	}
 	knnElapsed := time.Since(knnStart)
 	recordResult("Vector KNN-10", int64(VEC_QUERIES), knnElapsed)
+	recalls["flat"] = vecRecall(conn, r, knnCmd, gtAll)
 
 	// ── Filtered KNN (tag pre-filter) ───────────────────────────────────────
 	fknnCmd := buildSearchOn(vecIndexName, "(@category:{a})=>[KNN 10 @embedding $v AS score]")
@@ -303,12 +381,13 @@ func runVector() {
 		skipReply(r)
 	}
 	fknnStart := time.Now()
-	for range VEC_QUERIES/2 {
+	for range VEC_QUERIES / 2 {
 		writeFull(conn, fknnCmd)
 		skipReply(r)
 	}
 	fknnElapsed := time.Since(fknnStart)
 	recordResult("Vector KNN-10 +tag filter", int64(VEC_QUERIES/2), fknnElapsed)
+	recalls["flat+tag"] = vecRecall(conn, r, fknnCmd, gtA)
 
 	// ── Tag+numeric filter only ─────────────────────────────────────────────
 	filCmd := buildSearchOn(vecIndexName, "@category:{a} @views:[50 150]")
@@ -317,7 +396,7 @@ func runVector() {
 		skipReply(r)
 	}
 	filStart := time.Now()
-	for range VEC_QUERIES/2 {
+	for range VEC_QUERIES / 2 {
 		writeFull(conn, filCmd)
 		skipReply(r)
 	}
@@ -433,7 +512,7 @@ func runVector() {
 	}
 	hBuildElapsed := createHnsw(vecIndexName+"H", 16, 100)
 
-	hnnCmd := buildSearchOn(vecIndexName+"H", "*=>[KNN 10 @embedding $v AS score]")
+	hnnCmd := buildSearchOn(vecIndexName+"H", "*=>[KNN 10 @embedding $v"+efClause+" AS score]")
 	for i := 20; i >= 0; i-- {
 		writeFull(conn, hnnCmd)
 		skipReply(r)
@@ -445,11 +524,12 @@ func runVector() {
 	}
 	hnnElapsed := time.Since(hnnStart)
 	recordResult("Vector HNSW KNN-10", int64(VEC_QUERIES), hnnElapsed)
+	recalls["hnsw"] = vecRecall(conn, r, hnnCmd, gtAll)
 
 	// Same corpus, doubled connectivity: M=32 doubles level-0 edges and
 	// EF_CONSTRUCTION=200 widens the candidate search during the build.
 	h32BuildElapsed := createHnsw(vecIndexName+"H32", 32, 200)
-	h32Cmd := buildSearchOn(vecIndexName+"H32", "*=>[KNN 10 @embedding $v AS score]")
+	h32Cmd := buildSearchOn(vecIndexName+"H32", "*=>[KNN 10 @embedding $v"+efClause+" AS score]")
 	for range 20 {
 		writeFull(conn, h32Cmd)
 		skipReply(r)
@@ -461,6 +541,7 @@ func runVector() {
 	}
 	h32Elapsed := time.Since(h32Start)
 	recordResult("Vector HNSW M=32 KNN-10", int64(VEC_QUERIES), h32Elapsed)
+	recalls["hnsw M=32"] = vecRecall(conn, r, h32Cmd, gtAll)
 
 	vecCommand(conn, []byte("FT.DROPINDEX"), []byte(vecIndexName), []byte("DD"))
 	mustOK(r)
@@ -479,4 +560,8 @@ func runVector() {
 	fmt.Printf("filtered latency:  %.2f ms/q\n", fknnElapsed.Seconds()*1000/float64(VEC_QUERIES/2))
 	fmt.Printf("text latency:      %.3f ms/q\n", termElapsed.Seconds()*1000/float64(VEC_QUERIES/2))
 	fmt.Printf("conc. throughput:  %s q/s\n", fmtRate(float64(perClient*concN)/concElapsed.Seconds()))
+	fmt.Printf("hnsw ef_runtime:   %s\n", efLabel)
+	for _, k := range []string{"flat", "flat+tag", "hnsw", "hnsw M=32"} {
+		fmt.Printf("recall@10 %-9s %.3f\n", k+":", recalls[k])
+	}
 }
