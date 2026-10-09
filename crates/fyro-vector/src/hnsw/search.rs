@@ -310,7 +310,19 @@ impl HnswGraph {
         for level in (1..=top).rev() {
             (cur, cur_d) = self.greedy(kern, g, sc, q, cur, cur_d, level);
         }
-        self.search_layer(kern, g, sc, q, &[(cur_d, cur)], ef, 0, collect, out);
+        let mut eps_buf: Vec<(f32, u32)> = Vec::with_capacity(4);
+        eps_buf.push((cur_d, cur));
+        if g.len >= 2000 {
+            let stride = g.len / 3;
+            for s in 1..3usize {
+                let hint = (stride * s) as u32;
+                if hint != cur && (g.flag(hint) & F_DELETED == 0) {
+                    let d = self.dist(kern, g, q, hint);
+                    eps_buf.push((d, hint));
+                }
+            }
+        }
+        self.search_layer(kern, g, sc, q, &eps_buf, ef, 0, collect, out);
         out.truncate(k);
     }
 
@@ -579,6 +591,9 @@ impl HnswGraph {
         // Pass 1: Int8 pre-filter.
         let mut pre_heap: BinaryHeap<(Dist, u32)> = BinaryHeap::with_capacity(rerank_k + 1);
         for id in lo..hi {
+            if id + 16 < hi {
+                g.prefetch_flat_int8((id + 16) as u32);
+            }
             if g.flag(id as u32) & F_DELETED != 0 {
                 continue;
             }
@@ -645,8 +660,8 @@ impl HnswGraph {
         let mut pre_heaps: Vec<BinaryHeap<(Dist, u32)>> =
             rerank_ks.iter().map(|&rk| BinaryHeap::with_capacity(rk + 1)).collect();
         for id in lo..hi {
-            if id + 4 < hi {
-                g.prefetch((id + 4) as u32);
+            if id + 16 < hi {
+                g.prefetch_flat_int8((id + 16) as u32);
             }
             let id = id as u32;
             if g.flag(id) & F_DELETED != 0 {
@@ -715,9 +730,9 @@ impl HnswGraph {
             if id >= g.len || g.flag(id as u32) & F_DELETED != 0 {
                 continue;
             }
-            if let Some(&next) = ids.get(i + 4) {
+            if let Some(&next) = ids.get(i + 16) {
                 if next < g.len {
-                    g.prefetch(next as u32);
+                    g.prefetch_flat_int8(next as u32);
                 }
             }
             let stored = g.flat_int8_of(id as u32);

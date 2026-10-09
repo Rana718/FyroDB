@@ -283,6 +283,24 @@ impl Inner {
             _mm_prefetch(self.base(id).add(self.pay) as *const i8, _MM_HINT_T0);
         }
     }
+
+    #[inline(always)]
+    fn prefetch_flat_int8(&self, id: u32) {
+        if self.flat_int8.is_empty() {
+            return;
+        }
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            use std::arch::x86_64::{_MM_HINT_T0, _mm_prefetch};
+            let p = self.flat_int8.as_ptr().add(id as usize * self.dims);
+            let bytes = self.dims.min(1024);
+            let mut off = 0;
+            while off < bytes {
+                _mm_prefetch(p.add(off) as *const i8, _MM_HINT_T0);
+                off += 64;
+            }
+        }
+    }
 }
 
 /// Persisted link structure (see `HnswGraph::dump`).
@@ -1511,6 +1529,13 @@ impl HnswGraph {
         out.clear();
         out.extend(res.drain().map(|(Dist(d), id)| (d, id)));
         out.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
+        const SCRATCH_CAP_MAX: usize = 512;
+        if cand.capacity() > SCRATCH_CAP_MAX * 2 {
+            cand.shrink_to(SCRATCH_CAP_MAX);
+        }
+        if res.capacity() > SCRATCH_CAP_MAX * 2 {
+            res.shrink_to(SCRATCH_CAP_MAX);
+        }
         sc.cand = cand;
         sc.res = res;
         sc.links = links;
