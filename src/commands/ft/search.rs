@@ -450,7 +450,7 @@ fn knn_search(
         // top-k; large ones traverse the graph unfiltered and collect only
         // matches (hnswlib semantics). Unfilterable predicates (globs,
         // TTL/stale state) fall through to the keyspace scan.
-        let ef = knn.ef_runtime.unwrap_or((knn.k * 2).max(40)).max(knn.k);
+        let ef = knn.ef_runtime.unwrap_or((knn.k * 4).max(100)).max(knn.k);
         let graph = &entry.graph;
         // Quantized graphs return candidates in estimated order: fetch a
         // deeper head and rerank it with the documents' exact vectors.

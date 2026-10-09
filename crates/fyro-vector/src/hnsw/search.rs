@@ -51,7 +51,7 @@ impl HnswGraph {
     pub fn rerank_depth(&self, k: usize, ef: usize) -> usize {
         match self.quant {
             Quant::None => k,
-            Quant::Int8 => (k * 2).max(k + 5).min(ef.max(k)),
+            Quant::Int8 => ef.max(k * 2),
             Quant::RaBitQ => (k * 16).max(ef).max(k),
         }
     }
@@ -424,6 +424,9 @@ impl HnswGraph {
         lo: usize,
         hi: usize,
     ) -> Vec<Vec<(f32, u32)>> {
+        if self.quant == Quant::None && g.has_flat_int8() && (hi - lo) >= 2048 {
+            return self.scan_batch_two_pass(kern, g, queries, valid, lo, hi);
+        }
         let mut heaps: Vec<BinaryHeap<(Dist, u32)>> =
             queries.iter().map(|(_, k)| BinaryHeap::with_capacity(k + 1)).collect();
         for id in lo..hi {
@@ -512,8 +515,11 @@ impl HnswGraph {
         ids: Option<&[usize]>,
     ) -> Vec<(f32, u32)> {
         let span = if ids.is_some() { ids.unwrap().len() } else { hi - lo };
-        if self.quant == Quant::None && g.has_flat_int8() && ids.is_none() && span >= 2048 {
-            return self.scan_two_pass(kern, g, q, k, lo, hi);
+        if self.quant == Quant::None && g.has_flat_int8() && span >= 256 {
+            return match ids {
+                None => self.scan_two_pass(kern, g, q, k, lo, hi),
+                Some(id_slice) => self.scan_ids_two_pass(kern, g, q, k, &id_slice[lo..hi]),
+            };
         }
         // Max-heap capped at k: the top is the current worst.
         let mut heap: BinaryHeap<(Dist, u32)> = BinaryHeap::with_capacity(k + 1);
@@ -589,6 +595,139 @@ impl HnswGraph {
             } else if pre_heap.peek().is_some_and(|top| d < top.0) {
                 pre_heap.pop();
                 pre_heap.push((d, id as u32));
+            }
+        }
+        // Pass 2: exact rerank.
+        let mut heap: BinaryHeap<(Dist, u32)> = BinaryHeap::with_capacity(k + 1);
+        for (_, id) in pre_heap.into_vec() {
+            g.prefetch(id);
+            let d = Dist(self.dist(kern, g, q, id));
+            if heap.len() < k {
+                heap.push((d, id));
+            } else if heap.peek().is_some_and(|top| d < top.0) {
+                heap.pop();
+                heap.push((d, id));
+            }
+        }
+        heap.into_vec().into_iter().map(|(Dist(d), id)| (d, id)).collect()
+    }
+
+    /// Two-pass batched scan: Int8 pre-filter for all queries in one arena sweep,
+    /// then per-query exact rerank of the shortlisted candidates.
+    #[allow(clippy::too_many_arguments)]
+    #[inline(always)]
+    fn scan_batch_two_pass<K: Kernel>(
+        &self,
+        kern: K,
+        g: &Inner,
+        queries: &[(Query, usize)],
+        valid: &[bool],
+        lo: usize,
+        hi: usize,
+    ) -> Vec<Vec<(f32, u32)>> {
+        let nq = queries.len();
+        let rerank_ks: Vec<usize> = queries.iter().map(|(_, k)| (k * 4).max(32).min(hi - lo)).collect();
+        // Encode all query vectors to Int8 once.
+        let q_info: Vec<(Vec<i8>, f32)> = queries
+            .iter()
+            .zip(valid.iter())
+            .map(|((q, _), &v)| {
+                if !v {
+                    return (Vec::new(), 0.0);
+                }
+                let q_maxabs = q.v.iter().fold(0f32, |m, x| m.max(x.abs()));
+                let q_scale = if q_maxabs > 0.0 { q_maxabs / 127.0 } else { 1.0 };
+                let codes = q.v.iter().map(|&x| (x / q_scale).round().clamp(-127.0, 127.0) as i8).collect();
+                (codes, q_scale)
+            })
+            .collect();
+        // Pass 1: Int8 pre-filter — single pass over arena, all queries share each vector load.
+        let mut pre_heaps: Vec<BinaryHeap<(Dist, u32)>> =
+            rerank_ks.iter().map(|&rk| BinaryHeap::with_capacity(rk + 1)).collect();
+        for id in lo..hi {
+            if id + 4 < hi {
+                g.prefetch((id + 4) as u32);
+            }
+            let id = id as u32;
+            if g.flag(id) & F_DELETED != 0 {
+                continue;
+            }
+            let stored = g.flat_int8_of(id);
+            let x_scale = g.flat_scale(id);
+            for i in 0..nq {
+                if !valid[i] {
+                    continue;
+                }
+                let (ref q_codes, q_scale) = q_info[i];
+                let dot = kern.dot_i8(q_codes, stored);
+                let approx = Dist(-(dot as f32 * q_scale * x_scale));
+                let heap = &mut pre_heaps[i];
+                let rk = rerank_ks[i];
+                if heap.len() < rk {
+                    heap.push((approx, id));
+                } else if heap.peek().is_some_and(|top| approx < top.0) {
+                    heap.pop();
+                    heap.push((approx, id));
+                }
+            }
+        }
+        // Pass 2: exact rerank per query.
+        pre_heaps
+            .into_iter()
+            .zip(queries.iter().zip(valid.iter()))
+            .map(|(pre_heap, ((q, k), &v))| {
+                if !v {
+                    return Vec::new();
+                }
+                let mut heap: BinaryHeap<(Dist, u32)> = BinaryHeap::with_capacity(k + 1);
+                for (_, id) in pre_heap.into_vec() {
+                    g.prefetch(id);
+                    let d = Dist(self.dist(kern, g, *q, id));
+                    if heap.len() < *k {
+                        heap.push((d, id));
+                    } else if heap.peek().is_some_and(|top| d < top.0) {
+                        heap.pop();
+                        heap.push((d, id));
+                    }
+                }
+                heap.into_vec().into_iter().map(|(Dist(d), id)| (d, id)).collect()
+            })
+            .collect()
+    }
+
+    /// Two-pass scan over an explicit id subset: Int8 pre-filter then exact rerank.
+    #[inline(always)]
+    fn scan_ids_two_pass<K: Kernel>(
+        &self,
+        kern: K,
+        g: &Inner,
+        q: Query,
+        k: usize,
+        ids: &[usize],
+    ) -> Vec<(f32, u32)> {
+        let rerank_k = (k * 4).max(32).min(ids.len());
+        let q_maxabs = q.v.iter().fold(0f32, |m, x| m.max(x.abs()));
+        let q_scale = if q_maxabs > 0.0 { q_maxabs / 127.0 } else { 1.0 };
+        let q_codes: Vec<i8> = q.v.iter().map(|&x| (x / q_scale).round().clamp(-127.0, 127.0) as i8).collect();
+        // Pass 1: Int8 pre-filter over the id subset.
+        let mut pre_heap: BinaryHeap<(Dist, u32)> = BinaryHeap::with_capacity(rerank_k + 1);
+        for (i, &id) in ids.iter().enumerate() {
+            if id >= g.len || g.flag(id as u32) & F_DELETED != 0 {
+                continue;
+            }
+            if let Some(&next) = ids.get(i + 4) {
+                if next < g.len {
+                    g.prefetch(next as u32);
+                }
+            }
+            let stored = g.flat_int8_of(id as u32);
+            let dot = kern.dot_i8(&q_codes, stored);
+            let approx = Dist(-(dot as f32 * q_scale * g.flat_scale(id as u32)));
+            if pre_heap.len() < rerank_k {
+                pre_heap.push((approx, id as u32));
+            } else if pre_heap.peek().is_some_and(|top| approx < top.0) {
+                pre_heap.pop();
+                pre_heap.push((approx, id as u32));
             }
         }
         // Pass 2: exact rerank.
