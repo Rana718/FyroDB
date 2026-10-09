@@ -1,10 +1,3 @@
-//! FT.* (search module) command layer: index management, query
-//! execution, and aggregate/cursor commands.
-//!
-//! Layout: `index` (CREATE/INFO/DROP/ALTER/ALIAS/CONFIG), `search`
-//! (FT.SEARCH: options, scan, KNN, range), `doc` (per-document field
-//! access + predicate matching), `aggregate` (FT.AGGREGATE/FT.CURSOR).
-
 mod aggregate;
 mod hybrid;
 mod doc;
@@ -64,11 +57,7 @@ mod tests {
         xs.iter().flat_map(|x| x.to_le_bytes()).collect()
     }
 
-    // Unfiltered KNN streams the contiguous index (`brute_search`);
-    // filtered KNN re-scans the keyspace and applies `cond_matches`. The
-    // refactor split these into separate paths, so this pins that the tag
-    // filter actually restricts the vector results (a dropped predicate
-    // would return the nearest vector regardless of tag).
+    // Regression: filtered KNN must not return docs that fail the tag predicate.
     #[test]
     fn filtered_knn_respects_tag_predicate() {
         let store = Arc::new(Store::with_config(4, usize::MAX));

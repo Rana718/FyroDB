@@ -1,13 +1,3 @@
-//! Write hooks feeding incremental index maintenance.
-//!
-//! The keyspace notifies [`SearchHooks`] after every mutation while at
-//! least one index exists. Each index keeps one [`DirtySet`] per consumer
-//! (every vector field's graph, and the attribute postings); a write to a
-//! key under the index's prefixes lands in all of them. Consumers drain
-//! their set at query time and re-read just those keys, so an index stays
-//! current in O(changed keys) instead of rescanning the keyspace whenever
-//! anything, anywhere, was written.
-
 use super::{FxHashMap, IndexDef};
 use parking_lot::{Mutex, RwLock};
 use std::collections::HashSet;

@@ -1,5 +1,3 @@
-//! Cluster metadata and routing primitives.
-
 mod config;
 mod failure;
 mod hash;

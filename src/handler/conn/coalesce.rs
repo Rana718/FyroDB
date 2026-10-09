@@ -1,7 +1,3 @@
-//! Pipelined-run coalescing: same-key queue/write runs, SET+EXPIRE
-//! pairs and same-channel PUBLISH runs executed under one lock with
-//! per-command replies synthesized exactly (see ARCHITECTURE.md).
-
 use super::*;
 
 /// Max same-key queue commands per coalesced run (one lock acquisition).

@@ -1,5 +1,3 @@
-//! aarch64 NEON kernels (NEON is baseline on aarch64: no detection needed).
-
 use std::arch::aarch64::*;
 
 #[inline]

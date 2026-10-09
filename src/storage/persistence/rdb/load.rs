@@ -1,5 +1,3 @@
-//! Snapshot loader (lenient or strict truncation policy) and decoder.
-
 use super::*;
 
 pub fn load(store: &Store, path: &str) -> io::Result<usize> {

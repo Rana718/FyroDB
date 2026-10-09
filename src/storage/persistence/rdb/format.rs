@@ -1,5 +1,3 @@
-//! Wire format: type tags, load bounds, and primitive read/write helpers.
-
 use super::*;
 
 pub(super) const MAGIC: &[u8; 4] = b"FLDB";

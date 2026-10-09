@@ -1,9 +1,7 @@
-//! AVX-512 kernels (F + BW + VNNI): 16 f32 lanes per FMA with masked tails,
-//! and int8 dot products through `vpdpwssd` (i16 pair multiply-accumulate
-//! fused into one instruction).
-
 use std::arch::x86_64::*;
 
+/// # Safety
+/// Caller must ensure AVX-512F is available.
 #[inline]
 #[target_feature(enable = "avx512f")]
 pub unsafe fn dot(a: &[f32], b: &[f32]) -> f32 {
@@ -30,7 +28,8 @@ pub unsafe fn dot(a: &[f32], b: &[f32]) -> f32 {
     }
 }
 
-/// Squared Euclidean distance.
+/// # Safety
+/// Caller must ensure AVX-512F is available.
 #[inline]
 #[target_feature(enable = "avx512f")]
 pub unsafe fn l2sq(a: &[f32], b: &[f32]) -> f32 {
@@ -60,8 +59,8 @@ pub unsafe fn l2sq(a: &[f32], b: &[f32]) -> f32 {
     }
 }
 
-/// Σ a·b over int8 codes: sign-extend 32 bytes to i16, then one
-/// `vpdpwssd` multiplies pairs and accumulates into i32 lanes.
+/// # Safety
+/// Caller must ensure AVX-512F, BW, and VNNI are available.
 #[inline]
 #[target_feature(enable = "avx512f,avx512bw,avx512vnni")]
 pub unsafe fn dot_i8(a: &[i8], b: &[i8]) -> i32 {
@@ -95,7 +94,8 @@ pub unsafe fn dot_i8(a: &[i8], b: &[i8]) -> i32 {
     }
 }
 
-/// Bit-plane popcount dot for RaBitQ: Σ_j 2^j · popcount(code ∧ plane_j).
+/// # Safety
+/// Caller must ensure AVX-512F and VPOPCNTDQ are available.
 #[inline]
 #[target_feature(enable = "avx512f,avx512vpopcntdq")]
 pub unsafe fn masked_popcount_sum(code: &[u64], planes: &[u64], nplanes: usize) -> u64 {

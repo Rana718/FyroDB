@@ -115,7 +115,7 @@ pub(super) fn ft_hybrid(parts: &[&str], binaries: &[(usize, Vec<u8>)], store: &A
         return resp::write_store_err(out, "ERR vector index is still building");
     };
 
-    let mut fused: std::collections::HashMap<String, f64> = Default::default();
+    let mut fused: std::collections::HashMap<String, f64, foldhash::fast::RandomState> = Default::default();
     match combine {
         Combine::Rrf { constant } => {
             for list in [&text_hits, &vec_hits] {

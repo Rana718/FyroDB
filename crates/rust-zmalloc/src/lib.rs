@@ -1,6 +1,3 @@
-//! GlobalAlloc wrapper with memory tracking, RSS reporting, purge, and
-//! raw helpers for EBR. Backend: mimalloc (default), `system`, `jemalloc`.
-
 use std::alloc::{GlobalAlloc, Layout};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -157,7 +154,8 @@ pub fn fragmentation_ratio() -> f64 {
     rss_bytes_inner() as f64 / allocated as f64
 }
 
-/// Raw allocation helper for EBR-managed objects.
+/// # Safety
+/// Caller must handle null return (allocation failure) and free with matching layout.
 #[inline]
 pub unsafe fn alloc_raw(layout: Layout) -> *mut u8 {
     let ptr = backend_alloc(layout);
@@ -167,7 +165,8 @@ pub unsafe fn alloc_raw(layout: Layout) -> *mut u8 {
     ptr
 }
 
-/// Raw zeroed allocation; tables of null slots otherwise pay a manual fill.
+/// # Safety
+/// Caller must handle null return and free with matching layout.
 #[inline]
 pub unsafe fn alloc_raw_zeroed(layout: Layout) -> *mut u8 {
     let ptr = backend_alloc_zeroed(layout);
@@ -177,6 +176,8 @@ pub unsafe fn alloc_raw_zeroed(layout: Layout) -> *mut u8 {
     ptr
 }
 
+/// # Safety
+/// `ptr` must have been allocated with the same layout via `alloc_raw` or `alloc_raw_zeroed`.
 #[inline]
 pub unsafe fn dealloc_raw(ptr: *mut u8, layout: Layout) {
     if !ptr.is_null() {

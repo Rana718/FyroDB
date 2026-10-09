@@ -1,5 +1,3 @@
-//! Process memory introspection: allocator counters, RSS, cgroup limit.
-
 pub fn rss_bytes() -> usize {
     rust_zmalloc::resident_memory()
 }

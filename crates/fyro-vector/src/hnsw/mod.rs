@@ -1,24 +1,3 @@
-//! HNSW graph (Malkov & Yashunin, TPAMI 2018) with an hnswlib-style layout.
-//!
-//! Level 0 lives in one cache-line-aligned arena of fixed-stride blocks:
-//!
-//! ```text
-//! block(id) = [ vector: dims × f32 | norm: f32 | count: u32 | links: M0 × u32 | pad ]
-//! ```
-//!
-//! so a distance evaluation and the following neighbor expansion touch
-//! adjacent lines. Upper levels are sparse (≈1/M of nodes) and live in
-//! per-node boxes. Link slots are atomics: inserters run in parallel under
-//! the shared structural lock, each holding only the per-node lock of the
-//! list it rewrites, and readers never lock (a reader may observe a list
-//! mid-rewrite; every id it can see is a valid prepared node — the hnswlib
-//! contract). The structural `RwLock` is taken exclusively only to grow the
-//! arena (`prepare`) and to recycle compacted ids.
-//!
-//! Hot loops are generic over [`Kernel`] and entered through per-ISA
-//! wrappers compiled with that ISA's target features, so the distance
-//! kernel inlines into the traversal instead of being called per node.
-
 use crate::DistanceMetric;
 use crate::kernels::{self, Isa, Kernel};
 use crate::pool;
@@ -80,26 +59,21 @@ impl Ord for Dist {
     }
 }
 
-/// Per-thread traversal scratch: epoch-stamped visited table (marking is
-/// one store, clearing is free), both heaps, and the candidate/selection
-/// buffers used while linking. Nothing in the hot path allocates once
-/// these have grown to the working size.
+// epoch-stamped visited table: mark = one store, clear = free. Zero hot-path allocs.
 struct Scratch {
     stamps: Vec<u32>,
     epoch: u32,
     cand: BinaryHeap<Reverse<(Dist, u32)>>,
     res: BinaryHeap<(Dist, u32)>,
     links: Vec<u32>,
-    /// Layer search output (insert path).
     layer: Vec<(f32, u32)>,
-    /// Heuristic output for the node being inserted.
     sel: Vec<(f32, u32)>,
-    /// Overflow candidates when pruning a neighbor's list.
     over: Vec<(f32, u32)>,
-    /// Heuristic output for a pruned neighbor list.
     over_sel: Vec<(f32, u32)>,
-    /// Heuristic rejects (refill pool for keepPrunedConnections).
     rejected: Vec<(f32, u32)>,
+    q_int8: Vec<i8>,
+    acorn_hop: Vec<u32>,
+    acorn_frontier: Vec<u32>,
 }
 
 impl Scratch {
@@ -115,6 +89,9 @@ impl Scratch {
             over: Vec::new(),
             over_sel: Vec::new(),
             rejected: Vec::new(),
+            q_int8: Vec::new(),
+            acorn_hop: Vec::new(),
+            acorn_frontier: Vec::new(),
         }
     }
 
@@ -296,7 +273,7 @@ impl Inner {
             let bytes = self.dims.min(1024);
             let mut off = 0;
             while off < bytes {
-                _mm_prefetch(p.add(off) as *const i8, _MM_HINT_T0);
+                _mm_prefetch(p.add(off), _MM_HINT_T0);
                 off += 64;
             }
         }
@@ -436,6 +413,7 @@ pub struct HnswGraph {
     /// through upper HNSW layers for the 99.94% of nodes at level 0.
     entry_hints: Mutex<Vec<u32>>,
     flat: search::FlatBatch,
+    last_shrink: AtomicUsize,
 }
 
 #[inline(always)]
@@ -461,11 +439,13 @@ fn splitmix(mut z: u64) -> u64 {
 /// detected ISA, so every kernel call inlines into the loop.
 macro_rules! isa_dispatch {
     ($vis:vis fn $name:ident => $generic:ident ($($arg:ident : $ty:ty),*) -> $ret:ty) => {
+        #[allow(clippy::too_many_arguments)]
         $vis fn $name(&self, $($arg: $ty),*) -> $ret {
             match kernels::isa() {
                 #[cfg(target_arch = "x86_64")]
                 Isa::Avx2(k) => {
                     #[target_feature(enable = "avx2,fma")]
+                    #[allow(clippy::too_many_arguments)]
                     unsafe fn avx2(this: &HnswGraph, k: kernels::Avx2, $($arg: $ty),*) -> $ret {
                         this.$generic(k, $($arg),*)
                     }
@@ -475,6 +455,7 @@ macro_rules! isa_dispatch {
                 #[cfg(target_arch = "x86_64")]
                 Isa::Avx512(k) => {
                     #[target_feature(enable = "avx512f,avx512bw,avx512vnni,avx512vpopcntdq,avx2,fma")]
+                    #[allow(clippy::too_many_arguments)]
                     unsafe fn avx512(this: &HnswGraph, k: kernels::Avx512, $($arg: $ty),*) -> $ret {
                         this.$generic(k, $($arg),*)
                     }
@@ -538,6 +519,7 @@ impl HnswGraph {
             build_ef: AtomicUsize::new(ef_construction.clamp(1, 10_000)),
             entry_hints: Mutex::new(Vec::new()),
             flat: search::FlatBatch::default(),
+            last_shrink: AtomicUsize::new(0),
         }
     }
 
@@ -683,10 +665,7 @@ impl HnswGraph {
         quant::encode_query(self.quant, self.rot.as_ref(), &self.book.read(), self.metric, v)
     }
 
-    /// RaBitQ: fit the centroid codebook from a sample of the vectors about
-    /// to be inserted. Only honored while the graph is empty (codes already
-    /// stored were encoded against the old codebook). Returns the number of
-    /// centroids in use.
+    // Only honored while graph is empty — existing codes are tied to the old codebook.
     pub fn train(&self, sample: &[Vec<f32>]) -> usize {
         if self.quant != Quant::RaBitQ || self.node_count() > 0 {
             return self.book.read().centroids.len();
@@ -727,8 +706,6 @@ impl HnswGraph {
         ((-u.ln() * self.ml) as usize).min(MAX_LEVEL)
     }
 
-    /// Pre-size storage for `n` node slots so a bulk load does not pay
-    /// the arena's growth slack (up to 1.5× while ids arrive one by one).
     fn encode_flat_int8(g: &mut Inner, key_id: usize, vector: &[f32]) {
         let dims = g.dims;
         let needed = (key_id + 1) * dims;
@@ -786,10 +763,6 @@ impl HnswGraph {
         g.len = n;
     }
 
-    /// Store `vector` for `key_id`, unlinked. Follow with `link_one` or a
-    /// `build_links` pass (FLAT indexes never link). Rewriting a live id
-    /// replaces its vector in place and keeps its edges; callers normally
-    /// tombstone the old id and use a fresh one.
     pub fn prepare(&self, key_id: usize, vector: &[f32]) -> usize {
         self.prepare_at_level(key_id, vector, None)
     }
@@ -1001,12 +974,8 @@ impl HnswGraph {
         self.entry.store(pick.map_or(NO_ENTRY, |i| pack(i, g.level(i))), Ordering::Release);
     }
 
-    /// A copy of this graph renumbered in reverse Cuthill–McKee order (BFS
-    /// from the entry, neighbors by ascending degree, reversed) with every
-    /// adjacency list sorted by new id, so nodes a search visits together
-    /// sit in nearby blocks (Coleman et al., NeurIPS'22: up to ~40% faster
-    /// queries). Tombstones are dropped. Returns the graph and the
-    /// old→new id map (`u32::MAX` for dropped ids).
+    // Reverse Cuthill-McKee reorder: cache-adjacent nodes, ~40% faster queries.
+    // Tombstones dropped; returns new graph + old→new id map (u32::MAX = dropped).
     pub fn reordered(&self) -> (HnswGraph, Vec<u32>) {
         if self.deleted_len() > 0 {
             self.compact();
@@ -1211,6 +1180,23 @@ impl HnswGraph {
         }
         self.build_ef.store(ef_max, Ordering::Relaxed);
         self.release_raw(ids);
+        {
+            let count = self.count.load(Ordering::Relaxed);
+            let last = self.last_shrink.load(Ordering::Relaxed);
+            let by_batch = ids.len() >= 1000;
+            let by_milestone = count >= 1024 && count.leading_zeros() != last.leading_zeros();
+            if by_batch || by_milestone {
+                self.last_shrink.store(count, Ordering::Relaxed);
+                let mut g = self.inner.write();
+                g.blocks.shrink_to_fit();
+                g.flags.shrink_to_fit();
+                g.levels.shrink_to_fit();
+                g.locks.shrink_to_fit();
+                g.upper.shrink_to_fit();
+                g.flat_int8.shrink_to_fit();
+                g.flat_scales.shrink_to_fit();
+            }
+        }
     }
 
     /// Drop the exact vectors of linked `ids` (quantized graphs keep only
@@ -1336,15 +1322,19 @@ impl HnswGraph {
 
     fn refresh_entry_hints(&self, g: &Inner) {
         const NUM_HINTS: usize = 16;
-        let linked: Vec<u32> = (0..g.len as u32)
-            .filter(|&id| g.flag(id) & (F_PENDING | F_DELETED) == 0)
-            .collect();
-        if linked.len() < NUM_HINTS {
-            *self.entry_hints.lock() = linked;
+        let n = g.len;
+        let mut hints = Vec::with_capacity(NUM_HINTS);
+        if n == 0 {
+            *self.entry_hints.lock() = hints;
             return;
         }
-        let step = linked.len() / NUM_HINTS;
-        let hints: Vec<u32> = (0..NUM_HINTS).map(|i| linked[i * step]).collect();
+        let step = (n / NUM_HINTS).max(1);
+        for i in 0..NUM_HINTS {
+            let id = ((i * step).min(n - 1)) as u32;
+            if g.flag(id) & (F_PENDING | F_DELETED) == 0 {
+                hints.push(id);
+            }
+        }
         *self.entry_hints.lock() = hints;
     }
 
@@ -1385,12 +1375,8 @@ impl HnswGraph {
         sc.over_sel = over_sel;
     }
 
-    /// Malkov Algorithm 4 over `cands` (ascending by distance to the base
-    /// node): keep a candidate only if it is closer to the base than to
-    /// every already-kept neighbor, spreading edges across directions
-    /// instead of clumping them inside one cluster. Rejects then fill any
-    /// remaining slots (`keepPrunedConnections`) so sparse regions keep
-    /// their degree.
+    // Malkov Alg 4: keep only candidates closer to base than to any kept neighbor.
+    // Rejects fill remaining slots so sparse regions maintain degree.
     #[inline(always)]
     fn select_heuristic<K: Kernel>(
         &self,
@@ -1551,10 +1537,7 @@ impl HnswGraph {
         self.compact()
     }
 
-    /// Unlink every tombstone: each live list that points at a deleted
-    /// node is re-selected (heuristic) from its surviving edges plus the
-    /// deleted neighbors' edges — hnswlib's repair — then the freed ids
-    /// join the free list for `alloc_ids`.
+    // hnswlib repair: re-select edges around tombstones; freed ids join the free list.
     pub fn compact(&self) -> usize {
         let _m = self.maint.lock();
         let freed: Vec<u32> = {
@@ -1589,6 +1572,7 @@ impl HnswGraph {
             let best = (0..g.len as u32).filter(|&i| g.flag(i) == 0).max_by_key(|&i| g.levels[i as usize]);
             self.entry.store(best.map_or(NO_ENTRY, |i| pack(i, g.level(i))), Ordering::Release);
         }
+        g.free.shrink_to_fit();
         drop(g);
         self.refresh_entry_hints(&self.inner.read());
         freed.len()

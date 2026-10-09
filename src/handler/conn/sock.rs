@@ -1,6 +1,3 @@
-//! Socket I/O: drain reads into the parser, route each parsed command
-//! (coalesced runs first), flush the write buffer.
-
 use super::*;
 
 impl<'a> Conn<'a> {

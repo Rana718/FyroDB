@@ -1,12 +1,3 @@
-//! Key waiters for blocking commands (BLPOP, BLMOVE, BZPOPMIN, XREAD BLOCK…).
-//!
-//! A connection that must wait registers one waiter per key it blocks on.
-//! Writes that can satisfy a waiter (`push`, `zadd`, `xadd`, …) call
-//! `signal(key)`; with nobody blocked that is a single relaxed load. A
-//! signal wakes every waiter on the key through its worker's notifier; each
-//! woken connection retries its command on its own worker, and the ones
-//! that lose the race simply stay registered.
-
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;

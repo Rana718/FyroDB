@@ -6,19 +6,12 @@ use std::sync::{Arc, Condvar, Mutex, OnceLock};
 
 type Job = Box<dyn FnOnce() + Send + 'static>;
 
+#[derive(Default)]
 struct Queues {
     high: VecDeque<Job>,
     low: VecDeque<Job>,
 }
 
-impl Default for Queues {
-    fn default() -> Self {
-        Queues {
-            high: VecDeque::new(),
-            low: VecDeque::new(),
-        }
-    }
-}
 
 pub struct Pool {
     tickets: SegQueue<Job>,
@@ -162,7 +155,7 @@ impl Pool {
                 }
                 std::hint::spin_loop();
                 i = i.wrapping_add(1);
-                if i % 64 == 0 && start.elapsed() >= SPIN {
+                if i.is_multiple_of(64) && start.elapsed() >= SPIN {
                     break;
                 }
             }

@@ -1,5 +1,3 @@
-//! Snapshot writer, single-value encoder, periodic background save.
-
 use super::*;
 
 fn write_record(w: &mut impl Write, key: &str, val: &StoreValue) -> io::Result<()> {

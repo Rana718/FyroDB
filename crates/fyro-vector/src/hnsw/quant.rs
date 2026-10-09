@@ -1,19 +1,3 @@
-//! Compressed vector payloads for graph traversal.
-//!
-//! - `Int8`: per-vector symmetric scalar quantization (scale = max|x|/127),
-//!   the scheme Redis Vector Sets default to. 4× smaller than f32, and
-//!   distance is one int8 dot product (`vpdpwssd` / `vpmaddwd`).
-//! - `RaBitQ` (Gao & Long, SIGMOD'24): each vector's residual from its
-//!   nearest codebook centroid is normalized, rotated by a randomized
-//!   Hadamard transform and stored as sign bits plus a few scalars;
-//!   `<o, q>` is estimated from bit-plane popcounts against a 4-bit
-//!   quantized rotated query. ~20-30× smaller than f32. Centering matters:
-//!   uncentered, every vector of a far-off cluster points the same way
-//!   from the origin and 1-bit directions cannot tell neighbors apart.
-//!
-//! Both are approximate: search returns candidates in estimated order and
-//! the caller reranks the head with exact vectors.
-
 use crate::DistanceMetric;
 use crate::kernels::Kernel;
 
@@ -164,10 +148,7 @@ fn fwht(a: &mut [f32]) {
     }
 }
 
-/// Randomized Hadamard rotation `P = (H D3)(H D2)(H D1) / dp^{3/2}`:
-/// orthogonal, O(d log d), and mixes coordinates well enough that sign
-/// bits of rotated unit vectors are unbiased estimators (the RaBitQ
-/// construction with a fast structured rotation instead of a dense one).
+// Randomized Hadamard: orthogonal, O(d log d), makes sign bits unbiased estimators.
 pub(crate) struct Rotation {
     dp: usize,
     signs: [Vec<f32>; 3],

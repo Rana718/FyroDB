@@ -1,12 +1,3 @@
-//! Search-module registry: index definitions, the vector-index and
-//! filter-index caches, and search cursors.
-//!
-//! Layout: `schema` (types + SCHEMA parser), `distance` (SIMD kernels),
-//! `graph` (HNSW/FLAT vector entries + builders), `filter` (attribute
-//! postings). Everything is re-exported here so external paths
-//! (`crate::search::X`) stay stable.
-
-
 mod filter;
 pub mod hooks;
 pub mod query;
@@ -41,8 +32,6 @@ pub fn query_term(t: &str) -> Option<String> {
     (!is_stopword(&t)).then_some(t)
 }
 
-/// Text field tokenizer shared by the postings and the scan: split on
-/// non-alphanumerics, Unicode lowercase, drop stopwords.
 pub fn tokens(text: &str) -> impl Iterator<Item = String> + '_ {
     text.split(|c: char| !c.is_alphanumeric())
         .filter(|t| !t.is_empty())
@@ -300,14 +289,13 @@ impl SearchState {
         count: usize,
     ) -> Option<(CursorRows, u64)> {
         let mut cursors = self.cursors.lock();
-        let rows = cursors.take(id)?;
-        let page: Vec<_> = rows.iter().take(count).cloned().collect();
-        let rest = &rows[count.min(rows.len())..];
-        if rest.is_empty() {
-            Some((page, 0))
+        let mut rows = cursors.take(id)?;
+        if rows.len() <= count {
+            Some((rows, 0))
         } else {
-            cursors.put(id, rest.to_vec());
-            Some((page, id))
+            let tail = rows.split_off(count);
+            cursors.put(id, tail);
+            Some((rows, id))
         }
     }
 

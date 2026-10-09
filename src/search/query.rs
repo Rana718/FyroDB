@@ -126,10 +126,8 @@ pub fn parse_query(def: &IndexDef, query: &str) -> Result<ParsedQuery, String> {
     })
 }
 
-/// The filter head of a VECTOR_RANGE query ends where the vector field's
-/// `@` begins, so a wrapper paren opened for the whole hybrid query has
-/// its closer after the range clause — off-string. Strip that one opener
-/// when it can't close inside the head.
+// VECTOR_RANGE split: the closing paren of a wrapper opened before @field ends up
+// outside the filter head, so drop one unmatched opener.
 fn strip_unclosed_wrapper(fstr: &str) -> &str {
     let b = fstr.as_bytes();
     if b.first() != Some(&b'(') {
@@ -168,10 +166,8 @@ fn parse_range_query(
         .rfind('@')
         .map(|p| p + 1)
         .ok_or("ERR missing vector field")?;
-    // Everything before the vector field's `@` is the filter expression:
-    // `(@category:{tech} @embedding:[VECTOR_RANGE $r $v]` filters by the
-    // tag before ranging. Previously dropped, so filtered range queries
-    // silently returned docs of every category.
+    // Anything before the vector @field is the filter; previously dropped, causing range
+    // queries to ignore tag predicates silently.
     let filter = {
         let fstr = strip_unclosed_wrapper(q[..field_start - 1].trim());
         if fstr.is_empty() || fstr == "*" {
@@ -618,11 +614,6 @@ fn parse_tag_values(s: &str, i: usize) -> Result<(Vec<String>, usize), String> {
     Ok((values, j + 1))
 }
 
-/// Text clause after `@field:`. Parenthesised groups hold
-/// whitespace-separated terms (AND) with `|` alternation between groups
-/// (`(alpha beta|gamma)` = (alpha AND beta) OR gamma); a bare token is a
-/// single-term match. Returns the built condition plus the index just
-/// past the consumed text.
 fn parse_text_cond(s: &str, i: usize, field: &str) -> Result<(Cond, usize), String> {
     let b = s.as_bytes();
     if i < b.len() && b[i] == b'(' {

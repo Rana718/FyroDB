@@ -7,6 +7,8 @@ use crate::utils::resp;
 use std::collections::{HashMap, HashSet};
 
 type Row = Vec<(String, Option<Vec<u8>>)>;
+type ListMap = HashMap<usize, Vec<(String, Vec<Vec<u8>>)>>;
+type ListSlice<'a> = Option<&'a [(String, Vec<Vec<u8>>)]>;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Func {
@@ -266,7 +268,7 @@ pub(super) fn ft_aggregate(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     };
 
     let mut rows: Vec<Row> = Vec::new();
-    let mut lists: HashMap<usize, Vec<(String, Vec<Vec<u8>>)>> = HashMap::new();
+    let mut lists: ListMap = HashMap::new();
     if let Some((keys, reducers)) = &plan.group {
         let mut fields: Vec<String> = keys.clone();
         fields.extend(reducers.iter().filter_map(|r| r.arg.clone()));
@@ -324,7 +326,7 @@ pub(super) fn ft_aggregate(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
         order = order.into_iter().skip(off).take(num).collect();
     }
     let total = order.len();
-    let rendered: Vec<Vec<u8>> = order.iter().map(|&i| render_row(&rows[i], lists.get(&i))).collect();
+    let rendered: Vec<Vec<u8>> = order.iter().map(|&i| render_row(&rows[i], lists.get(&i).map(Vec::as_slice))).collect();
 
     match plan.cursor {
         Some(count) => {
@@ -340,7 +342,7 @@ pub(super) fn ft_aggregate(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     }
 }
 
-fn render_row(row: &Row, lists: Option<&Vec<(String, Vec<Vec<u8>>)>>) -> Vec<u8> {
+fn render_row(row: &Row, lists: ListSlice<'_>) -> Vec<u8> {
     let mut out = Vec::new();
     resp::write_array_header(&mut out, row.len() * 2);
     for (k, v) in row {

@@ -1,6 +1,3 @@
-//! Cluster write fence: per-worker in-flight counters drained by a
-//! fence holder (slot migration, replica bootstrap).
-
 use super::*;
 
 

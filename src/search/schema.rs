@@ -1,6 +1,3 @@
-//! Index schema vocabulary: field/metric/storage types, the index
-//! definition, and the `FT.CREATE SCHEMA` parser.
-
 use std::sync::atomic::AtomicU64;
 
 /// Hard caps enforced by the schema parser.
@@ -248,11 +245,7 @@ pub fn parse_field_defs(
                 dtype,
                 m,
                 ef_construction,
-                // HNSW traverses int8 codes by default from 256 dims up
-                // (measured ~2.7× faster and ~35% smaller at 768d with the
-                // exact rerank keeping recall); below that f32 distances are
-                // already cheap and links dominate the node, so exact f32
-                // stays the default. FLAT is exact by definition.
+                // Int8 is ~2.7× faster and 35% smaller at 768d; below 256 dims f32 is fast enough.
                 quant: if algorithm == "HNSW" {
                     quant.unwrap_or(if dims >= 256 { fyro_vector::Quant::Int8 } else { fyro_vector::Quant::None })
                 } else {

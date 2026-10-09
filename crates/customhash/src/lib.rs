@@ -53,10 +53,7 @@ impl<V> Deref for ValueRef<'_, V> {
     }
 }
 
-/// Notified after every key mutation lands (value written or key removed)
-/// while observing is enabled — incremental secondary indexes. A reader
-/// that drains observed keys and then reads the map sees every write the
-/// notification stood for, because notification follows the write.
+// Notification always follows the write, so a draining reader sees a consistent snapshot.
 pub trait WriteObserver: Send + Sync + 'static {
     fn on_write(&self, key: &str);
     /// The whole map was cleared.

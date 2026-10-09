@@ -141,15 +141,12 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
         max_slots: usize,
         mut f: impl FnMut(&str, &V) -> bool,
     ) -> Option<(usize, usize)> {
-        let Some(shard) = self.shards.get(shard_idx) else {
-            return None;
-        };
+        let shard = self.shards.get(shard_idx)?;
         let _guard = ebr::pin();
         let t = shard.table();
         let capacity = t.capacity();
         let start = start_slot.min(capacity);
         let end = start.saturating_add(max_slots).min(capacity);
-        let mut removed = false;
         for slot in &t.slots()[start..end] {
             let p = slot.load(Ordering::Acquire);
             if p.is_null() {
@@ -171,15 +168,12 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
                 unsafe { (*entry.value.get()).assume_init_drop() };
                 write_end(&entry.state, false);
                 shard.live.fetch_sub(1, Ordering::Relaxed);
-                removed = true;
                 if self.observing.load(Ordering::Relaxed) {
                     self.notify(entry.key.as_str());
                 }
             } else {
                 state_unlock(&entry.state);
             }
-        }
-        if removed {
         }
         Some((end, capacity))
     }
@@ -232,8 +226,6 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
                 state_unlock(&entry.state);
                 live += 1;
             }
-        }
-        if removed > 0 {
         }
         Some((end, capacity, removed, live))
     }

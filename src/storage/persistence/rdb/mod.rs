@@ -1,7 +1,3 @@
-//! RDB snapshots: `FLDB` magic + version + typed entries + EOF marker,
-//! written temp → fsync → rename. Also the bounded single-value codec
-//! replication uses, and the cluster/replication metadata sidecars.
-
 use crate::storage::{
     store::Store,
     value::{FyroDB, HashInner, ListInner, SetInner, SmallStr, StoreValue, now_ms},

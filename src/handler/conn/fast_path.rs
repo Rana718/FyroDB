@@ -1,6 +1,3 @@
-//! Per-command dispatch from raw parsed parts: auth gate, capacity
-//! gate, cluster routing, inline fast paths, binary-safe FT.SEARCH.
-
 use super::*;
 
 #[inline(always)]

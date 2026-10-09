@@ -1,5 +1,3 @@
-//! Search index definitions inside the snapshot (TYPE_INDEX records).
-
 use super::*;
 
 pub(super) fn write_search_indexes(w: &mut BufWriter<File>, store: &Store) -> io::Result<()> {

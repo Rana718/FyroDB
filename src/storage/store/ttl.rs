@@ -1,6 +1,3 @@
-//! TTL-key accounting: CPU-striped add/remove counters whose monotonic
-//! add count doubles as the expiry-scan generation.
-
 use super::*;
 
 

@@ -409,20 +409,16 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
         let t = self.table();
         let mut i = (hash as usize) & t.mask;
         loop {
-            match unsafe { t.slots().get_unchecked(i) }.load_if_tag_matches(hash, Ordering::Acquire)
-            {
-                Ok(p) => {
-                    if p.is_null() {
-                        return None;
-                    }
-                    let e = unsafe { &*p };
-                    if stored_hash(e.state.load(Ordering::Relaxed)) == hash as u32 as u64
-                        && e.key == key
-                    {
-                        return Some(e);
-                    }
+            if let Ok(p) = unsafe { t.slots().get_unchecked(i) }.load_if_tag_matches(hash, Ordering::Acquire) {
+                if p.is_null() {
+                    return None;
                 }
-                Err(()) => {}
+                let e = unsafe { &*p };
+                if stored_hash(e.state.load(Ordering::Relaxed)) == hash as u32 as u64
+                    && e.key == key
+                {
+                    return Some(e);
+                }
             }
             i = (i + 1) & t.mask;
         }

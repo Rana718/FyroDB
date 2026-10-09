@@ -1,5 +1,3 @@
-//! Cluster, replication and slot-migration state on `Store`.
-
 use super::*;
 
 pub(super) struct ClusterMetrics {

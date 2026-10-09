@@ -1,6 +1,3 @@
-//! Vector element types as stored in documents and query blobs, decoded to
-//! f32 for indexing and exact scoring. RediSearch spellings.
-
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ElemType {
     Float32,
@@ -49,10 +46,10 @@ impl ElemType {
         }
         let mut out = Vec::with_capacity(dims);
         match self {
-            Self::Float32 => out.extend(bytes.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))),
+            Self::Float32 => out.extend(bytes.as_chunks::<4>().0.iter().map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))),
             Self::Float16 => decode_f16(bytes, &mut out),
             Self::BFloat16 => {
-                out.extend(bytes.chunks_exact(2).map(|c| f32::from_bits((u16::from_le_bytes([c[0], c[1]]) as u32) << 16)))
+                out.extend(bytes.as_chunks::<2>().0.iter().map(|c| f32::from_bits((u16::from_le_bytes([c[0], c[1]]) as u32) << 16)))
             }
             Self::Int8 => out.extend(bytes.iter().map(|&b| b as i8 as f32)),
             Self::UInt8 => out.extend(bytes.iter().map(|&b| b as f32)),
@@ -68,7 +65,7 @@ fn decode_f16(bytes: &[u8], out: &mut Vec<f32>) {
         unsafe { decode_f16_f16c(bytes, out) };
         return;
     }
-    out.extend(bytes.chunks_exact(2).map(|c| f16_to_f32(u16::from_le_bytes([c[0], c[1]]))));
+    out.extend(bytes.as_chunks::<2>().0.iter().map(|c| f16_to_f32(u16::from_le_bytes([c[0], c[1]]))));
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -87,7 +84,7 @@ unsafe fn decode_f16_f16c(bytes: &[u8], out: &mut Vec<f32>) {
             i += 8;
         }
     }
-    out.extend(bytes[i * 2..].chunks_exact(2).map(|c| f16_to_f32(u16::from_le_bytes([c[0], c[1]]))));
+    out.extend(bytes[i * 2..].as_chunks::<2>().0.iter().map(|c| f16_to_f32(u16::from_le_bytes([c[0], c[1]]))));
 }
 
 /// IEEE 754 binary16 → binary32 (subnormals, infinities and NaN included).

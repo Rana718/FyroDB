@@ -1,5 +1,3 @@
-//! Attribute (tag/numeric) inverted index backing filtered `FT.SEARCH`.
-
 use super::FieldType;
 use super::StorageKind;
 use super::FxHashMap;
@@ -10,46 +8,23 @@ use super::hooks::Drained;
 use crate::storage::store::Store;
 use std::sync::Arc;
 
-// ── Attribute (filter) inverted index ────────────────────────────────────
+type VidMaps = parking_lot::Mutex<FxHashMap<String, (u64, Arc<Vec<u32>>)>>;
 
-/// Postings index over TAG/NUMERIC/TEXT fields. Turns a filtered
-/// `FT.SEARCH` from a full keyspace scan (per-doc tag split + numeric
-/// parse + per-term text split, ~2.5 ms at 50k docs) into a postings
-/// intersection (~0.2 ms).
-///
-/// Maintained incrementally from the index's dirty keys: a rewritten or
-/// deleted doc's old id becomes a tombstone and its new version gets a
-/// fresh id appended to every posting it belongs to (so postings stay
-/// ascending without re-sorting); results drop tombstones. Once they pass
-/// `DEAD_REBUILD_RATIO` the index is rebuilt from a scan. Trusted only
-/// while the store tracks no TTLs: lazy expiry removes docs without a write.
 pub struct FilterIndex {
     ids: Vec<Option<Box<str>>>,
     by_key: FxHashMap<Box<str>, u32>,
     dead: usize,
-    /// field idx → tag → doc ids, ascending.
     tags: FxHashMap<usize, FxHashMap<Box<str>, Vec<u32>>>,
-    /// field idx → (value, doc id) sorted by value.
     nums: FxHashMap<usize, Vec<(f64, u32)>>,
-    /// field idx → lowercased token → doc ids, ascending. Tokens mirror
-    /// the scan's word split (non-alphanumeric boundaries, ASCII-case-
-    /// insensitive compare), so a term resolves to exactly the docs the
-    /// per-doc `text_match` would accept.
     texts: FxHashMap<usize, FxHashMap<Box<str>, Posting>>,
-    /// field idx → token count per doc id (BM25 length normalization).
     doc_len: FxHashMap<usize, Vec<u32>>,
-    /// field idx → summed token count over live docs.
     len_sum: FxHashMap<usize, u64>,
-    /// Numeric fields holding NaN: sorted arrays can't place them the way
-    /// the scan's partial_cmp does, so those fields fall back to the scan.
+    // NaN in numeric fields can't be sorted; those fields fall back to scan
     nan_fields: Vec<usize>,
     tag_fields: Vec<(usize, char)>,
     num_fields: Vec<usize>,
     text_fields: Vec<usize>,
-    /// Per vector field: doc id → vector id, tagged with the graph entry's
-    /// epoch it was derived from. Turns the per-query key→id lookup of
-    /// every matching doc into an array index.
-    vid_maps: parking_lot::Mutex<FxHashMap<String, (u64, Arc<Vec<u32>>)>>,
+    vid_maps: VidMaps,
 }
 
 #[derive(Default)]
@@ -374,10 +349,7 @@ impl FilterIndex {
         Some(Resolved::Ids(ids))
     }
 
-    /// Doc-id set for `cond` (tombstones included), or None when the
-    /// condition needs the exact scan: tag/text globs, fields the index
-    /// doesn't cover, or numeric fields holding NaN (the scan matches NaN
-    /// against bounded ranges; a sorted postings array cannot place it).
+    // Returns None for globs, uncovered fields, or NaN numerics — those fall through to scan.
     fn resolve_raw(&self, def: &IndexDef, cond: &Cond) -> Option<Resolved> {
         match cond {
             Cond::MatchAll => Some(Resolved::All),
@@ -486,21 +458,18 @@ fn complement_ids(matched: &[u32], total: usize) -> Vec<u32> {
     if matched.is_empty() {
         return (0..total as u32).collect();
     }
-    let mut present = vec![false; total];
-    for &m in matched {
-        if (m as usize) < total {
-            present[m as usize] = true;
+    let mut out = Vec::with_capacity(total.saturating_sub(matched.len()));
+    let mut mi = 0usize;
+    for i in 0..total as u32 {
+        if mi < matched.len() && matched[mi] == i {
+            mi += 1;
+        } else {
+            out.push(i);
         }
     }
-    (0..total as u32)
-        .filter(|&i| !present[i as usize])
-        .collect()
+    out
 }
 
-/// One keyspace scan extracting every TAG/NUMERIC/TEXT value. Mirrors the
-/// scan predicates exactly: same separator split (no trimming, empty tokens
-/// kept), same numeric parse, same word split and ASCII-case folding, same
-/// key-prefix/type gating.
 fn build_filter_index(store: &Store, def: &IndexDef) -> Option<FilterIndex> {
     if def.storage != StorageKind::Hash {
         return None;

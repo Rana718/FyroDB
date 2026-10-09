@@ -1,5 +1,3 @@
-//! Cluster identity and replication offset sidecar files.
-
 use super::*;
 
 pub fn save_cluster_metadata(path: &str, node_id: &str, epoch: u64) -> io::Result<()> {

@@ -137,11 +137,7 @@ impl Store {
             }
             match val.value.as_string_mut() {
                 Some(s) => {
-                    // If the stored value is a well-formed HLL buffer, mutate its
-                    // registers in place. Only one byte can change per element, so
-                    // this avoids decoding into a 16 KB Vec and re-encoding into a
-                    // fresh 16 KB SmallStr on every PFADD — the whole cost of a
-                    // pipelined run of PFADDs against one key.
+                    // Mutate registers in-place: avoids 16 KB alloc + re-encode on every PFADD.
                     if is_hll_buffer(s.as_bytes()) {
                         let buf = s.as_bytes_mut();
                         let mut changed = false;
@@ -187,11 +183,7 @@ impl Store {
         }
     }
 
-    /// Coalesced PFADD run: applies `elements[i]` for command `i` to the same
-    /// key under a single entry lock and returns a per-command "changed" flag,
-    /// preserving the exact reply each individual PFADD would produce (a later
-    /// duplicate of an element added earlier in the run reports `0`). HLL
-    /// analogue of `sadd_added_flags` for pipelined-run coalescing.
+    // A later duplicate of an element added earlier in the same run still reports 0.
     pub fn pfadd_run(&self, key: &str, elements: &[&str]) -> Result<Vec<bool>, &'static str> {
         let apply = |buf: &mut [u8]| -> Vec<bool> {
             let mut flags = Vec::with_capacity(elements.len());

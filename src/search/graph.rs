@@ -1,12 +1,3 @@
-//! Vector-index entries: the per-(index, field) HNSW graph / FLAT array,
-//! background builds, and write-driven incremental maintenance.
-//!
-//! Freshness comes from the index's dirty set (see `hooks`): writes to keys
-//! under the index prefixes are recorded after they land, and the next
-//! query re-reads exactly those keys — O(changed keys), never a keyspace
-//! rescan. Only a first build, an overflowing dirty set, or a FLUSHALL
-//! rebuilds from scratch (in the background, on the vector pool).
-
 use super::hooks::{DirtySet, Drained};
 use super::FxHashMap;
 use super::IndexDef;
@@ -17,11 +8,11 @@ use fyro_vector::hnsw::{GraphDump, HnswGraph};
 use parking_lot::{Mutex, RwLock};
 use std::sync::Arc;
 
-/// How many nodes to link before publishing a searchable partial graph
-/// (queries then serve it instead of the exact scan while the rest links).
+type GraphSnapshot = Vec<(String, String, Vec<(usize, Arc<str>)>, Option<GraphDump>)>;
+
+// publish a partial graph every N linked nodes so queries don't wait for full build
 const PARTIAL_PUBLISH_STEP: usize = 20_000;
 
-/// Key ↔ vector-id map, each key stored once and shared by both halves.
 #[derive(Default)]
 struct KeyMap {
     by_key: FxHashMap<Arc<str>, u32>,
@@ -52,7 +43,6 @@ impl KeyMap {
     }
 }
 
-/// Source of `GraphEntry::epoch` values (unique across entries).
 static EPOCHS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 fn next_epoch() -> u64 {
@@ -189,7 +179,7 @@ fn build_graph_entry(
         let mut seen = 0usize;
         store.data.for_each(|k, val| {
             if let Some(v) = indexable(k, val) {
-                if seen % stride == 0 {
+                if seen.is_multiple_of(stride) {
                     sample.push(v);
                 }
                 seen += 1;
@@ -328,12 +318,6 @@ impl SearchState {
         });
     }
 
-    /// Start background builds for every vector field of `def`.
-    ///
-    /// RediSearch indexes pre-existing documents in the background after
-    /// FT.CREATE returns (progress in FT.INFO `indexing`/`percent_indexed`);
-    /// until a field's first partial graph is published its KNN queries use
-    /// the exact scan, so results are complete, just slower, meanwhile.
     pub fn prefetch_build(&self, store: &Arc<Store>, def: &Arc<IndexDef>) {
         self.start_background_apply(store);
         for f in &def.fields {
@@ -359,10 +343,6 @@ impl SearchState {
         }
     }
 
-    /// Install a graph restored from a snapshot: `nodes` are (key, level,
-    /// links) in dump order; vectors come from the loaded keyspace. Nodes
-    /// whose document vanished or changed shape are dropped (their ids
-    /// stay unused) and the entry repaired over the survivors.
     pub fn restore_graph(
         &self,
         store: &Store,
@@ -405,7 +385,7 @@ impl SearchState {
     /// Persistable view of every settled vector index: (index, field,
     /// id→key, dump). Entries still building are skipped (they rebuild on
     /// load). The dump compacts tombstones first.
-    pub fn graphs_for_snapshot(&self) -> Vec<(String, String, Vec<(usize, Arc<str>)>, Option<GraphDump>)> {
+    pub fn graphs_for_snapshot(&self) -> GraphSnapshot {
         let graphs: Vec<((String, String), Arc<GraphEntry>)> =
             self.graphs.read().iter().map(|(k, v)| (k.clone(), Arc::clone(v))).collect();
         let building = self.building.lock().clone();
@@ -431,7 +411,9 @@ impl SearchState {
     }
 
     pub fn hnsw_entry(&self, index: &str, field: &str) -> Option<Arc<GraphEntry>> {
-        self.graphs.read().get(&(index.to_string(), field.to_string())).cloned()
+        self.graphs.read().iter()
+            .find(|((k_idx, k_fld), _)| k_idx.as_str() == index && k_fld.as_str() == field)
+            .map(|(_, v)| Arc::clone(v))
     }
 
     /// RediSearch's `indexing` / `percent_indexed`: true while any vector
@@ -469,11 +451,10 @@ impl SearchState {
             if !entry.is_linked() {
                 return false;
             }
-            if let Some(dirty) = self.vector_dirty(&def.name, &f.name) {
-                if !dirty.vectors[&f.name].is_clean() {
+            if let Some(dirty) = self.vector_dirty(&def.name, &f.name)
+                && !dirty.vectors[&f.name].is_clean() {
                     return false;
                 }
-            }
         }
         true
     }
@@ -568,9 +549,8 @@ fn apply_keys(store: &Store, def: &IndexDef, field: &str, attrs: &VectorAttrs, e
         return;
     }
     let ids = graph.alloc_ids(adds.len());
-    for ((_, v), &id) in adds.iter().zip(&ids) {
-        graph.prepare(id, v);
-    }
+    let items: Vec<(usize, &[f32])> = adds.iter().zip(&ids).map(|((_, v), &id)| (id, v.as_slice())).collect();
+    graph.prepare_batch(&items);
     if entry.linked {
         graph.build_links(&ids, fyro_vector::pool::global().threads(), &mut |_| {});
     }

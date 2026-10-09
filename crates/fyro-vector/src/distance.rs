@@ -1,6 +1,3 @@
-//! SIMD distance kernels and the precomputed-norm query wrapper shared by
-//! exact FLAT scans and the graph build.
-
 use crate::DistanceMetric;
 use crate::kernels as simd;
 

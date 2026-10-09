@@ -1,6 +1,3 @@
-//! Query side: greedy upper-level descent + level-0 beam search, filtered
-//! traversal, and exact (FLAT) scans fanned out over the pool.
-
 use super::*;
 
 /// Exact scans currently running: a scan that finds the machine free fans
@@ -21,10 +18,7 @@ pub(crate) struct FlatReq {
     result: Mutex<Option<Vec<(f32, usize)>>>,
 }
 
-/// Rendezvous for batched exact scans on one graph.  Uses a lock-free
-/// MPSC queue (SegQueue) for submissions so concurrent submitters never
-/// contend on a single mutex.  One submitter wins the scanner role via
-/// an AtomicBool CAS; others spin-yield on their per-request `ready` flag.
+// Lock-free MPSC: CAS winner does the scan, others spin-yield on their ready flag.
 pub(crate) struct FlatBatch {
     queue: crossbeam_queue::SegQueue<Arc<FlatReq>>,
     scanning: AtomicBool,
@@ -88,14 +82,8 @@ impl HnswGraph {
         self.search_with(q, k, ef.max(k).max(k * 8), Collect::Filtered(allow))
     }
 
-    /// Filtered search against an id bitset. `acorn` selects ACORN-1
-    /// traversal (Patel et al., SIGMOD'24): only members are expanded, each
-    /// non-member neighbor contributing its own members (two-hop), so the
-    /// beam walks the predicate's subgraph instead of wading through
-    /// non-matching regions — the right regime for mid selectivity. Without
-    /// it, traversal is unrestricted and only members are collected (best
-    /// when most nodes match). Falls back to the unrestricted walk when the
-    /// predicate subgraph is not reachable from the entry.
+    // ACORN-1 (Patel SIGMOD'24): non-members contribute their two-hop members so
+    // the beam walks the predicate subgraph — best for mid selectivity.
     pub fn search_in_set(&self, q: &[f32], k: usize, ef: usize, set: &IdSet, acorn: bool) -> Vec<(f32, usize)> {
         if k == 0 || set.is_empty() {
             return Vec::new();
@@ -150,8 +138,9 @@ impl HnswGraph {
         let mut cand = std::mem::take(&mut sc.cand);
         let mut res = std::mem::take(&mut sc.res);
         let mut links = std::mem::take(&mut sc.links);
-        let mut hop = Vec::new();
-        let mut frontier: Vec<u32> = Vec::with_capacity(self.m0 * 2);
+        let mut hop = std::mem::take(&mut sc.acorn_hop);
+        let mut frontier = std::mem::take(&mut sc.acorn_frontier);
+        frontier.clear();
         cand.clear();
         res.clear();
         sc.visit(cur, epoch);
@@ -212,13 +201,10 @@ impl HnswGraph {
         sc.cand = cand;
         sc.res = res;
         sc.links = links;
+        sc.acorn_hop = hop;
+        sc.acorn_frontier = frontier;
     }
 
-    /// Every node within `radius` (reported metric units) of `q`,
-    /// ascending. Graph searches widen until the beam's farthest result
-    /// falls outside the radius (so nothing closer was cut off); FLAT
-    /// graphs and small allow-lists scan exactly. Approximate on graphs,
-    /// as RediSearch's HNSW range queries are.
     pub fn range(&self, q: &[f32], radius: f32, ef: usize, set: Option<&IdSet>, linked: bool) -> Vec<(f32, usize)> {
         let live = self.len();
         let exact_only = !linked || set.is_some_and(|s| s.len() <= 4096);
@@ -326,13 +312,7 @@ impl HnswGraph {
         out.truncate(k);
     }
 
-    /// Exact top-`k` over every live vector (FLAT, or HNSW fallback).
-    ///
-    /// Concurrent calls on one graph are batched: while a scan runs, new
-    /// queries queue up and the next scan serves all of them in one pass
-    /// (each vector is loaded once for up to `FLAT_BATCH_MAX` queries), so
-    /// throughput under concurrency is no longer one full memory sweep per
-    /// query. A lone query scans immediately — there is no batching window.
+    // Concurrent calls batch: one memory sweep serves up to FLAT_BATCH_MAX queries.
     pub fn brute_search(&self, q: &[f32], k: usize) -> Vec<(f32, usize)> {
         if k == 0 {
             return Vec::new();
@@ -400,7 +380,8 @@ impl HnswGraph {
         let pool = pool::global();
         let threads = if n >= PARALLEL_SCAN_MIN { pool.threads().min(n / 1024).max(1) } else { 1 };
         let per = n.div_ceil(threads.max(1));
-        let parts: Vec<Mutex<Vec<Vec<(f32, u32)>>>> = (0..threads).map(|_| Mutex::new(Vec::new())).collect();
+        type PartResults = Vec<Mutex<Vec<Vec<(f32, u32)>>>>;
+        let parts: PartResults = (0..threads).map(|_| Mutex::new(Vec::new())).collect();
         pool.parallel(threads, |t| {
             let lo = (t * per).min(n);
             let hi = ((t + 1) * per).min(n);
@@ -526,7 +507,7 @@ impl HnswGraph {
         hi: usize,
         ids: Option<&[usize]>,
     ) -> Vec<(f32, u32)> {
-        let span = if ids.is_some() { ids.unwrap().len() } else { hi - lo };
+        let span = ids.map_or(hi - lo, |s| s.len());
         if self.quant == Quant::None && g.has_flat_int8() && span >= 256 {
             return match ids {
                 None => self.scan_two_pass(kern, g, q, k, lo, hi),
@@ -587,44 +568,48 @@ impl HnswGraph {
         let rerank_k = (k * 4).max(32).min(hi - lo);
         let q_maxabs = q.v.iter().fold(0f32, |m, x| m.max(x.abs()));
         let q_scale = if q_maxabs > 0.0 { q_maxabs / 127.0 } else { 1.0 };
-        let q_codes: Vec<i8> = q.v.iter().map(|&x| (x / q_scale).round().clamp(-127.0, 127.0) as i8).collect();
-        // Pass 1: Int8 pre-filter.
-        let mut pre_heap: BinaryHeap<(Dist, u32)> = BinaryHeap::with_capacity(rerank_k + 1);
-        for id in lo..hi {
-            if id + 16 < hi {
-                g.prefetch_flat_int8((id + 16) as u32);
+        with_scratch(|sc| {
+            sc.q_int8.resize(q.v.len(), 0i8);
+            for (c, &x) in sc.q_int8.iter_mut().zip(q.v.iter()) {
+                *c = (x / q_scale).round().clamp(-127.0, 127.0) as i8;
             }
-            if g.flag(id as u32) & F_DELETED != 0 {
-                continue;
+            let q_codes = &sc.q_int8[..q.v.len()];
+            let mut pre_heap: BinaryHeap<(Dist, u32)> = BinaryHeap::with_capacity(rerank_k + 1);
+            for id in lo..hi {
+                if id + 16 < hi {
+                    g.prefetch_flat_int8((id + 16) as u32);
+                }
+                if g.flag(id as u32) & F_DELETED != 0 {
+                    continue;
+                }
+                let stored = g.flat_int8_of(id as u32);
+                let dot = kern.dot_i8(q_codes, stored);
+                let approx = match self.metric {
+                    DistanceMetric::Cosine => -(dot as f32 * q_scale * g.flat_scale(id as u32)),
+                    DistanceMetric::Ip => -(dot as f32 * q_scale * g.flat_scale(id as u32)),
+                    DistanceMetric::L2 => -(dot as f32 * q_scale * g.flat_scale(id as u32)),
+                };
+                let d = Dist(approx);
+                if pre_heap.len() < rerank_k {
+                    pre_heap.push((d, id as u32));
+                } else if pre_heap.peek().is_some_and(|top| d < top.0) {
+                    pre_heap.pop();
+                    pre_heap.push((d, id as u32));
+                }
             }
-            let stored = g.flat_int8_of(id as u32);
-            let dot = kern.dot_i8(&q_codes, stored);
-            let approx = match self.metric {
-                DistanceMetric::Cosine => -(dot as f32 * q_scale * g.flat_scale(id as u32)),
-                DistanceMetric::Ip => -(dot as f32 * q_scale * g.flat_scale(id as u32)),
-                DistanceMetric::L2 => -(dot as f32 * q_scale * g.flat_scale(id as u32)),
-            };
-            let d = Dist(approx);
-            if pre_heap.len() < rerank_k {
-                pre_heap.push((d, id as u32));
-            } else if pre_heap.peek().is_some_and(|top| d < top.0) {
-                pre_heap.pop();
-                pre_heap.push((d, id as u32));
+            let mut heap: BinaryHeap<(Dist, u32)> = BinaryHeap::with_capacity(k + 1);
+            for (_, id) in pre_heap.into_vec() {
+                g.prefetch(id);
+                let d = Dist(self.dist(kern, g, q, id));
+                if heap.len() < k {
+                    heap.push((d, id));
+                } else if heap.peek().is_some_and(|top| d < top.0) {
+                    heap.pop();
+                    heap.push((d, id));
+                }
             }
-        }
-        // Pass 2: exact rerank.
-        let mut heap: BinaryHeap<(Dist, u32)> = BinaryHeap::with_capacity(k + 1);
-        for (_, id) in pre_heap.into_vec() {
-            g.prefetch(id);
-            let d = Dist(self.dist(kern, g, q, id));
-            if heap.len() < k {
-                heap.push((d, id));
-            } else if heap.peek().is_some_and(|top| d < top.0) {
-                heap.pop();
-                heap.push((d, id));
-            }
-        }
-        heap.into_vec().into_iter().map(|(Dist(d), id)| (d, id)).collect()
+            heap.into_vec().into_iter().map(|(Dist(d), id)| (d, id)).collect()
+        })
     }
 
     /// Two-pass batched scan: Int8 pre-filter for all queries in one arena sweep,
@@ -723,40 +708,43 @@ impl HnswGraph {
         let rerank_k = (k * 4).max(32).min(ids.len());
         let q_maxabs = q.v.iter().fold(0f32, |m, x| m.max(x.abs()));
         let q_scale = if q_maxabs > 0.0 { q_maxabs / 127.0 } else { 1.0 };
-        let q_codes: Vec<i8> = q.v.iter().map(|&x| (x / q_scale).round().clamp(-127.0, 127.0) as i8).collect();
-        // Pass 1: Int8 pre-filter over the id subset.
-        let mut pre_heap: BinaryHeap<(Dist, u32)> = BinaryHeap::with_capacity(rerank_k + 1);
-        for (i, &id) in ids.iter().enumerate() {
-            if id >= g.len || g.flag(id as u32) & F_DELETED != 0 {
-                continue;
+        with_scratch(|sc| {
+            sc.q_int8.resize(q.v.len(), 0i8);
+            for (c, &x) in sc.q_int8.iter_mut().zip(q.v.iter()) {
+                *c = (x / q_scale).round().clamp(-127.0, 127.0) as i8;
             }
-            if let Some(&next) = ids.get(i + 16) {
-                if next < g.len {
-                    g.prefetch_flat_int8(next as u32);
+            let q_codes = &sc.q_int8[..q.v.len()];
+            let mut pre_heap: BinaryHeap<(Dist, u32)> = BinaryHeap::with_capacity(rerank_k + 1);
+            for (i, &id) in ids.iter().enumerate() {
+                if id >= g.len || g.flag(id as u32) & F_DELETED != 0 {
+                    continue;
+                }
+                if let Some(&next) = ids.get(i + 16)
+                    && next < g.len {
+                        g.prefetch_flat_int8(next as u32);
+                    }
+                let stored = g.flat_int8_of(id as u32);
+                let dot = kern.dot_i8(q_codes, stored);
+                let approx = Dist(-(dot as f32 * q_scale * g.flat_scale(id as u32)));
+                if pre_heap.len() < rerank_k {
+                    pre_heap.push((approx, id as u32));
+                } else if pre_heap.peek().is_some_and(|top| approx < top.0) {
+                    pre_heap.pop();
+                    pre_heap.push((approx, id as u32));
                 }
             }
-            let stored = g.flat_int8_of(id as u32);
-            let dot = kern.dot_i8(&q_codes, stored);
-            let approx = Dist(-(dot as f32 * q_scale * g.flat_scale(id as u32)));
-            if pre_heap.len() < rerank_k {
-                pre_heap.push((approx, id as u32));
-            } else if pre_heap.peek().is_some_and(|top| approx < top.0) {
-                pre_heap.pop();
-                pre_heap.push((approx, id as u32));
+            let mut heap: BinaryHeap<(Dist, u32)> = BinaryHeap::with_capacity(k + 1);
+            for (_, id) in pre_heap.into_vec() {
+                g.prefetch(id);
+                let d = Dist(self.dist(kern, g, q, id));
+                if heap.len() < k {
+                    heap.push((d, id));
+                } else if heap.peek().is_some_and(|top| d < top.0) {
+                    heap.pop();
+                    heap.push((d, id));
+                }
             }
-        }
-        // Pass 2: exact rerank.
-        let mut heap: BinaryHeap<(Dist, u32)> = BinaryHeap::with_capacity(k + 1);
-        for (_, id) in pre_heap.into_vec() {
-            g.prefetch(id);
-            let d = Dist(self.dist(kern, g, q, id));
-            if heap.len() < k {
-                heap.push((d, id));
-            } else if heap.peek().is_some_and(|top| d < top.0) {
-                heap.pop();
-                heap.push((d, id));
-            }
-        }
-        heap.into_vec().into_iter().map(|(Dist(d), id)| (d, id)).collect()
+            heap.into_vec().into_iter().map(|(Dist(d), id)| (d, id)).collect()
+        })
     }
 }

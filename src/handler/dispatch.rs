@@ -309,9 +309,10 @@ fn capture_command_mutation(conn: &mut Conn, parts: &[&str]) {
     {
         capture(conn, 1);
         capture(conn, 2);
-    } else if command.eq_ignore_ascii_case(b"COPY") || command.eq_ignore_ascii_case(b"BITOP") {
-        capture(conn, 2);
-    } else if command.eq_ignore_ascii_case(b"XGROUP") {
+    } else if command.eq_ignore_ascii_case(b"COPY")
+        || command.eq_ignore_ascii_case(b"BITOP")
+        || command.eq_ignore_ascii_case(b"XGROUP")
+    {
         capture(conn, 2);
     } else if command.eq_ignore_ascii_case(b"XREADGROUP")
         && let Some(pos) = parts.iter().position(|p| p.eq_ignore_ascii_case("STREAMS"))

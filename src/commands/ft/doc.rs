@@ -1,7 +1,3 @@
-//! Per-document access for the FT command layer: schema-gated field
-//! extraction, tag/text/numeric predicate matching, and index membership
-//! scans shared by INFO counts, DROPINDEX DD, search, and aggregate.
-
 use crate::search::query::Cond;
 use crate::search::{IndexDef, StorageKind};
 use crate::storage::store::Store;
@@ -155,7 +151,7 @@ pub(super) fn tag_cond(val: &StoreValue, def: &IndexDef, field: &str, any: &[Str
                 .any(|t| any.iter().any(|a| tag_match(a, t)))
         }),
         (FyroDB::Json(s), StorageKind::Json) => {
-            let Some(json) = crate::storage::value::JsonValue::parse(&**s) else {
+            let Some(json) = crate::storage::value::JsonValue::parse(s) else {
                 return !negated;
             };
             match json.get_path(&format!("$.{field}")) {
@@ -226,7 +222,7 @@ pub(super) fn doc_scalar(val: &StoreValue, def: &IndexDef, field: &str) -> Optio
             .and_then(|v| std::str::from_utf8(v.as_bytes()).ok())
             .and_then(|s| s.parse().ok()),
         (FyroDB::Json(s), _) => {
-            let json = crate::storage::value::JsonValue::parse(&**s)?;
+            let json = crate::storage::value::JsonValue::parse(s)?;
             let v = json.get_path(&format!("$.{field}"))?;
             match v {
                 crate::storage::value::JsonValue::Number(n) => Some(*n),

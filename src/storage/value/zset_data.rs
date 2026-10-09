@@ -258,27 +258,17 @@ impl ZSetData {
 
     pub fn insert(&mut self, score: f64, member: &str) -> bool {
         if let Some(ix) = self.index.as_deref_mut() {
-            let placed = match ix.entry(SmallStr::new(member)) {
-                std::collections::hash_map::Entry::Occupied(o) => Err(*o.get()),
-                std::collections::hash_map::Entry::Vacant(v) => {
-                    let m = v.key().clone();
-                    v.insert(score);
-                    Ok(m)
+            if let Some(&old) = ix.get(member) {
+                if (old - score).abs() > f64::EPSILON {
+                    self.relocate(member, score);
                 }
-            };
-            return match placed {
-                Ok(member) => {
-                    self.len += 1;
-                    self.place(ZEntry { score, member });
-                    true
-                }
-                Err(old) => {
-                    if (old - score).abs() > f64::EPSILON {
-                        self.relocate(member, score);
-                    }
-                    false
-                }
-            };
+                return false;
+            }
+            let m = SmallStr::new(member);
+            ix.insert(m.clone(), score);
+            self.len += 1;
+            self.place(ZEntry { score, member: m });
+            return true;
         }
         match self.score_of(member) {
             Some(old) => {

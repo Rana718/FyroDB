@@ -1,15 +1,3 @@
-//! Runtime-dispatched distance kernels: f32 dot / squared L2 (scalar,
-//! AVX2+FMA, AVX-512, NEON), int8 dot for quantized codes, bit-plane
-//! popcount for RaBitQ, and element-type decoding (FLOAT16 / BFLOAT16 /
-//! INT8 / UINT8 → f32).
-//!
-//! The plain release build has no FMA/AVX codegen, which made the previous
-//! scalar `mul_add` unrolling compile to SSE-less FADD/FMUL pairs at ~0.6
-//! GB/s. These kernels use `std::arch` + `target_feature` so the vector
-//! speed no longer depends on the build flags (`task build-avx`), and add a
-//! fused `dot + self-dot` pass for cosine, where recomputing both norms per
-//! distance tripled the work.
-
 #[cfg(target_arch = "x86_64")]
 pub mod avx512;
 pub mod convert;

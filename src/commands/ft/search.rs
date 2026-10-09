@@ -1,6 +1,3 @@
-//! FT.SEARCH execution: option parsing, filter scan (postings fast
-//! path), KNN (graph/FLAT, filtered and not), and range queries.
-
 use super::doc::{cond_matches, doc_fields, doc_scalar, doc_storage_matches, doc_vector, DocHit, SearchOpts};
 use crate::search::query::{parse_query, Cond};
 use crate::search::{IndexDef, QueryDist, Resolved};
@@ -138,11 +135,8 @@ pub(super) fn parse_search_options(
 /// fixed thread-spawn cost outweighs the speedup, so scans stay inline.
 const PARALLEL_SCAN_MIN_KEYS: usize = 20_000;
 
-/// Threads for one filtered exact scan. Concurrent clients each run their
-/// own scan on their own worker thread, so the budget divides the machine
-/// across in-flight searches: a lone client gets the box, eight clients
-/// get ~one thread each. (Unfiltered KNN skips the keyspace scan entirely
-/// and streams the contiguous index via `brute_search`.)
+// Budget threads per filtered scan: lone client gets the box, many clients share.
+// Unfiltered KNN bypasses this entirely via brute_search on the contiguous index.
 fn scan_threads(store: &Arc<Store>, shards: usize) -> usize {
     let cpus = num_cpus::get();
     let busy = store.connected_clients().saturating_sub(1).min(cpus);
@@ -258,12 +252,8 @@ fn ft_search_execute(
     };
 
 
-    // Inverted-index fast path: exact tag/numeric/text predicates (and
-    // their negations) resolve to a postings intersection or complement
-    // — no keyspace scan, no per-doc tag split, numeric parse, or text
-    // word-split, and only the LIMIT page materializes keys. Tag/text
-    // globs, INKEYS/SORTBY, TTL presence, and a stale generation fall
-    // through to the scan above.
+    // Fast path: postings intersection/complement — skips the keyspace scan.
+    // Globs, INKEYS/SORTBY, TTL presence, and stale generation fall through above.
     if opts.ids.is_empty()
         && opts.sortby_field.is_none()
         && let Some(fi) = store.search_state().filter_index(store, &def)
@@ -436,20 +426,11 @@ fn knn_search(
         return resp::write_store_err(out, "ERR query vector dim mismatch");
     };
     let qv: &[f32] = &qv_owned;
-    // KNN over an indexed vector field: walk the contiguous vector array
-    // (HNSW graph traversal, or FLAT exact SIMD scan). The old flat path
-    // re-scanned the hash keyspace per query — a random pointer chase plus
-    // per-doc String alloc that capped single-query throughput at ~10 ms
-    // and blocked client scaling.
     let indexed = vattrs.algorithm == "HNSW" || vattrs.algorithm == "FLAT";
     if indexed && let Some(entry) = store.search_state().vector_index_entry(store, def, &knn.field)
     {
-        // Filtered KNN: resolve the predicate to postings, map to vector
-        // ids once, then search the index with an allow-set — redis-style
-        // pre-filtered vector search. Small subsets brute-force the exact
-        // top-k; large ones traverse the graph unfiltered and collect only
-        // matches (hnswlib semantics). Unfilterable predicates (globs,
-        // TTL/stale state) fall through to the keyspace scan.
+        // Pre-filtered: resolve predicate → postings → allow-set, then search index.
+        // Globs and TTL/stale fall through to keyspace scan.
         let ef = knn.ef_runtime.unwrap_or((knn.k * 4).max(100)).max(knn.k);
         let graph = &entry.graph;
         // Quantized graphs return candidates in estimated order: fetch a

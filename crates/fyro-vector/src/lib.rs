@@ -1,9 +1,3 @@
-//! FyroDB vector engine.
-//!
-//! - `kernels`: runtime-dispatched SIMD distance kernels
-//! - `distance`: metric-level helpers over raw little-endian f32 bytes
-//! - `hnsw`: the HNSW graph (also serves exact FLAT scans over its arena)
-
 pub mod distance;
 pub mod hnsw;
 pub mod kernels;

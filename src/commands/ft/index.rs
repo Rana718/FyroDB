@@ -1,6 +1,3 @@
-//! Index lifecycle commands: `FT.CREATE`, `FT.INFO`, `FT.DROPINDEX`,
-//! `FT.ALTER`, aliases, and `FT.CONFIG`.
-
 use super::doc::{collect_keys, count_docs};
 use crate::search::{parse_field_defs, FieldDef, FieldType, IndexDef, StorageKind};
 use crate::storage::store::Store;

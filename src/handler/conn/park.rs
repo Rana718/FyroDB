@@ -1,16 +1,3 @@
-//! Parked connections.
-//!
-//! A command that cannot finish inline parks its connection instead of
-//! stalling the worker: either it runs as a job on the vector pool (heavy
-//! FT.SEARCH, index builds) and its reply comes back through the worker's
-//! completion queue, or it is a blocking command (BLPOP, BLMOVE,
-//! BZPOPMIN, …) waiting for a key to be written or its timeout to fire.
-//!
-//! While parked the connection keeps reading (so a closed socket is still
-//! noticed) but parses nothing: pipelined commands behind the parked one
-//! wait in the read buffer, preserving reply order. Unparking resumes the
-//! parse loop from where it stopped.
-
 use super::*;
 use crate::pubsub::Completion;
 use crate::storage::blocking::Waiter;
@@ -214,8 +201,6 @@ impl<'a> Conn<'a> {
         }
     }
 }
-
-// ── Blocking commands ──────────────────────────────────────────────────────
 
 /// Parse a Redis blocking timeout (seconds, may be fractional; 0 = forever).
 pub(crate) fn parse_timeout(s: &str) -> Result<Option<Duration>, &'static str> {
