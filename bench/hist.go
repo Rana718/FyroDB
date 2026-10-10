@@ -7,9 +7,7 @@ import (
 )
 
 // Log-linear latency histogram (HdrHistogram layout, 5 significant bits):
-// values below 64ns get one bucket each; above that every power of two is
-// split into 32 linear sub-buckets, so any recorded value is reported within
-// ~3% of its true magnitude. Fixed size, allocation-free on Record.
+// reports any value within ~3% of its magnitude. Fixed size, alloc-free on record.
 const (
 	histSubBits = 5
 	histSub     = 1 << histSubBits

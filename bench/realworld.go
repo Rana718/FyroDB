@@ -21,8 +21,8 @@ var (
 )
 
 var (
-	// skipFlush (-f): keep all keys between phases so peak RSS at the end
-	// reflects the true steady-state footprint of the full workload.
+	// skipFlush (-f): keep all keys between phases so final peak RSS
+	// reflects the full workload's steady-state footprint.
 	skipFlush bool
 
 	incrHdr     = []byte("*2\r\n$4\r\nINCR\r\n$")
@@ -701,10 +701,8 @@ func runBenchJson() {
 	recordResult("JSON.SET/GET (documents)", total, time.Since(start))
 }
 
-// ── Stream (XADD) ─────────────────────────────────────────────────────────────
-// Each client pipelined-appends MIX_OPS_CLIENT entries to its own stream key.
-// XADD returns a variable-length bulk string entry-ID (e.g. "1748000000000-0")
-// so we use skipBulkReply instead of skipGetReplies' fast-path matchers.
+// Each client pipelined-appends entries to its own stream key. XADD returns a
+// variable-length entry-ID bulk string, so use skipBulkReply, not skipGetReplies.
 
 var xaddHdr = []byte("*5\r\n$4\r\nXADD\r\n$")
 
@@ -724,17 +722,14 @@ func appendXADD(out, key []byte, seq int) []byte {
 }
 
 // skipBulkReply drains n RESP bulk-string replies ($<len>\r\n<data>\r\n).
-// Used for XADD which returns a variable-length entry-ID bulk string.
 func skipBulkReply(r *bufio.Reader, n int) {
 	for i := 0; i < n; i++ {
-		// Read the type byte
 		b, err := r.ReadByte()
 		if err != nil {
 			panic(err)
 		}
 		switch b {
 		case '$':
-			// Read length line
 			line, err := r.ReadSlice('\n')
 			if err != nil {
 				panic(err)
@@ -748,13 +743,11 @@ func skipBulkReply(r *bufio.Reader, n int) {
 				}
 			}
 			if vlen < 0 {
-				// null bulk string ($-1\r\n) — nothing more to read
-				continue
+				continue // null bulk string ($-1\r\n)
 			}
-			// Discard value bytes + trailing \r\n
 			discardN(r, vlen+2)
 		case '+', ':', '-':
-			// Simple string, integer, or error — read to end of line
+			// simple string, integer, or error: read to end of line
 			for {
 				line, e := r.ReadSlice('\n')
 				if e != bufio.ErrBufferFull {
@@ -791,7 +784,6 @@ func runBenchStream() {
 					buf = appendXADD(buf, skey, sent+j)
 				}
 				writeFull(conn, buf)
-				// XADD replies with a bulk string entry-id, e.g. $15\r\n1748...-0\r\n
 				skipBulkReply(r, batch)
 				sent += batch
 			}
@@ -801,9 +793,8 @@ func runBenchStream() {
 	recordResult("XADD (streams)", total, time.Since(start))
 }
 
-// ── Bitmap (SETBIT / BITCOUNT) ────────────────────────────────────────────────
-// Each client sets MIX_OPS_CLIENT bits on its own bitmap key, then issues one
-// BITCOUNT to verify. Ops counted = SETBIT calls.
+// Bitmap: each client sets MIX_OPS_CLIENT bits on its own key, then one
+// BITCOUNT. Ops counted = SETBIT calls.
 
 var (
 	setbitHdr   = []byte("*4\r\n$6\r\nSETBIT\r\n$")
@@ -860,9 +851,8 @@ func runBenchBitmap() {
 	recordResult("SETBIT/BITCOUNT (bitmap)", total, time.Since(start))
 }
 
-// ── HyperLogLog (PFADD / PFCOUNT) ────────────────────────────────────────────
-// Each client adds MIX_OPS_CLIENT distinct elements to its own HLL key, then
-// reads back the approximate count. Ops counted = PFADD calls.
+// HyperLogLog: each client adds MIX_OPS_CLIENT distinct elements to its own
+// key, then reads the count. Ops counted = PFADD calls.
 
 var (
 	pfaddHdr   = []byte("*3\r\n$5\r\nPFADD\r\n$")
@@ -919,10 +909,8 @@ func runBenchHLL() {
 	recordResult("PFADD/PFCOUNT (HyperLogLog)", total, time.Since(start))
 }
 
-// ── Geospatial (GEOADD / GEODIST) ────────────────────────────────────────────
-// Each client adds MIX_OPS_CLIENT members to its own geo key using synthetic
-// (lon, lat) coordinates, then queries GEODIST between the first and last member.
-// Ops counted = GEOADD calls.
+// Geospatial: each client adds MIX_OPS_CLIENT members with synthetic (lon, lat)
+// coords, then queries GEODIST between two members. Ops counted = GEOADD calls.
 
 var geoadd5Hdr = []byte("*5\r\n$6\r\nGEOADD\r\n$")
 
@@ -941,13 +929,11 @@ func runBenchGeo() {
 			gkey := clientKey("geo:", i, kb[:])
 
 			// Phase 1: GEOADD <key> <lon> <lat> <member>
-			// lon cycles [−180, 180) and lat [−85, 85) deterministically.
 			for sent := 0; sent < MIX_OPS_CLIENT; {
 				batch := min(MIX_PIPE, MIX_OPS_CLIENT-sent)
 				buf = buf[:0]
 				for j := range batch {
 					idx := sent + j
-					// Spread coordinates across the valid range
 					lon := float64(idx%360) - 180.0
 					lat := float64(idx%170) - 85.0
 					lonStr := strconv.AppendFloat(nil, lon, 'f', 4, 64)

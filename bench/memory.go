@@ -10,11 +10,8 @@ import (
 	"time"
 )
 
-// Memory-efficiency phase (`-m mem`), after Dragonfly's methodology: every
-// scenario starts from an empty-database baseline, loads K keys × M elements,
-// and reports logical (used_memory) and resident (used_memory_rss) bytes per
-// key and per element. Each container type is measured in both its compact
-// and its large encoding, because the transition is where overhead hides.
+// Memory-efficiency phase (`-m mem`), after Dragonfly's methodology: load K
+// keys × M elements from empty, reporting used/rss bytes per key and element.
 type memScenario struct {
 	name  string
 	keys  int

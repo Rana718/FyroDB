@@ -11,11 +11,8 @@ import (
 	"time"
 )
 
-// latConfig drives `-m lat`: a latency-first KV phase with explicit value
-// size, keyspace and key distribution. With rate > 0 the load is open-loop:
-// each request carries its *intended* send time and latency is measured from
-// it, so a stalled server shows up as queueing delay instead of silently
-// slowing the generator down (coordinated omission).
+// latConfig drives `-m lat`. With rate > 0 the load is open-loop: each request
+// carries its intended send time to avoid coordinated omission.
 type latConfig struct {
 	rate     int // total target ops/sec; 0 = closed loop
 	duration time.Duration
@@ -77,8 +74,7 @@ func appendGet(out, key []byte) []byte {
 	return appendBulk(out, key)
 }
 
-// preloadKeys writes every key once so GETs hit, using wide pipelines on
-// all connections.
+// preloadKeys writes every key once so GETs hit.
 func preloadKeys(cfg latConfig, val []byte) {
 	conns := preDial(cfg.conns)
 	defer closeAll(conns)
@@ -210,10 +206,8 @@ func openLoop(cfg latConfig, val []byte) (hist, time.Duration) {
 			// Stagger connections so their schedules don't align.
 			next := start.Add(time.Duration(ci) * interval / time.Duration(cfg.conns))
 			for next.Before(end) {
-				// Sleep rather than spin: 2×conns spinning goroutines would
-				// steal the cores the server under test needs. Timer slack
-				// only delays the send, and that delay is charged to the
-				// request because latency counts from `next`.
+				// Sleep rather than spin so we don't steal cores from the
+				// server; timer slack is charged to the request via `next`.
 				now := time.Now()
 				if now.Before(next) {
 					time.Sleep(next.Sub(now))

@@ -196,22 +196,34 @@ func mustOK(r *bufio.Reader) {
 	}
 }
 
+// isRedisServer reports whether addr is a real Redis server: FyroDB's
+// INFO server carries fyrodb_version, Redis only has redis_version.
+func isRedisServer(addr string) bool {
+	if infoField(addr, "server", "fyrodb_version") != "" {
+		return false
+	}
+	return infoField(addr, "server", "redis_version") != ""
+}
+
 func runVector() {
+	// OSS Redis Cluster can't shard a vector index, so for Redis we pin it to
+	// one node (addrs[0]); for a FyroDB cluster we skip as before.
 	if len(addrs) > 1 {
-		fmt.Println("── Vector / Search Benchmark\n   (skipped — single-node only)")
-		return
+		if !isRedisServer(addrs[0]) {
+			fmt.Println("── Vector / Search Benchmark\n   (skipped — single-node only)")
+			return
+		}
+		fmt.Printf("── Vector / Search Benchmark\n   (Redis cluster — running against a single node %s)\n\n", addrs[0])
 	}
 
-	// Probe: check if FT.CREATE is supported before running.
 	{
 		conn, err := net.Dial("tcp", addrs[0])
 		if err != nil {
 			fmt.Println("── Vector / Search Benchmark\n   (skipped — could not connect)")
 			return
 		}
-		// Send a harmless FT.INFO on a nonexistent index; any response (even an
-		// error) confirms the command is dispatched. A "-ERR unknown command"
-		// reply means FT is not loaded.
+		// FT.INFO on a missing index: any reply confirms FT exists;
+		// "unknown command" means it is not loaded.
 		conn.Write([]byte("*2\r\n$7\r\nFT.INFO\r\n$12\r\n__ft_probe__\r\n"))
 		probe := make([]byte, 256)
 		conn.SetReadDeadline(time.Now().Add(2 * time.Second))

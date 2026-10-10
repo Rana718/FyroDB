@@ -19,12 +19,8 @@ import (
 	"time"
 )
 
-// ANN recall/QPS benchmark (`-m ann`). Loads a TEXMEX-format dataset
-// (SIFT-1M, GIST, GloVe/dbpedia converted to .fvecs) or generates a
-// clustered synthetic corpus, computes exact ground truth when needed, and
-// reports recall@k vs throughput for an EF_RUNTIME sweep, a concurrency sweep
-// and a filter-selectivity sweep. Filtered ground truth is always computed
-// here, over the exact filtered subset.
+// ANN recall/QPS benchmark (`-m ann`). Loads a TEXMEX-format dataset or a
+// synthetic corpus, then reports recall@k vs QPS over EF/concurrency/filter sweeps.
 type annConfig struct {
 	dir       string
 	metric    string // L2 | COSINE | IP
@@ -138,9 +134,8 @@ func findFile(dir, suffix string) string {
 	return ""
 }
 
-// synthClustered draws vectors around a few hundred Gaussian centroids:
-// unlike uniform noise this has the neighborhood structure real embeddings
-// have, so recall numbers mean something.
+// synthClustered draws vectors around Gaussian centroids, giving the
+// neighborhood structure real embeddings have so recall is meaningful.
 func synthClustered(n, q, dim int) (base, queries [][]float32) {
 	r := rand.New(rand.NewPCG(7, 11))
 	nc := 256
@@ -530,8 +525,8 @@ func runANN() {
 	vecCommand(conn, args...)
 	mustOK(r)
 
-	// Load: every doc carries bucket = id % 100 so `@bucket:[0 p-1]`
-	// selects exactly p% of the corpus for the filter sweep.
+	// Each doc carries bucket = id % 100 so `@bucket:[0 p-1]` selects
+	// exactly p% of the corpus for the filter sweep.
 	loadStart := time.Now()
 	const loadConns = 8
 	lc := preDial(loadConns)
@@ -578,9 +573,8 @@ func runANN() {
 		blobs[i] = f32blob(q)
 	}
 
-	// The first query kicks the build if the load outran it; then wait for
-	// FT.INFO to report the index complete so no timed query hits a
-	// partial graph.
+	// Kick the build if the load outran it, then wait for the index to
+	// report complete so no timed query hits a partial graph.
 	buildStart := time.Now()
 	writeFull(conn, annSearchCmd(idx, cfg.k, 10, "", blobs[0]))
 	readSearchIDs(r, nil)

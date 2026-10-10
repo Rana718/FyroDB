@@ -109,7 +109,6 @@ func main() {
 
 	// Set before any benchmark phase runs; flushServer checks it.
 	skipFlush = *noFlush
-
 	if *cluster != "" {
 		for _, a := range strings.Split(*cluster, ",") {
 			a = strings.TrimSpace(a)
@@ -137,7 +136,6 @@ func main() {
 			len(addrs), strings.Join(addrs, ", "))
 	}
 
-	// ── Resource monitoring setup ─────────────────────────────────────────────
 	serverPID := *pid
 	var clusterPIDs []int
 	var dockerContainers []string
@@ -165,13 +163,12 @@ func main() {
 			}
 		}
 	} else {
-		// Single-node mode: explicit PID, explicit Docker name, auto-detect Docker, or native PID.
+		// Single-node: explicit PID, explicit/auto Docker, or native PID.
 		if serverPID == 0 {
 			if *dockerName != "" {
 				dockerContainers = []string{*dockerName}
 				useDocker = true
 			} else {
-				// Try to find a Docker container mapped to this port.
 				if cid := findDockerContainerOnPort(*port); cid != "" {
 					dockerContainers = []string{cid}
 					useDocker = true
@@ -182,7 +179,6 @@ func main() {
 		}
 	}
 
-	// ── Print idle resource stats ─────────────────────────────────────────────
 	if serverPID > 0 {
 		idle := sampleProc(serverPID)
 		fmt.Printf("── Server Resource (idle, PID %d) ──────────────\n", serverPID)
@@ -207,7 +203,6 @@ func main() {
 		fmt.Printf("── Server Resource (idle) ─── (no process/container found)\n\n")
 	}
 
-	// ── Start monitor ─────────────────────────────────────────────────────────
 	var mon *monitor
 	if useDocker {
 		mon = startDockerMonitor(dockerContainers)
@@ -219,9 +214,8 @@ func main() {
 
 	mixResults = nil
 
-	// Warmup: one small pipelined round-trip per connection so the first
-	// timed phase does not pay connection setup, page faults and cold code
-	// paths. Too small to affect the server's own caches meaningfully.
+	// Warmup: one small pipelined round-trip per connection so the first timed
+	// phase skips connection setup, page faults, and cold code paths.
 	warmup()
 
 	switch *mode {
@@ -286,8 +280,8 @@ func main() {
 		writeJSON(*jsonOut)
 	}
 
-	// With -f the keyspace was never flushed, so report what the server is
-	// actually holding now that all phases finished.
+	// With -f the keyspace was never flushed, so report what the server
+	// holds now that all phases finished.
 	if skipFlush {
 		fmt.Println("── Final State (-f: no flush between phases) ────")
 		for _, addr := range addrs {

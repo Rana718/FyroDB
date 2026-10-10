@@ -12,7 +12,7 @@ import (
 const seqBatch = 64
 const clusterPipeSize = 2500
 
-// crc16Table is the exact table Redis uses for hash slot computation (CRC-16/CCITT).
+// CRC-16/CCITT table Redis uses for hash slots.
 // Source: https://github.com/redis/redis/blob/unstable/src/crc16.c
 var crc16Table = [256]uint16{
 	0x0000, 0x1021, 0x2042, 0x3063, 0x4084, 0x50a5, 0x60c6, 0x70e7,
@@ -51,7 +51,7 @@ var crc16Table = [256]uint16{
 
 // keySlot computes the Redis cluster hash slot for a key (0–16383).
 func keySlot(key []byte) int {
-	// Support hash tags: if key contains {...}, hash only the content inside.
+	// Hash tags: if key contains {...}, hash only the content inside.
 	if s := hashTag(key); s != nil {
 		key = s
 	}
@@ -62,8 +62,8 @@ func keySlot(key []byte) int {
 	return int(crc) % 16384
 }
 
-// hashTag extracts the content between the first '{' and the first '}' after it,
-// returning nil if no valid tag is present (matching Redis behaviour).
+// hashTag returns the content between the first '{' and a following '}',
+// or nil if there is no valid tag (matching Redis behaviour).
 func hashTag(key []byte) []byte {
 	for i, b := range key {
 		if b == '{' {
@@ -77,17 +77,14 @@ func hashTag(key []byte) []byte {
 	return nil
 }
 
-// nodeForKey maps a key to the index in addrs that owns its slot.
-// Assumes the cluster evenly distributes the 16384 slots across masters,
-// which is exactly what redis-cli --cluster create does by default.
+// nodeForKey maps a key to the owning index in addrs, assuming slots are
+// spread evenly across masters (the redis-cli --cluster create default).
 func nodeForKey(key []byte) int {
 	if len(addrs) == 1 {
 		return 0
 	}
 	return keySlot(key) * len(addrs) / 16384
 }
-
-// ── Connection management ────────────────────────────────────────────────────
 
 // clusterConns[clientID][nodeID] → *net.TCPConn
 type clusterConns [][]*net.TCPConn
@@ -125,8 +122,7 @@ func closeCluster(cc clusterConns) {
 	}
 }
 
-// preDial opens n connections, each routed to addrs[i%len(addrs)].
-// Used for single-node mode only.
+// preDial opens n connections, routed to addrs[i%len(addrs)] (single-node only).
 func preDial(n int) []*net.TCPConn {
 	conns := make([]*net.TCPConn, n)
 	var wg sync.WaitGroup
@@ -179,8 +175,6 @@ func dialTCP(id int) *net.TCPConn {
 	return tc
 }
 
-// ── Benchmark ────────────────────────────────────────────────────────────────
-
 func runKV() {
 	if len(addrs) > 1 {
 		runClusterKV()
@@ -208,7 +202,6 @@ func runKV() {
 
 	var wg sync.WaitGroup
 
-	// ── Pipeline-64 SET ──────────────────────────────────────────────────────
 	seqStart := time.Now()
 	for i := range CLIENTS {
 		wg.Go(func() {
@@ -229,8 +222,8 @@ func runKV() {
 					nodeReqs[n] = appendSetBytes(nodeReqs[n], kn)
 					nodeCnts[n]++
 				}
-				// Write to all nodes first, then read all replies — maximises
-				// parallel I/O across nodes instead of serialising them.
+				// Write all nodes first, then read all replies, to
+				// overlap I/O across nodes instead of serialising it.
 				flushAll(conns, nodeReqs, nodeCnts)
 				readSetReplies(readers, nodeCnts)
 				sent += batch
@@ -241,7 +234,6 @@ func runKV() {
 	seqElapsed := time.Since(seqStart)
 	printResult("Pipeline-64 SET", totalOps, seqElapsed)
 
-	// ── Pipelined SET ────────────────────────────────────────────────────────
 	pipeSetStart := time.Now()
 	for i := range CLIENTS {
 		wg.Go(func() {
@@ -272,8 +264,7 @@ func runKV() {
 	pipeSetElapsed := time.Since(pipeSetStart)
 	printResult("Pipelined SET", totalOps, pipeSetElapsed)
 
-	// ── Pipelined GET ────────────────────────────────────────────────────────
-	// GET the exact same keys that were written in the pipelined SET phase.
+	// GET the same keys written in the pipelined SET phase.
 	pipeGetStart := time.Now()
 	for i := range CLIENTS {
 		wg.Go(func() {
@@ -320,8 +311,6 @@ func runKV() {
 	fmt.Printf("pipelined  GET:    %s\n", fmtRate(getRate))
 	fmt.Printf("pipeline speedup:  %.1fx\n", setRate/seqRate)
 }
-
-// ── Helpers ──────────────────────────────────────────────────────────────────
 
 func runClusterKV() {
 	fmt.Printf("── KV Benchmark (cluster(%d masters)) ────────────────────────\n", len(addrs))
@@ -448,8 +437,8 @@ func flushAll(conns []*net.TCPConn, bufs [][]byte, cnts []int) {
 	}
 }
 
-// warmup runs a small pipelined SET/GET round so neither the client nor the
-// server pays first-touch costs inside the timed phases.
+// warmup runs a small pipelined SET/GET round so neither client nor server
+// pays first-touch costs inside the timed phases.
 func warmup() {
 	if len(addrs) > 1 {
 		warmupCluster()
@@ -484,8 +473,7 @@ func warmup() {
 	flushServer()
 }
 
-// Cluster warmup: route each client's key to its owning node only, using the
-// same nodeForKey mapping as the timed phases.
+// Cluster warmup: route each client's key only to its owning node.
 func warmupCluster() {
 	conns := preDialCluster(CLIENTS)
 	defer closeCluster(conns)
@@ -650,7 +638,7 @@ func skipGetReplies(r *bufio.Reader, n int) {
 					break
 				}
 			}
-			discardN(r, vlen+2) // value + trailing \r\n
+			discardN(r, vlen+2) // value + trailing CRLF
 		default:
 			isError := b == '-'
 			for {

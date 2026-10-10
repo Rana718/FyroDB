@@ -225,7 +225,7 @@ func sampleProc(pid int) procSample {
 }
 
 func findServerPID(port int) int {
-	// 1. Try ss (more reliable than lsof, available without extra packages)
+	// ss is more reliable than lsof and needs no extra packages.
 	out, err := exec.Command("sh", "-c",
 		fmt.Sprintf("ss -tlnp sport = :%d 2>/dev/null | awk 'NR>1{print $NF}'", port)).Output()
 	if err == nil {
@@ -242,7 +242,7 @@ func findServerPID(port int) int {
 		}
 	}
 
-	// 2. Try lsof as fallback
+	// Fallback: lsof.
 	out, err = exec.Command("sh", "-c",
 		fmt.Sprintf("lsof -ti tcp:%d -s tcp:listen 2>/dev/null | head -1", port)).Output()
 	if err == nil {
@@ -252,7 +252,7 @@ func findServerPID(port int) int {
 		}
 	}
 
-	// 3. Scan /proc/*/comm for known binary names
+	// Fallback: scan /proc/*/comm for known binary names.
 	for _, name := range []string{"fyro_db", "redis-server", "dragonfly"} {
 		matches, _ := filepath.Glob("/proc/*/comm")
 		for _, m := range matches {
