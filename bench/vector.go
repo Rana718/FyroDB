@@ -61,7 +61,7 @@ func vecReplyIDs(reply any) []int {
 		if !ok || !strings.HasPrefix(key, vecKeyPrefix) {
 			continue
 		}
-		if id, err := strconv.Atoi(key[len(vecKeyPrefix):]); err == nil {
+		if id, ok := vecID(key); ok {
 			ids = append(ids, id)
 		}
 	}
@@ -82,6 +82,30 @@ const (
 	vecKeyPrefix  = "vec:"
 	vecIndexName  = "vecbench"
 )
+
+// vecKeyTag is a cluster hash tag ("{n}:") whose slot is owned by addrs[0], so
+// every vec: key lands on the single pinned node. Empty in single-node mode.
+var vecKeyTag []byte
+
+// vecKey builds the key "vec:" + tag + id into dst.
+func vecKey(dst []byte, id int) []byte {
+	dst = append(dst[:0], vecKeyPrefix...)
+	dst = append(dst, vecKeyTag...)
+	return appendLen(dst, id)
+}
+
+// vecID parses the id from a vec: key, skipping an optional "{...}" tag.
+func vecID(key string) (int, bool) {
+	s := key[len(vecKeyPrefix):]
+	if len(s) > 0 && s[0] == '{' {
+		if j := strings.IndexByte(s, '}'); j >= 0 {
+			s = s[j+1:]
+		}
+	}
+	s = strings.TrimPrefix(s, ":")
+	id, err := strconv.Atoi(s)
+	return id, err == nil
+}
 
 func f32bytes(r *rand.Rand, buf []byte) []byte {
 	for i := range VEC_DIM {
@@ -208,12 +232,13 @@ func isRedisServer(addr string) bool {
 func runVector() {
 	// OSS Redis Cluster can't shard a vector index, so for Redis we pin it to
 	// one node (addrs[0]); for a FyroDB cluster we skip as before.
+	clusterRedis := false
 	if len(addrs) > 1 {
 		if !isRedisServer(addrs[0]) {
 			fmt.Println("── Vector / Search Benchmark\n   (skipped — single-node only)")
 			return
 		}
-		fmt.Printf("── Vector / Search Benchmark\n   (Redis cluster — running against a single node %s)\n\n", addrs[0])
+		clusterRedis = true
 	}
 
 	{
@@ -239,6 +264,13 @@ func runVector() {
 			fmt.Println("── Vector / Search Benchmark\n   (skipped — FT module not loaded)")
 			return
 		}
+	}
+
+	if clusterRedis {
+		// Pin every vec: key to addrs[0]'s slot via a shared hash tag, so the
+		// index and all HSETs live on the one node we query (no MOVED).
+		vecKeyTag = clusterHashTags()[0]
+		fmt.Printf("── Vector / Search Benchmark\n   (Redis cluster — running against a single node %s)\n\n", addrs[0])
 	}
 
 	flushServer()
@@ -298,8 +330,7 @@ func runVector() {
 		batch := min(VEC_LOAD_PIPE, VEC_DOCS-done)
 		for j := range batch {
 			id := done + j
-			key := append(keyBuf[:0], vecKeyPrefix...)
-			key = appendLen(key, id)
+			key := vecKey(keyBuf[:0], id)
 			f32bytes(rng, vecBuf)
 			for i := range VEC_DIM {
 				vecs = append(vecs, math.Float32frombits(binary.LittleEndian.Uint32(vecBuf[i*4:])))

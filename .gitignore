@@ -3,3 +3,4 @@
 temp/
 **/target/
 .claude/
+fyrodb_*
