@@ -2,7 +2,7 @@
 
 ## Overview
 
-FyroDB is a Redis-compatible in-memory key-value store written in Rust. It speaks the RESP wire protocol so any Redis client works out of the box. It uses a thread-per-core event loop architecture, a lock-free concurrent hash map with epoch-based reclamation and per-key seqlock, zero-copy RESP parsing, and direct-write response building.
+FyroDB is a Redis-compatible in-memory key-value store written in Rust. It speaks the RESP wire protocol so any Redis client works out of the box. It uses a thread-per-core event loop architecture, a lock-free concurrent hash map with epoch-based reclamation and per-key seqlock, zero-copy RESP parsing, and direct-write response building. Vector, full-text and hybrid search (the `FT.*` family) run on a separate persistent thread pool so heavy queries never stall the network workers.
 
 ---
 
@@ -26,6 +26,9 @@ FyroDB is a Redis-compatible in-memory key-value store written in Rust. It speak
 | Pipelined hot keys  | One lock per command          | Run coalescing: a run of ≤512 consecutive same-key commands takes one entry lock               |
 | SET + EXPIRE pairs  | Two commands, two locks       | Adjacent pair fused into one atomic set-with-TTL under a single lock                          |
 | Hash probe step     | Deref entry to compare key    | 15-bit hash tag packed into the slot pointer — reject a non-match without touching the entry |
+| Pipelined lookups   | One dependent miss per command | Look-ahead scans up to 16 queued commands and prefetches their slots, then their entries   |
+| Blocking commands   | Per-client blocked state      | Parked connections: waiters registered per key, woken through the owning worker's queue       |
+| Snapshots           | fork() + copy-on-write pages  | Forkless point-in-time snapshot: one state bit per entry, writers save pre-images            |
 | Lock contention     | Single-threaded, none         | Test-and-test-and-set with exponential backoff, then yield                                   |
 | Cluster slot lookup | Flat `slots[16384]` array     | Same: shared routing table, revalidated per connection with one atomic load                  |
 | Memory accounting   | `zmalloc_used_memory` counter | Per-CPU striped counters, so `used_memory` is real and drives purge/defrag                   |
@@ -42,18 +45,21 @@ CustomMap<V>
   ├── shift / shard_mask                 (fast shard selection via hash >> shift)
   ├── hasher: foldhash::RandomState      (non-cryptographic, fast hash)
   ├── key_count: AtomicUsize             (global live key count)
-  └── max_keys: usize                    (capacity limit)
+  ├── max_keys: usize                    (capacity limit)
+  ├── observer: Option<WriteObserver>    (search indexes' dirty-key hook, gated by one flag)
+  └── snap: Arc<SnapCtl<V>>              (forkless snapshot control)
 
 Shard<V>  (cache-padded counters)
   ├── table: AtomicPtr<SlotTable<V>>     (swapped atomically on growth)
   ├── len: CachePadded<AtomicUsize>      (occupied slots)
   ├── insert_gate: CachePadded<AtomicUsize>  (concurrent insert counter + GROWING flag)
-  └── grow_lock: Mutex<()>               (serializes growth/compaction per shard)
+  ├── grow_lock: Mutex<()>               (serializes growth/compaction per shard)
+  ├── hasher: RandomState                (recomputes hashes on growth; entries store none)
+  └── snap: Arc<SnapCtl<V>>              (shared snapshot parity + pre-image sink)
 
-Entry<V>  (per key, heap-allocated)
-  ├── hash: u64                          (full 64-bit hash, cached)
-  ├── key: CompactKey                    (≤15 bytes inline)
-  ├── state: AtomicU64                   (lock + occupied bit + seqlock generation)
+Entry<V>  (per key, heap-allocated, exactly 64 bytes for StoreValue)
+  ├── key: CompactKey                    (≤23 bytes inline, 24-byte footprint)
+  ├── state: AtomicU64                   (lock + occupied + seqlock generation + snapshot bit)
   └── value: UnsafeCell<MaybeUninit<V>>  (mutated in place while occupied)
 ```
 
@@ -108,7 +114,7 @@ Every shard starts with eight slots and grows only as keys arrive. When a shard 
 1. Set GROWING flag in insert_gate (blocks new inserts)
 2. Wait for in-flight inserts to complete
 3. Allocate new SlotTable at 2× capacity
-4. Copy live Entry pointers (skip tombstones)
+4. Rehash live Entry pointers from their keys (skip tombstones); the slot tag is rebuilt from the fresh hash
 5. Atomic swap of table pointer
 6. Retire old table via EBR
 7. Clear GROWING flag
@@ -126,11 +132,31 @@ Updates to existing keys mutate their value in place. Allocations are needed onl
 
 ### Compact Values
 
-- `SmallStr` stores strings up to 23 bytes inline
-- Small hashes and lists use compact sequential storage
-- Sets use integer, compact-vector, or full hash-set representations and promote/demote with size
-- Sorted sets use one score-ordered `Vec<ZEntry>` with a bloom filter for fast negative member lookups; exact (score, member) hits are binary-searched, and score-range operations use binary partition points
-- Background maintenance can shrink collection capacity and rebuild fragmented values under the existing entry lock
+Static assertions pin the layout: `SmallStr` and `CompactKey` are 24 bytes with
+23 bytes inline (the length tag doubles as the enum niche), `FyroDB` is 24 bytes,
+`StoreValue` 32, and an `Entry` exactly 64 — one cache line per key.
+
+- **Strings**: `SmallStr`, inline up to 23 bytes, one heap allocation beyond.
+  JSON documents are boxed so the two string-carrying variants do not compete for
+  the niche.
+- **Hashes / sets**: compact sequential storage that promotes to hash maps (sets
+  also have an integer-only form) and demotes on shrink.
+- **Lists**: a quicklist — a deque of packed chunks (≤128 elements or 4 KB).
+  Each chunk stores raw element bytes plus a `u32` offset table, about
+  4 bytes of overhead per element instead of a 24-byte slot. Chunks keep reserved
+  front space, so LPUSH is amortized O(1) without shifting, and a pop only moves a
+  head index. A filled chunk is sealed (capacity trimmed) when the next one opens.
+- **Sorted sets**: score-ordered chunks of ≤256 entries (a two-level B+-tree
+  without internal nodes: chunk boundaries are found by binary search on each
+  chunk's last entry). Above 128 members a `member → score` hash index turns
+  ZSCORE into one probe, and ZRANK / ZREM / ZINCRBY into probe plus binary search.
+  An in-place score change that keeps order skips the remove/insert.
+- **Streams**: packed nodes of ≤100 entries or 4 KB keyed by their first ID in a
+  `BTreeMap`. Entries are varint-encoded (ID delta from the node's master ID, field
+  count, length-prefixed fields) with a tombstone byte, so XDEL is a flag flip and
+  approximate (`~`) trimming drops whole nodes.
+- Background maintenance can shrink collection capacity and rebuild fragmented
+  values under the existing entry lock.
 
 ### Contention Behaviour
 
@@ -148,6 +174,11 @@ while a write-only hot key is bounded by lock handoff latency.
 
 ### Memory Maintenance
 
+- Active expiry runs 10 times per second with a 25 ms budget per tick: it scans
+  32K slots, and keeps scanning while more than 10% of the TTL keys it saw had
+  expired (the Redis adaptive cycle, without a separate expires dictionary).
+  Removal re-checks expiry under the entry lock, so a key that just received a
+  new TTL is never deleted by a stale check
 - EBR and allocator collection run every 10 seconds
 - Fragmentation checks run every 60 seconds; when RSS exceeds live bytes by more
   than 20% a cursor-based defragmentation pass rebuilds a bounded number of
@@ -246,17 +277,162 @@ live in different reachability domains and must be set accordingly.
 
 ---
 
+## Search — Vector, Full-Text, Hybrid
+
+All index code lives in `src/search` (registry, schema, query parser, attribute
+index, graph lifecycle) and `crates/fyro-vector` (kernels, HNSW, quantization,
+thread pool), which has no dependency on the rest of the server.
+
+### Indexes and incremental maintenance
+
+`FT.CREATE` registers a schema (prefix, storage type, fields); documents stay
+plain hashes. Index maintenance is driven by a write hook on `CustomMap`: every
+committed write notifies `SearchHooks`, which appends the key to each matching
+index's dirty set (16 sharded `Mutex<HashSet>` stripes, capped at 250K keys,
+after which the index is marked for a rebuild). With no index defined the hook
+costs one relaxed load. Queries drain the dirty set and apply exactly those keys
+— there is no generation-wide rescan. The attribute index keeps tombstoned
+postings (tag/text terms with term frequencies and document lengths, sorted
+numeric arrays), so a dirty key is an O(fields) update.
+
+### Execution model
+
+`FT.SEARCH`, `FT.AGGREGATE`, `FT.HYBRID` and `FT.CURSOR` run off
+the network workers: the connection parks, the query runs on the persistent
+vector pool, and the reply returns through the worker's completion queue (see
+Parked Connections). `FYRODB_SEARCH_INLINE=1` restores inline execution.
+
+The pool (`fyro_vector::pool`) is a fixed set of optionally pinned threads with
+high- and low-priority queues (index builds run low). Job dispatch uses a lock-free
+`SegQueue<Job>` per queue so submission never takes a lock. `parallel(n, f)` hands
+out tickets from a per-call counter, and the caller runs tickets itself while it
+waits, so nested parallel calls cannot deadlock the pool. Idle workers spin briefly
+before parking.
+
+### Kernels and element types
+
+Distance kernels are monomorphized per ISA (AVX-512 F/BW/VNNI/VPOPCNTDQ, AVX2+FMA,
+NEON, scalar) behind a `Kernel` trait, selected once at startup
+(`FYRODB_DISABLE_AVX512` opts out). FLOAT32, FLOAT16, BFLOAT16, INT8 and UINT8
+vectors are decoded from the stored blob (F16C for halves).
+
+### HNSW
+
+Level 0 is a fixed-stride block per node: `u32` neighbour ids, count and flags
+live in one cache-line-aligned stride, hnswlib-style, with per-node locks for
+parallel insertion. Upper layers are sparse. The level distribution uses
+`mL = 1/ln M`, neighbour selection uses Malkov's diversity heuristic with
+`keepPrunedConnections`, and search keeps reusable scratch (visited epochs, heaps, Int8 query codes, ACORN
+working sets) per thread — zero hot-path allocation after warmup. Ids are recycled
+through a free list; deletions are tombstones that traversal skips, compacted once
+they pass a threshold. Arena buffers shrink at each power-of-two node count
+milestone tracked by `last_shrink: AtomicUsize`, so cache density improves for
+streaming inserts as well as bulk builds. After a bulk build of ≥10K nodes the
+graph is renumbered in BFS/RCM order so neighbours sit close in memory.
+
+Builds are parallel on the pool. Queries are answered from the partially built
+graph with an exact scan of the unbuilt remainder, and `FT.INFO` reports
+`indexing` / `percent_indexed`.
+
+### Quantization
+
+`QUANTIZATION INT8 | RABITQ | NONE` per field (INT8 is the default for HNSW
+fields of ≥256 dims). INT8 stores a per-vector symmetric scale and uses integer
+dot products (VNNI where present). RaBitQ applies a randomized Hadamard rotation,
+subtracts the nearest of ≤16 k-means centroids and stores a 1-bit residual code,
+estimated against a 4-bit bit-plane query code. Both rerank their candidates with
+exact distances read from the hash field itself, so quantized graphs hold no raw
+float copy.
+
+### Filters and ranges
+
+Pre-filters resolve to an `IdSet` bitset. The strategy follows selectivity:
+brute-force over the allowed ids when they are few (≤4096 or <2%), ACORN-1
+two-hop expansion below 30%, and in-traversal filtering above. `VECTOR_RANGE`
+walks the graph with a radius bound instead of scanning.
+
+FLAT fields batch concurrent queries: the first query of a burst becomes the
+leader, later ones join its batch (up to 32). The scan is two-pass: an Int8
+pre-filter narrows candidates before exact f32 rerank, with the Int8 codes held
+in thread-local scratch to avoid per-query allocation.
+
+### Text and hybrid
+
+The tokenizer lowercases Unicode and drops RediSearch's stopword list; TEXT
+fields rank by BM25 (k1 = 1.2, b = 0.75). Negated filter sets resolve as a
+sorted merge over the ascending id range, using O(output) space instead of a
+boolean array. `FT.HYBRID` runs the lexical and vector legs in parallel on the
+pool and fuses them with RRF (Cormack) or LINEAR weighting. `FT.AGGREGATE`
+streams matches through GROUPBY/REDUCE accumulators (COUNT, COUNT_DISTINCT, SUM,
+AVG, MIN, MAX, TOLIST) with SORTBY/LIMIT and cursors.
+
+### Persistence
+
+RDB v3 stores each index's M / EF / type / quantization, and every HNSW graph's
+links and centroids (`TYPE_VECTOR_GRAPH`), so a restart restores graphs without
+rebuilding. Fields without a persisted graph rebuild in the background.
+
+---
+
+## Parked Connections and Blocking Commands
+
+A command that cannot complete inline parks its connection. The connection keeps
+reading (a closed socket is still noticed) but parses nothing, so pipelined
+commands behind it keep their order.
+
+- **Jobs** (off-worker search) complete through a per-worker `SegQueue` plus
+  `mio::Waker`. A drop guard sends an error reply if a job panics, so no
+  connection can stay parked forever.
+- **Blocking commands** — BLPOP, BRPOP, BLMOVE, BRPOPLPUSH, BZPOPMIN, BZPOPMAX,
+  XREAD BLOCK, XREADGROUP BLOCK — register a waiter per key in `BlockRegistry`
+  and re-attempt once after registering, which closes the race with a write that
+  lands in between. Writes call `signal(key)`, which costs one relaxed load when
+  nobody is blocked. Woken connections retry on their own worker, and the ones
+  that lose the race stay registered. Timeouts live in a per-worker binary heap
+  that bounds the poll timeout.
+
+Streams implement consumer groups fully: XREADGROUP (`>` and history reads,
+NOACK), XACK, XPENDING (summary and extended, IDLE, per consumer), XCLAIM (IDLE,
+TIME, RETRYCOUNT, FORCE, JUSTID, LASTID), XAUTOCLAIM (reports deleted ids),
+XGROUP CREATE / SETID / DESTROY / CREATECONSUMER / DELCONSUMER, and XINFO
+STREAM / GROUPS / CONSUMERS. XADD validates IDs, supports `ms-*`, and trims by
+MAXLEN or MINID, exact or approximate, with LIMIT.
+
+---
+
 ## Request Lifecycle
 
 ```
 Client → TCP (SO_REUSEPORT) → Per-thread epoll → Conn::do_read()
+  → Look-ahead prefetch of the next ≤16 queued keys
   → Zero-copy RESP parse → Inline fast path (SET/GET/INCR/DEL/LPUSH/RPOP/SADD)
+  → Blocking or off-worker commands park the connection
   → Run coalescing look-ahead (same-key runs, SET+EXPIRE pairs, PUBLISH batches)
   → Or: dispatch table → Storage operation → Response to write buffer
   → Conn::do_write() → Client
 ```
 
 All I/O is batched: read all ready events, then flush all responses in one pass.
+
+### Pipeline prefetch
+
+Before parsing, the connection scans already-buffered RESP for up to 16 commands
+and prefetches in two stages, following Valkey's memory-access amortization. The
+first stage hashes each key and prefetches its slot; the second loads each slot
+whose tag matches and prefetches the entry. The cache misses of a pipeline then
+overlap instead of serializing. Prefetch runs only when at least two keys are
+buffered, so single-command traffic pays one short scan.
+
+### Networking knobs
+
+- `FYRODB_AFFINITY=auto` pins workers to cores `0..W` and the search pool to the
+  remaining cores. `FYRODB_WORKER_CORES` / `FYRODB_SEARCH_CORES` take explicit
+  lists such as `0-5,12`.
+- `FYRODB_BUSY_POLL_US=N` keeps a worker polling with a zero timeout for N µs
+  after activity, trading CPU for wake-up latency.
+- `--features io-uring` with `FYRODB_IO_URING=1` submits all of a loop
+  iteration's replies as one batch of `send` SQEs (one `io_uring_enter` instead
+  of one `write` per connection). It is an opt-in experiment; reads stay on epoll.
 
 ---
 
@@ -303,14 +479,46 @@ Correctness rules every collector obeys:
 
 ---
 
-## Persistence — RDB Snapshots
+## Persistence
 
-- Format: `FLDB` magic + version + typed entries + EOF marker
-- Supports: String, Hash, List, Set, ZSet, JSON, Stream
-- Atomic write: temp file → fsync → rename
-- Per-slot EBR pin during save (no multi-second GC stalls)
-- Expired keys skipped during load
-- Truncation-safe: loads partial files with warning
+### RDB snapshots (forkless, point-in-time)
+
+- Format: `FLDB` magic + version (3) + typed records + index/graph records + EOF
+- Supports String, Hash, List, Set, ZSet, JSON, Stream (packed nodes plus
+  consumer groups, PELs and consumers), search indexes and HNSW graphs
+- Atomic write: temp file → fsync → rename → directory fsync
+
+A snapshot is consistent as of its start without `fork()`. Each entry's state
+word carries one snapshot bit; starting a snapshot flips a global parity, so
+every existing entry reads as "unsaved":
+
+1. The saver walks each shard's table under one epoch pin, takes each unsaved
+   entry's lock, encodes it straight into the file buffer (no value clone) and
+   marks it saved.
+2. A writer about to modify an unsaved entry first encodes the old value into a
+   side buffer and marks it, still under the entry lock it already holds. Deletes
+   and FLUSHALL do the same, so keys removed mid-snapshot are still saved.
+3. Entries created during the snapshot are born "saved" and excluded.
+4. The side buffer is drained into the file between shards; ending the snapshot
+   takes the sink's write lock, so no in-flight pre-image is lost.
+
+Outside a snapshot the hook is one `Acquire` load per write.
+
+### AOF (optional)
+
+`FYRODB_AOF=1` enables a state-based append-only log next to the RDB
+(`FYRODB_AOF_DIR`, `FYRODB_AOF_FSYNC=always|everysec|no`). It hooks the same
+capture points as replication: after a write, the key's current value (or a
+delete / flush marker) is appended. Each thread writes its own file, and records
+reach the kernel before the replies of the same loop iteration are sent.
+
+Every record carries a global sequence number taken *before* the value is read,
+so the record with the highest sequence for a key always reflects its final
+state. Startup loads the RDB and then k-way-merges all AOF files by sequence.
+Each snapshot starts a new file generation. After the RDB is renamed, a base
+sequence is persisted, records at or after it are carried over, and older files
+are deleted. Replay ignores records below the base, which keeps it correct even
+if the process dies between those steps.
 
 ---
 
@@ -318,65 +526,66 @@ Correctness rules every collector obeys:
 
 ```
 src/
-├── main.rs              Entry point, config, signal handling
-├── worker.rs            Per-thread epoll loop, batched I/O
+├── main.rs                 Entry point, config, affinity plan, AOF open, expiry cycle, signals
+├── worker.rs               Per-thread epoll loop, completions, timers, batched I/O, busy-poll
 ├── handler/
-│   ├── conn.rs          Connection state, inline fast paths, run coalescing (queue/write/publish runs, SET+EXPIRE pairs)
-│   ├── dispatch.rs      First-byte fast-path + enum fallback
-│   ├── subscription.rs  Pub/Sub state machine
-│   └── pubsub_cmds.rs   PUBSUB subcommands
-├── commends/
-│   ├── mod.rs           Command enum + dispatcher
-│   ├── string.rs        String commands
-│   ├── hash.rs          Hash commands
-│   ├── list.rs          List commands
-│   ├── set.rs           Set commands
-│   ├── zset.rs          Sorted Set commands
-│   ├── json.rs          JSON commands
-│   ├── stream.rs        Stream commands
-│   ├── bitmap.rs        Bitmap commands
-│   ├── hll.rs           HyperLogLog commands
-│   ├── geo.rs           Geospatial commands
-│   ├── keys.rs          Key management commands
-│   ├── scan.rs          SCAN cursor implementation
-│   ├── connection.rs    Server/connection commands
-│   └── transaction.rs   MULTI/EXEC/DISCARD
+│   ├── conn/
+│   │   ├── mod.rs          Connection state
+│   │   ├── sock.rs         Read/parse loop, writes (write(2) and io_uring variants)
+│   │   ├── fast_path.rs    Inline hot commands, blocking/off-worker routing
+│   │   ├── coalesce.rs     Same-key run coalescing, SET+EXPIRE pairs, PUBLISH batches
+│   │   ├── park.rs         Parked connections, blocking ops, timer heap
+│   │   └── prefetch.rs     Pipeline look-ahead key prefetch
+│   ├── dispatch.rs         First-byte fast path, enum fallback, replication/AOF capture
+│   ├── uring.rs            io_uring batched sends (feature `io-uring`)
+│   ├── subscription.rs     Pub/Sub state machine
+│   └── pubsub_cmds.rs      PUBSUB subcommands
+├── commands/               RESP command handlers per type (string, hash, list, set, zset,
+│   │                       json, stream, bitmap, hll, geo, keys, scan, connection, transaction)
+│   └── ft/                 FT.CREATE/INFO/…, FT.SEARCH, FT.AGGREGATE, FT.HYBRID, document helpers
+├── search/
+│   ├── mod.rs              Index registry, tokenizer, pool configuration
+│   ├── hooks.rs            Write-hook dirty sets per index
+│   ├── schema.rs           Field attributes (types, metrics, quantization)
+│   ├── query.rs            Query parser (KNN, VECTOR_RANGE, filters)
+│   ├── filter.rs           Incremental attribute index, BM25 postings
+│   └── graph.rs            Graph lifecycle: builds, dirty apply, restore
 ├── storage/
-│   ├── store.rs         Store struct (CustomMap + counters)
-│   ├── value/           FyroDB values, SmallStr, compact collections, JSON, ZSetData
-│   ├── string.rs        String storage operations
-│   ├── hash.rs          Hash storage operations
-│   ├── list.rs          List storage operations
-│   ├── set.rs           Set storage operations
-│   ├── zset.rs          Sorted Set storage operations
-│   ├── json.rs          JSON storage operations
-│   ├── stream.rs        Stream storage operations
-│   ├── bitmap.rs        Bitmap storage operations
-│   ├── hll.rs           HyperLogLog storage operations
-│   ├── geo.rs           Geospatial storage operations
-│   ├── keys.rs          Key operations (expire, rename, copy)
-│   ├── scan.rs          Cursor-based scan
-│   ├── server.rs        Info, flush, cleanup_expired
-│   └── rdb.rs           RDB persistence
-├── pubsub/
-│   ├── registry.rs      Arc-snapshot pub/sub registry
-│   ├── slot.rs          Per-subscriber queue, worker notifier, grouped FanEntry fan-out
-│   └── frame.rs         RESP message encoding
-└── utils/
-    ├── parser.rs        Zero-copy RESP parser (SIMD memchr)
-    ├── resp.rs          RESP response builders
-    ├── resp3.rs         RESP3 protocol types
-    └── util.rs          Glob matching, float formatting
+│   ├── store/              Store struct, cluster hooks, write fence, TTL counters, memory stats
+│   ├── value/              FyroDB values, SmallStr, quicklist, ZSetData, JSON, compact collections
+│   ├── persistence/
+│   │   ├── rdb/            Snapshot format, forkless save, load, stream codec, index/graph records
+│   │   └── aof.rs          Per-thread state AOF, replay, rewrite after snapshot
+│   ├── blocking.rs         Key waiters for blocking commands
+│   ├── stream.rs           Packed stream nodes, consumer groups
+│   ├── list.rs / zset.rs / hash.rs / set.rs / string.rs / json.rs / bitmap.rs / hll.rs / geo.rs
+│   ├── keys.rs / scan.rs   Key operations, cursor scan
+│   └── server.rs           INFO, flush, expiry sweep
+├── pubsub/                 Arc-snapshot registry, per-subscriber queues, frames
+├── cluster/                Slot routing, topology, replication, cluster bus
+└── utils/                  RESP parser (resumable), RESP builders, affinity, glob/float utils
 
 crates/customhash/src/
-├── lib.rs               Public CustomMap API
-├── shard.rs             Entry/table layout, probing, growth
-├── ops.rs               iteration, clear, compaction, defragmentation
-├── key.rs               15-byte inline CompactKey
-└── ebr.rs               Epoch-based reclamation
+├── lib.rs                  Public CustomMap API, write observer, prefetch_batch
+├── shard.rs                Entry/table layout, probing, growth
+├── ops.rs                  Iteration, expiry sweep, compaction, defrag, snapshot walk
+├── snap.rs                 Forkless snapshot control (parity bit, pre-image sink)
+├── key.rs                  23-byte inline CompactKey
+└── ebr.rs                  Epoch-based reclamation
+
+crates/fyro-vector/src/
+├── kernels/                ISA-dispatched distance kernels, element-type conversion
+├── hnsw/                   Graph layout, insert, search, filters, range, quantization, tests
+├── distance.rs             Metric definitions
+└── pool.rs                 Persistent pinned thread pool with ticketed parallel()
 
 crates/rust-zmalloc/src/
-└── lib.rs               mimalloc allocator, striped allocation counters, RSS, purge (mi_collect)
+└── lib.rs                  mimalloc allocator, striped allocation counters, RSS, purge
+
+bench/                      Go load generator: KV/mix, latency histograms (closed/open loop),
+                            memory per key, ANN recall (SIFT/GIST or synthetic), vector/realworld suites
+benches/core.rs             Criterion micro-benchmarks (parser, keyspace, kernels, HNSW)
+scripts/                    bench_local.sh, bench_compare.py, pgo_train.sh, test.sh
 ```
 
 Cluster sources:
@@ -410,34 +619,39 @@ src/cluster/
 | SET / DEL / EXPIRE            | O(1) average                                                                                               | Tag-filtered probe + per-entry mutation/removal                                                                                   |
 | INCR / LPUSH / SADD           | O(1)                                                                                                       | Per-key spinlock + in-place mutate                                                                                                |
 | HGETALL / SMEMBERS            | O(N)                                                                                                       | Seqlock-validated iteration                                                                                                       |
-| ZADD                          | O(1) amortized new member with ascending score; O(log N) same-score re-add; O(N) different-score update | 5-probe bloom filter (≈0.5% false positives) guards the scan; an exact (score, member) hit is binary-searched in the sorted Vec |
-| ZRANGE                        | O(K)                                                                                                       | Contiguous sorted Vec slice                                                                                                       |
-| ZRANGEBYSCORE                 | O(log N + K)                                                                                               | Binary partition points + slice iteration                                                                                         |
-| ZRANK / ZSCORE                | O(N)                                                                                                       | Linear member lookup                                                                                                              |
-| ZPOPMIN / ZPOPMAX             | O(N) / O(1)                                                                                                | Vec front removal / tail pop                                                                                                      |
-| LINDEX                        | O(N)                                                                                                       | VecDeque index access                                                                                                             |
-| LRANGE                        | O(N)                                                                                                       | Seqlock + VecDeque slice iteration                                                                                                |
-| LREM / LPOS                   | O(N)                                                                                                       | Linear scan of VecDeque                                                                                                           |
-| LPUSH / RPUSH                 | O(1)                                                                                                       | VecDeque push_front/push_back under spinlock                                                                                      |
-| LPOP / RPOP                   | O(1)                                                                                                       | VecDeque pop under spinlock; a single-element pop writes the reply straight to the output buffer with no Vec or String allocation |
+| ZADD                          | O(log N) + O(C) | Hash-index probe for an existing member; chunk located by binary search, C ≤ 256-entry memmove inside one chunk |
+| ZRANGE                        | O(N/C + K)    | Walk chunk lengths to the start rank, then iterate K entries                                                     |
+| ZRANGEBYSCORE                 | O(log N + K)  | Binary search over chunk tails, then inside the chunk                                                            |
+| ZSCORE / ZRANK                | O(1) / O(log N + N/C) | Member → score index; rank adds a binary search and a sum of preceding chunk lengths                   |
+| ZPOPMIN / ZPOPMAX             | O(C)          | Remove from the first/last chunk                                                                                 |
+| LINDEX / LSET                 | O(N/C)        | Walk chunk lengths from the nearer end (C ≤ 128)                                                                  |
+| LRANGE                        | O(N/C + K)    | Locate the start chunk, then iterate packed elements                                                             |
+| LREM / LPOS / LINSERT         | O(N)          | Linear scan; LREM/LINSERT rewrite only the touched chunks                                                         |
+| LPUSH / RPUSH                 | O(1) amortized | Append to the tail chunk / write into the head chunk's reserved front space                                     |
+| LPOP / RPOP                   | O(1)          | Advance the head index / truncate the tail; a single pop writes the reply straight to the output buffer           |
 | SINTER                        | O(N × M)                                                                                                   | HashSet intersection (smallest-first)                                                                                             |
 | SUNION / SDIFF                | O(N)                                                                                                       | HashSet union/difference                                                                                                          |
 | GEOSEARCH                     | O(N)                                                                                                       | Full ZSet scan with haversine filter                                                                                              |
 | JSON.SET (root)               | O(V)                                                                                                       | JSON parse + atomic store                                                                                                         |
 | JSON.SET (path)               | O(D)                                                                                                       | D = path depth traversal                                                                                                          |
 | JSON.GET                      | O(1)                                                                                                       | Direct path lookup                                                                                                                |
-| XADD                          | O(1)                                                                                                       | BTreeMap append (auto-incrementing ID)                                                                                            |
-| XRANGE                        | O(log N + K)                                                                                               | BTreeMap range query                                                                                                              |
-| BITCOUNT                      | O(N)                                                                                                       | Byte-level popcount                                                                                                               |
+| XADD                          | O(1) amortized | Varint append to the last packed node; `~` trims whole nodes                                                    |
+| XRANGE / XREAD                | O(log N + K)  | BTreeMap seek to the node containing the start ID, decode forward                                                 |
+| BITCOUNT                      | O(B)          | B = bytes; hardware `count_ones()` per byte; BITCOUNT byte-range is O(range)                                     |
+| BITPOS                        | O(B)          | `leading_zeros()` per byte in byte mode; O(B) bit scan in bit mode                                               |
+| BITFIELD                      | O(1)                                                                                                       | Single byte-range read/write with overflow check                                                                                  |
 | PFADD / PFCOUNT               | O(1)                                                                                                       | HyperLogLog register update/estimate                                                                                              |
+| GEOADD                        | O(log N + C) | Geohash encode + ZSet chunked insert; C ≤ 256-entry chunk memmove                                                |
+| GEODIST / GEOPOS              | O(1)          | ZSet score decode + haversine                                                                                    |
+| GEOSEARCH                     | O(N)          | Full ZSet scan with haversine radius/box filter                                                                  |
 | PUBLISH                       | O(S) sparse fan-out, O(W) dense                                                                           | W = workers; above ~8 subscribers/worker one queue entry per worker, delivery is a memcpy at the worker                         |
 | PUBLISH pipelined run of K    | O(K·S) encode + O(W) enqueue                                                                              | One snapshot scan and one grouped fan-out for the whole run                                                                     |
 | Same-key pipelined run of K   | O(K) work under 1 lock, O(1) amortized per command                                                        | Queue/write-run coalescing; per-command replies synthesized exactly                                                             |
 | SET+EXPIRE adjacent pair      | O(1)                                                                                                       | Fused into one atomic set-with-TTL under a single entry lock                                                                    |
-| SCAN                          | O(COUNT)                                                                                                   | Hash-based cursor, stable across mutations                                                                                        |
+| SCAN / RANDOMKEY              | O(COUNT)      | Slot cursor; only key and expiry are read (values are never cloned)                                               |
 | KEYS pattern                  | O(N)                                                                                                       | Full scan with per-slot EBR pin                                                                                                   |
 | SORT                          | O(N log N)                                                                                                 | Vec collect + sort                                                                                                                |
-| RDB save                      | O(N)                                                                                                       | Per-slot iteration, buffered I/O                                                                                                  |
+| RDB save                      | O(N)          | Forkless snapshot walk, encoded without cloning; writers pay one pre-image encode per first touch                 |
 | RESP parse                    | O(B)                                                                                                       | B = bytes, SIMD memchr for newlines                                                                                               |
 | Command dispatch (fast-path)  | O(1)                                                                                                       | First-byte + `cmd_eq` for 13 hot commands (GET/SET/HGET/HSET/LPUSH/LPOP/LRANGE/RPUSH/RPOP/EXPIRE/ZADD/JSON.GET/JSON.SET)          |
 | Command dispatch (all others) | O(1)                                                                                                       | Static `OnceLock<foldhash::HashMap>` — uppercase to 32-byte stack buf + one hash probe; built once, zero allocation per call      |
@@ -448,6 +662,15 @@ src/cluster/
 | Cluster slot routing          | O(1)                                                                                                       | Key CRC16 once, then one index into the shared 16384-entry owner table                                                            |
 | Cluster topology refresh      | O(1)                                                                                                       | One `Acquire` load of a version counter; only a change pays for the lock and `Arc` clone                                          |
 | Cluster write fence           | O(1) per write, O(W) to engage                                                                             | Per-worker in-flight counter; a fence holder drains W counters                                                                    |
+| Active expiry                 | O(budget) per tick | 32K-slot chunks, repeated while >10% of sampled TTL keys expired, ≤25 ms per 100 ms tick                   |
+| Blocking wake                 | O(W_k)        | W_k = waiters on the written key; one relaxed load when nobody is blocked                                         |
+| XREADGROUP `>` / XACK         | O(log N + K) / O(log P) | Deliver after `last_delivered`, PEL is a BTreeMap plus per-consumer BTreeSet                          |
+| FT.SEARCH KNN (HNSW)          | O(ef · log N) | Graph traversal on the pool; quantized distances, exact rerank of the candidates                                 |
+| FT.SEARCH KNN (FLAT)          | O(N/2) avg    | Two-pass: Int8 pre-filter over all vectors, exact f32 rerank of the shortlist; batched across concurrent queries  |
+| FT.SEARCH filtered KNN        | O(A) … O(ef · log N) | A = allowed ids; brute-force, ACORN-1 or in-traversal chosen by filter selectivity                          |
+| FT.SEARCH text filter         | O(P + K)      | P = postings for the term; negations resolve as O(total − matched) sorted merge                                   |
+| FT.AGGREGATE cursor           | O(page)       | Rows are split off the cursor Vec with split_off; no full-cursor clone per page                                   |
+| Index maintenance per write   | O(1) + O(fields) at query | Write hook marks the key dirty; the next query applies exactly the dirty keys                      |
 | Value defragmentation         | O(budget)                                                                                                  | Cursor walks one shard per tick and rebuilds at most `budget` values                                                              |
 | `used_memory`                 | O(S)                                                                                                       | Sums S per-CPU allocation stripes                                                                                                 |
 
@@ -457,13 +680,13 @@ src/cluster/
 | ---------------------- | ------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
 | Key→Value mapping      | Open-addressing hash table (linear probe)                                 | Cache-friendly, no pointer chasing                                                                        |
 | Hash fields            | compact `Vec<SmallStr>` → `foldhash::HashMap<SmallStr, SmallStr>`         | Low overhead for small hashes, O(1) access after promotion                                                |
-| List                   | compact/full `VecDeque<SmallStr>`                                         | Inline short values and O(1) push/pop both ends                                                           |
+| List                   | Quicklist: `VecDeque` of packed chunks (bytes + `u32` offsets)            | ~4 bytes overhead per element, O(1) ends, cache-dense ranges                                              |
 | Set                    | sorted integers → compact `Vec<SmallStr>` → `foldhash::HashSet<SmallStr>` | Representation follows member type and cardinality                                                        |
-| Sorted Set             | score-ordered `Vec<ZEntry>` + bloom filter                                | Compact memory, O(1) append for ascending scores, O(log n) score ranges, bloom skips scan for new members |
-| Stream consumer groups | `foldhash::HashMap<String, ConsumerGroup>`                                | O(1) group/consumer lookup                                                                                |
+| Sorted Set             | Chunked sorted `Vec<ZEntry>` (≤256) + member → score hash index (>128)    | Cache-friendly ranges, O(1) score lookup, bounded memmove on insert                                        |
+| Stream consumer groups | `HashMap<SmallStr, ConsumerGroup>`; PEL `BTreeMap<StreamId, PelEntry>`    | O(1) group/consumer lookup, ordered PEL for XPENDING / XAUTOCLAIM                                         |
 | Command name → enum    | `OnceLock<foldhash::HashMap<&'static str, ComdType>>`                     | O(1) dispatch after one-time init                                                                         |
 | JSON                   | Custom recursive enum (`JsonValue`)                                       | Zero-dependency, path traversal                                                                           |
-| Stream                 | `BTreeMap<StreamId, Vec<(String, String)>>`                               | Ordered by ID, O(log N) range                                                                             |
+| Stream                 | `BTreeMap<StreamId, Node>` of varint-packed nodes (≤100 entries / 4 KB)   | Ordered by ID, compact entries, tombstone deletes, whole-node trimming                                    |
 | HyperLogLog            | 16384-register byte array                                                 | Fixed 16KB, probabilistic counting                                                                        |
 | Geospatial             | ZSet with geohash-encoded scores                                          | Reuses sorted set, haversine filtering                                                                    |
 | Pub/Sub channels       | Arc-snapshot Vec per shard                                                | Lock-free publish, copy-on-write subscribe                                                                |
@@ -473,3 +696,8 @@ src/cluster/
 | Allocator accounting   | `rust-zmalloc` + mimalloc                                                 | Zero-overhead allocator; RSS tracked periodically via /proc, explicit page release via mi_collect         |
 | Shard selection        | Bit shift + mask (foldhash)                                               | Single instruction, no modulo                                                                             |
 | RESP newline scan      | `memchr` (SIMD AVX2)                                                      | 32 bytes per cycle                                                                                        |
+| Vector graph           | Fixed-stride level-0 blocks (`u32` ids) + sparse upper layers             | Cache-line-aligned neighbour lists, parallel insert with per-node locks                                   |
+| Vector codes           | INT8 per-vector scale or RaBitQ 1-bit residuals + ≤16 centroids           | 4–32× smaller than f32; exact rerank from the stored hash field                                           |
+| Search dirty sets      | 16 sharded `HashSet` stripes per index                                    | Write hook stays cheap under concurrency; overflow falls back to a rebuild                                |
+| Blocked clients        | `HashMap<key, Vec<Waiter>>` + per-worker deadline heap                    | Wake only the waiters of the written key; timeouts bound the poll                                         |
+| AOF                    | Per-thread append files, sequence-numbered state records                  | No cross-thread contention; replay is a k-way merge                                                       |

@@ -243,6 +243,15 @@ pub fn is_write_command(command: &[u8]) -> bool {
     let Some(&first) = command.first() else {
         return false;
     };
+    if first.eq_ignore_ascii_case(&b'X')
+        && (command.eq_ignore_ascii_case(b"XTRIM")
+            || command.eq_ignore_ascii_case(b"XGROUP")
+            || command.eq_ignore_ascii_case(b"XCLAIM")
+            || command.eq_ignore_ascii_case(b"XAUTOCLAIM")
+            || command.eq_ignore_ascii_case(b"XREADGROUP"))
+    {
+        return true;
+    }
     match (command.len(), first.to_ascii_uppercase()) {
         // len=3
         (3, b'S') => command.eq_ignore_ascii_case(b"SET"),

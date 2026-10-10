@@ -1,5 +1,6 @@
 mod common;
 use common::*;
+use fyro_db::storage::stream::{Trim, TrimBy};
 
 #[test]
 fn xadd_creates_stream() {
@@ -42,7 +43,7 @@ fn xadd_with_maxlen() {
     let s = store();
     for i in 0..10 {
         let fields = vec![("i".to_string(), i.to_string())];
-        s.xadd("k", "*", fields, Some(5), false).unwrap();
+        s.xadd("k", "*", fields, Some(Trim { by: TrimBy::MaxLen(5), approx: false, limit: 0 }), false).unwrap();
     }
     assert_eq!(s.xlen("k"), Ok(5));
 }
@@ -113,7 +114,7 @@ fn xtrim_reduces_length() {
         s.xadd("k", &format!("{}-0", i), fields, None, false)
             .unwrap();
     }
-    let removed = s.xtrim("k", 5).unwrap();
+    let removed = s.xtrim("k", Trim { by: TrimBy::MaxLen(5), approx: false, limit: 0 }).unwrap();
     assert_eq!(removed, 5);
     assert_eq!(s.xlen("k"), Ok(5));
 }
@@ -161,7 +162,7 @@ fn xgroup_create_missing_key_no_mkstream() {
     let s = store();
     assert_eq!(
         s.xgroup_create("k", "g", "0", false),
-        Err("ERR The XGROUP subcommand requires the key to exist")
+        Err(fyro_db::storage::stream::ERR_NO_KEY_GROUP)
     );
 }
 

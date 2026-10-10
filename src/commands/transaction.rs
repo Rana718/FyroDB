@@ -18,7 +18,7 @@ pub fn exec(queue: &[Vec<String>], store: &Arc<Store>, out: &mut Vec<u8>) {
     resp::write_array_header(out, queue.len());
     for cmd_parts in queue {
         let refs: Vec<&str> = cmd_parts.iter().map(|s| s.as_str()).collect();
-        crate::commends::execute(&refs, store, out);
+        crate::commands::execute(&refs, store, out);
     }
 }
 

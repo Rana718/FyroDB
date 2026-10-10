@@ -78,7 +78,7 @@ pub fn write_hello_resp3(out: &mut Vec<u8>) {
     super::resp::write_bulk(out, "server");
     super::resp::write_bulk(out, "fyrodb");
     super::resp::write_bulk(out, "version");
-    super::resp::write_bulk(out, env!("CARGO_PKG_VERSION"));
+    super::resp::write_bulk(out, "8.2.0");
     super::resp::write_bulk(out, "proto");
     super::resp::write_integer(out, 3);
     super::resp::write_bulk(out, "id");
@@ -88,8 +88,10 @@ pub fn write_hello_resp3(out: &mut Vec<u8>) {
     super::resp::write_bulk(out, "role");
     super::resp::write_bulk(out, "master");
     super::resp::write_bulk(out, "modules");
-    write_set_header(out, 0);
+    write_set_header(out, 1);
+    super::resp::write_bulk(out, "search");
 }
+
 
 #[inline]
 pub fn write_integer(out: &mut Vec<u8>, n: i64) {

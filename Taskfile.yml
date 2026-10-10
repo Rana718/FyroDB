@@ -35,69 +35,225 @@ tasks:
       cmds:
          - cargo clippy
 
+   build-avx:
+      desc: Release build with x86-64-v3 (FMA/AVX2) codegen for max vector-kernel throughput
+      cmds:
+         - RUSTFLAGS="-C target-cpu=x86-64-v3 -C link-arg=-fuse-ld=lld" cargo build --release
+
+   build-uring:
+      desc: "Release build with the experimental io_uring batched-send path (enable at runtime with FYRODB_IO_URING=1)"
+      cmds:
+         - cargo build --release --features io-uring
+
+   run-pinned:
+      desc: "Run with workers and the vector pool pinned to disjoint cores (FYRODB_AFFINITY=auto) and a 50us busy-poll window"
+      cmds:
+         - FYRODB_AFFINITY=auto FYRODB_BUSY_POLL_US=50 target/release/{{.BINARY}}
+
+   run-aof:
+      desc: "Run with the per-thread AOF enabled (everysec fsync) next to the RDB"
+      cmds:
+         - FYRODB_AOF=1 FYRODB_AOF_FSYNC=everysec target/release/{{.BINARY}}
+
+   docker-build-portable:
+      desc: "Docker image without the x86-64-v3 baseline, for pre-Haswell CPUs"
+      cmds:
+         - docker build --build-arg TARGET_CPU=x86-64 -t fyrodb:portable .
+
    test:
       desc: Run tests with summary
       cmds:
          - ./scripts/test.sh {{.CLI_ARGS}}
 
-   bench-key-fyrodb:
-      desc: benchmark key operations on FyroDB
+   # ── Measurement: latency, memory, ANN recall, micro-benchmarks ───────────
+   test-e2e:
+      desc: Run isolated Python end-to-end suites
       cmds:
-         - cd bench && go run . -m key
+         - cargo build --release
+         - python3 tests/e2e/python/run.py {{.CLI_ARGS}}
 
-   bench-key-redis:
-      desc: benchmark key operations on redis
+   bench-local:
+      desc: "Start a throwaway FyroDB, run the Go bench with CLI_ARGS, stop it (e.g. task bench-local -- -m lat)"
       cmds:
-         - cd bench && go run . -p 6379 -m key
+         - task: build
+         - ./scripts/bench_local.sh {{.CLI_ARGS}}
 
-   bench-key-dragonfly:
-      desc: benchmark key operations on DragonflyDB
+   bench-lat:
+      desc: "Closed-loop latency histogram (p50/p99/p99.9): 1M keys, 64B values, 90% GET"
       cmds:
-         - cd bench && go run . -p 6379 -m key
+         - cd bench && go run . -m lat -keys 1000000 -vsize 64 -conns 50 {{.CLI_ARGS}}
 
-   bench-pub-fyrodb:
-      desc: benchmark pub operations on FyroDB
+   bench-lat-open:
+      desc: "Open-loop (coordinated-omission-free) latency at a fixed rate; override with -- -rate N"
       cmds:
-         - cd bench && go run . -m pub
+         - cd bench && go run . -m lat -keys 1000000 -vsize 64 -conns 50 -rate 500000 {{.CLI_ARGS}}
 
-   bench-pub-redis:
-      desc: benchmark pub operations on redis
+   bench-mem:
+      desc: "Bytes per key / per element for every data type in compact and large encodings"
       cmds:
-         - cd bench && go run . -p 6379 -m pub
+         - cd bench && go run . -m mem {{.CLI_ARGS}}
 
-   bench-pub-dragonfly:
-      desc: benchmark pub operations on DragonflyDB
+   bench-ann:
+      desc: "ANN recall@10 vs QPS on a clustered synthetic corpus (EF, concurrency, filter sweeps)"
       cmds:
-         - cd bench && go run . -p 6379 -m pub
+         - cd bench && go run . -m ann {{.CLI_ARGS}}
 
+   bench-ann-sift:
+      desc: "ANN benchmark on SIFT-1M (run task sift-download first)"
+      cmds:
+         - cd bench && go run . -m ann -ann-dir ../temp/datasets/sift -ann-metric L2 {{.CLI_ARGS}}
+
+   sift-download:
+      desc: Download the TEXMEX SIFT-1M dataset (base/query/groundtruth .fvecs/.ivecs)
+      cmds:
+         - mkdir -p temp/datasets
+         - curl -fL -o temp/datasets/sift.tar.gz ftp://ftp.irisa.fr/local/texmex/corpus/sift.tar.gz
+         - tar -xzf temp/datasets/sift.tar.gz -C temp/datasets
+
+   bench-json:
+      desc: "Full suite writing results to temp/bench/<name>.json (task bench-json NAME=candidate)"
+      vars:
+         NAME: '{{.NAME | default "run"}}'
+      cmds:
+         - mkdir -p temp/bench
+         - cd bench && go run . -json ../temp/bench/{{.NAME}}.json {{.CLI_ARGS}}
+
+   bench-compare:
+      desc: "Diff two bench JSON files; exits 1 on >5% regressions (task bench-compare -- base.json cand.json)"
+      cmds:
+         - python3 scripts/bench_compare.py {{.CLI_ARGS}}
+
+   bench-rust:
+      desc: "Criterion micro-benchmarks: RESP parse, GET/SET, distance kernels, HNSW build/search"
+      cmds:
+         - cargo bench --bench core {{.CLI_ARGS}}
+
+   memtier:
+      desc: "Independent C++ load generator cross-check (needs memtier_benchmark); PORT defaults to 8000"
+      vars:
+         PORT: '{{.PORT | default "8000"}}'
+      cmds:
+         - memtier_benchmark -s 127.0.0.1 -p {{.PORT}} --protocol=redis -t 8 -c 25 --pipeline=16 --ratio=1:9 --key-maximum=1000000 -d 64 --test-time=30 --hide-histogram --print-percentiles=50,99,99.9 {{.CLI_ARGS}}
+
+   # ── Profiling ─────────────────────────────────────────────────────────────
+   build-prof:
+      desc: Release build with frame pointers and symbols for perf / flamegraphs
+      cmds:
+         - CARGO_PROFILE_RELEASE_DEBUG=line-tables-only CARGO_PROFILE_RELEASE_STRIP=none RUSTFLAGS="-C force-frame-pointers=yes -C target-cpu=x86-64-v3 -C link-arg=-fuse-ld=lld" cargo build --release
+
+   perf-record:
+      desc: "Record a CPU profile of a running server for 20s (PID=<pid>, default: pidof fyro_db)"
+      cmds:
+         - perf record -F 999 -g --call-graph fp -p {{.PID | default "$(pidof fyro_db)"}} -o temp/perf.data -- sleep 20
+         - perf report -i temp/perf.data --no-children --percent-limit 1 --stdio | head -80
+
+   perf-stat:
+      desc: "Cache misses / IPC of a running server for 10s (PID=<pid>)"
+      cmds:
+         - perf stat -e cycles,instructions,cache-references,cache-misses,L1-dcache-load-misses,LLC-load-misses,branch-misses -p {{.PID | default "$(pidof fyro_db)"}} -- sleep 10
+
+   flamegraph:
+      desc: "Flamegraph SVG from temp/perf.data (needs inferno: cargo install inferno)"
+      cmds:
+         - perf script -i temp/perf.data | inferno-collapse-perf | inferno-flamegraph > temp/flamegraph.svg
+         - echo "wrote temp/flamegraph.svg"
+
+   heaptrack:
+      desc: Run the server under heaptrack to attribute allocations
+      cmds:
+         - task: build-prof
+         - heaptrack target/release/{{.BINARY}}
+
+   # ── PGO (needs: cargo install cargo-pgo; rustup component add llvm-tools) ─
+   pgo:
+      desc: "Profile-guided build: instrument, train on the Go bench mix, rebuild optimized"
+      cmds:
+         - cargo pgo build
+         - ./scripts/pgo_train.sh
+         - cargo pgo optimize build
+         - echo "optimized binary in ${CARGO_TARGET_DIR:-target}/x86_64-unknown-linux-gnu/release/{{.BINARY}}"
+
+   pgo-bolt:
+      desc: "PGO + BOLT: keep only if it measurably beats plain PGO"
+      cmds:
+         - cargo pgo build
+         - ./scripts/pgo_train.sh
+         - cargo pgo bolt build --with-pgo
+         - ./scripts/pgo_train.sh bolt
+         - cargo pgo bolt optimize --with-pgo
+
+   # ── Full benchmark suites (KV + Pub/Sub + all data types) ─────────────────
    bench-fyrodb:
-      desc: benchmark FyroDB
+      desc: "Full suite against FyroDB: KV, Pub/Sub, INCR, Hash, List, Set, ZSet, JSON, TTL, HotKey, Queue, Stream, Bitmap, HLL, Geo"
       cmds:
          - cd bench && go run .
+
    bench-redis:
-      desc: benchmark redis
+      desc: "Full suite against Redis: KV, Pub/Sub, INCR, Hash, List, Set, ZSet, JSON, TTL, HotKey, Queue, Stream, Bitmap, HLL, Geo"
       cmds:
          - cd bench && go run . -p 6379
 
    bench-dragonfly:
-      desc: benchmark DragonflyDB
+      desc: "Full suite against DragonflyDB: KV, Pub/Sub, INCR, Hash, List, Set, ZSet, JSON, TTL, HotKey, Queue, Stream, Bitmap, HLL, Geo"
       cmds:
          - cd bench && go run . -p 6379
 
+   # ── No-flush variants: keyspace accumulates for peak-RSS measurement ────────
    bench-fyrodb-f:
-      desc: "benchmark FyroDB without flushing between phases: keyspace accumulates, final RSS + key count reported"
+      desc: "Full FyroDB suite without flushing between phases: keyspace accumulates, final RSS + key count reported"
       cmds:
          - cd bench && go run . -f
 
    bench-redis-f:
-      desc: "benchmark redis without flushing between phases: keyspace accumulates, final RSS + key count reported"
+      desc: "Full Redis suite without flushing between phases: keyspace accumulates, final RSS + key count reported"
       cmds:
          - cd bench && go run . -p 6379 -f
 
    bench-dragonfly-f:
-      desc: "benchmark DragonflyDB without flushing between phases: keyspace accumulates, final RSS + key count reported"
+      desc: "Full DragonflyDB suite without flushing between phases: keyspace accumulates, final RSS + key count reported"
       cmds:
          - cd bench && go run . -p 6379 -f
+
+   # ── Targeted single-mode runs ─────────────────────────────────────────────
+   bench-fyrodb-kv:
+      desc: KV-only benchmark on FyroDB (Pipeline-64 SET, Pipelined SET/GET)
+      cmds:
+         - cd bench && go run . -m key
+
+   bench-redis-kv:
+      desc: KV-only benchmark on Redis
+      cmds:
+         - cd bench && go run . -p 6379 -m key
+
+   bench-fyrodb-pub:
+      desc: Pub/Sub-only benchmark on FyroDB
+      cmds:
+         - cd bench && go run . -m pub
+
+   bench-redis-pub:
+      desc: Pub/Sub-only benchmark on Redis
+      cmds:
+         - cd bench && go run . -p 6379 -m pub
+
+   bench-fyrodb-mix:
+      desc: "Mixed data-type benchmark on FyroDB (INCR, Hash, List, Set, ZSet, JSON, TTL, Stream, Bitmap, HLL, Geo)"
+      cmds:
+         - cd bench && go run . -m mix
+
+   bench-redis-mix:
+      desc: "Mixed data-type benchmark on Redis (INCR, Hash, List, Set, ZSet, JSON, TTL, Stream, Bitmap, HLL, Geo)"
+      cmds:
+         - cd bench && go run . -p 6379 -m mix
+
+   bench-fyrodb-vec:
+      desc: Vector search benchmark on FyroDB (load, KNN, filtered KNN)
+      cmds:
+         - cd bench && go run . -m vec
+
+   bench-redis-vec:
+      desc: Vector search benchmark on Redis (needs RediSearch)
+      cmds:
+         - cd bench && go run . -p 6379 -m vec
 
    bench-fyro-cluster-f:
       desc: "benchmark FyroDB cluster without flushing between phases: keyspace accumulates, final RSS + key count reported"
@@ -145,6 +301,36 @@ tasks:
       desc: Stop DragonflyDB
       cmds:
          - cd bench/dragonfly && docker compose down
+
+   valkey-up:
+      desc: Start Valkey 8 (io-threads + prefetch batching, port 6379)
+      cmds:
+         - cd bench/valkey && docker compose up -d
+
+   valkey-down:
+      desc: Stop Valkey
+      cmds:
+         - cd bench/valkey && docker compose down
+
+   redis8-up:
+      desc: Start Redis 8 single node with the built-in Query Engine (port 6379)
+      cmds:
+         - cd bench/redis8 && docker compose up -d
+
+   redis8-down:
+      desc: Stop Redis 8
+      cmds:
+         - cd bench/redis8 && docker compose down
+
+   bench-valkey:
+      desc: "Full suite against Valkey 8 (task valkey-up first)"
+      cmds:
+         - cd bench && go run . -p 6379 {{.CLI_ARGS}}
+
+   bench-redis8-ann:
+      desc: "ANN benchmark against Redis 8 Query Engine (task redis8-up first)"
+      cmds:
+         - cd bench && go run . -p 6379 -m ann {{.CLI_ARGS}}
 
    redis-up-12:
       desc: Start Redis Cluster (12 masters, one per hardware thread)

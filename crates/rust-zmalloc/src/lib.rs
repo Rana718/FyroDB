@@ -1,6 +1,3 @@
-//! GlobalAlloc wrapper with memory tracking, RSS reporting, purge, and
-//! raw helpers for EBR. Backend: mimalloc (default), `system`, `jemalloc`.
-
 use std::alloc::{GlobalAlloc, Layout};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -31,8 +28,6 @@ fn backend_realloc(ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
     unsafe { BACKEND.realloc(ptr, layout, new_size) }
 }
 
-/// Striped by CPU; cross-CPU frees move debt between stripes, the sum
-/// stays exact.
 const STRIPES: usize = 64;
 
 #[repr(align(128))]
@@ -40,19 +35,25 @@ struct Stripe(std::sync::atomic::AtomicI64);
 
 static ALLOCATED: [Stripe; STRIPES] = [const { Stripe(std::sync::atomic::AtomicI64::new(0)) }; STRIPES];
 
-/// Runs inside GlobalAlloc: thread_local! lazy init would recurse;
-/// sched_getcpu (vDSO) is safe.
+thread_local! {
+    static LOCAL_STRIPE: std::cell::Cell<usize> = const { std::cell::Cell::new(usize::MAX) };
+}
+
 #[inline(always)]
 fn stripe() -> &'static std::sync::atomic::AtomicI64 {
-    #[cfg(target_os = "linux")]
-    let index = {
-        let cpu = unsafe { libc::sched_getcpu() };
-        if cpu < 0 { 0 } else { cpu as usize % STRIPES }
-    };
-    #[cfg(not(target_os = "linux"))]
-    let index = 0usize;
-    // SAFETY: index is masked into range above.
-    &unsafe { ALLOCATED.get_unchecked(index) }.0
+    let index = LOCAL_STRIPE.try_with(|slot| {
+        let index = slot.get();
+        if index != usize::MAX {
+            return index;
+        }
+        #[cfg(target_os = "linux")]
+        let index = unsafe { libc::sched_getcpu() }.max(0) as usize % STRIPES;
+        #[cfg(not(target_os = "linux"))]
+        let index = 0;
+        slot.set(index);
+        index
+    }).unwrap_or(0);
+    &ALLOCATED[index].0
 }
 
 #[inline(always)]
@@ -153,7 +154,8 @@ pub fn fragmentation_ratio() -> f64 {
     rss_bytes_inner() as f64 / allocated as f64
 }
 
-/// Raw allocation helper for EBR-managed objects.
+/// # Safety
+/// Caller must handle null return (allocation failure) and free with matching layout.
 #[inline]
 pub unsafe fn alloc_raw(layout: Layout) -> *mut u8 {
     let ptr = backend_alloc(layout);
@@ -163,7 +165,8 @@ pub unsafe fn alloc_raw(layout: Layout) -> *mut u8 {
     ptr
 }
 
-/// Raw zeroed allocation; tables of null slots otherwise pay a manual fill.
+/// # Safety
+/// Caller must handle null return and free with matching layout.
 #[inline]
 pub unsafe fn alloc_raw_zeroed(layout: Layout) -> *mut u8 {
     let ptr = backend_alloc_zeroed(layout);
@@ -173,6 +176,8 @@ pub unsafe fn alloc_raw_zeroed(layout: Layout) -> *mut u8 {
     ptr
 }
 
+/// # Safety
+/// `ptr` must have been allocated with the same layout via `alloc_raw` or `alloc_raw_zeroed`.
 #[inline]
 pub unsafe fn dealloc_raw(ptr: *mut u8, layout: Layout) {
     if !ptr.is_null() {
@@ -219,53 +224,5 @@ fn page_size() -> usize {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn raw_alloc_preserves_alignment_and_contents() {
-        for &(size, align) in &[(1, 1), (17, 8), (129, 64), (4096, 4096)] {
-            let layout = Layout::from_size_align(size, align).unwrap();
-            let ptr = unsafe { alloc_raw(layout) };
-            assert!(!ptr.is_null());
-            assert_eq!((ptr as usize) % align, 0);
-            unsafe {
-                std::ptr::write_bytes(ptr, 0xA5, size);
-                assert_eq!(*ptr, 0xA5);
-                assert_eq!(*ptr.add(size - 1), 0xA5);
-                dealloc_raw(ptr, layout);
-            }
-        }
-    }
-
-    /// `used_memory` used to report RSS, which made it useless for the
-    /// fragmentation ratio (rss/rss == 1) and for the purge/defrag triggers.
-    #[test]
-    fn used_memory_tracks_live_requested_bytes() {
-        const SIZE: usize = 4 * 1024 * 1024;
-        let layout = Layout::from_size_align(SIZE, 64).unwrap();
-
-        let before = used_memory();
-        let ptr = unsafe { alloc_raw(layout) };
-        assert!(!ptr.is_null());
-        let during = used_memory();
-        unsafe { dealloc_raw(ptr, layout) };
-        let after = used_memory();
-
-        assert!(
-            during >= before + SIZE,
-            "expected used_memory to grow by at least {SIZE}, went {before} -> {during}"
-        );
-        assert!(
-            after + SIZE / 2 < during,
-            "expected used_memory to drop after free, {during} -> {after}"
-        );
-    }
-
-    #[test]
-    fn rss_reading_is_plausible() {
-        let rss = rss_bytes_inner();
-        assert!(rss > 0, "RSS reading should be non-zero on Linux");
-        assert!(rss < 1 << 40);
-    }
-}
+#[path = "../../../tests/unit/allocator/accounting.rs"]
+mod tests;

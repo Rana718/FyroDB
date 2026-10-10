@@ -42,6 +42,90 @@ impl Store {
         }
     }
 
+    pub fn hset_bytes(&self, key: &str, fields: &[(&str, &[u8])]) -> Result<usize, &'static str> {
+        let result = self.data.update_with(key, |val| {
+            if val.is_expired() {
+                let mut h = HashInner::new();
+                let added = fields.len();
+                for (f, v) in fields {
+                    h.insert_bytes(f, v);
+                }
+                val.value = FyroDB::Hash(Box::new(h));
+                val.expires_ms = 0;
+                return Ok(added);
+            }
+            match val.value.as_hash_mut() {
+                Some(h) => {
+                    let mut added = 0;
+                    for (f, v) in fields {
+                        if h.insert_bytes(f, v) {
+                            added += 1;
+                        }
+                    }
+                    Ok(added)
+                }
+                None => Err("WRONGTYPE"),
+            }
+        });
+
+        match result {
+            Some(r) => r,
+            None => {
+                let mut h = HashInner::new();
+                let added = fields.len();
+                for (f, v) in fields {
+                    h.insert_bytes(f, v);
+                }
+                self.data.insert_str(
+                    key,
+                    StoreValue {
+                        value: FyroDB::Hash(Box::new(h)),
+                        expires_ms: 0,
+                    },
+                );
+                Ok(added)
+            }
+        }
+    }
+
+    pub fn hset_bytes_added_flags(
+        &self,
+        key: &str,
+        fields: &[(&str, &[u8])],
+    ) -> Result<Vec<bool>, &'static str> {
+        let result = self.data.update_with(key, |val| {
+            if val.is_expired() {
+                let mut h = HashInner::new();
+                let flags: Vec<bool> =
+                    fields.iter().map(|(f, v)| h.insert_bytes(f, v)).collect();
+                val.value = FyroDB::Hash(Box::new(h));
+                val.expires_ms = 0;
+                return Ok(flags);
+            }
+            match val.value.as_hash_mut() {
+                Some(h) => Ok(fields.iter().map(|(f, v)| h.insert_bytes(f, v)).collect()),
+                None => Err("WRONGTYPE"),
+            }
+        });
+
+        match result {
+            Some(r) => r,
+            None => {
+                let mut h = HashInner::new();
+                let flags: Vec<bool> =
+                    fields.iter().map(|(f, v)| h.insert_bytes(f, v)).collect();
+                self.data.insert_str(
+                    key,
+                    StoreValue {
+                        value: FyroDB::Hash(Box::new(h)),
+                        expires_ms: 0,
+                    },
+                );
+                Ok(flags)
+            }
+        }
+    }
+
     pub fn hset(&self, key: &str, fields: &[(&str, &str)]) -> Result<usize, &'static str> {
         let result = self.data.update_with(key, |val| {
             if val.is_expired() {
@@ -243,6 +327,7 @@ impl Store {
         let result = self.data.read_consistent(key, |val| {
             out.truncate(start_len);
             if val.is_expired() {
+                crate::utils::resp::write_array_header(out, 0);
                 return Ok(0);
             }
             match val.value.as_hash() {
@@ -262,6 +347,7 @@ impl Store {
             Some(r) => r,
             None => {
                 out.truncate(start_len);
+                crate::utils::resp::write_array_header(out, 0);
                 Ok(0)
             }
         }
@@ -442,5 +528,40 @@ impl Store {
                 Ok(by)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod missing_key_tests {
+    use super::*;
+
+    #[test]
+    fn empty_replies_on_missing_and_expired_keys() {
+        let store = Store::new();
+        let mut out = Vec::new();
+        store.hgetall_to_buf("missing", &mut out).unwrap();
+        assert_eq!(out, b"*0\r\n");
+
+        let mut out = Vec::new();
+        store.smembers_to_buf("missing", &mut out).unwrap();
+        assert_eq!(out, b"*0\r\n");
+
+        let mut out = Vec::new();
+        store.lrange_to_buf("missing", 0, -1, &mut out).unwrap();
+        assert_eq!(out, b"*0\r\n");
+
+        let mut h = HashInner::new();
+        h.insert_ref("f", "v");
+        self::Store::with_config(1, 100).data.insert_str(
+            "exp:h",
+            crate::storage::value::StoreValue {
+                value: crate::storage::value::FyroDB::Hash(Box::new(h)),
+                expires_ms: 1,
+            },
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let mut out = Vec::new();
+        store.hgetall_to_buf("exp:h", &mut out).unwrap();
+        assert_eq!(out, b"*0\r\n");
     }
 }

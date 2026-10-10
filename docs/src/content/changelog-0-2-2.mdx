@@ -1,0 +1,55 @@
+---
+title: Changelog v0.2.2
+description: Vector search, HNSW arena milestone-shrink, two-pass FLAT scan, lock-free search pool, O(bytes) bitmap ops, full-text BM25, hybrid fusion, and zero clippy warnings.
+order: 21
+---
+
+# v0.2.2
+
+Released: October 2026
+
+v0.2.2 ships the **vector search and AI engine** (HNSW, FLAT, BM25 full-text, `FT.HYBRID` RRF/LINEAR fusion) alongside a round of memory and throughput optimizations: arena milestone-shrink, two-pass FLAT Int8 pre-filter, lock-free search pool dispatch, O(bytes) bitmap operations, zero-copy cursor reads, and O(output) complement filters. Zero clippy warnings across all crates.
+
+Against a 12-node Redis Cluster, a single FyroDB node delivers **9.14M Pipeline-64 SET**, **47.12M INCR**, **46.69M Hot Key**, **70.44M Pub/Sub msg/sec**, **5.0K HNSW KNN-10 q/s** (4.55×), and **42.6K text-term q/s** (26.6×).
+
+---
+
+## Highlights
+
+- **Vector Search (HNSW + FLAT)**: `FT.CREATE`, `FT.SEARCH` KNN, `VECTOR_RANGE`, tag/numeric/text pre-filters, `QUANTIZATION INT8 | RABITQ | NONE`, exact rerank from the stored hash field, persistence in RDB v3, incremental maintenance via a write hook.
+- **BM25 Full-Text**: Unicode tokenizer, RediSearch stopwords, BM25 (k1 = 1.2, b = 0.75) ranking, `FT.AGGREGATE` GROUPBY/REDUCE with cursors.
+- **FT.HYBRID**: Lexical and vector legs run in parallel on the pool and fuse with RRF (Cormack) or LINEAR weighting.
+- **HNSW Arena Milestone-Shrink**: Arena buffers shrink at each power-of-two node count milestone (`last_shrink: AtomicUsize`), reducing cache-miss pressure on streaming HSET inserts as well as bulk builds.
+- **Thread-Local Scratch Zero-Alloc**: `Scratch` gains `q_int8`, `acorn_hop`, and `acorn_frontier` — ACORN traversal and FLAT two-pass scans share pre-allocated working memory with zero hot-path allocation after warmup.
+- **Two-Pass FLAT Scan**: Int8 pre-filter pass narrows candidates before exact f32 rerank; codes are held in thread-local scratch to avoid per-query allocation.
+- **Lock-Free Search Pool**: Job dispatch uses `crossbeam::SegQueue<Job>` per priority tier; submission never takes a lock. Index builds run on the low-priority tier so queries stay responsive during background work.
+- **`prepare_batch` Burst HSET**: N consecutive HSET writes on the same vector field take one write-lock instead of N, cutting ingestion lock overhead.
+- **`cursor_read` Zero-Clone**: `FT.CURSOR READ` uses `Vec::split_off` instead of a full cursor-row clone, eliminating O(n²) work per page.
+- **`complement_ids` Sorted-Merge**: Negated filter sets resolve as an O(output) sorted merge over the ascending id range instead of a 100 KB boolean array per query.
+- **ZSet No-Alloc Update**: `ZSetData::insert` probes the member index before allocating a `SmallStr`, skipping all allocation on score-update paths.
+- **O(bytes) Bitmap Ops**: `BITCOUNT` and `BITPOS` operate at the byte level using hardware `count_ones()` / `leading_zeros()` instead of per-bit loops.
+- **Zero Clippy Warnings**: All 16 warning categories resolved across `fyro-vector`, `customhash`, `rust-zmalloc`, and `src/`.
+
+---
+
+## Performance
+
+| Benchmark | v0.2.2 | Redis Cluster (12 nodes) | Speedup |
+| ------------------------- | ------------------- | ------------------------ | ------- |
+| Pipelined SET             | 20.60M ops/sec      | 6.53M ops/sec            | 3.15×   |
+| Pipelined GET             | 29.52M ops/sec      | 11.62M ops/sec           | 2.54×   |
+| INCR (counters)           | 47.12M ops/sec      | 6.54M ops/sec            | 7.2×    |
+| LPUSH/RPOP (queue)        | 42.86M ops/sec      | 7.17M ops/sec            | 5.98×   |
+| Hot Key (contention)      | 46.69M ops/sec      | 1.61M ops/sec            | 29.0×   |
+| SETBIT/BITCOUNT           | 20.92M ops/sec      | 5.94M ops/sec            | 3.52×   |
+| PFADD/PFCOUNT             | 36.29M ops/sec      | 6.03M ops/sec            | 6.02×   |
+| Pub/Sub delivery          | 70.44M msg/sec      | 8.09M msg/sec            | 8.7×    |
+| Vector KNN-10 (FLAT)      | 1.0K q/s            | 104 q/s †                | 9.6×    |
+| Text term search          | 42.6K q/s           | 1.6K q/s †               | 26.6×   |
+| Text negation             | 21.7K q/s           | 361 q/s †                | 60.1×   |
+| Vector HNSW KNN-10        | 5.0K q/s            | 1.1K q/s †               | 4.55×   |
+| Vector HNSW M=32 KNN-10   | 2.9K q/s            | 1.1K q/s †               | 2.64×   |
+
+† Redis Cluster does not distribute vector or graph operations across nodes — those benchmarks ran against a single Redis node.
+
+See the full benchmark table in [Introduction](/docs/introduction).

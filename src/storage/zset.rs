@@ -19,7 +19,16 @@ pub struct ZAddOptions {
 impl Store {
 /// Plain single-member ZADDs under one lock, per-command added flags;
 /// flag variants change replies and stay un-coalesced.
-    pub fn zadd_added_flags(
+    /// Wakes connections blocked on `key` after a successful write.
+    pub fn zadd_added_flags(&self, key: &str, members: &[(f64, &str)]) -> Result<Vec<bool>, &'static str> {
+        let r = self.zadd_added_flags_impl(key, members);
+        if r.is_ok() {
+            self.blocking.signal(key);
+        }
+        r
+    }
+
+    fn zadd_added_flags_impl(
         &self,
         key: &str,
         members: &[(f64, &str)],
@@ -56,7 +65,16 @@ impl Store {
         }
     }
 
-    pub fn zadd(
+    /// Wakes connections blocked on `key` after a successful write.
+    pub fn zadd(&self, key: &str, members: &[(f64, &str)], opts: ZAddOptions) -> Result<usize, &'static str> {
+        let r = self.zadd_impl(key, members, opts);
+        if r.is_ok() {
+            self.blocking.signal(key);
+        }
+        r
+    }
+
+    fn zadd_impl(
         &self,
         key: &str,
         members: &[(f64, &str)],
@@ -277,7 +295,16 @@ impl Store {
         }
     }
 
+    /// Wakes connections blocked on `key` after a successful write.
     pub fn zincrby(&self, key: &str, increment: f64, member: &str) -> Result<f64, &'static str> {
+        let r = self.zincrby_impl(key, increment, member);
+        if r.is_ok() {
+            self.blocking.signal(key);
+        }
+        r
+    }
+
+    fn zincrby_impl(&self, key: &str, increment: f64, member: &str) -> Result<f64, &'static str> {
         let result = self.data.update_with(key, |val| {
             if val.is_expired() {
                 let mut z = ZSetData::new();
@@ -324,7 +351,6 @@ impl Store {
                     }
                     let items: Vec<(String, f64)> = z
                         .range_by_rank(s, e_idx + 1)
-                        .iter()
                         .map(|entry| (entry.member.to_string(), entry.score))
                         .collect();
                     Ok(items)
@@ -357,7 +383,7 @@ impl Store {
                     }
                     let n = e_idx - s + 1;
                     crate::utils::resp::write_array_header(out, if withscores { n * 2 } else { n });
-                    for entry in z.range_by_rank(s, e_idx + 1).iter() {
+                    for entry in z.range_by_rank(s, e_idx + 1) {
                         crate::utils::resp::write_bulk(out, entry.member.as_str());
                         if withscores {
                             crate::utils::resp::write_bulk(
@@ -418,7 +444,6 @@ impl Store {
                 Some(z) => {
                     let items: Vec<(String, f64)> = z
                         .range_by_score(min, max)
-                        .iter()
                         .skip(offset)
                         .take(if count == 0 { usize::MAX } else { count })
                         .map(|entry| (entry.member.to_string(), entry.score))

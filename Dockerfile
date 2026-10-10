@@ -5,14 +5,26 @@ RUN apk add --no-cache musl-dev make
 
 WORKDIR /app
 
+ARG TARGETARCH
+ARG TARGET_CPU=x86-64-v3
+ARG FEATURES=""
+
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
-RUN mkdir src && echo "fn main() {}" > src/main.rs
-RUN cargo build --release
+COPY benches ./benches
+RUN mkdir src && echo "fn main() {}" > src/main.rs && touch src/lib.rs
+RUN if [ "$TARGETARCH" = "amd64" ] || [ -z "$TARGETARCH" -a "$(uname -m)" = "x86_64" ]; then \
+        export RUSTFLAGS="-C target-cpu=${TARGET_CPU}"; \
+    fi; \
+    cargo build --release ${FEATURES:+--features $FEATURES}
 RUN rm -rf src
 
 COPY src ./src
-RUN touch src/main.rs && cargo build --release
+RUN touch src/main.rs src/lib.rs && \
+    if [ "$TARGETARCH" = "amd64" ] || [ -z "$TARGETARCH" -a "$(uname -m)" = "x86_64" ]; then \
+        export RUSTFLAGS="-C target-cpu=${TARGET_CPU}"; \
+    fi; \
+    cargo build --release ${FEATURES:+--features $FEATURES}
 
 # Runtime stage
 FROM alpine:latest

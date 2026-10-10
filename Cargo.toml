@@ -1,8 +1,18 @@
 [package]
 name = "fyro_db"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2024"
 license = "Apache-2.0"
+
+[workspace]
+members = [".", "crates/customhash", "crates/rust-zmalloc", "crates/fyro-vector"]
+
+
+[profile.dev]
+opt-level = 0
+debug = 1
+incremental = true
+codegen-units = 256
 
 [profile.release]
 opt-level = 3
@@ -16,6 +26,7 @@ overflow-checks = false
 
 [dependencies]
 customhash = { path = "crates/customhash" }
+fyro-vector = { path = "crates/fyro-vector" }
 rust-zmalloc = { path = "crates/rust-zmalloc" }
 num_cpus = "1.17.0"
 socket2 = { version = "0.6.5", features = ["all"] }
@@ -25,3 +36,22 @@ libc = "0.2.186"
 crossbeam-queue = "0.3.13"
 crossbeam-utils = "0.8.22"
 foldhash = "0.2.0"
+parking_lot = { version = "0.12", features = ["arc_lock"] }
+bytemuck = "1"
+io-uring = { version = "0.7", optional = true }
+pprof = { version = "0.15", optional = true, default-features = false, features = ["frame-pointer"] }
+
+[features]
+io-uring = ["dep:io-uring"]
+profiling = ["dep:pprof"]
+
+[dev-dependencies]
+criterion = { version = "0.7", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "core"
+harness = false
+
+[profile.bench]
+debug = "line-tables-only"
+strip = "none"

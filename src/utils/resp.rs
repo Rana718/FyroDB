@@ -124,6 +124,13 @@ pub fn write_err(out: &mut Vec<u8>, msg: &str) {
 pub fn write_store_err(out: &mut Vec<u8>, err: &str) {
     if err == "WRONGTYPE" {
         write_wrong_type(out);
+        return;
+    }
+    let code = err.split(' ').next().unwrap_or("");
+    if code.len() >= 3 && err.len() > code.len() && code.bytes().all(|b| b.is_ascii_uppercase()) {
+        out.push(b'-');
+        out.extend_from_slice(err.as_bytes());
+        out.extend_from_slice(b"\r\n");
     } else {
         write_err(out, err);
     }

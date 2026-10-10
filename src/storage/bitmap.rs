@@ -91,14 +91,17 @@ impl Store {
                         if s_idx > e_idx {
                             return Ok(0);
                         }
-                        let mut count = 0usize;
-                        for i in s_idx..=e_idx {
-                            let byte_idx = i / 8;
-                            let bit_idx = 7 - (i % 8);
-                            if byte_idx < bytes.len() && (bytes[byte_idx] >> bit_idx) & 1 == 1 {
-                                count += 1;
-                            }
-                        }
+                        let s_byte = s_idx / 8;
+                        let e_byte = e_idx / 8;
+                        let count = if s_byte == e_byte {
+                            let mask = (0xFF_u8 >> (s_idx % 8)) & (0xFF_u8 << (7 - e_idx % 8));
+                            (bytes[s_byte] & mask).count_ones() as usize
+                        } else {
+                            let head = (bytes[s_byte] & (0xFF_u8 >> (s_idx % 8))).count_ones() as usize;
+                            let mid: usize = bytes[s_byte + 1..e_byte].iter().map(|b| b.count_ones() as usize).sum();
+                            let tail = (bytes[e_byte] & (0xFF_u8 << (7 - e_idx % 8))).count_ones() as usize;
+                            head + mid + tail
+                        };
                         Ok(count)
                     } else {
                         let len = bytes.len() as i64;
@@ -164,16 +167,18 @@ impl Store {
                         if s_idx > e_idx {
                             return Ok(-1);
                         }
-                        for i in s_idx..=e_idx {
-                            let byte_idx = i / 8;
-                            let bit_idx = 7 - (i % 8);
-                            let val = if byte_idx < bytes.len() {
-                                (bytes[byte_idx] >> bit_idx) & 1
-                            } else {
-                                0
-                            };
-                            if val == bit {
-                                return Ok(i as i64);
+                        let s_byte = s_idx / 8;
+                        let e_byte = e_idx / 8;
+                        for byte_i in s_byte..=e_byte {
+                            if byte_i >= bytes.len() {
+                                break;
+                            }
+                            let lo = if byte_i == s_byte { s_idx % 8 } else { 0 };
+                            let hi = if byte_i == e_byte { e_idx % 8 } else { 7 };
+                            let mask = (0xFF_u8 >> lo) & (0xFF_u8 << (7 - hi));
+                            let target = if bit == 1 { bytes[byte_i] & mask } else { !bytes[byte_i] & mask };
+                            if target != 0 {
+                                return Ok((byte_i * 8 + target.leading_zeros() as usize) as i64);
                             }
                         }
                         Ok(-1)
@@ -195,12 +200,9 @@ impl Store {
                             return Ok(-1);
                         }
                         for (byte_idx, &b) in bytes.iter().enumerate().take(e_idx + 1).skip(s_idx) {
-                            for bit_idx in (0..8).rev() {
-                                let val = (b >> bit_idx) & 1;
-                                if val == bit {
-                                    let pos = byte_idx * 8 + (7 - bit_idx);
-                                    return Ok(pos as i64);
-                                }
+                            let target = if bit == 1 { b } else { !b };
+                            if target != 0 {
+                                return Ok((byte_idx * 8 + target.leading_zeros() as usize) as i64);
                             }
                         }
                         if bit == 0 && !has_end {

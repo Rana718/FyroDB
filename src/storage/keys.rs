@@ -6,6 +6,9 @@ use std::time::Duration;
 impl Store {
     pub fn del(&self, key: &str) -> bool {
         let removed = self.data.remove_no_clone(key);
+        if removed {
+            self.aof_capture(key);
+        }
         if removed && let Some(log) = &self.replication {
             let _ = log.append(crate::cluster::MutationRecord {
                 offset: 0,
@@ -20,7 +23,7 @@ impl Store {
     }
 
     pub fn exists(&self, key: &str) -> bool {
-        matches!(self.data.get_ref(key), Some(e) if !e.is_expired_precise())
+        matches!(self.data.get_ref(key), Some(e) if !e.is_expired_precise() && !e.value.is_drained_collection())
     }
 
     pub fn expire(&self, key: &str, duration: Duration) -> bool {
@@ -40,6 +43,7 @@ impl Store {
         if was_persistent {
             self.add_ttl();
         }
+        self.aof_capture(key);
         if let Some(log) = &self.replication {
             let _ = log.append(crate::cluster::MutationRecord {
                 offset: 0,
@@ -67,6 +71,7 @@ impl Store {
             .unwrap_or(false);
         if ok {
             self.add_ttl();
+            self.aof_capture(key);
             if let Some(log) = &self.replication {
                 let _ = log.append(crate::cluster::MutationRecord {
                     offset: 0,
@@ -200,9 +205,9 @@ impl Store {
             let start = (slot_seed as usize) % slot_count;
             for offset in 0..slot_count {
                 let slot_idx = (start + offset) % slot_count;
-                if let Some((key, val)) = self.data.peek_slot(shard_idx, slot_idx)
-                    && !val.is_expired()
-                {
+                if let Some(Some(key)) = self.data.peek_slot_with(shard_idx, slot_idx, |k, v| {
+                    (!v.is_expired()).then(|| k.to_string())
+                }) {
                     return Some(key);
                 }
             }

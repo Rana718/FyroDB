@@ -1,6 +1,3 @@
-//! Caps on key count (Redis denyoom semantics): keyspace-growing writes
-//! are refused at the limit; freeing commands stay available.
-
 /// True for keyspace-growing writes; removals must stay available so a
 /// client can free room.
 pub fn is_denyoom_command(command: &[u8]) -> bool {

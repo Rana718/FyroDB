@@ -1,4 +1,4 @@
-use crate::commends;
+use crate::commands;
 use crate::pubsub::encode_sub_reply;
 use crate::utils::resp;
 
@@ -24,83 +24,83 @@ pub fn dispatch(conn: &mut Conn<'_>, parts: &[&str]) {
                 Some(b'S') => {
                     if cmd_eq(cmd, b"SET") {
                         let response_start = conn.parser.wbuf.len();
-                        commends::string::set(parts, conn.store, &mut conn.parser.wbuf);
+                        commands::string::set(parts, conn.store, &mut conn.parser.wbuf);
                         capture_if_success(conn, parts, response_start);
                         return;
                     } else if cmd_eq(cmd, b"SADD") {
                         let response_start = conn.parser.wbuf.len();
-                        commends::set::sadd(parts, conn.store, &mut conn.parser.wbuf);
+                        commands::set::sadd(parts, conn.store, &mut conn.parser.wbuf);
                         capture_if_success(conn, parts, response_start);
                         return;
                     }
                 }
                 Some(b'G') if cmd_eq(cmd, b"GET") => {
-                    return commends::string::get(parts, conn.store, &mut conn.parser.wbuf);
+                    return commands::string::get(parts, conn.store, &mut conn.parser.wbuf);
                 }
                 Some(b'D') if cmd_eq(cmd, b"DEL") => {
-                    return commends::keys::del(parts, conn.store, &mut conn.parser.wbuf);
+                    return commands::keys::del(parts, conn.store, &mut conn.parser.wbuf);
                 }
                 Some(b'I') if cmd_eq(cmd, b"INCR") => {
                     let response_start = conn.parser.wbuf.len();
-                    commends::string::incr(parts, conn.store, &mut conn.parser.wbuf);
+                    commands::string::incr(parts, conn.store, &mut conn.parser.wbuf);
                     capture_if_success(conn, parts, response_start);
                     return;
                 }
                 Some(b'H') => {
                     if cmd_eq(cmd, b"HSET") {
                         let response_start = conn.parser.wbuf.len();
-                        commends::hash::hset(parts, conn.store, &mut conn.parser.wbuf);
+                        commands::hash::hset(parts, conn.store, &mut conn.parser.wbuf);
                         capture_if_success(conn, parts, response_start);
                         return;
                     } else if cmd_eq(cmd, b"HGET") {
-                        return commends::hash::hget(parts, conn.store, &mut conn.parser.wbuf);
+                        return commands::hash::hget(parts, conn.store, &mut conn.parser.wbuf);
                     }
                 }
                 Some(b'L') => {
                     if cmd_eq(cmd, b"LPUSH") {
                         let response_start = conn.parser.wbuf.len();
-                        commends::list::lpush(parts, conn.store, &mut conn.parser.wbuf);
+                        commands::list::lpush(parts, conn.store, &mut conn.parser.wbuf);
                         capture_if_success(conn, parts, response_start);
                         return;
                     } else if cmd_eq(cmd, b"LPOP") {
                         let response_start = conn.parser.wbuf.len();
-                        commends::list::lpop(parts, conn.store, &mut conn.parser.wbuf);
+                        commands::list::lpop(parts, conn.store, &mut conn.parser.wbuf);
                         capture_if_success(conn, parts, response_start);
                         return;
                     } else if cmd_eq(cmd, b"LRANGE") {
-                        return commends::list::lrange(parts, conn.store, &mut conn.parser.wbuf);
+                        return commands::list::lrange(parts, conn.store, &mut conn.parser.wbuf);
                     }
                 }
                 Some(b'R') => {
                     if cmd_eq(cmd, b"RPUSH") {
                         let response_start = conn.parser.wbuf.len();
-                        commends::list::rpush(parts, conn.store, &mut conn.parser.wbuf);
+                        commands::list::rpush(parts, conn.store, &mut conn.parser.wbuf);
                         capture_if_success(conn, parts, response_start);
                         return;
                     } else if cmd_eq(cmd, b"RPOP") {
                         let response_start = conn.parser.wbuf.len();
-                        commends::list::rpop(parts, conn.store, &mut conn.parser.wbuf);
+                        commands::list::rpop(parts, conn.store, &mut conn.parser.wbuf);
                         capture_if_success(conn, parts, response_start);
                         return;
                     }
                 }
                 Some(b'E') if cmd_eq(cmd, b"EXPIRE") => {
-                    return commends::keys::expire(parts, conn.store, &mut conn.parser.wbuf);
+                    return commands::keys::expire(parts, conn.store, &mut conn.parser.wbuf);
                 }
                 Some(b'Z') if cmd_eq(cmd, b"ZADD") => {
                     let response_start = conn.parser.wbuf.len();
-                    commends::zset::zadd(parts, conn.store, &mut conn.parser.wbuf);
+                    commands::zset::zadd(parts, conn.store, &mut conn.parser.wbuf);
                     capture_if_success(conn, parts, response_start);
                     return;
                 }
                 Some(b'J') if cmd.len() == 8 => {
                     if cmd_eq(cmd, b"JSON.SET") {
                         let response_start = conn.parser.wbuf.len();
-                        commends::json::json_set(parts, conn.store, &mut conn.parser.wbuf);
+                        commands::json::json_set(parts, conn.store, &mut conn.parser.wbuf);
                         capture_if_success(conn, parts, response_start);
                         return;
                     } else if cmd_eq(cmd, b"JSON.GET") {
-                        return commends::json::json_get(parts, conn.store, &mut conn.parser.wbuf);
+                        return commands::json::json_get(parts, conn.store, &mut conn.parser.wbuf);
                     }
                 }
                 _ => {}
@@ -126,7 +126,7 @@ pub fn dispatch(conn: &mut Conn<'_>, parts: &[&str]) {
                 pubsub_info(parts, conn.pubsub, &mut conn.parser.wbuf);
             } else {
                 let response_start = conn.parser.wbuf.len();
-                commends::execute(parts, conn.store, &mut conn.parser.wbuf);
+                commands::execute(parts, conn.store, &mut conn.parser.wbuf);
                 capture_if_success(conn, parts, response_start);
             }
         }
@@ -271,8 +271,9 @@ fn mutation_key_index(command: &[u8]) -> Option<usize> {
             command.eq_ignore_ascii_case(b"XADD")
                 || command.eq_ignore_ascii_case(b"XTRIM")
                 || command.eq_ignore_ascii_case(b"XDEL")
-                || command.eq_ignore_ascii_case(b"XGROUP")
                 || command.eq_ignore_ascii_case(b"XACK")
+                || command.eq_ignore_ascii_case(b"XCLAIM")
+                || command.eq_ignore_ascii_case(b"XAUTOCLAIM")
         }
         _ => false,
     };
@@ -308,8 +309,18 @@ fn capture_command_mutation(conn: &mut Conn, parts: &[&str]) {
     {
         capture(conn, 1);
         capture(conn, 2);
-    } else if command.eq_ignore_ascii_case(b"COPY") || command.eq_ignore_ascii_case(b"BITOP") {
+    } else if command.eq_ignore_ascii_case(b"COPY")
+        || command.eq_ignore_ascii_case(b"BITOP")
+        || command.eq_ignore_ascii_case(b"XGROUP")
+    {
         capture(conn, 2);
+    } else if command.eq_ignore_ascii_case(b"XREADGROUP")
+        && let Some(pos) = parts.iter().position(|p| p.eq_ignore_ascii_case("STREAMS"))
+    {
+        let n = (parts.len() - pos - 1) / 2;
+        for index in pos + 1..pos + 1 + n {
+            capture(conn, index);
+        }
     }
 }
 

@@ -190,7 +190,7 @@ impl Local {
             epoch,
         });
         self.retires += 1;
-        if self.retires % COLLECT_INTERVAL == 0 {
+        if self.retires.is_multiple_of(COLLECT_INTERVAL) {
             self.collect();
         }
     }
@@ -257,7 +257,7 @@ pub fn force_collect_quiescent() {
 }
 
 thread_local! {
-    static LOCAL: UnsafeCell<Local> = UnsafeCell::new(Local::uninit());
+    static LOCAL: UnsafeCell<Local> = const { UnsafeCell::new(Local::uninit()) };
 }
 
 pub struct Guard {
@@ -277,8 +277,8 @@ pub fn pin() -> Guard {
     Guard { _p: PhantomData }
 }
 
-/// Retire an explicitly allocated object. The callback must destroy the
-/// object and release its allocation exactly once after the EBR grace period.
+/// # Safety
+/// `ptr` must be a valid heap allocation; `drop_fn` must free it exactly once after the grace period.
 #[inline]
 pub unsafe fn retire_raw(ptr: *mut u8, drop_fn: unsafe fn(*mut u8)) {
     if ptr.is_null() {

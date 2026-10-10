@@ -1,0 +1,21 @@
+services:
+  valkey:
+    image: valkey/valkey:8.1
+    container_name: valkey
+    network_mode: host
+    restart: "no"
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    # io-threads + prefetch batching are Valkey 8's multi-core path; match
+    # the worker count FyroDB runs with for a like-for-like comparison.
+    command:
+      - valkey-server
+      - --port 6379
+      - --bind 0.0.0.0
+      - --save ""
+      - --appendonly no
+      - --protected-mode no
+      - --io-threads 8
+      - --prefetch-batch-max-size 16

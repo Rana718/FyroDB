@@ -1,9 +1,27 @@
-pub(crate) const INLINE_CAP: usize = 15;
+pub(crate) const INLINE_CAP: usize = 23;
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(u8)]
+#[allow(dead_code)]
+pub(crate) enum Tag {
+    L0, L1, L2, L3, L4, L5, L6, L7, L8, L9, L10, L11,
+    L12, L13, L14, L15, L16, L17, L18, L19, L20, L21, L22, L23,
+    Heap = 0xFF,
+}
+
+impl Tag {
+    #[inline(always)]
+    pub(crate) fn inline(n: usize) -> Tag {
+        assert!(n <= 23);
+        unsafe { std::mem::transmute::<u8, Tag>(n as u8) }
+    }
+}
+
 
 #[repr(C)]
 pub(crate) struct CompactKey {
     data: [u8; INLINE_CAP],
-    tag: u8,
+    tag: Tag,
 }
 
 impl CompactKey {
@@ -26,7 +44,7 @@ impl CompactKey {
             data[..s.len()].copy_from_slice(s.as_bytes());
             Self {
                 data,
-                tag: s.len() as u8,
+                tag: Tag::inline(s.len()),
             }
         } else {
             let ptr = Box::into_raw(s.into_boxed_str());
@@ -34,7 +52,7 @@ impl CompactKey {
             let addr = (ptr as *const u8 as usize).to_ne_bytes();
             data[..8].copy_from_slice(&addr);
             Self::store_heap_len(&mut data, unsafe { &*ptr }.len());
-            Self { data, tag: 0xFF }
+            Self { data, tag: Tag::Heap }
         }
     }
 
@@ -46,7 +64,7 @@ impl CompactKey {
             data[..s.len()].copy_from_slice(s.as_bytes());
             Self {
                 data,
-                tag: s.len() as u8,
+                tag: Tag::inline(s.len()),
             }
         } else {
             Self::from_string(String::from(s))
@@ -55,7 +73,7 @@ impl CompactKey {
 
     #[inline(always)]
     pub(crate) fn as_str(&self) -> &str {
-        if self.tag != 0xFF {
+        if self.tag != Tag::Heap {
             unsafe { std::str::from_utf8_unchecked(&self.data[..self.tag as usize]) }
         } else {
             let ptr_val = usize::from_ne_bytes(self.data[..8].try_into().unwrap());
@@ -72,7 +90,7 @@ impl CompactKey {
 
 impl Drop for CompactKey {
     fn drop(&mut self) {
-        if self.tag == 0xFF {
+        if self.tag == Tag::Heap {
             let ptr_val = usize::from_ne_bytes(self.data[..8].try_into().unwrap());
             let len_val = Self::read_heap_len(&self.data);
             unsafe {

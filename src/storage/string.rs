@@ -25,11 +25,16 @@ impl Store {
 
     #[inline]
     pub fn set_string(&self, key: &str, value: &str, expires_ms: u64) {
+        self.set_string_hinted(key, None, value, expires_ms);
+    }
+
+    #[inline]
+    pub fn set_string_hinted(&self, key: &str, hash: Option<u64>, value: &str, expires_ms: u64) {
         let store_val = StoreValue {
             value: crate::storage::value::FyroDB::String(SmallStr::new(value)),
             expires_ms,
         };
-        self.data.set_str(key, store_val);
+        self.data.set_str_hinted(key, hash, store_val);
         if expires_ms != 0 {
             self.add_ttl();
         }
@@ -67,7 +72,15 @@ impl Store {
 
     #[inline]
     pub fn get_to_buf(&self, key: &str, out: &mut Vec<u8>) -> bool {
-        let (h, idx) = self.data.locate_key(key);
+        self.get_to_buf_hinted(key, None, out)
+    }
+
+    #[inline]
+    pub fn get_to_buf_hinted(&self, key: &str, hash: Option<u64>, out: &mut Vec<u8>) -> bool {
+        let (h, idx) = match hash {
+            Some(h) => (h, self.data.shard_of(h)),
+            None => self.data.locate_key(key),
+        };
         let found = self.data.with_entry(key, h, idx, |val| {
             if val.is_expired() {
                 return Err(());

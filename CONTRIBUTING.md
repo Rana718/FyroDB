@@ -172,9 +172,9 @@ FyroDB is designed to outperform standard Redis instances by 2× to 16×. When t
 ### Adding a New Command
 
 When adding or expanding Redis commands:
-1. **Define the command enum**: Add the variant and uppercase string to `string_enum!` in `src/commends/mod.rs`. (Command resolution is $O(1)$ via a static `foldhash` map).
+1. **Define the command enum**: Add the variant and uppercase string to `string_enum!` in `src/commands/mod.rs`. (Command resolution is $O(1)$ via a static `foldhash` map).
 2. **Implement storage logic**: Add the data structure mutation/query in `src/storage/<type>.rs`.
-3. **Implement command handler**: Add the parameter parsing and response generation in `src/commends/<type>.rs`.
+3. **Implement command handler**: Add the parameter parsing and response generation in `src/commands/<type>.rs`.
 4. **Hot-path dispatch (optional)**: If the command is high-frequency, add a first-byte fast-path check in `src/handler/dispatch.rs`.
 5. **Add tests**: Create comprehensive test cases under `tests/<type>.rs`.
 

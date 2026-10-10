@@ -181,6 +181,7 @@ impl Store {
         let result = self.data.read_consistent(key, |val| {
             out.truncate(start_len);
             if val.is_expired() {
+                crate::utils::resp::write_array_header(out, 0);
                 return Ok(0);
             }
             match val.value.as_set() {
@@ -199,6 +200,7 @@ impl Store {
             Some(r) => r,
             None => {
                 out.truncate(start_len);
+                crate::utils::resp::write_array_header(out, 0);
                 Ok(0)
             }
         }

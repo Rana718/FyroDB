@@ -2,3 +2,5 @@
 *.rdb
 temp/
 **/target/
+.claude/
+fyrodb_*

@@ -24,6 +24,27 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
         }
     }
 
+    /// Iterate a half-open range of shards under an EBR pin per shard.
+    /// Disjoint shard ranges may run concurrently on separate threads.
+    pub fn for_each_shard_range(&self, from: usize, to: usize, mut f: impl FnMut(&str, &V)) {
+        for shard_idx in from..to.min(self.shards.len()) {
+            let _guard = ebr::pin();
+            let t = self.shards[shard_idx].table();
+            for slot in t.slots().iter() {
+                let p = slot.load(Ordering::Acquire);
+                if p.is_null() {
+                    continue;
+                }
+                let e = unsafe { &*p };
+                if state_occupied(&e.state, Ordering::Acquire) {
+                    f(e.key.as_str(), unsafe {
+                        (*e.value.get()).assume_init_ref()
+                    });
+                }
+            }
+        }
+    }
+
 /// Entry addresses never move (readers stay valid); reclaimed memory goes
 /// to EBR. Returns (next_slot, capacity, rebuilt).
     pub fn defragment_shard_range(
@@ -52,6 +73,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
             }
             state_lock(&entry.state);
             if state_occupied(&entry.state, Ordering::Relaxed) {
+                self.snap.before_write(entry);
                 write_begin(&entry.state);
                 rebuild(unsafe { (*entry.value.get()).assume_init_mut() });
                 write_end(&entry.state, true);
@@ -71,6 +93,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
     }
 
     pub fn retain(&self, mut f: impl FnMut(&str, &V) -> bool) {
+        let mut removed = false;
         for shard in self.shards.iter() {
             let _guard = ebr::pin();
             let t = shard.table();
@@ -88,15 +111,22 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
                 }) {
                     state_lock(&entry.state);
                     if state_occupied(&entry.state, Ordering::Relaxed) {
+                        self.snap.before_write(entry);
                         write_begin(&entry.state);
                         unsafe { (*entry.value.get()).assume_init_drop() };
                         write_end(&entry.state, false);
-                        self.key_count.fetch_sub(1, Ordering::Relaxed);
+                        shard.live.fetch_sub(1, Ordering::Relaxed);
+                        removed = true;
+                        if self.observing.load(Ordering::Relaxed) {
+                            self.notify(entry.key.as_str());
+                        }
                     } else {
                         state_unlock(&entry.state);
                     }
                 }
             }
+        }
+        if removed {
         }
     }
 
@@ -111,9 +141,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
         max_slots: usize,
         mut f: impl FnMut(&str, &V) -> bool,
     ) -> Option<(usize, usize)> {
-        let Some(shard) = self.shards.get(shard_idx) else {
-            return None;
-        };
+        let shard = self.shards.get(shard_idx)?;
         let _guard = ebr::pin();
         let t = shard.table();
         let capacity = t.capacity();
@@ -135,15 +163,71 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
             }
             state_lock(&entry.state);
             if state_occupied(&entry.state, Ordering::Relaxed) {
+                self.snap.before_write(entry);
                 write_begin(&entry.state);
                 unsafe { (*entry.value.get()).assume_init_drop() };
                 write_end(&entry.state, false);
-                self.key_count.fetch_sub(1, Ordering::Relaxed);
+                shard.live.fetch_sub(1, Ordering::Relaxed);
+                if self.observing.load(Ordering::Relaxed) {
+                    self.notify(entry.key.as_str());
+                }
             } else {
                 state_unlock(&entry.state);
             }
         }
         Some((end, capacity))
+    }
+
+    pub fn expire_shard_range(
+        &self,
+        shard_idx: usize,
+        start_slot: usize,
+        max_slots: usize,
+        expired: impl Fn(&V) -> Option<bool>,
+    ) -> Option<(usize, usize, usize, usize)> {
+        let shard = self.shards.get(shard_idx)?;
+        let _guard = ebr::pin();
+        let t = shard.table();
+        let capacity = t.capacity();
+        let start = start_slot.min(capacity);
+        let end = start.saturating_add(max_slots).min(capacity);
+        let (mut removed, mut live) = (0usize, 0usize);
+        for slot in &t.slots()[start..end] {
+            let p = slot.load(Ordering::Acquire);
+            if p.is_null() {
+                continue;
+            }
+            let entry = unsafe { &*p };
+            if !state_occupied(&entry.state, Ordering::Acquire) {
+                continue;
+            }
+            match expired(unsafe { (*entry.value.get()).assume_init_ref() }) {
+                None => continue,
+                Some(false) => {
+                    live += 1;
+                    continue;
+                }
+                Some(true) => {}
+            }
+            state_lock(&entry.state);
+            let still = state_occupied(&entry.state, Ordering::Relaxed)
+                && expired(unsafe { (*entry.value.get()).assume_init_ref() }) == Some(true);
+            if still {
+                self.snap.before_write(entry);
+                write_begin(&entry.state);
+                unsafe { (*entry.value.get()).assume_init_drop() };
+                write_end(&entry.state, false);
+                shard.live.fetch_sub(1, Ordering::Relaxed);
+                removed += 1;
+                if self.observing.load(Ordering::Relaxed) {
+                    self.notify(entry.key.as_str());
+                }
+            } else {
+                state_unlock(&entry.state);
+                live += 1;
+            }
+        }
+        Some((end, capacity, removed, live))
     }
 
     pub fn compact_shard(&self, shard_idx: usize) {
@@ -189,11 +273,12 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
                 unsafe { ebr::retire_raw(p.cast(), drop_raw_entry::<V>) };
                 continue;
             }
-            let mut i = (e.hash as usize) & new_table.mask;
+            let h = stored_hash(e.state.load(Ordering::Relaxed));
+            let mut i = (h as usize) & new_table.mask;
             loop {
                 let new_slot = unsafe { new_table.slots().get_unchecked(i) };
                 if new_slot.load(Ordering::Relaxed).is_null() {
-                    new_slot.store(p, e.hash, Ordering::Relaxed);
+                    new_slot.store(p, h, Ordering::Relaxed);
                     break;
                 }
                 i = (i + 1) & new_table.mask;
@@ -232,7 +317,14 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
             }
             shard.insert_gate.store(0, Ordering::Release);
         }
-        self.key_count.store(0, Ordering::Release);
+        for shard in self.shards.iter() {
+            shard.live.store(0, Ordering::Release);
+        }
+        if self.observing.load(Ordering::Relaxed)
+            && let Some(o) = self.observer.get()
+        {
+            o.on_clear();
+        }
         ebr::force_collect();
     }
 
@@ -256,6 +348,42 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
             .iter()
             .zip(capacities)
             .all(|(shard, &capacity)| shard.table().capacity() == capacity)
+    }
+
+    pub fn begin_snapshot(&self, sink: crate::SnapSink<V>) -> bool {
+        self.snap.begin(sink)
+    }
+
+    pub fn end_snapshot(&self) {
+        self.snap.end();
+    }
+
+    pub fn snapshot_shard(&self, shard_idx: usize, mut visit: impl FnMut(&str, &V)) {
+        let Some(shard) = self.shards.get(shard_idx) else {
+            return;
+        };
+        let _guard = ebr::pin();
+        let parity = self.snap.parity();
+        let t = shard.table();
+        for slot in t.slots() {
+            let p = slot.load(Ordering::Acquire);
+            if p.is_null() {
+                continue;
+            }
+            let e = unsafe { &*p };
+            if e.state.load(Ordering::Acquire) & STATE_SNAP == parity {
+                continue;
+            }
+            state_lock(&e.state);
+            let st = e.state.load(Ordering::Relaxed);
+            if st & STATE_SNAP != parity {
+                if st & STATE_OCCUPIED != 0 {
+                    visit(e.key.as_str(), unsafe { (*e.value.get()).assume_init_ref() });
+                }
+                e.state.store((st & !STATE_SNAP) | parity, Ordering::Relaxed);
+            }
+            state_unlock(&e.state);
+        }
     }
 
     pub fn peek_slot(&self, shard: usize, slot: usize) -> Option<(String, V)> {

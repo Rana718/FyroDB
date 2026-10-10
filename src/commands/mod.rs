@@ -1,5 +1,6 @@
 use super::storage::store::Store;
 use crate::string_enum;
+use crate::utils::resp;
 use std::sync::Arc;
 
 string_enum! {
@@ -207,11 +208,30 @@ string_enum! {
         XGROUP => "XGROUP",
         XACK => "XACK",
         XINFO => "XINFO",
+        XREADGROUP => "XREADGROUP",
+        XPENDING => "XPENDING",
+        XCLAIM => "XCLAIM",
+        XAUTOCLAIM => "XAUTOCLAIM",
 
         MULTI => "MULTI",
         DISCARD => "DISCARD",
         WATCH => "WATCH",
         UNWATCH => "UNWATCH",
+
+        MODULE => "MODULE",
+        FTCREATE => "FT.CREATE",
+        FTINFO => "FT.INFO",
+        FTDROPINDEX => "FT.DROPINDEX",
+        FTALTER => "FT.ALTER",
+        FTALIASADD => "FT.ALIASADD",
+        FTALIASUPDATE => "FT.ALIASUPDATE",
+        FTALIASDEL => "FT.ALIASDEL",
+        FTALIASLIST => "FT.ALIASLIST",
+        FTSEARCH => "FT.SEARCH",
+        FTAGGREGATE => "FT.AGGREGATE",
+        FTCURSOR => "FT.CURSOR",
+        FTCONFIG => "FT.CONFIG",
+        FTALIST => "FT._LIST",
     }
 }
 
@@ -422,16 +442,42 @@ pub fn execute(parts: &[&str], store: &Arc<Store>, out: &mut Vec<u8>) {
         ComdType::XGROUP => stream::xgroup(parts, store, out),
         ComdType::XACK => stream::xack(parts, store, out),
         ComdType::XINFO => stream::xinfo(parts, store, out),
+        ComdType::XREADGROUP => stream::xreadgroup(parts, store, out),
+        ComdType::XPENDING => stream::xpending(parts, store, out),
+        ComdType::XCLAIM => stream::xclaim(parts, store, out),
+        ComdType::XAUTOCLAIM => stream::xautoclaim(parts, store, out),
 
         ComdType::MULTI => transaction::multi(out),
         ComdType::DISCARD => transaction::discard(out),
         ComdType::WATCH => transaction::watch(parts, out),
         ComdType::UNWATCH => transaction::unwatch(out),
 
+        ComdType::MODULE => {
+            if parts.len() >= 2 && parts[1].eq_ignore_ascii_case("LIST") {
+                ft::module_list(out);
+            } else {
+                resp::write_store_err(out, "ERR unknown subcommand");
+            }
+        }
+        ComdType::FTCREATE
+        | ComdType::FTINFO
+        | ComdType::FTDROPINDEX
+        | ComdType::FTALTER
+        | ComdType::FTALIASADD
+        | ComdType::FTALIASUPDATE
+        | ComdType::FTALIASDEL
+        | ComdType::FTALIASLIST
+        | ComdType::FTSEARCH
+        | ComdType::FTAGGREGATE
+        | ComdType::FTCURSOR
+        | ComdType::FTCONFIG
+        | ComdType::FTALIST => ft::execute_ft(parts, store, out),
+
         _ => out.extend_from_slice(b"-ERR unknown command\r\n"),
     }
 }
 
+pub mod ft;
 pub mod bitmap;
 pub mod connection;
 pub mod geo;

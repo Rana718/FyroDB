@@ -21,7 +21,7 @@ impl Store {
                 }
             }
             self.data
-                .insert_str(key, StoreValue::json_raw(value.to_owned()));
+                .insert_str(key, StoreValue::json_str(value));
             return Ok(true);
         }
 

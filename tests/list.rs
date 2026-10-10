@@ -289,3 +289,21 @@ fn lpush_rpush_wrong_type() {
     assert_eq!(s.lpush("k", &["a"]), Err("WRONGTYPE"));
     assert_eq!(s.rpush("k", &["a"]), Err("WRONGTYPE"));
 }
+
+#[test]
+fn lrange_to_buf_always_replies_on_empty_ranges() {
+    let s = common::store();
+    s.rpush("q", &["a"]).unwrap();
+    let mut out = Vec::new();
+    // start > stop used to write nothing at all (client hangs).
+    s.lrange_to_buf("q", 1, 0, &mut out).unwrap();
+    assert_eq!(out, b"*0\r\n");
+    out.clear();
+    let mut scratch = String::new();
+    assert!(s.pop_one_to_scratch("q", false, &mut scratch).unwrap());
+    // A drained list stays allocated; `0 -1` must not claim an element.
+    s.lrange_to_buf("q", 0, -1, &mut out).unwrap();
+    assert_eq!(out, b"*0\r\n");
+    assert!(!s.exists("q"));
+    assert_eq!(s.type_of("q"), "none");
+}
