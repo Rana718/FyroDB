@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [0.2.2] - 2026-10-10
 
 ### Added
 - **Vector Search & AI (RedisVL-compatible)**:
@@ -43,6 +43,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Optional AOF** (`FYRODB_AOF=1`): per-thread state logs with global sequence numbers, k-way-merge replay, and a rewrite after every snapshot.
 - **Runtime knobs**: `FYRODB_AFFINITY=auto`, `FYRODB_WORKER_CORES`, `FYRODB_SEARCH_CORES`, `FYRODB_BUSY_POLL_US`, and an experimental `io-uring` feature for batched sends (`FYRODB_IO_URING=1`).
 - **Measurement**: open- and closed-loop latency histograms (`-m lat`), bytes per key (`-m mem`), ANN recall on SIFT/GIST or synthetic data (`-m ann`), JSON output with `scripts/bench_compare.py`, criterion micro-benchmarks, Valkey / Redis 8 baselines, perf/flamegraph/heaptrack tasks, and the `cargo pgo` flow.
+
+### Optimized
+- **HNSW arena milestone-shrink**: arena buffers now shrink at each power-of-two node count milestone tracked by `last_shrink: AtomicUsize`, so cache density improves on streaming inserts (not only after bulk builds).
+- **Thread-local Scratch zero-alloc**: `Scratch` gains `q_int8`, `acorn_hop`, and `acorn_frontier` fields; ACORN traversal and two-pass FLAT scans share pre-allocated working memory with zero hot-path allocation after warmup.
+- **Two-pass FLAT scan**: an Int8 pre-filter pass narrows candidates before exact f32 rerank; `q_int8` codes are carried in `Scratch` to avoid per-query allocation.
+- **Lock-free search pool**: job dispatch switches from `Mutex<VecDeque<Job>>` to `crossbeam::SegQueue<Job>`, removing the lock on every job submission.
+- **`prepare_batch` for burst HSET**: N consecutive HSET writes on the same vector field take one write-lock instead of N, cutting lock contention on bulk ingestion.
+- **`cursor_read` zero-clone**: replaced clone-and-drain with `Vec::split_off`, eliminating one full cursor-row clone per `FT.CURSOR READ` page.
+- **`complement_ids` sorted-merge**: negated filter sets use an O(output) sorted merge over the ascending id range instead of a 100 KB boolean array per query.
+- **ZSet no-alloc update**: `ZSetData::insert` probes the member index before allocating a `SmallStr`, skipping all allocation on score-update paths.
+- **O(bytes) bitmap ops**: `BITCOUNT` and `BITPOS` in byte mode operate at the byte level using hardware `count_ones()` / `leading_zeros()` instead of per-bit loops.
+- Zero clippy warnings across all crates.
 
 ### Changed
 - `Entry` stays 64 bytes without a stored hash (shards rehash on growth). Inline keys and strings grew from 15 to 23 bytes; `FyroDB` stays 24 bytes, enforced by static asserts.

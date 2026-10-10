@@ -24,25 +24,35 @@ Unlike Redis (single-threaded), FyroDB uses **all CPU cores** via a thread-per-c
 
 ## Performance
 
-| Benchmark | FyroDB (1 node) | Redis Cluster (6 nodes) | Speedup |
-| -------------------- | --------------------------- | ----------------------- | ------- |
-| Pipeline-64 SET | 8.95M ops/sec | 5.75M ops/sec | 1.6× |
-| Pipelined SET | 20.08M ops/sec | 7.56M ops/sec | 2.7× |
-| Pipelined GET | 28.16M ops/sec | 11.29M ops/sec | 2.5× |
-| Pub/Sub publish | 1.49M ops/sec | 147.1K ops/sec | 10.1× |
-| Pub/Sub delivery | 74.64M msg/sec | 7.35M msg/sec | 10.2× |
-| Mixed SET/GET (50/50)| 20.90M ops/sec | 7.24M ops/sec | 2.9× |
-| INCR (counters) | 50.11M ops/sec | 6.32M ops/sec | 7.9× |
-| HSET/HGET (sessions) | 33.07M ops/sec | 7.95M ops/sec | 4.2× |
-| LPUSH/RPOP (queue) | 39.26M ops/sec | 7.19M ops/sec | 5.5× |
-| SADD (sets) | 27.87M ops/sec | 6.34M ops/sec | 4.4× |
-| ZADD (zsets) | 18.12M ops/sec | 4.55M ops/sec | 4.0× |
-| JSON.SET/GET (docs) | 14.91M ops/sec | 3.38M ops/sec | 4.4× |
-| SET+EXPIRE (TTL) | 10.51M ops/sec | 2.64M ops/sec | 4.0× |
-| Hot Key (contention) | 44.07M ops/sec | 2.03M ops/sec | 21.7× |
-| Producer/Consumer | 36.20M ops/sec | 981.3K ops/sec | 36.9× |
+| Benchmark | FyroDB (1 node) | Redis Cluster (12 nodes) | Speedup |
+| ------------------------- | ------------------- | ------------------------ | ------- |
+| Pipeline-64 SET           | 9.14M ops/sec       | 5.00M ops/sec            | 1.83×   |
+| Pipelined SET             | 20.60M ops/sec      | 6.53M ops/sec            | 3.15×   |
+| Pipelined GET             | 29.52M ops/sec      | 11.62M ops/sec           | 2.54×   |
+| Pub/Sub publish           | 1.41M ops/sec       | 161.9K ops/sec           | 8.7×    |
+| Pub/Sub delivery          | 70.44M msg/sec      | 8.09M msg/sec            | 8.7×    |
+| Mixed SET/GET (50/50)     | 16.25M ops/sec      | 5.82M ops/sec            | 2.79×   |
+| INCR (counters)           | 47.12M ops/sec      | 6.54M ops/sec            | 7.2×    |
+| HSET/HGET (sessions)      | 33.03M ops/sec      | 6.63M ops/sec            | 4.98×   |
+| LPUSH/RPOP (queue)        | 42.86M ops/sec      | 7.17M ops/sec            | 5.98×   |
+| SADD (sets)               | 30.43M ops/sec      | 6.27M ops/sec            | 4.85×   |
+| ZADD (zsets)              | 19.09M ops/sec      | 4.78M ops/sec            | 3.99×   |
+| JSON.SET/GET (docs)       | 13.22M ops/sec      | 3.23M ops/sec            | 4.09×   |
+| SET+EXPIRE (cache TTL)    | 8.62M ops/sec       | 2.41M ops/sec            | 3.58×   |
+| Hot Key (contention)      | 46.69M ops/sec      | 1.61M ops/sec            | 29.0×   |
+| Producer/Consumer         | 28.64M ops/sec      | 1.70M ops/sec            | 16.8×   |
+| XADD (streams)            | 9.88M ops/sec       | 4.27M ops/sec            | 2.31×   |
+| SETBIT/BITCOUNT (bitmap)  | 20.92M ops/sec      | 5.94M ops/sec            | 3.52×   |
+| PFADD/PFCOUNT (HLL)       | 36.29M ops/sec      | 6.03M ops/sec            | 6.02×   |
+| GEOADD/GEODIST (geo)      | 6.30M ops/sec       | 3.07M ops/sec            | 2.05×   |
+| Vector KNN-10 (FLAT)      | 1.0K q/s            | 104 q/s †                | 9.6×    |
+| Text term search          | 42.6K q/s           | 1.6K q/s †               | 26.6×   |
+| Text negation             | 21.7K q/s           | 361 q/s †                | 60.1×   |
+| Vector HNSW KNN-10        | 5.0K q/s            | 1.1K q/s †               | 4.55×   |
 
-Both sides tested on the same 6-core Intel i5-11400H (12 hardware threads): one single FyroDB node against a 6-node Redis Cluster (7 containers).
+Tested on a 6-core Intel i5-11400H (12 hardware threads): one FyroDB node against a 12-node Redis Cluster (13 containers).
+
+† Redis Cluster does not distribute vector or graph operations across nodes — those benchmarks ran against a single Redis node.
 
 ## Links
 

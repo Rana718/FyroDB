@@ -16,6 +16,41 @@ FyroDB combines five key architectural decisions:
 
 ## Data Flow
 
+<svg viewBox="0 0 720 92" xmlns="http://www.w3.org/2000/svg" style={{maxWidth:'100%',display:'block',margin:'1.5rem 0'}}>
+  <defs>
+    <marker id="df-arr" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#6366f1"/>
+    </marker>
+  </defs>
+  <rect x="5" y="24" width="78" height="44" rx="7" fill="#1e1b4b" stroke="#6366f1" strokeWidth="1.5"/>
+  <text x="44" y="43" textAnchor="middle" fill="#c7d2fe" fontSize="11" fontFamily="ui-monospace,monospace">Client</text>
+  <text x="44" y="58" textAnchor="middle" fill="#818cf8" fontSize="8" fontFamily="ui-monospace,monospace">sends RESP</text>
+  <line x1="83" y1="46" x2="101" y2="46" stroke="#6366f1" strokeWidth="1.5" markerEnd="url(#df-arr)"/>
+  <rect x="103" y="14" width="106" height="64" rx="7" fill="#1e1b4b" stroke="#6366f1" strokeWidth="1.5"/>
+  <text x="156" y="37" textAnchor="middle" fill="#c7d2fe" fontSize="11" fontFamily="ui-monospace,monospace">TCP</text>
+  <text x="156" y="52" textAnchor="middle" fill="#818cf8" fontSize="8.5" fontFamily="ui-monospace,monospace">SO_REUSEPORT</text>
+  <text x="156" y="66" textAnchor="middle" fill="#818cf8" fontSize="8.5" fontFamily="ui-monospace,monospace">epoll (mio)</text>
+  <line x1="209" y1="46" x2="227" y2="46" stroke="#6366f1" strokeWidth="1.5" markerEnd="url(#df-arr)"/>
+  <rect x="229" y="14" width="122" height="64" rx="7" fill="#312e81" stroke="#6366f1" strokeWidth="1.5"/>
+  <text x="290" y="37" textAnchor="middle" fill="#c7d2fe" fontSize="11" fontFamily="ui-monospace,monospace">Worker Thread</text>
+  <text x="290" y="52" textAnchor="middle" fill="#818cf8" fontSize="8.5" fontFamily="ui-monospace,monospace">parse · dispatch</text>
+  <text x="290" y="66" textAnchor="middle" fill="#818cf8" fontSize="8.5" fontFamily="ui-monospace,monospace">prefetch · coalesce</text>
+  <line x1="351" y1="46" x2="369" y2="46" stroke="#6366f1" strokeWidth="1.5" markerEnd="url(#df-arr)"/>
+  <rect x="371" y="14" width="106" height="64" rx="7" fill="#1e1b4b" stroke="#6366f1" strokeWidth="1.5"/>
+  <text x="424" y="37" textAnchor="middle" fill="#c7d2fe" fontSize="11" fontFamily="ui-monospace,monospace">Store</text>
+  <text x="424" y="52" textAnchor="middle" fill="#818cf8" fontSize="8.5" fontFamily="ui-monospace,monospace">lock-free map</text>
+  <text x="424" y="66" textAnchor="middle" fill="#818cf8" fontSize="8.5" fontFamily="ui-monospace,monospace">per-key spinlock</text>
+  <line x1="477" y1="46" x2="495" y2="46" stroke="#6366f1" strokeWidth="1.5" markerEnd="url(#df-arr)"/>
+  <rect x="497" y="14" width="118" height="64" rx="7" fill="#1e1b4b" stroke="#6366f1" strokeWidth="1.5"/>
+  <text x="556" y="37" textAnchor="middle" fill="#c7d2fe" fontSize="11" fontFamily="ui-monospace,monospace">Response</text>
+  <text x="556" y="52" textAnchor="middle" fill="#818cf8" fontSize="8.5" fontFamily="ui-monospace,monospace">write buffer</text>
+  <text x="556" y="66" textAnchor="middle" fill="#818cf8" fontSize="8.5" fontFamily="ui-monospace,monospace">batched flush</text>
+  <line x1="615" y1="46" x2="633" y2="46" stroke="#6366f1" strokeWidth="1.5" markerEnd="url(#df-arr)"/>
+  <rect x="635" y="24" width="78" height="44" rx="7" fill="#1e1b4b" stroke="#6366f1" strokeWidth="1.5"/>
+  <text x="674" y="43" textAnchor="middle" fill="#c7d2fe" fontSize="11" fontFamily="ui-monospace,monospace">Client</text>
+  <text x="674" y="58" textAnchor="middle" fill="#818cf8" fontSize="8" fontFamily="ui-monospace,monospace">receives reply</text>
+</svg>
+
 ```
 Client → TCP (SO_REUSEPORT) → Worker Thread (epoll)
   → read(socket) → RESP Parser (zero-copy, SIMD memchr)
@@ -89,7 +124,71 @@ Memory maintenance runs outside command hot paths:
 - **First-byte pattern index** — patterns bucketed by first character, PUBLISH only checks relevant bucket
 - **Lock-free delivery** — SegQueue per subscriber, coalesced wake notifications
 
+## Vector and Full-Text Search
+
+`FT.*` queries run on a persistent, optionally pinned thread pool while the network workers keep serving other clients. Job dispatch uses a lock-free `SegQueue<Job>` per priority tier (index builds run low), so submission never takes a lock.
+
+HNSW graphs use fixed-stride `u32` level-0 blocks for cache-line-aligned neighbour lists. Thread-local `Scratch` buffers hold visited-set epochs, candidate heaps, Int8 query codes, and ACORN working sets — zero hot-path allocation after warmup. Arena buffers shrink at each power-of-two node count milestone, improving cache density on streaming inserts as well as bulk builds.
+
+FLAT fields batch concurrent queries into one pass. The scan is two-pass: an Int8 pre-filter narrows candidates before exact f32 rerank, with codes held in thread-local scratch.
+
+Negated filter sets resolve as a sorted merge over the ascending id range, using O(output) space instead of a boolean array per query.
+
 ## Concurrency Model
+
+<svg viewBox="0 0 680 218" xmlns="http://www.w3.org/2000/svg" style={{maxWidth:'100%',display:'block',margin:'1.5rem 0'}}>
+  <defs>
+    <marker id="cm-arr" markerWidth="7" markerHeight="6" refX="6" refY="3" orient="auto">
+      <polygon points="0 0, 7 3, 0 6" fill="#6366f1"/>
+    </marker>
+    <marker id="cm-arr2" markerWidth="7" markerHeight="6" refX="6" refY="3" orient="auto">
+      <polygon points="0 0, 7 3, 0 6" fill="#818cf8"/>
+    </marker>
+    <marker id="cm-arr3" markerWidth="7" markerHeight="6" refX="6" refY="3" orient="auto">
+      <polygon points="0 0, 7 3, 0 6" fill="#4f46e5"/>
+    </marker>
+  </defs>
+  <rect x="10" y="79" width="95" height="56" rx="8" fill="#312e81" stroke="#6366f1" strokeWidth="2"/>
+  <text x="57" y="102" textAnchor="middle" fill="#c7d2fe" fontSize="12" fontFamily="ui-monospace,monospace">main</text>
+  <text x="57" y="118" textAnchor="middle" fill="#818cf8" fontSize="9" fontFamily="ui-monospace,monospace">thread</text>
+  <rect x="158" y="8" width="128" height="40" rx="7" fill="#1e1b4b" stroke="#6366f1" strokeWidth="1.5"/>
+  <text x="222" y="24" textAnchor="middle" fill="#c7d2fe" fontSize="11" fontFamily="ui-monospace,monospace">Worker 1</text>
+  <text x="222" y="39" textAnchor="middle" fill="#818cf8" fontSize="8" fontFamily="ui-monospace,monospace">epoll · parse · store</text>
+  <rect x="158" y="56" width="128" height="40" rx="7" fill="#1e1b4b" stroke="#6366f1" strokeWidth="1.5"/>
+  <text x="222" y="72" textAnchor="middle" fill="#c7d2fe" fontSize="11" fontFamily="ui-monospace,monospace">Worker 2</text>
+  <text x="222" y="87" textAnchor="middle" fill="#818cf8" fontSize="8" fontFamily="ui-monospace,monospace">epoll · parse · store</text>
+  <rect x="158" y="104" width="128" height="40" rx="7" fill="#1e1b4b" stroke="#6366f1" strokeWidth="1.5"/>
+  <text x="222" y="120" textAnchor="middle" fill="#c7d2fe" fontSize="11" fontFamily="ui-monospace,monospace">Worker 3</text>
+  <text x="222" y="135" textAnchor="middle" fill="#818cf8" fontSize="8" fontFamily="ui-monospace,monospace">epoll · parse · store</text>
+  <rect x="158" y="152" width="128" height="40" rx="7" fill="#1e1b4b" stroke="#6366f1" strokeWidth="1.5"/>
+  <text x="222" y="168" textAnchor="middle" fill="#c7d2fe" fontSize="11" fontFamily="ui-monospace,monospace">Worker N</text>
+  <text x="222" y="183" textAnchor="middle" fill="#818cf8" fontSize="8" fontFamily="ui-monospace,monospace">epoll · parse · store</text>
+  <line x1="105" y1="107" x2="156" y2="28" stroke="#6366f1" strokeWidth="1.5" markerEnd="url(#cm-arr)"/>
+  <line x1="105" y1="107" x2="156" y2="76" stroke="#6366f1" strokeWidth="1.5" markerEnd="url(#cm-arr)"/>
+  <line x1="105" y1="107" x2="156" y2="124" stroke="#6366f1" strokeWidth="1.5" markerEnd="url(#cm-arr)"/>
+  <line x1="105" y1="107" x2="156" y2="172" stroke="#6366f1" strokeWidth="1.5" markerEnd="url(#cm-arr)"/>
+  <rect x="340" y="8" width="152" height="96" rx="8" fill="#1e1b4b" stroke="#818cf8" strokeWidth="1.5" strokeDasharray="5,3"/>
+  <text x="416" y="30" textAnchor="middle" fill="#a5b4fc" fontSize="11" fontFamily="ui-monospace,monospace">Search Pool</text>
+  <text x="416" y="46" textAnchor="middle" fill="#818cf8" fontSize="8.5" fontFamily="ui-monospace,monospace">lock-free SegQueue</text>
+  <text x="416" y="61" textAnchor="middle" fill="#818cf8" fontSize="8.5" fontFamily="ui-monospace,monospace">FT.SEARCH · HNSW · FLAT</text>
+  <text x="416" y="76" textAnchor="middle" fill="#818cf8" fontSize="8.5" fontFamily="ui-monospace,monospace">FT.AGGREGATE · FT.HYBRID</text>
+  <text x="416" y="91" textAnchor="middle" fill="#818cf8" fontSize="8.5" fontFamily="ui-monospace,monospace">parked connections</text>
+  <line x1="286" y1="76" x2="338" y2="56" stroke="#818cf8" strokeWidth="1" strokeDasharray="4,3" markerEnd="url(#cm-arr2)"/>
+  <rect x="340" y="122" width="152" height="36" rx="7" fill="#1e1b4b" stroke="#4f46e5" strokeWidth="1.2"/>
+  <text x="416" y="138" textAnchor="middle" fill="#c7d2fe" fontSize="10" fontFamily="ui-monospace,monospace">Expiry sweep</text>
+  <text x="416" y="151" textAnchor="middle" fill="#818cf8" fontSize="8" fontFamily="ui-monospace,monospace">10 Hz · 25 ms budget</text>
+  <rect x="340" y="165" width="152" height="36" rx="7" fill="#1e1b4b" stroke="#4f46e5" strokeWidth="1.2"/>
+  <text x="416" y="181" textAnchor="middle" fill="#c7d2fe" fontSize="10" fontFamily="ui-monospace,monospace">RDB saver</text>
+  <text x="416" y="194" textAnchor="middle" fill="#818cf8" fontSize="8" fontFamily="ui-monospace,monospace">forkless snapshot · 5 min</text>
+  <line x1="105" y1="107" x2="338" y2="140" stroke="#4f46e5" strokeWidth="1.2" markerEnd="url(#cm-arr3)"/>
+  <line x1="105" y1="107" x2="338" y2="183" stroke="#4f46e5" strokeWidth="1.2" markerEnd="url(#cm-arr3)"/>
+  <line x1="20" y1="210" x2="32" y2="210" stroke="#6366f1" strokeWidth="1.5"/>
+  <text x="36" y="213" fill="#818cf8" fontSize="8" fontFamily="ui-monospace,monospace">spawns workers</text>
+  <line x1="160" y1="210" x2="168" y2="210" stroke="#818cf8" strokeWidth="1" strokeDasharray="4,2"/>
+  <text x="172" y="213" fill="#818cf8" fontSize="8" fontFamily="ui-monospace,monospace">parks FT.* queries</text>
+  <line x1="320" y1="210" x2="332" y2="210" stroke="#4f46e5" strokeWidth="1.2"/>
+  <text x="336" y="213" fill="#818cf8" fontSize="8" fontFamily="ui-monospace,monospace">maintenance threads</text>
+</svg>
 
 ```
 main thread

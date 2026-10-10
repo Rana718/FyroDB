@@ -4,7 +4,7 @@
 
 ## Changelog
 
-**v0.2.1** — Pipelined batch coalescing, zero-allocation command dispatch, grouped Pub/Sub fan-out, and performance optimizations reaching up to 50M ops/sec. See the [v0.2.1 changelog](https://fyrodb.vercel.app/docs/changelog-0-2-1).
+**v0.2.2** — Vector search (HNSW + FLAT + hybrid), BM25 full-text, arena milestone-shrink, lock-free search pool, two-pass FLAT scan, O(bytes) bitmap ops, zero clippy warnings. See the [v0.2.2 changelog](https://fyrodb.vercel.app/docs/changelog-0-2-2).
 
 ---
 
@@ -16,47 +16,63 @@ Built on [`customhash`](https://www.ranadolui.me/blog/custom-concurrent-hashmap-
 
 6-core Intel i5-11400H (12 hardware threads), loopback TCP, 100 clients, 1M operations per benchmark.
 
-Comparing a single FyroDB node against a 6-node Redis Cluster (7 containers) and a single multi-threaded DragonflyDB node.
+Comparing a single FyroDB node against a 12-node Redis Cluster (13 containers) and a single multi-threaded DragonflyDB node.
 
-| Benchmark | FyroDB (1 node) | Redis Cluster (6 nodes) | DragonflyDB (1 node) | Speedup vs Redis |
-| -------------------- | --------------------------- | ----------------------- | -------------------- | ------- |
-| Pipeline-64 SET | 8.95M ops/sec | 5.75M ops/sec | 4.09M ops/sec | 1.6× |
-| Pipelined SET | 20.08M ops/sec | 7.56M ops/sec | 4.16M ops/sec | 2.7× |
-| Pipelined GET | 28.16M ops/sec | 11.29M ops/sec | 4.09M ops/sec | 2.5× |
-| Pub/Sub publish | 1.49M ops/sec | 147.1K ops/sec | 315.5K ops/sec | 10.1× |
-| Pub/Sub delivery | 74.64M msg/sec | 7.35M msg/sec | 15.43M msg/sec | 10.2× |
-| Mixed SET/GET (50/50)| 20.90M ops/sec | 7.24M ops/sec | 5.15M ops/sec | 2.9× |
-| INCR (counters) | 50.11M ops/sec | 6.32M ops/sec | 6.84M ops/sec | 7.9× |
-| HSET/HGET (sessions) | 33.07M ops/sec | 7.95M ops/sec | 5.81M ops/sec | 4.2× |
-| LPUSH/RPOP (queue) | 39.26M ops/sec | 7.19M ops/sec | 6.23M ops/sec | 5.5× |
-| SADD (sets) | 27.87M ops/sec | 6.34M ops/sec | 5.00M ops/sec | 4.4× |
-| ZADD (zsets) | 18.12M ops/sec | 4.55M ops/sec | 4.36M ops/sec | 4.0× |
-| JSON.SET/GET (docs) | 14.91M ops/sec | 3.38M ops/sec | 151.5K ops/sec | 4.4× |
-| SET+EXPIRE (cache TTL)| 10.51M ops/sec | 2.64M ops/sec | 2.41M ops/sec | 4.0× |
-| Hot Key (contention) | 44.07M ops/sec | 2.03M ops/sec | 2.15M ops/sec | 21.7× |
-| Producer/Consumer | 36.20M ops/sec | 981.3K ops/sec | 1.75M ops/sec | 36.9× |
+| Benchmark | FyroDB (1 node) | Redis Cluster (12 nodes) | DragonflyDB (1 node) | Speedup vs Redis |
+| ------------------------- | ------------------- | ------------------------ | -------------------- | ---------------- |
+| Pipeline-64 SET           | 9.14M ops/sec       | 5.00M ops/sec            | 4.09M ops/sec        | 1.83×            |
+| Pipelined SET             | 20.60M ops/sec      | 6.53M ops/sec            | 4.16M ops/sec        | 3.15×            |
+| Pipelined GET             | 29.52M ops/sec      | 11.62M ops/sec           | 4.09M ops/sec        | 2.54×            |
+| Pub/Sub publish           | 1.41M ops/sec       | 161.9K ops/sec           | 315.5K ops/sec       | 8.7×             |
+| Pub/Sub delivery          | 70.44M msg/sec      | 8.09M msg/sec            | 15.43M msg/sec       | 8.7×             |
+| Mixed SET/GET (50/50)     | 16.25M ops/sec      | 5.82M ops/sec            | 5.15M ops/sec        | 2.79×            |
+| INCR (counters)           | 47.12M ops/sec      | 6.54M ops/sec            | 6.84M ops/sec        | 7.2×             |
+| HSET/HGET (sessions)      | 33.03M ops/sec      | 6.63M ops/sec            | 5.81M ops/sec        | 4.98×            |
+| LPUSH/RPOP (queue)        | 42.86M ops/sec      | 7.17M ops/sec            | 6.23M ops/sec        | 5.98×            |
+| SADD (sets)               | 30.43M ops/sec      | 6.27M ops/sec            | 5.00M ops/sec        | 4.85×            |
+| ZADD (zsets)              | 19.09M ops/sec      | 4.78M ops/sec            | 4.36M ops/sec        | 3.99×            |
+| JSON.SET/GET (docs)       | 13.22M ops/sec      | 3.23M ops/sec            | 151.5K ops/sec       | 4.09×            |
+| SET+EXPIRE (cache TTL)    | 8.62M ops/sec       | 2.41M ops/sec            | 2.41M ops/sec        | 3.58×            |
+| Hot Key (contention)      | 46.69M ops/sec      | 1.61M ops/sec            | 2.15M ops/sec        | 29.0×            |
+| Producer/Consumer         | 28.64M ops/sec      | 1.70M ops/sec            | 1.75M ops/sec        | 16.8×            |
+| XADD (streams)            | 9.88M ops/sec       | 4.27M ops/sec            | —                    | 2.31×            |
+| SETBIT/BITCOUNT (bitmap)  | 20.92M ops/sec      | 5.94M ops/sec            | —                    | 3.52×            |
+| PFADD/PFCOUNT (HLL)       | 36.29M ops/sec      | 6.03M ops/sec            | —                    | 6.02×            |
+| GEOADD/GEODIST (geo)      | 6.30M ops/sec       | 3.07M ops/sec            | —                    | 2.05×            |
+| Vector HSET load          | 160.7K ops/sec      | 66.4K ops/sec †          | —                    | 2.42×            |
+| Vector KNN-10 (FLAT)      | 1.0K q/s            | 104 q/s †                | —                    | 9.6×             |
+| Vector KNN-10 +filter     | 1.7K q/s            | 162 q/s †                | —                    | 10.5×            |
+| Filter Tag+Num            | 5.0K q/s            | 313 q/s †                | —                    | 16.0×            |
+| Text term                 | 42.6K q/s           | 1.6K q/s †               | —                    | 26.6×            |
+| Text + Tag                | 24.7K q/s           | 1.8K q/s †               | —                    | 13.7×            |
+| Text negation             | 21.7K q/s           | 361 q/s †                | —                    | 60.1×            |
+| Vector KNN-10 (8 clients) | 3.0K q/s            | 97 q/s †                 | —                    | 30.9×            |
+| Vector HNSW KNN-10        | 5.0K q/s            | 1.1K q/s †               | —                    | 4.55×            |
+| Vector HNSW M=32 KNN-10   | 2.9K q/s            | 1.1K q/s †               | —                    | 2.64×            |
 
-DragonflyDB is a single multi-threaded process, so it is the closest single-node comparison to a single FyroDB node — it uses every core at once, yet FyroDB is faster on every workload.
+DragonflyDB is a single multi-threaded process, so it is the closest single-node comparison to a single FyroDB node — it uses every core at once, yet FyroDB is faster on every workload. DragonflyDB numbers are from an earlier benchmark run.
+
+† Redis Cluster does not distribute vector or graph operations across nodes. These benchmarks ran against a single Redis node; the other 11 cluster nodes contributed no compute for these workloads.
 
 How to read some of these:
 
 - **Pipeline-64 SET** includes hash table growth from empty to 1M keys. On a pre-warmed server it reaches ~17M ops/sec. See [Production Tips](https://fyrodb.vercel.app/docs/production-tips).
-- **SET+EXPIRE** fuses pipelined `SET` and `EXPIRE` pairs into a single atomic write-with-TTL operation (10.51M pairs/sec is ~21M commands/sec).
-- **Pub/Sub publish** fans one publish out to 50 subscribers; the delivery row is the same work counted per subscriber (74.64M msg/sec).
-- **Hot Key** and **Producer/Consumer** hammer a single key. With pipelined batch coalescing and backoff spinlocks, FyroDB achieves 44.07M ops/sec under contention and 36.20M ops/sec on producer/consumer queues (a 36.9× speedup over Redis Cluster).
+- **SET+EXPIRE** fuses pipelined `SET` and `EXPIRE` pairs into a single atomic write-with-TTL operation (8.62M pairs/sec is ~17M commands/sec).
+- **Pub/Sub publish** fans one publish out to 50 subscribers; the delivery row is the same work counted per subscriber (70.44M msg/sec).
+- **Hot Key** and **Producer/Consumer** hammer a single key. With pipelined batch coalescing and backoff spinlocks, FyroDB achieves 46.69M ops/sec under contention and 28.64M ops/sec on producer/consumer queues.
 
 ### Resource Usage
 
-Measured over the full benchmark suite across all processes:
+Measured over the full benchmark suite (including 50k×768d HNSW vector workloads) across all processes:
 
-| Metric | FyroDB (1 node, PID 2258) | Redis Cluster (6 nodes, 7 containers) | DragonflyDB (1 node) |
-| ------------------- | ------------------------- | ------------------------------------- | -------------------- |
-| Peak RSS | **294.19 MB** | 767.63 MB | 235.80 MB |
-| Avg RSS | 168.81 MB | 347.46 MB | 171.86 MB |
-| Peak CPU | **79.6%** | 442.1% | 957.5% |
-| Avg CPU | **42.5%** | 125.2% | 430.6% |
+| Metric      | FyroDB (1 node) | Redis Cluster (12 nodes, 13 containers) |
+| ----------- | --------------- | --------------------------------------- |
+| Peak RSS    | 1005.84 MB      | 756.74 MB                               |
+| Avg RSS     | 784.87 MB       | 583.18 MB                               |
+| Peak CPU    | 1219.9%         | 761.0%                                  |
+| Avg CPU     | 1051.3%         | 117.9%                                  |
 
-A single FyroDB node beats a 6-node Redis Cluster on every workload while holding less memory and using a fraction of the CPU.
+FyroDB's higher peak RSS reflects the 50k×768d HNSW graph loaded during the vector benchmark suite — each query uses all 12 workers simultaneously. Redis Cluster's lower memory is because vector operations cannot be distributed across cluster nodes; all vector load landed on a single Redis node while the other 11 sat idle.
 
 ## Quick Start
 
@@ -156,6 +172,9 @@ Full Redis command compatibility including:
 - **Batched I/O** — all epoll events processed before flushing, reducing syscall count
 - **Arc-snapshot Pub/Sub** — publish path reads with zero locks, per-subscriber lock-free queues
 - **Flat cluster routing** — slot ownership resolves through a shared 16384-entry table, revalidated per connection with one atomic load
+- **Lock-free search pool** — vector/search job dispatch via `SegQueue`, no lock on submission
+- **Two-pass FLAT scan** — Int8 pre-filter narrows candidates before exact f32 rerank, codes held in thread-local scratch
+- **HNSW arena milestone-shrink** — arena buffers shrink at each power-of-two node count, improving cache density for streaming inserts
 
 ## Persistence
 

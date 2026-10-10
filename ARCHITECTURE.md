@@ -303,10 +303,11 @@ vector pool, and the reply returns through the worker's completion queue (see
 Parked Connections). `FYRODB_SEARCH_INLINE=1` restores inline execution.
 
 The pool (`fyro_vector::pool`) is a fixed set of optionally pinned threads with
-high- and low-priority queues (index builds run low). `parallel(n, f)` hands out
-tickets from a per-call counter, and the caller runs tickets itself while it
-waits, so nested parallel calls cannot deadlock the pool. Idle workers spin
-briefly before parking.
+high- and low-priority queues (index builds run low). Job dispatch uses a lock-free
+`SegQueue<Job>` per queue so submission never takes a lock. `parallel(n, f)` hands
+out tickets from a per-call counter, and the caller runs tickets itself while it
+waits, so nested parallel calls cannot deadlock the pool. Idle workers spin briefly
+before parking.
 
 ### Kernels and element types
 
@@ -321,11 +322,13 @@ Level 0 is a fixed-stride block per node: `u32` neighbour ids, count and flags
 live in one cache-line-aligned stride, hnswlib-style, with per-node locks for
 parallel insertion. Upper layers are sparse. The level distribution uses
 `mL = 1/ln M`, neighbour selection uses Malkov's diversity heuristic with
-`keepPrunedConnections`, and search keeps reusable scratch (visited epochs,
-heaps) per thread. Ids are recycled through a free list; deletions are
-tombstones that traversal skips, compacted once they pass a threshold. After a
-bulk build of ≥10K nodes the graph is renumbered in BFS/RCM order so neighbours
-sit close in memory.
+`keepPrunedConnections`, and search keeps reusable scratch (visited epochs, heaps, Int8 query codes, ACORN
+working sets) per thread — zero hot-path allocation after warmup. Ids are recycled
+through a free list; deletions are tombstones that traversal skips, compacted once
+they pass a threshold. Arena buffers shrink at each power-of-two node count
+milestone tracked by `last_shrink: AtomicUsize`, so cache density improves for
+streaming inserts as well as bulk builds. After a bulk build of ≥10K nodes the
+graph is renumbered in BFS/RCM order so neighbours sit close in memory.
 
 Builds are parallel on the pool. Queries are answered from the partially built
 graph with an exact scan of the unbuilt remainder, and `FT.INFO` reports
@@ -349,16 +352,19 @@ two-hop expansion below 30%, and in-traversal filtering above. `VECTOR_RANGE`
 walks the graph with a radius bound instead of scanning.
 
 FLAT fields batch concurrent queries: the first query of a burst becomes the
-leader, later ones join its batch (up to 32), and a single pass over the vectors
-scores all of them.
+leader, later ones join its batch (up to 32). The scan is two-pass: an Int8
+pre-filter narrows candidates before exact f32 rerank, with the Int8 codes held
+in thread-local scratch to avoid per-query allocation.
 
 ### Text and hybrid
 
 The tokenizer lowercases Unicode and drops RediSearch's stopword list; TEXT
-fields rank by BM25 (k1 = 1.2, b = 0.75). `FT.HYBRID` runs the lexical and vector
-legs in parallel on the pool and fuses them with RRF (Cormack) or LINEAR
-weighting. `FT.AGGREGATE` streams matches through GROUPBY/REDUCE accumulators
-(COUNT, COUNT_DISTINCT, SUM, AVG, MIN, MAX, TOLIST) with SORTBY/LIMIT and cursors.
+fields rank by BM25 (k1 = 1.2, b = 0.75). Negated filter sets resolve as a
+sorted merge over the ascending id range, using O(output) space instead of a
+boolean array. `FT.HYBRID` runs the lexical and vector legs in parallel on the
+pool and fuses them with RRF (Cormack) or LINEAR weighting. `FT.AGGREGATE`
+streams matches through GROUPBY/REDUCE accumulators (COUNT, COUNT_DISTINCT, SUM,
+AVG, MIN, MAX, TOLIST) with SORTBY/LIMIT and cursors.
 
 ### Persistence
 
@@ -631,8 +637,13 @@ src/cluster/
 | JSON.GET                      | O(1)                                                                                                       | Direct path lookup                                                                                                                |
 | XADD                          | O(1) amortized | Varint append to the last packed node; `~` trims whole nodes                                                    |
 | XRANGE / XREAD                | O(log N + K)  | BTreeMap seek to the node containing the start ID, decode forward                                                 |
-| BITCOUNT                      | O(N)                                                                                                       | Byte-level popcount                                                                                                               |
+| BITCOUNT                      | O(B)          | B = bytes; hardware `count_ones()` per byte; BITCOUNT byte-range is O(range)                                     |
+| BITPOS                        | O(B)          | `leading_zeros()` per byte in byte mode; O(B) bit scan in bit mode                                               |
+| BITFIELD                      | O(1)                                                                                                       | Single byte-range read/write with overflow check                                                                                  |
 | PFADD / PFCOUNT               | O(1)                                                                                                       | HyperLogLog register update/estimate                                                                                              |
+| GEOADD                        | O(log N + C) | Geohash encode + ZSet chunked insert; C ≤ 256-entry chunk memmove                                                |
+| GEODIST / GEOPOS              | O(1)          | ZSet score decode + haversine                                                                                    |
+| GEOSEARCH                     | O(N)          | Full ZSet scan with haversine radius/box filter                                                                  |
 | PUBLISH                       | O(S) sparse fan-out, O(W) dense                                                                           | W = workers; above ~8 subscribers/worker one queue entry per worker, delivery is a memcpy at the worker                         |
 | PUBLISH pipelined run of K    | O(K·S) encode + O(W) enqueue                                                                              | One snapshot scan and one grouped fan-out for the whole run                                                                     |
 | Same-key pipelined run of K   | O(K) work under 1 lock, O(1) amortized per command                                                        | Queue/write-run coalescing; per-command replies synthesized exactly                                                             |
@@ -655,7 +666,10 @@ src/cluster/
 | Blocking wake                 | O(W_k)        | W_k = waiters on the written key; one relaxed load when nobody is blocked                                         |
 | XREADGROUP `>` / XACK         | O(log N + K) / O(log P) | Deliver after `last_delivered`, PEL is a BTreeMap plus per-consumer BTreeSet                          |
 | FT.SEARCH KNN (HNSW)          | O(ef · log N) | Graph traversal on the pool; quantized distances, exact rerank of the candidates                                 |
+| FT.SEARCH KNN (FLAT)          | O(N/2) avg    | Two-pass: Int8 pre-filter over all vectors, exact f32 rerank of the shortlist; batched across concurrent queries  |
 | FT.SEARCH filtered KNN        | O(A) … O(ef · log N) | A = allowed ids; brute-force, ACORN-1 or in-traversal chosen by filter selectivity                          |
+| FT.SEARCH text filter         | O(P + K)      | P = postings for the term; negations resolve as O(total − matched) sorted merge                                   |
+| FT.AGGREGATE cursor           | O(page)       | Rows are split off the cursor Vec with split_off; no full-cursor clone per page                                   |
 | Index maintenance per write   | O(1) + O(fields) at query | Write hook marks the key dirty; the next query applies exactly the dirty keys                      |
 | Value defragmentation         | O(budget)                                                                                                  | Cursor walks one shard per tick and rebuilds at most `budget` values                                                              |
 | `used_memory`                 | O(S)                                                                                                       | Sums S per-CPU allocation stripes                                                                                                 |
