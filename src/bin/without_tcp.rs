@@ -116,7 +116,6 @@ fn main() {
    let pubsub = Arc::new(PubSub::new());
    fyro_db::search::configure_pool(None);
 
-
    let mut results: Vec<BenchResult> = Vec::new();
 
    match mode.as_str() {
@@ -148,7 +147,6 @@ fn run_kv(store: &Arc<Store>, results: &mut Vec<BenchResult>) {
    let ops_client = 100_000usize;
    let total_ops = (clients * ops_client) as i64;
    let pipe_size = 100usize;
-
 
    // Warmup
    for i in 0..10_000 {
@@ -207,7 +205,11 @@ fn run_kv(store: &Arc<Store>, results: &mut Vec<BenchResult>) {
       }
    });
    let elapsed = start.elapsed();
-   results.push(BenchResult { label: "Pipeline-64 SET", ops: total_ops, elapsed });
+   results.push(BenchResult {
+      label: "Pipeline-64 SET",
+      ops: total_ops,
+      elapsed,
+   });
 
    store.flush();
 
@@ -235,7 +237,11 @@ fn run_kv(store: &Arc<Store>, results: &mut Vec<BenchResult>) {
       }
    });
    let elapsed = start.elapsed();
-   results.push(BenchResult { label: "Pipelined SET", ops: total_ops, elapsed });
+   results.push(BenchResult {
+      label: "Pipelined SET",
+      ops: total_ops,
+      elapsed,
+   });
 
    // 3. Pipelined GET
    let start = Instant::now();
@@ -262,7 +268,11 @@ fn run_kv(store: &Arc<Store>, results: &mut Vec<BenchResult>) {
       }
    });
    let elapsed = start.elapsed();
-   results.push(BenchResult { label: "Pipelined GET", ops: total_ops, elapsed });
+   results.push(BenchResult {
+      label: "Pipelined GET",
+      ops: total_ops,
+      elapsed,
+   });
 }
 
 // --- PUBSUB BENCHMARK ---
@@ -275,7 +285,6 @@ fn run_pubsub(pubsub: &Arc<PubSub>, results: &mut Vec<BenchResult>) {
    let total_deliveries = total_publishes * (subscribers as i64);
    let channel = "pubsub:bench";
    let message_payload = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-
 
    let workers = num_cpus::get();
    let notifiers: Vec<Arc<WorkerNotifier>> = (0..workers)
@@ -311,7 +320,11 @@ fn run_pubsub(pubsub: &Arc<PubSub>, results: &mut Vec<BenchResult>) {
       }
    });
    let pub_elapsed = start_pub.elapsed();
-   results.push(BenchResult { label: "Pub/Sub publish", ops: total_publishes, elapsed: pub_elapsed });
+   results.push(BenchResult {
+      label: "Pub/Sub publish",
+      ops: total_publishes,
+      elapsed: pub_elapsed,
+   });
 
    // 2. Delivery drain across workers
    let start_e2e = start_pub;
@@ -333,7 +346,11 @@ fn run_pubsub(pubsub: &Arc<PubSub>, results: &mut Vec<BenchResult>) {
       }
    });
    let e2e_elapsed = start_e2e.elapsed();
-   results.push(BenchResult { label: "Pub/Sub delivery", ops: total_deliveries, elapsed: e2e_elapsed });
+   results.push(BenchResult {
+      label: "Pub/Sub delivery",
+      ops: total_deliveries,
+      elapsed: e2e_elapsed,
+   });
 
    for slot in &slots {
       pubsub.unsubscribe(channel, slot);
@@ -346,7 +363,6 @@ fn run_mix(store: &Arc<Store>, results: &mut Vec<BenchResult>) {
    let mix_ops_client = 20_000usize;
    let pipe_size = 500usize;
    let total_mix_ops = (clients * mix_ops_client) as i64;
-
 
    // 1. Mixed SET/GET (50/50)
    store.flush();
@@ -381,7 +397,11 @@ fn run_mix(store: &Arc<Store>, results: &mut Vec<BenchResult>) {
       }
    });
    let elapsed = start.elapsed();
-   results.push(BenchResult { label: "Mixed SET/GET (50/50)", ops: total_mix_ops, elapsed: elapsed });
+   results.push(BenchResult {
+      label: "Mixed SET/GET (50/50)",
+      ops: total_mix_ops,
+      elapsed: elapsed,
+   });
 
    // 2. INCR (atomic counters)
    store.flush();
@@ -403,7 +423,11 @@ fn run_mix(store: &Arc<Store>, results: &mut Vec<BenchResult>) {
       }
    });
    let elapsed = start.elapsed();
-   results.push(BenchResult { label: "INCR (atomic counters)", ops: total_mix_ops, elapsed: elapsed });
+   results.push(BenchResult {
+      label: "INCR (atomic counters)",
+      ops: total_mix_ops,
+      elapsed: elapsed,
+   });
 
    // 3. HSET/HGET (sessions)
    store.flush();
@@ -432,7 +456,11 @@ fn run_mix(store: &Arc<Store>, results: &mut Vec<BenchResult>) {
       }
    });
    let elapsed = start.elapsed();
-   results.push(BenchResult { label: "HSET/HGET (sessions)", ops: total_mix_ops, elapsed: elapsed });
+   results.push(BenchResult {
+      label: "HSET/HGET (sessions)",
+      ops: total_mix_ops,
+      elapsed: elapsed,
+   });
 
    // 4. LPUSH/RPOP (queue)
    store.flush();
@@ -459,7 +487,11 @@ fn run_mix(store: &Arc<Store>, results: &mut Vec<BenchResult>) {
       }
    });
    let elapsed = start.elapsed();
-   results.push(BenchResult { label: "LPUSH/RPOP (queue)", ops: total_mix_ops, elapsed: elapsed });
+   results.push(BenchResult {
+      label: "LPUSH/RPOP (queue)",
+      ops: total_mix_ops,
+      elapsed: elapsed,
+   });
 
    // 5. SADD (per-client sets)
    store.flush();
@@ -484,7 +516,11 @@ fn run_mix(store: &Arc<Store>, results: &mut Vec<BenchResult>) {
       }
    });
    let elapsed = start.elapsed();
-   results.push(BenchResult { label: "SADD (per-client sets)", ops: total_mix_ops, elapsed: elapsed });
+   results.push(BenchResult {
+      label: "SADD (per-client sets)",
+      ops: total_mix_ops,
+      elapsed: elapsed,
+   });
 
    // 6. ZADD (per-client zsets)
    store.flush();
@@ -510,7 +546,11 @@ fn run_mix(store: &Arc<Store>, results: &mut Vec<BenchResult>) {
       }
    });
    let elapsed = start.elapsed();
-   results.push(BenchResult { label: "ZADD (per-client zsets)", ops: total_mix_ops, elapsed: elapsed });
+   results.push(BenchResult {
+      label: "ZADD (per-client zsets)",
+      ops: total_mix_ops,
+      elapsed: elapsed,
+   });
 
    // 7. JSON.SET/GET (documents)
    store.flush();
@@ -545,7 +585,11 @@ fn run_mix(store: &Arc<Store>, results: &mut Vec<BenchResult>) {
       }
    });
    let elapsed = start.elapsed();
-   results.push(BenchResult { label: "JSON.SET/GET (documents)", ops: total_mix_ops, elapsed: elapsed });
+   results.push(BenchResult {
+      label: "JSON.SET/GET (documents)",
+      ops: total_mix_ops,
+      elapsed: elapsed,
+   });
 
    // 8. SET+EXPIRE (cache TTL)
    store.flush();
@@ -571,7 +615,11 @@ fn run_mix(store: &Arc<Store>, results: &mut Vec<BenchResult>) {
       }
    });
    let elapsed = start.elapsed();
-   results.push(BenchResult { label: "SET+EXPIRE (cache TTL)", ops: total_mix_ops, elapsed: elapsed });
+   results.push(BenchResult {
+      label: "SET+EXPIRE (cache TTL)",
+      ops: total_mix_ops,
+      elapsed: elapsed,
+   });
 
    // 9. Hot Key (1 key, contention)
    let hotkey_ops_client = 10_000usize;
@@ -599,7 +647,11 @@ fn run_mix(store: &Arc<Store>, results: &mut Vec<BenchResult>) {
       }
    });
    let elapsed = start.elapsed();
-   results.push(BenchResult { label: "Hot Key (1 key, contention)", ops: total_hotkey_ops, elapsed: elapsed });
+   results.push(BenchResult {
+      label: "Hot Key (1 key, contention)",
+      ops: total_hotkey_ops,
+      elapsed: elapsed,
+   });
 
    // 10. Producer/Consumer (50+50)
    store.flush();
@@ -634,7 +686,11 @@ fn run_mix(store: &Arc<Store>, results: &mut Vec<BenchResult>) {
       }
    });
    let elapsed = start.elapsed();
-   results.push(BenchResult { label: "Producer/Consumer (50+50)", ops: total_queue_ops, elapsed: elapsed });
+   results.push(BenchResult {
+      label: "Producer/Consumer (50+50)",
+      ops: total_queue_ops,
+      elapsed: elapsed,
+   });
 
    // 11. XADD (streams)
    store.flush();
@@ -659,7 +715,11 @@ fn run_mix(store: &Arc<Store>, results: &mut Vec<BenchResult>) {
       }
    });
    let elapsed = start.elapsed();
-   results.push(BenchResult { label: "XADD (streams)", ops: total_mix_ops, elapsed: elapsed });
+   results.push(BenchResult {
+      label: "XADD (streams)",
+      ops: total_mix_ops,
+      elapsed: elapsed,
+   });
 
    // 12. SETBIT/BITCOUNT (bitmap)
    store.flush();
@@ -683,7 +743,11 @@ fn run_mix(store: &Arc<Store>, results: &mut Vec<BenchResult>) {
       }
    });
    let elapsed = start.elapsed();
-   results.push(BenchResult { label: "SETBIT/BITCOUNT (bitmap)", ops: total_mix_ops, elapsed: elapsed });
+   results.push(BenchResult {
+      label: "SETBIT/BITCOUNT (bitmap)",
+      ops: total_mix_ops,
+      elapsed: elapsed,
+   });
 
    // 13. PFADD/PFCOUNT (HyperLogLog)
    store.flush();
@@ -710,7 +774,11 @@ fn run_mix(store: &Arc<Store>, results: &mut Vec<BenchResult>) {
       }
    });
    let elapsed = start.elapsed();
-   results.push(BenchResult { label: "PFADD/PFCOUNT (HyperLogLog)", ops: total_mix_ops, elapsed: elapsed });
+   results.push(BenchResult {
+      label: "PFADD/PFCOUNT (HyperLogLog)",
+      ops: total_mix_ops,
+      elapsed: elapsed,
+   });
 
    // 14. GEOADD/GEODIST (geospatial)
    store.flush();
@@ -739,7 +807,11 @@ fn run_mix(store: &Arc<Store>, results: &mut Vec<BenchResult>) {
       }
    });
    let elapsed = start.elapsed();
-   results.push(BenchResult { label: "GEOADD/GEODIST (geospatial)", ops: total_mix_ops, elapsed: elapsed });
+   results.push(BenchResult {
+      label: "GEOADD/GEODIST (geospatial)",
+      ops: total_mix_ops,
+      elapsed: elapsed,
+   });
 }
 
 // --- VECTOR SEARCH BENCHMARK ---
@@ -838,7 +910,11 @@ fn run_vector(store: &Arc<Store>, results: &mut Vec<BenchResult>) {
       }
    });
    let elapsed = start.elapsed();
-   results.push(BenchResult { label: "Vector HSET load", ops: vec_docs as i64, elapsed: elapsed });
+   results.push(BenchResult {
+      label: "Vector HSET load",
+      ops: vec_docs as i64,
+      elapsed: elapsed,
+   });
 
    // Vector KNN-10
    let knn_queries = 2_000usize;
@@ -862,7 +938,11 @@ fn run_vector(store: &Arc<Store>, results: &mut Vec<BenchResult>) {
       search_dispatch(&parts, &binaries, store, &mut out);
    }
    let elapsed = start.elapsed();
-   results.push(BenchResult { label: "Vector KNN-10", ops: knn_queries as i64, elapsed: elapsed });
+   results.push(BenchResult {
+      label: "Vector KNN-10",
+      ops: knn_queries as i64,
+      elapsed: elapsed,
+   });
 
    // Vector KNN-10 +tag filter
    let tag_queries = 1_000usize;
@@ -885,7 +965,11 @@ fn run_vector(store: &Arc<Store>, results: &mut Vec<BenchResult>) {
       search_dispatch(&parts_filt, &binaries, store, &mut out);
    }
    let elapsed = start.elapsed();
-   results.push(BenchResult { label: "Vector KNN-10 +tag filter", ops: tag_queries as i64, elapsed: elapsed });
+   results.push(BenchResult {
+      label: "Vector KNN-10 +tag filter",
+      ops: tag_queries as i64,
+      elapsed: elapsed,
+   });
 
    // Filter Tag+Num
    let filter_queries = 1_000usize;
@@ -904,7 +988,11 @@ fn run_vector(store: &Arc<Store>, results: &mut Vec<BenchResult>) {
       search_dispatch(&parts_tag_num, &[], store, &mut out);
    }
    let elapsed = start.elapsed();
-   results.push(BenchResult { label: "Filter Tag+Num", ops: filter_queries as i64, elapsed: elapsed });
+   results.push(BenchResult {
+      label: "Filter Tag+Num",
+      ops: filter_queries as i64,
+      elapsed: elapsed,
+   });
 
    // Text term
    let text_queries = 1_000usize;
@@ -923,7 +1011,11 @@ fn run_vector(store: &Arc<Store>, results: &mut Vec<BenchResult>) {
       search_dispatch(&parts_text, &[], store, &mut out);
    }
    let elapsed = start.elapsed();
-   results.push(BenchResult { label: "Text term", ops: text_queries as i64, elapsed: elapsed });
+   results.push(BenchResult {
+      label: "Text term",
+      ops: text_queries as i64,
+      elapsed: elapsed,
+   });
 
    // Text + Tag
    let start = Instant::now();
@@ -941,7 +1033,11 @@ fn run_vector(store: &Arc<Store>, results: &mut Vec<BenchResult>) {
       search_dispatch(&parts_text_tag, &[], store, &mut out);
    }
    let elapsed = start.elapsed();
-   results.push(BenchResult { label: "Text + Tag", ops: text_queries as i64, elapsed: elapsed });
+   results.push(BenchResult {
+      label: "Text + Tag",
+      ops: text_queries as i64,
+      elapsed: elapsed,
+   });
 
    // Text negation
    let start = Instant::now();
@@ -959,7 +1055,11 @@ fn run_vector(store: &Arc<Store>, results: &mut Vec<BenchResult>) {
       search_dispatch(&parts_text_neg, &[], store, &mut out);
    }
    let elapsed = start.elapsed();
-   results.push(BenchResult { label: "Text negation", ops: text_queries as i64, elapsed: elapsed });
+   results.push(BenchResult {
+      label: "Text negation",
+      ops: text_queries as i64,
+      elapsed: elapsed,
+   });
 
    // Vector KNN-10 (8 clients)
    let knn_clients = 8usize;
@@ -993,7 +1093,11 @@ fn run_vector(store: &Arc<Store>, results: &mut Vec<BenchResult>) {
       }
    });
    let elapsed = start.elapsed();
-   results.push(BenchResult { label: "Vector KNN-10 (8 clients)", ops: knn_queries as i64, elapsed });
+   results.push(BenchResult {
+      label: "Vector KNN-10 (8 clients)",
+      ops: knn_queries as i64,
+      elapsed,
+   });
    fn wait_indexed(store: &Arc<Store>, idx: &str) {
       let mut out = Vec::new();
       for _ in 0..6000 {
@@ -1061,7 +1165,11 @@ fn run_vector(store: &Arc<Store>, results: &mut Vec<BenchResult>) {
       search_dispatch(&parts_hnsw, &binaries, store, &mut out);
    }
    let elapsed = start.elapsed();
-   results.push(BenchResult { label: "Vector HNSW KNN-10", ops: knn_queries as i64, elapsed: elapsed });
+   results.push(BenchResult {
+      label: "Vector HNSW KNN-10",
+      ops: knn_queries as i64,
+      elapsed: elapsed,
+   });
 
    // HNSW M=32
    out.clear();
@@ -1116,5 +1224,9 @@ fn run_vector(store: &Arc<Store>, results: &mut Vec<BenchResult>) {
       search_dispatch(&parts_hnsw32, &binaries, store, &mut out);
    }
    let elapsed = start.elapsed();
-   results.push(BenchResult { label: "Vector HNSW M=32 KNN-10", ops: knn_queries as i64, elapsed: elapsed });
+   results.push(BenchResult {
+      label: "Vector HNSW M=32 KNN-10",
+      ops: knn_queries as i64,
+      elapsed: elapsed,
+   });
 }

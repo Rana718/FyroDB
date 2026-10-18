@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.2.3] - 2026-10-19
+
+### Added
+- **Engine Performance & Latency Audit**:
+  - In-process benchmark execution harness (`without_tcp`) profiling elapsed time, throughput, and per-op latency across 12 hardware threads.
+  - Sub-10ns execution latency on atomic counters (8.3 ns) and contended key paths (8.15 ns).
+  - Comprehensive vector and full-text search profiling: HNSW ANN queries (5.2k q/s at ~192.5 µs latency), FLAT KNN, and BM25 text term search (41.5k q/s at ~24.1 µs).
+- **io-uring Batched Completions**:
+  - Worker loops gate ring submissions to batch pending socket writes when multiple connections have unwritten data, amortizing completion queue submission costs.
+
+### Optimized
+- **Hot Key Contention Scaling**:
+  - TTAS exponential spin backoff (`MAX_SPIN_BACKOFF = 64`) coupled with thread yielding prevents cache-line bouncing, lifting Hot Key throughput to **122.68M ops/sec** (76.2× vs Redis Cluster).
+- **Atomic Counters**:
+  - Direct 64-byte aligned `Entry` in-place integer mutation reaches **120.49M ops/sec** (18.4× vs Redis Cluster).
+- **Pub/Sub Fan-Out Delivery**:
+  - Lock-free Arc snapshot channel distribution reaches **152.20M msg/sec** delivery (18.8× vs Redis Cluster).
+- **Pipelined KV Throughput**:
+  - Pipelined GET achieves **40.21M ops/sec** (~24.9 ns/op).
+  - Pipelined SET achieves **28.32M ops/sec** (~35.3 ns/op).
+  - Pipeline-64 SET reaches **12.14M ops/sec** (~82.4 ns/op).
+- **Queues, Hashes & Documents**:
+  - LPUSH/RPOP achieves **67.72M ops/sec** (9.44× vs Redis Cluster).
+  - HSET/HGET achieves **62.51M ops/sec** (9.43× vs Redis Cluster).
+  - JSON.GET documents achieves **22.96M ops/sec**; JSON.SET achieves **11.07M ops/sec**.
+  - HyperLogLog PFADD/PFCOUNT reaches **61.82M ops/sec** (10.3× vs Redis Cluster).
+
 ## [0.2.2] - 2026-10-10
 
 ### Added

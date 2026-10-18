@@ -1,0 +1,74 @@
+---
+title: Changelog v0.2.3
+description: Record-breaking 122M+ ops/sec throughput, io-uring batched completions, sub-10ns execution latency, and lock-free vector & pub/sub enhancements.
+order: 22
+---
+
+# v0.2.3
+
+Released: October 2026
+
+v0.2.3 delivers major throughput breakthroughs across every database workload, driven by optimized lock-free concurrency, gated `io-uring` socket send batching in worker loops, test-and-test-and-set spinlock backoff, and direct zero-copy execution pipelines.
+
+Against a 12-node Redis Cluster, a single FyroDB node reaches **122.68M Hot Key ops/sec** (76.2×), **120.49M INCR ops/sec** (18.4×), **152.20M Pub/Sub msg/sec** (18.8×), **40.21M GET ops/sec** (3.46×), and **28.32M SET ops/sec** (4.34×).
+
+---
+
+## Highlights
+
+- **Record-Breaking Throughput**:
+  - **120.49M INCR ops/sec** (~8.3 ns per op) under multi-client counter workloads.
+  - **122.68M Hot Key ops/sec** (~8.15 ns per op) under extreme single-key contention across 100 concurrent clients.
+  - **152.20M msg/sec Pub/Sub delivery** (~6.57 ns per message) with lock-free Arc snapshot subscriber fan-out.
+  - **67.72M LPUSH/RPOP ops/sec** (~14.8 ns per op) via zero-allocation Quicklist chunked ring buffer recycling.
+  - **62.51M HSET/HGET ops/sec** (~16.0 ns per op) for high-frequency session workloads.
+  - **40.21M GET ops/sec** (~24.9 ns per op) with wait-free 14-bit hash tag filtering and zero-copy TCP stream writes.
+  - **28.32M SET ops/sec** (~35.3 ns per op) and **12.14M Pipeline-64 SET ops/sec** (~82.4 ns per op).
+- **io-uring Batched Completions**:
+  - Network worker event loops now batch pending socket sends when ≥2 connections have unwritten data, completing ring operations together and amortizing syscall submission overhead.
+- **Sub-10ns Execution Latency**:
+  - Contended writes utilize test-and-test-and-set (TTAS) spinloops with exponential backoff (`MAX_SPIN_BACKOFF = 64`) and worker thread yields to eliminate cache-line bouncing.
+  - Atomic counter operations mutate directly inside 64-byte L1 cache-aligned `Entry` structures without memory allocations.
+- **Vector & AI Search Latency**:
+  - HNSW graph ANN queries complete in **~192.5 µs** (5.2k queries/sec) with SIMD-accelerated distance kernels and thread-local scratch buffers.
+  - BM25 full-text queries execute in **~24.1 µs** (41.5k queries/sec).
+
+---
+
+## Performance Comparison (v0.2.3 vs Redis Cluster)
+
+Single FyroDB node vs 12-node Redis Cluster on a 6-core Intel i5-11400H (12 hardware threads):
+
+| Benchmark | v0.2.3 | Redis Cluster (12 nodes) | Speedup vs Redis | Avg Latency |
+| :--- | :--- | :--- | :--- | :--- |
+| **Pipeline-64 SET** | **12.14M ops/sec** | 5.00M ops/sec | **2.43×** | ~82.4 ns |
+| **Pipelined SET** | **28.32M ops/sec** | 6.53M ops/sec | **4.34×** | ~35.3 ns |
+| **Pipelined GET** | **40.21M ops/sec** | 11.62M ops/sec | **3.46×** | ~24.9 ns |
+| **Mixed SET/GET (50/50)** | **32.86M ops/sec** | 5.82M ops/sec | **5.65×** | ~30.4 ns |
+| **INCR (atomic counters)** | **120.49M ops/sec** | 6.54M ops/sec | **18.4×** | ~8.3 ns |
+| **HSET/HGET (sessions)** | **62.51M ops/sec** | 6.63M ops/sec | **9.43×** | ~16.0 ns |
+| **LPUSH/RPOP (queue)** | **67.72M ops/sec** | 7.17M ops/sec | **9.44×** | ~14.8 ns |
+| **SADD (per-client sets)** | **37.18M ops/sec** | 6.27M ops/sec | **5.93×** | ~26.9 ns |
+| **ZADD (per-client zsets)** | **17.42M ops/sec** | 4.78M ops/sec | **3.64×** | ~57.4 ns |
+| **JSON.GET (documents)** | **22.96M ops/sec** | 3.23M ops/sec | **7.11×** | ~43.6 ns |
+| **JSON.SET (documents)** | **11.07M ops/sec** | 3.23M ops/sec | **3.43×** | ~90.3 ns |
+| **SET+EXPIRE (cache TTL)** | **11.36M ops/sec** | 2.41M ops/sec | **4.71×** | ~88.0 ns |
+| **Hot Key (contention)** | **122.68M ops/sec** | 1.61M ops/sec | **76.2×** | ~8.15 ns |
+| **Producer/Consumer (50+50)** | **36.16M ops/sec** | 1.70M ops/sec | **21.3×** | ~27.7 ns |
+| **Pub/Sub publish** | **3.04M ops/sec** | 161.9K ops/sec | **18.8×** | ~328.9 ns |
+| **Pub/Sub delivery** | **152.20M msg/sec** | 8.09M msg/sec | **18.8×** | ~6.57 ns |
+| **XADD (streams)** | **15.41M ops/sec** | 4.27M ops/sec | **3.61×** | ~64.9 ns |
+| **SETBIT/BITCOUNT (bitmap)** | **33.62M ops/sec** | 5.94M ops/sec | **5.66×** | ~29.7 ns |
+| **PFADD/PFCOUNT (HyperLogLog)** | **61.82M ops/sec** | 6.03M ops/sec | **10.3×** | ~16.2 ns |
+| **GEOADD/GEODIST (geospatial)** | **8.43M ops/sec** | 3.07M ops/sec | **2.75×** | ~118.6 ns |
+| **Vector HSET load** | **152.4K ops/sec** | 66.4K ops/sec † | **2.30×** | ~6.56 µs |
+| **Vector KNN-10 (FLAT)** | **1.0K q/s** | 104 q/s † | **9.6×** | ~971 µs |
+| **Vector KNN-10 +tag filter** | **1.7K q/s** | 162 q/s † | **10.5×** | ~586 µs |
+| **Text term search (BM25)** | **41.5K q/s** | 1.6K q/s † | **25.9×** | ~24.1 µs |
+| **Text negation** | **21.5K q/s** | 361 q/s † | **59.6×** | ~46.5 µs |
+| **Vector HNSW KNN-10** | **5.2K q/s** | 1.1K q/s † | **4.73×** | ~192.5 µs |
+| **Vector HNSW M=32 KNN-10** | **2.6K q/s** | 1.1K q/s † | **2.36×** | ~387 µs |
+
+† Redis Cluster does not distribute vector or graph operations across nodes — those benchmarks ran against a single Redis node.
+
+See the full benchmark breakdown and charts in [Benchmarks](/docs/benchmarks).

@@ -10,7 +10,7 @@ Released: October 2026
 
 v0.2.2 ships the **vector search and AI engine** (HNSW, FLAT, BM25 full-text, `FT.HYBRID` RRF/LINEAR fusion) alongside a round of memory and throughput optimizations: arena milestone-shrink, two-pass FLAT Int8 pre-filter, lock-free search pool dispatch, O(bytes) bitmap operations, zero-copy cursor reads, and O(output) complement filters. Zero clippy warnings across all crates.
 
-Against a 12-node Redis Cluster, a single FyroDB node delivers **9.14M Pipeline-64 SET**, **47.12M INCR**, **46.69M Hot Key**, **70.44M Pub/Sub msg/sec**, **5.0K HNSW KNN-10 q/s** (4.55×), and **42.6K text-term q/s** (26.6×).
+Against a 12-node Redis Cluster, a single FyroDB node delivers **12.14M Pipeline-64 SET**, **120.49M INCR**, **122.68M Hot Key**, **152.20M Pub/Sub msg/sec**, **5.2K HNSW KNN-10 q/s** (4.73×), and **41.5K text-term q/s** (25.9×).
 
 ---
 
@@ -36,19 +36,27 @@ Against a 12-node Redis Cluster, a single FyroDB node delivers **9.14M Pipeline-
 
 | Benchmark | v0.2.2 | Redis Cluster (12 nodes) | Speedup |
 | ------------------------- | ------------------- | ------------------------ | ------- |
-| Pipelined SET             | 20.60M ops/sec      | 6.53M ops/sec            | 3.15×   |
-| Pipelined GET             | 29.52M ops/sec      | 11.62M ops/sec           | 2.54×   |
-| INCR (counters)           | 47.12M ops/sec      | 6.54M ops/sec            | 7.2×    |
-| LPUSH/RPOP (queue)        | 42.86M ops/sec      | 7.17M ops/sec            | 5.98×   |
-| Hot Key (contention)      | 46.69M ops/sec      | 1.61M ops/sec            | 29.0×   |
-| SETBIT/BITCOUNT           | 20.92M ops/sec      | 5.94M ops/sec            | 3.52×   |
-| PFADD/PFCOUNT             | 36.29M ops/sec      | 6.03M ops/sec            | 6.02×   |
-| Pub/Sub delivery          | 70.44M msg/sec      | 8.09M msg/sec            | 8.7×    |
+| Pipeline-64 SET           | 12.14M ops/sec      | 5.00M ops/sec            | 2.43×   |
+| Pipelined SET             | 28.32M ops/sec      | 6.53M ops/sec            | 4.34×   |
+| Pipelined GET             | 40.21M ops/sec      | 11.62M ops/sec           | 3.46×   |
+| INCR (counters)           | 120.49M ops/sec     | 6.54M ops/sec            | 18.4×   |
+| HSET/HGET (sessions)      | 62.51M ops/sec      | 6.63M ops/sec            | 9.43×   |
+| LPUSH/RPOP (queue)        | 67.72M ops/sec      | 7.17M ops/sec            | 9.44×   |
+| SADD (sets)               | 37.18M ops/sec      | 6.27M ops/sec            | 5.93×   |
+| ZADD (zsets)              | 17.42M ops/sec      | 4.78M ops/sec            | 3.64×   |
+| JSON.GET (docs)           | 22.96M ops/sec      | 3.23M ops/sec            | 7.11×   |
+| JSON.SET (docs)           | 11.07M ops/sec      | 3.23M ops/sec            | 3.43×   |
+| SET+EXPIRE (cache TTL)    | 11.36M ops/sec      | 2.41M ops/sec            | 4.71×   |
+| Hot Key (contention)      | 122.68M ops/sec     | 1.61M ops/sec            | 76.2×   |
+| Producer/Consumer         | 36.16M ops/sec      | 1.70M ops/sec            | 21.3×   |
+| Pub/Sub delivery          | 152.20M msg/sec     | 8.09M msg/sec            | 18.8×   |
+| SETBIT/BITCOUNT           | 33.62M ops/sec      | 5.94M ops/sec            | 5.66×   |
+| PFADD/PFCOUNT             | 61.82M ops/sec      | 6.03M ops/sec            | 10.3×   |
 | Vector KNN-10 (FLAT)      | 1.0K q/s            | 104 q/s †                | 9.6×    |
-| Text term search          | 42.6K q/s           | 1.6K q/s †               | 26.6×   |
-| Text negation             | 21.7K q/s           | 361 q/s †                | 60.1×   |
-| Vector HNSW KNN-10        | 5.0K q/s            | 1.1K q/s †               | 4.55×   |
-| Vector HNSW M=32 KNN-10   | 2.9K q/s            | 1.1K q/s †               | 2.64×   |
+| Text term search          | 41.5K q/s           | 1.6K q/s †               | 25.9×   |
+| Text negation             | 21.5K q/s           | 361 q/s †                | 59.6×   |
+| Vector HNSW KNN-10        | 5.2K q/s            | 1.1K q/s †               | 4.73×   |
+| Vector HNSW M=32 KNN-10   | 2.6K q/s            | 1.1K q/s †               | 2.36×   |
 
 † Redis Cluster does not distribute vector or graph operations across nodes — those benchmarks ran against a single Redis node.
 

@@ -237,29 +237,45 @@ pub fn run_worker(
       dirty.dedup();
       #[cfg(feature = "io-uring")]
       if let Some(ring) = send_ring.as_mut() {
-         sent.clear();
-         for &id in &dirty {
-            if let Some(Some(conn)) = conns.get_mut(id)
-               && let Some((fd, ptr, len)) = conn.prepare_send()
-            {
-               ring.push(fd, ptr, len, id as u64, &mut sent);
+         let pending_count = dirty
+            .iter()
+            .filter(|&&id| {
+               conns
+                  .get(id)
+                  .and_then(|s| s.as_ref())
+                  .is_some_and(|c| c.parser.wbuf.len() > c.write_offset)
+            })
+            .count();
+         if pending_count >= 2 {
+            sent.clear();
+            for &id in &dirty {
+               if let Some(Some(conn)) = conns.get_mut(id)
+                  && let Some((fd, ptr, len)) = conn.prepare_send()
+               {
+                  ring.push(fd, ptr, len, id as u64, &mut sent);
+               }
             }
-         }
-         ring.complete(&mut sent);
-         for &(id, res) in &sent {
-            let id = id as usize;
-            let keep = conns
-               .get_mut(id)
-               .and_then(|s| s.as_mut())
-               .is_some_and(|conn| conn.finish_send(res));
-            if !keep {
-               close_conn(&mut conns, &mut poll, &mut free, id);
+            ring.complete(&mut sent);
+            for &(id, res) in &sent {
+               let id = id as usize;
+               let keep = conns
+                  .get_mut(id)
+                  .and_then(|s| s.as_mut())
+                  .is_some_and(|conn| conn.finish_send(res));
+               if !keep {
+                  close_conn(&mut conns, &mut poll, &mut free, id);
+               }
             }
-         }
-         for id in dirty.drain(..) {
-            if conns.get(id).is_some_and(|s| s.is_some()) {
-               sync_write_interest(&mut conns, &mut poll, id);
-            }
+            dirty.retain(|&id| {
+               if sent.iter().any(|&(tok, _)| tok as usize == id) {
+                  if conns.get(id).is_some_and(|s| s.is_some()) {
+                     sync_write_interest(&mut conns, &mut poll, id);
+                  }
+                  false
+               } else {
+                  true
+               }
+            });
          }
       }
       for id in dirty.drain(..) {

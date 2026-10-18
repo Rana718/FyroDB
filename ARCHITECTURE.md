@@ -611,6 +611,66 @@ src/cluster/
 
 ---
 
+## Performance, Latency & Algorithmic Breakdown
+
+Direct in-process benchmark execution (`src/bin/without_tcp.rs`) across 12 hardware threads:
+
+### Summary & Latency Profile
+
+| Benchmark | Elapsed | Throughput | Avg Latency / Op | Algorithmic Mechanism |
+| :--- | :--- | :--- | :--- | :--- |
+| **Pipeline-64 SET** | 824ms | 12.14M ops/sec | 82.4 ns | Open-addressing tag-filtered probe + 75% load factor |
+| **Pipelined SET** | 353ms | 28.32M ops/sec | 35.3 ns | Batched linear probe + single-store release |
+| **Pipelined GET** | 249ms | 40.21M ops/sec | 24.9 ns | Wait-free EBR lookup + zero-copy buffer output |
+| **Pub/Sub publish** | 66ms | 3.04M ops/sec | 328.9 ns | Arc-snapshot channel reader (zero lock) |
+| **Pub/Sub delivery** | 66ms | 152.20M ops/sec | 6.57 ns | Shared Arc frame + lock-free SegQueue worker dispatch |
+| **Mixed SET/GET (50/50)** | 61ms | 32.86M ops/sec | 30.4 ns | Concurrent seqlock readers & per-key spinlock writers |
+| **INCR (atomic counters)** | 17ms | 120.49M ops/sec | 8.3 ns | In-place integer mutation under 64-byte aligned Entry |
+| **HSET/HGET (sessions)** | 32ms | 62.51M ops/sec | 16.0 ns | SmallStr inline fields + compact vector promote to foldhash |
+| **LPUSH/RPOP (queue)** | 30ms | 67.72M ops/sec | 14.8 ns | Quicklist chunked deque + output stream direct write |
+| **SADD (per-client sets)** | 54ms | 37.18M ops/sec | 26.9 ns | Sorted integer array promote to compact HashSet |
+| **ZADD (per-client zsets)** | 115ms | 17.42M ops/sec | 57.4 ns | 5-bit bloom filter + chunked score-sorted vector |
+| **JSON.GET (documents)** | 87ms | 22.96M ops/sec | 43.6 ns | Fast path direct JSON property extraction |
+| **JSON.SET (documents)** | 181ms | 11.07M ops/sec | 90.3 ns | Recursive AST parse + atomic swap |
+| **SET+EXPIRE (cache TTL)** | 176ms | 11.36M ops/sec | 88.0 ns | Fused atomic set-with-TTL under single lock |
+| **Hot Key (contention)** | 82ms | 122.68M ops/sec | 8.15 ns | TTAS with exponential spin backoff + thread yield |
+| **Producer/Consumer (50+50)** | 55ms | 36.16M ops/sec | 27.7 ns | Concurrent LPUSH/RPOP ring buffer reuse |
+| **XADD (streams)** | 130ms | 15.41M ops/sec | 64.9 ns | Varint-packed BTreeMap node append |
+| **SETBIT/BITCOUNT (bitmap)** | 59ms | 33.62M ops/sec | 29.7 ns | Byte-level hardware `count_ones()` / `leading_zeros()` |
+| **PFADD/PFCOUNT (HLL)** | 32ms | 61.82M ops/sec | 16.2 ns | 16,384 6-bit register hashing (O(1)) |
+| **GEOADD/GEODIST (geo)** | 237ms | 8.43M ops/sec | 118.6 ns | 52-bit geohash encode + haversine distance |
+| **Vector HSET load** | 328ms | 152.4k ops/sec | 6.56 µs | Burst write lock coalescing for consecutive vector fields |
+| **Vector KNN-10 (FLAT)** | 1.942s | 1.0k ops/sec | 971 µs | Two-pass Int8 pre-filter + exact f32 rerank |
+| **Vector KNN-10 +tag filter** | 586ms | 1.7k ops/sec | 586 µs | Pre-filter bitset intersection + KNN shortlist |
+| **Filter Tag+Num** | 192ms | 5.2k ops/sec | 192 µs | Roaring/sorted-merge postings traversal |
+| **Text term (BM25)** | 24ms | 41.5k ops/sec | 24.1 µs | Inverted index posting list scan with BM25 scorer |
+| **Text + Tag** | 38ms | 26.3k ops/sec | 38.0 µs | Postings intersection with tag bitset |
+| **Text negation** | 47ms | 21.5k ops/sec | 46.5 µs | O(total - matched) sorted-merge candidate elimination |
+| **Vector KNN-10 (8 clients)** | 1.049s | 1.9k ops/sec | 524 µs | Parallel graph search on persistent thread pool |
+| **Vector HNSW KNN-10** | 385ms | 5.2k ops/sec | 192.5 µs | Level-0 fixed-stride graph traversal + scratch buffers |
+| **Vector HNSW M=32 KNN-10** | 774ms | 2.6k ops/sec | 387 µs | High-connectivity graph search (M=32, ef=64) |
+
+### Algorithmic Drivers of Latency & Throughput
+
+1. **Sub-10ns Contended Writes & Atomic Counters (120M–122M ops/sec)**:
+   - **TTAS Exponential Backoff**: When multiple threads hammer the same key, they spin on a plain shared load. Only when the lock bit clears do they attempt a `compare_exchange_weak`. If contention persists, backoff doubles up to `MAX_SPIN_BACKOFF = 64` before calling `std::thread::yield_now()`. This completely prevents cache line bouncing and bus saturation.
+   - **Single Cache-Line Mutation**: `Entry<V>` is exactly 64 bytes (aligned to an L1 cache line). Incrementing a counter modifies the integer directly in-place without heap reallocation.
+
+2. **Wait-Free Zero-Copy Lookups (40.21M ops/sec, ~24.9 ns)**:
+   - **14-Bit Hash Tag Probing**: The unused high bits of slot pointers store a 14-bit hash tag derived from `foldhash`. Probing steps inspect the pointer value itself; if the tag does not match, the entry is skipped without dereferencing the pointer or bringing unrelated cache lines into L1.
+   - **Epoch-Based Reclamation (EBR)**: Readers pin their thread-local epoch with a single atomic store. Readers never block writers, and writers never block readers.
+
+3. **Massive Pub/Sub Fan-Out (152.20M msg/sec, ~6.57 ns/msg)**:
+   - **Lock-Free Arc Snapshots**: Subscribers are stored in copy-on-write `Arc` vectors. A publisher clones the `Arc` pointer with a single atomic increment (zero locks).
+   - **Batched Crossbeam SegQueues**: Delivered messages are wrapped in a single shared `Arc<Frame>` and enqueued into lock-free worker queues, avoiding per-subscriber message payload copying.
+
+4. **Vector Search & AI Engine (5.2k KNN queries/sec, ~192.5 µs)**:
+   - **Persistent Pinned Pool**: CPU-heavy vector searches are offloaded to dedicated pool threads via lock-free `crossbeam::SegQueue<Job>` priority tiers.
+   - **Thread-Local Scratch**: Traversal visited bitsets, candidate priority queues, and Int8 quantized query codes use pre-allocated thread-local `Scratch` memory, completely eliminating allocations on the query path.
+   - **Arena Milestone Shrinking**: The graph arena releases excess memory at power-of-two milestones, keeping the graph nodes dense in L2/L3 cache.
+
+---
+
 ## Complexity Reference
 
 | Operation                     | Time                                                                                                       | Mechanism                                                                                                                         |
