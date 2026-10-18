@@ -119,9 +119,13 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
 
     pub fn with_capacity(shard_count: usize, expected_keys: usize) -> Self {
         let n = shard_count.next_power_of_two().max(1);
-// A capacity limit, not a reservation: lazy growth keeps idle RSS small.
-        let _ = expected_keys;
-        Self::build(n, INITIAL_SHARD_CAPACITY, expected_keys)
+        let per_shard = if expected_keys == usize::MAX || expected_keys == 0 {
+            INITIAL_SHARD_CAPACITY
+        } else {
+            let target = (expected_keys.saturating_mul(LOAD_DEN) / LOAD_NUM) / n;
+            target.next_power_of_two().max(INITIAL_SHARD_CAPACITY)
+        };
+        Self::build(n, per_shard, expected_keys)
     }
 
     fn build(n: usize, per_shard: usize, max_keys: usize) -> Self {
@@ -217,16 +221,10 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
         })
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn get(&self, key: &str) -> Option<V> {
         let (h, idx) = self.locate(key);
-        ebr::with_pin(|_| {
-            let e = unsafe { self.shards.get_unchecked(idx) }.find(key, h)?;
-            if !state_occupied(&e.state, Ordering::Acquire) {
-                return None;
-            }
-            Some(unsafe { (*e.value.get()).assume_init_ref().clone() })
-        })
+        ebr::with_pin(|_| unsafe { self.shards.get_unchecked(idx) }.get(key, h))
     }
 
     #[inline]
@@ -334,25 +332,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
     ) -> bool {
         let _guard = ebr::pin();
         let shard = unsafe { self.shards.get_unchecked(idx) };
-        if let Some(existing) = shard.find(key, h) {
-            state_lock(&existing.state);
-// Re-check under the lock: racing a remove would drop twice.
-            let was_occupied = state_occupied(&existing.state, Ordering::Relaxed);
-            self.snap.before_write(existing);
-            write_begin(&existing.state);
-            if was_occupied {
-                unsafe { (*existing.value.get()).assume_init_drop() };
-            }
-            unsafe { (*existing.value.get()).write(value) };
-            write_end(&existing.state, true);
-            self.touched(key);
-            if was_occupied {
-                return false;
-            }
-            self.bump(idx, true);
-            return true;
-        }
-        let is_new = shard.insert_new_key(key_owned(), value, h, true);
+        let is_new = shard.set_key(key, h, value, key_owned);
         if is_new {
             self.bump(idx, true);
         }
@@ -584,25 +564,8 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
         let (h, idx) = self.locate(&key);
         let _guard = ebr::pin();
         let shard = unsafe { self.shards.get_unchecked(idx) };
-        if let Some(entry) = shard.find(&key, h) {
-            if state_occupied(&entry.state, Ordering::Acquire) {
-                return false;
-            }
-            state_lock(&entry.state);
-            if state_occupied(&entry.state, Ordering::Relaxed) {
-                state_unlock(&entry.state);
-                return false;
-            }
-            self.snap.before_write(entry);
-            write_begin(&entry.state);
-            unsafe { (*entry.value.get()).write(value) };
-            write_end(&entry.state, true);
-            self.bump(idx, true);
-            self.touched(&key);
-            return true;
-        }
         let observed = self.observing().then(|| key.clone());
-        let is_new = shard.insert_new(key, value, h, false);
+        let is_new = shard.set_compact_key(CompactKey::from_string(key), h, value, false);
         if is_new {
             self.bump(idx, true);
         }
@@ -619,24 +582,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
         let (h, idx) = self.locate(key);
         let _guard = ebr::pin();
         let shard = unsafe { self.shards.get_unchecked(idx) };
-        if let Some(entry) = shard.find(key, h) {
-            if state_occupied(&entry.state, Ordering::Acquire) {
-                return false;
-            }
-            state_lock(&entry.state);
-            if state_occupied(&entry.state, Ordering::Relaxed) {
-                state_unlock(&entry.state);
-                return false;
-            }
-            self.snap.before_write(entry);
-            write_begin(&entry.state);
-            unsafe { (*entry.value.get()).write(value) };
-            write_end(&entry.state, true);
-            self.bump(idx, true);
-            self.touched(key);
-            return true;
-        }
-        let is_new = shard.insert_new_key(CompactKey::from_str(key), value, h, false);
+        let is_new = shard.set_key_with_overwrite(key, h, value, false, || CompactKey::from_str(key));
         if is_new {
             self.bump(idx, true);
         }
@@ -795,11 +741,7 @@ mod tests {
                     for _ in 0..20_000 {
                         // update-then-create-if-missing, the INCR pattern
                         if map.update_with("counter", |v: &mut i64| *v += 1).is_none() {
-                            let mut i = 1i64;
-                            let created = map.insert_if_absent("counter".into(), {
-                                i += 1;
-                                1
-                            });
+                            let created = map.insert_if_absent("counter".into(), 1);
                             if !created {
                                 // Lost the create race; the increment still
                                 // must happen via a retried update.
@@ -860,6 +802,7 @@ mod tests {
 
     #[test]
     fn concurrent_clear_read_write_is_safe() {
+        let _serialize = crate::ebr::TEST_SERIALIZE.lock().unwrap_or_else(|e| e.into_inner());
         let map = Arc::new(CustomMap::with_capacity(8, 100_000));
         std::thread::scope(|scope| {
             for worker in 0..4 {

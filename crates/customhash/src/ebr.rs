@@ -1,7 +1,7 @@
 use std::cell::UnsafeCell;
 use std::marker::PhantomData;
 use std::ptr;
-use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering, fence};
+use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 
 use crossbeam_utils::CachePadded;
 
@@ -101,35 +101,55 @@ impl Local {
         }
     }
 
+    #[cold]
+    #[inline(never)]
+    fn pin_slow(&mut self) {
+        let participant = unsafe { &*self.participant };
+        loop {
+            participant.local.store(INACTIVE, Ordering::Release);
+            let e = GLOBAL_EPOCH.load(Ordering::Relaxed);
+            participant.local.store(e, Ordering::Release);
+            if GLOBAL_EPOCH.load(Ordering::Acquire) == e {
+                break;
+            }
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn unpin_slow(&mut self) {
+        self.collect();
+        self.collect();
+        self.collect_on_unpin = !self.garbage.is_empty();
+    }
+
     #[inline(always)]
     fn pin(&mut self) {
-        self.ensure_init();
-        self.depth += 1;
-        if self.depth == 1 {
+        let d = self.depth;
+        self.depth = d + 1;
+        if d == 0 {
+            if !self.initialized {
+                self.initialize();
+            }
             let participant = unsafe { &*self.participant };
-            loop {
-                let e = GLOBAL_EPOCH.load(Ordering::Relaxed);
-                participant.local.store(e, Ordering::Release);
-                fence(Ordering::Acquire);
-                if GLOBAL_EPOCH.load(Ordering::Acquire) == e {
-                    break;
-                }
-                participant.local.store(INACTIVE, Ordering::Release);
+            let e = GLOBAL_EPOCH.load(Ordering::Relaxed);
+            participant.local.store(e, Ordering::Release);
+            if GLOBAL_EPOCH.load(Ordering::Acquire) != e {
+                self.pin_slow();
             }
         }
     }
 
     #[inline(always)]
     fn unpin(&mut self) {
-        self.depth -= 1;
-        if self.depth == 0 {
+        let d = self.depth - 1;
+        self.depth = d;
+        if d == 0 {
             unsafe { &*self.participant }
                 .local
                 .store(INACTIVE, Ordering::Release);
             if self.collect_on_unpin {
-                self.collect();
-                self.collect();
-                self.collect_on_unpin = !self.garbage.is_empty();
+                self.unpin_slow();
             }
         }
     }
@@ -194,12 +214,8 @@ impl Local {
             self.collect();
         }
     }
-}
 
-impl Drop for Local {
-/// Exited threads hand unreclaimed garbage to ORPHANS for survivors to
-/// reclaim; dropping the vector would leak every retired entry.
-    fn drop(&mut self) {
+    fn drop_local(&mut self) {
         if !self.initialized {
             return;
         }
@@ -236,9 +252,17 @@ impl Drop for Local {
     }
 }
 
+struct LocalCell(UnsafeCell<Local>);
+
+impl Drop for LocalCell {
+    fn drop(&mut self) {
+        unsafe { &mut *self.0.get() }.drop_local();
+    }
+}
+
 pub fn force_collect() {
     LOCAL.with(|c| {
-        let l = unsafe { &mut *c.get() };
+        let l = unsafe { &mut *c.0.get() };
 // Always register: maintenance threads must adopt orphaned garbage.
         l.ensure_init();
         l.collect();
@@ -257,7 +281,7 @@ pub fn force_collect_quiescent() {
 }
 
 thread_local! {
-    static LOCAL: UnsafeCell<Local> = const { UnsafeCell::new(Local::uninit()) };
+    static LOCAL: LocalCell = const { LocalCell(UnsafeCell::new(Local::uninit())) };
 }
 
 pub struct Guard {
@@ -267,13 +291,13 @@ pub struct Guard {
 impl Drop for Guard {
     #[inline(always)]
     fn drop(&mut self) {
-        LOCAL.with(|c| unsafe { &mut *c.get() }.unpin());
+        LOCAL.with(|c| unsafe { &mut *c.0.get() }.unpin());
     }
 }
 
 #[inline(always)]
 pub fn pin() -> Guard {
-    LOCAL.with(|c| unsafe { &mut *c.get() }.pin());
+    LOCAL.with(|c| unsafe { &mut *c.0.get() }.pin());
     Guard { _p: PhantomData }
 }
 
@@ -285,7 +309,7 @@ pub unsafe fn retire_raw(ptr: *mut u8, drop_fn: unsafe fn(*mut u8)) {
         return;
     }
     LOCAL.with(|c| {
-        let l = unsafe { &mut *c.get() };
+        let l = unsafe { &mut *c.0.get() };
         l.ensure_init();
         l.retire_raw(ptr, drop_fn);
         l.collect_on_unpin = true;
@@ -295,7 +319,7 @@ pub unsafe fn retire_raw(ptr: *mut u8, drop_fn: unsafe fn(*mut u8)) {
 #[inline(always)]
 pub fn with_pin<R>(f: impl FnOnce(&()) -> R) -> R {
     LOCAL.with(|c| {
-        let l = unsafe { &mut *c.get() };
+        let l = unsafe { &mut *c.0.get() };
         l.pin();
         let r = f(&());
         l.unpin();
@@ -304,13 +328,12 @@ pub fn with_pin<R>(f: impl FnOnce(&()) -> R) -> R {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::sync::Mutex;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+pub(crate) static TEST_SERIALIZE: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-    /// These tests inspect process-global EBR state, so they must not overlap
-    /// with each other.
-    static SERIALIZE: Mutex<()> = Mutex::new(());
+#[cfg(test)]
+mod tests {
+    use super::TEST_SERIALIZE;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     static HANDOFF_DROPPED: AtomicUsize = AtomicUsize::new(0);
 
@@ -334,7 +357,7 @@ mod tests {
 /// vector epoch-ordered for partition_point.
     #[test]
     fn garbage_from_exited_threads_is_still_reclaimed() {
-        let _serialize = SERIALIZE.lock().unwrap_or_else(|e| e.into_inner());
+        let _serialize = TEST_SERIALIZE.lock().unwrap_or_else(|e| e.into_inner());
         const PER_THREAD: usize = 16;
         const THREADS: usize = 2;
 
@@ -360,7 +383,7 @@ mod tests {
 /// walks every thread ever spawned.
     #[test]
     fn participant_slots_are_reused_across_thread_lifetimes() {
-        let _serialize = SERIALIZE.lock().unwrap_or_else(|e| e.into_inner());
+        let _serialize = TEST_SERIALIZE.lock().unwrap_or_else(|e| e.into_inner());
 
         fn participant_count() -> usize {
             let mut count = 0;

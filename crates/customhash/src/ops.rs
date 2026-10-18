@@ -235,11 +235,8 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
             return;
         };
         let _lock = shard.grow_lock.lock().unwrap_or_else(|e| e.into_inner());
-        while shard
-            .insert_gate
-            .compare_exchange_weak(0, GROWING, Ordering::AcqRel, Ordering::Relaxed)
-            .is_err()
-        {
+        shard.insert_gate.fetch_or(GROWING, Ordering::AcqRel);
+        while (shard.insert_gate.load(Ordering::Acquire) & !GROWING) != 0 {
             std::hint::spin_loop();
         }
 
@@ -258,7 +255,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
             .next_power_of_two()
             .max(8);
         if new_cap >= old_table.capacity() {
-            shard.insert_gate.store(0, Ordering::Release);
+            shard.insert_gate.fetch_and(!GROWING, Ordering::Release);
             return;
         }
 
@@ -289,17 +286,14 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
         let new_ptr = alloc_table(*new_table);
         shard.table.store(new_ptr, Ordering::Release);
         unsafe { ebr::retire_raw(old_ptr.cast(), drop_raw_table::<V>) };
-        shard.insert_gate.store(0, Ordering::Release);
+        shard.insert_gate.fetch_and(!GROWING, Ordering::Release);
     }
 
     pub fn clear(&self) {
         for shard in self.shards.iter() {
             let _lock = shard.grow_lock.lock().unwrap_or_else(|e| e.into_inner());
-            while shard
-                .insert_gate
-                .compare_exchange_weak(0, GROWING, Ordering::AcqRel, Ordering::Relaxed)
-                .is_err()
-            {
+            shard.insert_gate.fetch_or(GROWING, Ordering::AcqRel);
+            while (shard.insert_gate.load(Ordering::Acquire) & !GROWING) != 0 {
                 std::hint::spin_loop();
             }
             let new_table = alloc_table(SlotTable::<V>::new(INITIAL_SHARD_CAPACITY));
@@ -315,7 +309,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
                 }
                 unsafe { ebr::retire_raw(old_ptr.cast(), drop_raw_table::<V>) };
             }
-            shard.insert_gate.store(0, Ordering::Release);
+            shard.insert_gate.fetch_and(!GROWING, Ordering::Release);
         }
         for shard in self.shards.iter() {
             shard.live.store(0, Ordering::Release);
