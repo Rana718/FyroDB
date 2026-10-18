@@ -15,9 +15,7 @@ fn bench_pure_resp_parser_throughput() {
     let hget_cmd = b"*3\r\n$4\r\nHGET\r\n$9\r\nperf:0001\r\n$6\r\nfield1\r\n";
     let hset_cmd = b"*4\r\n$4\r\nHSET\r\n$9\r\nperf:0001\r\n$6\r\nfield1\r\n$16\r\n0123456789abcdef\r\n";
 
-    // -------------------------------------------------------------------------
     // Benchmark 0: Pure In-Memory Zero-Copy GET Parser (10 Million commands)
-    // -------------------------------------------------------------------------
     {
         const NUM_COMMANDS: usize = 10_000_000;
         let mut big_buf = Vec::with_capacity(NUM_COMMANDS * get_cmd.len());
@@ -63,9 +61,7 @@ fn bench_pure_resp_parser_throughput() {
         println!("   Latency/Command : {:.2} ns / cmd\n", ns_per_cmd);
     }
 
-    // -------------------------------------------------------------------------
     // Benchmark 1: Single-Thread Streaming GET Parser (*2 $3 GET $9 key)
-    // -------------------------------------------------------------------------
     {
         const NUM_COMMANDS: usize = 10_000_000;
         const BATCH_SIZE: usize = 10_000;
@@ -104,9 +100,7 @@ fn bench_pure_resp_parser_throughput() {
         println!("   Latency/Command : {:.2} ns / cmd\n", ns_per_cmd);
     }
 
-    // -------------------------------------------------------------------------
     // Benchmark 2: Single-Thread Streaming SET Parser (*3 $3 SET $9 key $16 val)
-    // -------------------------------------------------------------------------
     {
         const NUM_COMMANDS: usize = 10_000_000;
         const BATCH_SIZE: usize = 10_000;
@@ -145,9 +139,7 @@ fn bench_pure_resp_parser_throughput() {
         println!("   Latency/Command : {:.2} ns / cmd\n", ns_per_cmd);
     }
 
-    // -------------------------------------------------------------------------
     // Benchmark 3: Single-Thread Streaming PING Parser (*1 $4 PING)
-    // -------------------------------------------------------------------------
     {
         const NUM_COMMANDS: usize = 10_000_000;
         const BATCH_SIZE: usize = 10_000;
@@ -186,9 +178,7 @@ fn bench_pure_resp_parser_throughput() {
         println!("   Latency/Command : {:.2} ns / cmd\n", ns_per_cmd);
     }
 
-    // -------------------------------------------------------------------------
     // Benchmark 3b: Single-Thread Streaming DEL Parser (*2 $3 DEL $9 key)
-    // -------------------------------------------------------------------------
     {
         const NUM_COMMANDS: usize = 10_000_000;
         const BATCH_SIZE: usize = 10_000;
@@ -227,9 +217,7 @@ fn bench_pure_resp_parser_throughput() {
         println!("   Latency/Command : {:.2} ns / cmd\n", ns_per_cmd);
     }
 
-    // -------------------------------------------------------------------------
     // Benchmark 3c: Single-Thread Streaming HGET Parser (*3 $4 HGET $9 key $6 field)
-    // -------------------------------------------------------------------------
     {
         const NUM_COMMANDS: usize = 10_000_000;
         const BATCH_SIZE: usize = 10_000;
@@ -268,9 +256,7 @@ fn bench_pure_resp_parser_throughput() {
         println!("   Latency/Command : {:.2} ns / cmd\n", ns_per_cmd);
     }
 
-    // -------------------------------------------------------------------------
     // Benchmark 3d: Single-Thread Streaming HSET Parser (*4 $4 HSET $9 key $6 field $16 val)
-    // -------------------------------------------------------------------------
     {
         const NUM_COMMANDS: usize = 10_000_000;
         const BATCH_SIZE: usize = 10_000;
@@ -309,9 +295,7 @@ fn bench_pure_resp_parser_throughput() {
         println!("   Latency/Command : {:.2} ns / cmd\n", ns_per_cmd);
     }
 
-    // -------------------------------------------------------------------------
     // Benchmark 4: Multi-Core Parser Throughput (2 Cores / 2 Threads)
-    // -------------------------------------------------------------------------
     {
         const THREADS: usize = 2;
         const COMMANDS_PER_THREAD: usize = 10_000_000;
@@ -361,9 +345,7 @@ fn bench_pure_resp_parser_throughput() {
         println!("   Throughput      : {:.2} MILLION commands/sec\n", qps / 1_000_000.0);
     }
 
-    // -------------------------------------------------------------------------
     // Benchmark 5: Multi-Core Parser Throughput (4 Cores / 4 Threads)
-    // -------------------------------------------------------------------------
     {
         const THREADS: usize = 4;
         const COMMANDS_PER_THREAD: usize = 10_000_000;

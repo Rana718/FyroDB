@@ -30,6 +30,11 @@ tasks:
       desc: Release build
       cmds:
          - cargo build --release
+   fmt:
+      desc: Format entire codebase (all workspace crates) with rustfmt
+      cmds:
+         - cargo fmt --all
+
    lint:
       desc: Lint check
       cmds:
@@ -182,7 +187,11 @@ tasks:
          - ./scripts/pgo_train.sh bolt
          - cargo pgo bolt optimize --with-pgo
 
-   # ── Full benchmark suites (KV + Pub/Sub + all data types) ─────────────────
+   without-tcp:
+      desc: "Full in-memory benchmark suite against FyroDB engine directly without TCP/network bottleneck"
+      cmds:
+         - cargo run --release --bin without_tcp -- {{.CLI_ARGS}}
+
    bench-fyrodb:
       desc: "Full suite against FyroDB: KV, Pub/Sub, INCR, Hash, List, Set, ZSet, JSON, TTL, HotKey, Queue, Stream, Bitmap, HLL, Geo"
       cmds:

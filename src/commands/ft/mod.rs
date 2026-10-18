@@ -1,13 +1,13 @@
 mod aggregate;
-mod hybrid;
 mod doc;
+mod hybrid;
 mod index;
 mod search;
 
-use index::AliasOp;
 use crate::search::SEARCH_MODULE_VERSION;
 use crate::storage::store::Store;
 use crate::utils::resp;
+use index::AliasOp;
 use std::sync::Arc;
 
 pub fn execute_ft(parts: &[&str], store: &std::sync::Arc<Store>, out: &mut Vec<u8>) {
@@ -44,7 +44,10 @@ pub fn search_dispatch(
     store: &Arc<Store>,
     out: &mut Vec<u8>,
 ) {
-    if parts.first().is_some_and(|c| c.eq_ignore_ascii_case("FT.HYBRID")) {
+    if parts
+        .first()
+        .is_some_and(|c| c.eq_ignore_ascii_case("FT.HYBRID"))
+    {
         return hybrid::ft_hybrid(parts, binaries, store, out);
     }
     search::ft_search_impl(parts, binaries, store, out)
@@ -64,8 +67,25 @@ mod tests {
         let mut out = Vec::new();
         execute_ft(
             &[
-                "FT.CREATE", "idx", "ON", "HASH", "PREFIX", "1", "d:", "SCHEMA", "cat", "TAG",
-                "e", "VECTOR", "FLAT", "6", "TYPE", "FLOAT32", "DIM", "2", "DISTANCE_METRIC",
+                "FT.CREATE",
+                "idx",
+                "ON",
+                "HASH",
+                "PREFIX",
+                "1",
+                "d:",
+                "SCHEMA",
+                "cat",
+                "TAG",
+                "e",
+                "VECTOR",
+                "FLAT",
+                "6",
+                "TYPE",
+                "FLOAT32",
+                "DIM",
+                "2",
+                "DISTANCE_METRIC",
                 "L2",
             ],
             &store,
@@ -74,16 +94,31 @@ mod tests {
 
         // near the query (0,0) is `far` (tag x); `near` carries tag y.
         store
-            .hset_bytes("d:near", &[("cat", "y".as_bytes()), ("e", &f32le(&[0.0, 0.0]))])
+            .hset_bytes(
+                "d:near",
+                &[("cat", "y".as_bytes()), ("e", &f32le(&[0.0, 0.0]))],
+            )
             .unwrap();
         store
-            .hset_bytes("d:far", &[("cat", "x".as_bytes()), ("e", &f32le(&[9.0, 9.0]))])
+            .hset_bytes(
+                "d:far",
+                &[("cat", "x".as_bytes()), ("e", &f32le(&[9.0, 9.0]))],
+            )
             .unwrap();
 
         let q = f32le(&[0.1, 0.1]);
         let run = |query: &str| {
             let parts = [
-                "FT.SEARCH", "idx", query, "LIMIT", "0", "10", "NOCONTENT", "PARAMS", "2", "v",
+                "FT.SEARCH",
+                "idx",
+                query,
+                "LIMIT",
+                "0",
+                "10",
+                "NOCONTENT",
+                "PARAMS",
+                "2",
+                "v",
                 "",
             ];
             let mut o = Vec::new();
@@ -106,18 +141,38 @@ mod tests {
         let mut out = Vec::new();
         execute_ft(
             &[
-                "FT.CREATE", "idx", "ON", "HASH", "PREFIX", "1", "d:", "SCHEMA", "title",
-                "TEXT", "cat", "TAG", "views", "NUMERIC", "e", "VECTOR", "FLAT", "6", "TYPE",
-                "FLOAT32", "DIM", "2", "DISTANCE_METRIC", "L2",
+                "FT.CREATE",
+                "idx",
+                "ON",
+                "HASH",
+                "PREFIX",
+                "1",
+                "d:",
+                "SCHEMA",
+                "title",
+                "TEXT",
+                "cat",
+                "TAG",
+                "views",
+                "NUMERIC",
+                "e",
+                "VECTOR",
+                "FLAT",
+                "6",
+                "TYPE",
+                "FLOAT32",
+                "DIM",
+                "2",
+                "DISTANCE_METRIC",
+                "L2",
             ],
             store,
             &mut out,
         );
     }
 
-    // The postings fast path's partition_points run lo past hi on an
-    // inverted range; the scan answers "no docs", and before the clamp
-    // this aborted the whole process (panic=abort).
+    // Inverted range produces "no docs"; clamp prevents partition_point
+    // bounds panic on invalid ranges.
     #[test]
     fn inverted_numeric_range_returns_empty() {
         let store = Arc::new(Store::with_config(4, usize::MAX));
@@ -129,12 +184,23 @@ mod tests {
         }
         let mut out = Vec::new();
         execute_ft(
-            &["FT.SEARCH", "idx", "@views:[40 20]", "LIMIT", "0", "10", "NOCONTENT"],
+            &[
+                "FT.SEARCH",
+                "idx",
+                "@views:[40 20]",
+                "LIMIT",
+                "0",
+                "10",
+                "NOCONTENT",
+            ],
             &store,
             &mut out,
         );
         let s = String::from_utf8_lossy(&out).into_owned();
-        assert!(s.starts_with("*1\r\n:0\r\n"), "inverted range must be empty: {s}");
+        assert!(
+            s.starts_with("*1\r\n:0\r\n"),
+            "inverted range must be empty: {s}"
+        );
     }
 
     // Text terms resolve through token postings: same docs the per-doc
@@ -165,7 +231,10 @@ mod tests {
         // Case-insensitive term match.
         let one = search("@title:ALPHA");
         assert!(one.contains("d:1") && one.contains("d:3"), "term: {one}");
-        assert!(!one.contains("d:2") && !one.contains("d:4"), "term leaked: {one}");
+        assert!(
+            !one.contains("d:2") && !one.contains("d:4"),
+            "term leaked: {one}"
+        );
 
         // Multi-term AND (paren form).
         let both = search("@title:(doc alpha)");
@@ -174,13 +243,22 @@ mod tests {
 
         // Negation is the complement (docs without the term).
         let neg = search("-@title:alpha");
-        assert!(neg.contains("d:2") && neg.contains("d:4"), "negation: {neg}");
-        assert!(!neg.contains("d:1") && !neg.contains("d:3"), "negation leaked: {neg}");
+        assert!(
+            neg.contains("d:2") && neg.contains("d:4"),
+            "negation: {neg}"
+        );
+        assert!(
+            !neg.contains("d:1") && !neg.contains("d:3"),
+            "negation leaked: {neg}"
+        );
 
         // Text + tag intersect through mixed postings.
         store.hset_bytes("d:1", &[("cat", b"x")]).unwrap();
         let mixed = search("(@title:alpha @cat:{x})");
-        assert!(mixed.contains("d:1") && !mixed.contains("d:3"), "mixed: {mixed}");
+        assert!(
+            mixed.contains("d:1") && !mixed.contains("d:3"),
+            "mixed: {mixed}"
+        );
     }
 
     // VECTOR_RANGE drops documents outside its filter clause — the parser
@@ -197,8 +275,19 @@ mod tests {
             .unwrap();
         let q = f32le(&[0.0, 0.0]);
         let parts = [
-            "FT.SEARCH", "idx", "(@cat:{x} @e:[VECTOR_RANGE $r $v]=>{$YIELD_DISTANCE_AS: d})",
-            "LIMIT", "0", "10", "NOCONTENT", "PARAMS", "4", "r", "1.5", "v", "",
+            "FT.SEARCH",
+            "idx",
+            "(@cat:{x} @e:[VECTOR_RANGE $r $v]=>{$YIELD_DISTANCE_AS: d})",
+            "LIMIT",
+            "0",
+            "10",
+            "NOCONTENT",
+            "PARAMS",
+            "4",
+            "r",
+            "1.5",
+            "v",
+            "",
         ];
         let mut o = Vec::new();
         search_dispatch(&parts, &[(12usize, q.clone())], &store, &mut o);
@@ -219,8 +308,13 @@ mod tests {
         let mut out = Vec::new();
         execute_ft(
             &[
-                "FT.SEARCH", "idx", "*=>[KNN 18446744073709551615 @e $v AS s]", "LIMIT", "0",
-                "10", "NOCONTENT",
+                "FT.SEARCH",
+                "idx",
+                "*=>[KNN 18446744073709551615 @e $v AS s]",
+                "LIMIT",
+                "0",
+                "10",
+                "NOCONTENT",
             ],
             &store,
             &mut out,

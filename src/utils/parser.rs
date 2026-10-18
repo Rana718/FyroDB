@@ -4,9 +4,8 @@ pub struct RespParser {
     pub pos: usize,
     pub wbuf: Vec<u8>,
     pub parts_raw: Vec<(*const u8, usize)>,
-    /// Progress through a large command that arrived across several reads.
-    /// Offsets are relative to the command start, which survives the
-    /// compaction in `read_buf` (it only ever shifts the unparsed tail).
+    /// Progress through multi-read commands with offsets relative to command start,
+    /// surviving buffer compaction.
     partial: Option<Partial>,
 }
 
@@ -1235,9 +1234,8 @@ impl RespParser {
         let base = self.rbuf[start..].as_ptr();
         self.parts_raw.reserve(p.parts.len());
         for (off, len) in p.parts {
-            // SAFETY: every offset was produced from a live element inside
-            // `rbuf[start..self.pos]`, which has not moved since this call
-            // began and will not move until the next `read_buf`.
+            // SAFETY: offsets come from live elements in rbuf[start..self.pos]
+            // that remain valid until the next read_buf.
             self.parts_raw.push((unsafe { base.add(off) }, len));
         }
         ParseResult::Complete
@@ -1445,9 +1443,8 @@ mod tests {
         assert_eq!(parts_of(&parser), args);
     }
 
-    /// A large command trickling in over many reads resumes from its saved
-    /// element index and still yields every part intact, including when
-    /// `read_buf` compacts or grows the buffer between reads.
+    /// Resumes multi-read commands from saved element index even when
+    /// read_buf compacts or reallocates.
     #[test]
     fn a_fragmented_large_command_resumes_across_reads() {
         let (mut wire, args) = big_hset(3000);

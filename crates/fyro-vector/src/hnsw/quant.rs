@@ -297,9 +297,8 @@ pub(crate) fn encode_query(q: Quant, rot: Option<&Rotation>, book: &Codebook, me
         Quant::RaBitQ => {
             let rot = rot.expect("RaBitQ graph has a rotation");
             let qnorm = crate::kernels::norm_sq_f32(v).sqrt();
-            // Score every metric through the centered residuals: the
-            // uncentered direction estimate is far noisier (the reason the
-            // codes are centered), and x·q follows from ‖x−q‖².
+            // Score metrics through centered residuals: uncentered direction
+            // estimates are noisier, and x·q follows from ‖x−q‖².
             let _ = metric;
             let parts = book
                 .centroids

@@ -1,8 +1,7 @@
 use super::*;
 
-/// Exact scans currently running: a scan that finds the machine free fans
-/// out across the pool; one that sees a peer stays serial (N concurrent
-/// clients already fill the cores, more threads only fight for bandwidth).
+/// Number of exact scans currently in flight, controlling whether a scan
+/// fans out across threadpool threads or stays serial.
 static BRUTE_INFLIGHT: AtomicUsize = AtomicUsize::new(0);
 
 /// Exact scans below this many vectors never fan out.
@@ -39,9 +38,8 @@ impl HnswGraph {
         self.search_with(q, k, ef.max(k), Collect::Query)
     }
 
-    /// How many candidates a quantized search should hand to `rerank` for
-    /// a final top-`k`: the estimate's error decides how deep the exact
-    /// pass must look (RaBitQ's 1-bit estimate needs more than int8).
+    /// Candidate depth to forward to `rerank` for final top-`k`, tuned
+    /// by quantization precision (e.g. RaBitQ requires deeper re-ranking).
     pub fn rerank_depth(&self, k: usize, ef: usize) -> usize {
         match self.quant {
             Quant::None => k,
@@ -50,9 +48,8 @@ impl HnswGraph {
         }
     }
 
-    /// Exact re-scoring of approximate candidates: `fetch(id)` supplies the
-    /// exact vector (None drops the candidate). Returns the best `k` with
-    /// reported (metric-unit) distances.
+    /// Re-scores approximate candidates using exact vectors from `fetch(id)`.
+    /// Returns the best `k` sorted by metric distance.
     pub fn rerank(
         &self,
         q: &[f32],
@@ -69,9 +66,8 @@ impl HnswGraph {
         out
     }
 
-    /// Graph search restricted to `allow`: traversal stays unfiltered (edges
-    /// through non-matching nodes remain navigable) and only matches are
-    /// collected. `ef` is widened so a selective filter still fills `k`.
+    /// Filtered graph search: traverses unfiltered graph while collecting only
+    /// allowed candidates, widening `ef` for selective filters.
     pub fn search_filtered(
         &self,
         q: &[f32],
@@ -459,9 +455,8 @@ impl HnswGraph {
         self.exact(&g, q, k, Some(ids))
     }
 
-    /// Shared exact scan over all slots (`ids = None`) or an id subset.
-    /// Splits across the pool when the machine is otherwise free and the
-    /// range is large.
+    /// Shared exact scan over all slots (`ids = None`) or an id subset,
+    /// splitting across the pool if idle and the range is sufficiently large.
     fn exact(&self, g: &Inner, q: &[f32], k: usize, ids: Option<&[usize]>) -> Vec<(f32, usize)> {
         let norm = self.norm_of(q);
         if k == 0 || norm == 0.0 || g.dims != q.len() {

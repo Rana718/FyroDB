@@ -150,13 +150,11 @@ pub(crate) struct Inner {
     upper: Vec<Box<[AtomicU32]>>,
     /// Compacted ids ready for reuse (no edge points at them).
     free: Vec<u32>,
-    /// Quantized graphs: the exact vector of nodes still being linked (and
-    /// of a whole bulk build), so links are chosen with exact distances;
-    /// released once linked — only codes stay resident.
+    /// Exact vectors for nodes being linked in quantized graphs;
+    /// released once linked so only codes stay resident.
     raw: Vec<Option<Box<[f32]>>>,
-    /// For `Quant::None` graphs with FLAT scans: packed Int8 codes and
-    /// per-vector scales for a two-pass pre-filter scan.  Lazily populated
-    /// by `prepare`/`prepare_batch` on unquantized graphs.
+    /// Packed Int8 codes and scales for two-pass pre-filter scans on
+    /// unquantized graphs, populated lazily by prepare/prepare_batch.
     flat_int8: Vec<i8>,
     flat_scales: Vec<f32>,
 }
@@ -306,9 +304,8 @@ pub(crate) struct Query<'a> {
 
 static NO_ENC: QEnc = QEnc::None;
 
-/// Which traversed nodes may enter a layer's result set. Everything
-/// reachable is traversed (deleted and filtered-out nodes keep the graph
-/// connected).
+/// Which traversed nodes may enter a layer's result set, while all reachable
+/// nodes maintain graph connectivity during traversal.
 #[derive(Clone, Copy)]
 pub(crate) enum Collect<'a> {
     /// Construction: anything not deleted — in-flight inserts included, so
@@ -322,9 +319,8 @@ pub(crate) enum Collect<'a> {
     Set(&'a IdSet),
 }
 
-/// Dense bitset over vector ids: the allow-list of a filtered query.
-/// Membership is one shift-and-mask, instead of a binary search per
-/// traversed neighbor.
+/// Dense bitset allow-list over vector ids for filtered queries,
+/// enabling O(1) bit-mask membership checks per neighbor.
 pub struct IdSet {
     bits: Vec<u64>,
     len: usize,
@@ -408,9 +404,8 @@ pub struct HnswGraph {
     deleted: AtomicUsize,
     /// Effective ef during bulk build; ramped from 32 to `ef_construction`.
     build_ef: AtomicUsize,
-    /// Cached level-0 entry hints: up to 16 spatially diverse nodes used as
-    /// starting points for level-0 inserts, avoiding the greedy descent
-    /// through upper HNSW layers for the 99.94% of nodes at level 0.
+    /// Cached level-0 entry hints: up to 16 spatially diverse starting nodes
+    /// avoiding greedy descent through upper layers for level-0 inserts.
     entry_hints: Mutex<Vec<u32>>,
     flat: search::FlatBatch,
     last_shrink: AtomicUsize,
@@ -434,9 +429,8 @@ fn splitmix(mut z: u64) -> u64 {
     z ^ (z >> 31)
 }
 
-/// Define `$name(&self, args) -> ret` that runs the `#[inline(always)]`
-/// generic `$generic::<K>(k, args)` inside a function compiled for the
-/// detected ISA, so every kernel call inlines into the loop.
+/// Dispatches `$generic::<K>` specialized for the detected ISA so
+/// kernel calls inline directly into the hot loop.
 macro_rules! isa_dispatch {
     ($vis:vis fn $name:ident => $generic:ident ($($arg:ident : $ty:ty),*) -> $ret:ty) => {
         #[allow(clippy::too_many_arguments)]
@@ -476,9 +470,8 @@ impl HnswGraph {
         Self::with_quant(metric, dims, m, ef_construction, Quant::None)
     }
 
-    /// A graph whose traversal payloads are `quant`-encoded (see `quant`).
-    /// Search on a quantized graph returns candidates in estimated order;
-    /// rerank the head with exact vectors (`rerank`).
+    /// Creates a graph with `quant`-encoded traversal payloads; search returns
+    /// approximate candidates intended to be reranked with exact vectors.
     pub fn with_quant(metric: DistanceMetric, dims: usize, m: usize, ef_construction: usize, quant: Quant) -> Self {
         assert!(dims > 0);
         let m = m.clamp(2, 128);
@@ -641,9 +634,8 @@ impl HnswGraph {
         }
     }
 
-    /// Stored-vs-stored distance for neighbor selection: exact on f32
-    /// graphs and whenever both raw vectors are still held (bulk builds);
-    /// a code-vs-code estimate otherwise.
+    /// Distance between stored vectors for neighbor selection: exact when raw
+    /// vectors exist, approximate code-vs-code otherwise.
     #[inline(always)]
     fn dist_ids<K: Kernel>(&self, k: K, g: &Inner, a: u32, b: u32) -> f32 {
         if self.quant == Quant::None {
@@ -907,9 +899,8 @@ impl HnswGraph {
         }
     }
 
-    /// Link structure of every live node, for persistence. Tombstones are
-    /// compacted away first: their vectors no longer exist in the keyspace
-    /// to restore, and simply dropping edges to them would leave holes.
+    /// Link structure of live nodes for persistence, compacting away
+    /// tombstones before generating the snapshot.
     pub fn dump(&self) -> GraphDump {
         if self.deleted_len() > 0 {
             self.compact();
@@ -1126,9 +1117,8 @@ impl HnswGraph {
         }
     }
 
-    /// Link a batch of prepared ids, every pool thread inserting in
-    /// parallel. `progress(done)` fires after each chunk; all ids before
-    /// `done` (in slice order) are linked at that point.
+    /// Parallel batch link of prepared ids across pool threads, invoking
+    /// `progress(done)` after each chunk.
     pub fn build_links(&self, ids: &[usize], threads: usize, progress: &mut impl FnMut(usize)) {
         if ids.is_empty() {
             return;
@@ -1226,9 +1216,8 @@ impl HnswGraph {
         }
     }
 
-    /// hnswlib `addPoint`: greedy descent to the node's level, then per
-    /// level an `ef_construction` beam search, heuristic selection, own
-    /// links, and reverse links (re-selected by the heuristic on overflow).
+    /// hnswlib `addPoint`: greedy descent to node level, then per-level beam
+    /// search, heuristic selection, own links, and reciprocal reverse links.
     #[inline(always)]
     fn link_node<K: Kernel>(&self, k: K, g: &Inner, sc: &mut Scratch, id: u32) {
         if id as usize >= g.len || g.flag(id) != F_PENDING {

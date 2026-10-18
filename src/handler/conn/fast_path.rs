@@ -877,9 +877,8 @@ pub(super) fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     diff == 0
 }
 
-/// Search commands run on the vector pool, never on the worker: one
-/// heavy KNN or aggregate must not stall every other connection this
-/// worker serves. `FYRODB_SEARCH_INLINE=1` keeps them inline (A/B runs).
+/// Offloads search commands to the vector pool to avoid stalling workers;
+/// `FYRODB_SEARCH_INLINE=1` overrides to keep them inline.
 fn search_offloaded() -> bool {
     static INLINE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     !*INLINE.get_or_init(|| std::env::var("FYRODB_SEARCH_INLINE").is_ok_and(|v| v == "1"))

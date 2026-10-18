@@ -40,8 +40,7 @@ pub fn tokens(text: &str) -> impl Iterator<Item = String> + '_ {
 }
 
 /// Size the vector pool from the environment before first use:
-/// `FYRODB_SEARCH_THREADS` (default: all cores) and `FYRODB_SEARCH_CORES`
-/// (CPU list such as `4-11,14` to pin pool threads to; default: unpinned).
+/// `FYRODB_SEARCH_THREADS` (thread count) and `FYRODB_SEARCH_CORES` (CPU affinity).
 pub fn configure_pool(cores: Option<Vec<usize>>) {
     let threads = std::env::var("FYRODB_SEARCH_THREADS")
         .ok()
@@ -85,9 +84,7 @@ pub struct SearchState {
     filter_build: Mutex<()>,
     /// (index, field) keys with a background builder in flight.
     building: Mutex<FxHashMap<(String, String), ()>>,
-    /// Serializes delta applies: two concurrent queries on a stale entry
-    /// used to race on duplicate node ids (and the split-RwLock graph could
-    /// deadlock). A delta is cheap to wait for relative to its effect.
+    /// Serializes delta applies across concurrent queries on stale entries.
     pub cursor_seq: AtomicU64,
     /// Dirty-key tracking fed by the keyspace write observer.
     pub(crate) hooks: Arc<hooks::SearchHooks>,

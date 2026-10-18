@@ -1,6 +1,4 @@
-// Isolates the SET+EXPIRE phase cost: measures SET-only, EXPIRE-only, and
-// interleaved SET+EXPIRE pairs over pre-set keys, 100 conns × pipeline 100,
-// exactly like the bench phase.
+// Measures SET-only, EXPIRE-only, and interleaved SET+EXPIRE pairs (100 conns, pipeline 100).
 package main
 
 import (

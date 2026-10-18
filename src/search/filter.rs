@@ -114,9 +114,8 @@ impl FilterIndex {
         self.dead > 1024 && self.dead as f64 > DEAD_REBUILD_RATIO * self.ids.len() as f64
     }
 
-    /// Index one document under a fresh id (larger than every existing id,
-    /// so tag/text postings stay ascending by plain push). Numeric entries
-    /// go to `new_nums` for one sorted merge per delta.
+    /// Index document with ascending id; numeric entries append to new_nums
+    /// for sorted merge per delta.
     fn add_doc(&mut self, def: &IndexDef, key: &str, h: &crate::storage::value::HashInner, new_nums: &mut FxHashMap<usize, Vec<(f64, u32)>>) {
         let id = self.ids.len() as u32;
         self.ids.push(Some(key.into()));
@@ -238,9 +237,8 @@ impl FilterIndex {
         acc
     }
 
-    /// Docs holding every (non-stopword) term within the scope's fields;
-    /// Some(None) when all terms were stopwords (matches everything), None
-    /// when the postings can't answer (globs, unindexed field).
+    /// Docs matching non-stopword terms; Some(None) if all terms are stopwords,
+    /// None if postings cannot answer.
     fn text_docs(&self, def: &IndexDef, field: Option<&str>, terms: &[String]) -> Option<Option<Vec<u32>>> {
         if terms.is_empty() || terms.iter().any(|t| t.contains('*')) {
             return None;
@@ -281,9 +279,8 @@ impl FilterIndex {
         }
     }
 
-    /// BM25 score of each doc for the positive text terms in `cond`
-    /// (Robertson/Spärck Jones idf, k1 = 1.2, b = 0.75), or None when the
-    /// query has no text terms to rank by.
+    /// BM25 score of each doc for positive terms in `cond`, or None when
+    /// no text terms exist to rank by.
     pub fn bm25(&self, def: &IndexDef, cond: &Cond, docs: &[u32]) -> Option<Vec<f32>> {
         let mut terms = Vec::new();
         self.scoring_terms(def, cond, &mut terms);
@@ -380,9 +377,7 @@ impl FilterIndex {
                 if any.iter().any(|t| t.contains('*')) {
                     return None;
                 }
-                // Complement of "doc carries any of the tags": docs whose
-                // tag set intersects `any` are excluded, field-less docs
-                // kept — exactly the scan's `!hit`.
+                // Exclude docs whose tags intersect `any`; keep field-less docs.
                 let mut matched: Vec<u32> = Vec::new();
                 for t in any {
                     if let Some(list) = tags.get(t.as_str()) {
@@ -513,9 +508,8 @@ fn build_filter_index(store: &Store, def: &IndexDef) -> Option<FilterIndex> {
 pub type FilterRead = parking_lot::ArcRwLockReadGuard<parking_lot::RawRwLock, FilterIndex>;
 
 impl SearchState {
-    /// Current postings for this index, first applying the keys written
-    /// since the last query. None → caller must use the exact scan: JSON
-    /// indexes, or TTL presence (lazy expiry removes docs without a write).
+    /// Current postings with pending writes applied; None signals caller to
+    /// fall back to exact keyspace scan.
     pub fn filter_index(&self, store: &Store, def: &Arc<IndexDef>) -> Option<FilterRead> {
         if store.has_ttl_keys() {
             return None;

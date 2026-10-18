@@ -46,9 +46,8 @@ pub(super) fn write_search_indexes(w: &mut BufWriter<File>, store: &Store) -> io
     Ok(())
 }
 
-/// Persisted HNSW links (and FLAT id maps) so a restart restores search
-/// immediately instead of relinking every vector. Vectors themselves are
-/// not duplicated: they are re-read from the loaded hash fields.
+/// Persists HNSW links and FLAT id maps to restore search immediately on restart.
+/// Vectors are re-read from loaded hash fields.
 pub(super) fn write_vector_graphs(w: &mut BufWriter<File>, store: &Store) -> io::Result<()> {
     for (index, field, keys, dump) in store.search_state().graphs_for_snapshot() {
         let key_of: HashMap<usize, std::sync::Arc<str>> = keys.into_iter().collect();

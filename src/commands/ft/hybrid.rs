@@ -1,7 +1,7 @@
 use super::doc::{cond_matches, doc_fields, doc_storage_matches};
 use super::search::parse_search_options;
-use crate::search::query::parse_query;
 use crate::search::Resolved;
+use crate::search::query::parse_query;
 use crate::storage::store::Store;
 use crate::utils::resp;
 use std::sync::Arc;
@@ -11,12 +11,20 @@ enum Combine {
     Linear { alpha: f64, beta: f64 },
 }
 
-pub(super) fn ft_hybrid(parts: &[&str], binaries: &[(usize, Vec<u8>)], store: &Arc<Store>, out: &mut Vec<u8>) {
+pub(super) fn ft_hybrid(
+    parts: &[&str],
+    binaries: &[(usize, Vec<u8>)],
+    store: &Arc<Store>,
+    out: &mut Vec<u8>,
+) {
     let [_, index, search_kw, query, vsim_kw, field, param, ..] = parts else {
         return resp::write_store_err(out, "ERR wrong number of arguments for 'ft.hybrid'");
     };
     if !search_kw.eq_ignore_ascii_case("SEARCH") || !vsim_kw.eq_ignore_ascii_case("VSIM") {
-        return resp::write_store_err(out, "ERR syntax: FT.HYBRID idx SEARCH <query> VSIM @field $vector ...");
+        return resp::write_store_err(
+            out,
+            "ERR syntax: FT.HYBRID idx SEARCH <query> VSIM @field $vector ...",
+        );
     }
     let Some(def) = store.search_state().def_arc(index) else {
         return resp::write_store_err(out, "ERR Unknown index name");
@@ -44,7 +52,9 @@ pub(super) fn ft_hybrid(parts: &[&str], binaries: &[(usize, Vec<u8>)], store: &A
                 i += 2;
             }
             "WINDOW" => {
-                window = num(rest.get(i + 1)).map_or(window, |v| v as usize).clamp(1, 10_000);
+                window = num(rest.get(i + 1))
+                    .map_or(window, |v| v as usize)
+                    .clamp(1, 10_000);
                 i += 2;
             }
             "COMBINE" => {
@@ -53,7 +63,10 @@ pub(super) fn ft_hybrid(parts: &[&str], binaries: &[(usize, Vec<u8>)], store: &A
                 match kind.as_deref() {
                     Some("RRF") => {
                         let mut constant = 60.0;
-                        if rest.get(i).is_some_and(|s| s.eq_ignore_ascii_case("CONSTANT")) {
+                        if rest
+                            .get(i)
+                            .is_some_and(|s| s.eq_ignore_ascii_case("CONSTANT"))
+                        {
                             constant = num(rest.get(i + 1)).unwrap_or(60.0);
                             i += 2;
                         }
@@ -107,7 +120,15 @@ pub(super) fn ft_hybrid(parts: &[&str], binaries: &[(usize, Vec<u8>)], store: &A
         if leg == 0 {
             *text_hits.lock() = lexical(store, &def, pq.filter.as_ref(), window);
         } else {
-            *vec_hits.lock() = vector(store, &def, field, &vattrs, &qv, window, ef.unwrap_or(window.max(10)));
+            *vec_hits.lock() = vector(
+                store,
+                &def,
+                field,
+                &vattrs,
+                &qv,
+                window,
+                ef.unwrap_or(window.max(10)),
+            );
         }
     });
     let text_hits = text_hits.into_inner();
@@ -115,7 +136,8 @@ pub(super) fn ft_hybrid(parts: &[&str], binaries: &[(usize, Vec<u8>)], store: &A
         return resp::write_store_err(out, "ERR vector index is still building");
     };
 
-    let mut fused: std::collections::HashMap<String, f64, foldhash::fast::RandomState> = Default::default();
+    let mut fused: std::collections::HashMap<String, f64, foldhash::fast::RandomState> =
+        Default::default();
     match combine {
         Combine::Rrf { constant } => {
             for list in [&text_hits, &vec_hits] {
@@ -126,9 +148,24 @@ pub(super) fn ft_hybrid(parts: &[&str], binaries: &[(usize, Vec<u8>)], store: &A
         }
         Combine::Linear { alpha, beta } => {
             let norm = |list: &[(String, f64)]| -> Vec<(String, f64)> {
-                let (lo, hi) = list.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(l, h), x| (l.min(x.1), h.max(x.1)));
+                let (lo, hi) = list
+                    .iter()
+                    .fold((f64::INFINITY, f64::NEG_INFINITY), |(l, h), x| {
+                        (l.min(x.1), h.max(x.1))
+                    });
                 let span = (hi - lo).max(1e-12);
-                list.iter().map(|(k, s)| (k.clone(), if list.len() == 1 { 1.0 } else { (s - lo) / span })).collect()
+                list.iter()
+                    .map(|(k, s)| {
+                        (
+                            k.clone(),
+                            if list.len() == 1 {
+                                1.0
+                            } else {
+                                (s - lo) / span
+                            },
+                        )
+                    })
+                    .collect()
             };
             for (key, s) in norm(&text_hits) {
                 *fused.entry(key).or_default() += alpha * s;
@@ -155,7 +192,11 @@ pub(super) fn ft_hybrid(parts: &[&str], binaries: &[(usize, Vec<u8>)], store: &A
             resp::write_bulk(out, &score_str);
         }
         if !opts.no_content {
-            let mut fields = store.data.get_ref(key).map(|v| doc_fields(&v, &def, &opts)).unwrap_or_default();
+            let mut fields = store
+                .data
+                .get_ref(key)
+                .map(|v| doc_fields(&v, &def, &opts))
+                .unwrap_or_default();
             fields.push(("__score".to_string(), score_str.into_bytes()));
             resp::write_array_header(out, fields.len() * 2);
             for (f, v) in &fields {
@@ -166,7 +207,12 @@ pub(super) fn ft_hybrid(parts: &[&str], binaries: &[(usize, Vec<u8>)], store: &A
     }
 }
 
-fn lexical(store: &Store, def: &Arc<crate::search::IndexDef>, cond: Option<&crate::search::query::Cond>, window: usize) -> Vec<(String, f64)> {
+fn lexical(
+    store: &Store,
+    def: &Arc<crate::search::IndexDef>,
+    cond: Option<&crate::search::query::Cond>,
+    window: usize,
+) -> Vec<(String, f64)> {
     let Some(cond) = cond else { return Vec::new() };
     if let Some(fi) = store.search_state().filter_index(store, def)
         && let Some(res) = fi.resolve(def, cond)
@@ -175,7 +221,9 @@ fn lexical(store: &Store, def: &Arc<crate::search::IndexDef>, cond: Option<&crat
             Resolved::All => (0..fi.doc_count() as u32).collect(),
             Resolved::Ids(ids) => ids,
         };
-        let scores = fi.bm25(def, cond, &ids).unwrap_or_else(|| vec![1.0; ids.len()]);
+        let scores = fi
+            .bm25(def, cond, &ids)
+            .unwrap_or_else(|| vec![1.0; ids.len()]);
         let mut ranked: Vec<(u32, f32)> = ids.into_iter().zip(scores).collect();
         let cmp = |a: &(u32, f32), b: &(u32, f32)| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0));
         if ranked.len() > window {
@@ -183,7 +231,10 @@ fn lexical(store: &Store, def: &Arc<crate::search::IndexDef>, cond: Option<&crat
             ranked.truncate(window);
         }
         ranked.sort_unstable_by(cmp);
-        return ranked.into_iter().filter_map(|(d, s)| fi.key(d).map(|k| (k.to_string(), s as f64))).collect();
+        return ranked
+            .into_iter()
+            .filter_map(|(d, s)| fi.key(d).map(|k| (k.to_string(), s as f64)))
+            .collect();
     }
     let mut hits = Vec::new();
     store.data.for_each(|key, val| {
@@ -216,11 +267,19 @@ fn vector(
         let depth = graph.rerank_depth(window, ef.max(window));
         let cands = graph.search(qv, depth, ef.max(depth));
         if graph.is_quantized() {
-            let fetch = |id: usize| entry.key_for_id(id).and_then(|k| crate::search::graph::doc_vector(store, def, field, attrs, &k));
+            let fetch = |id: usize| {
+                entry
+                    .key_for_id(id)
+                    .and_then(|k| crate::search::graph::doc_vector(store, def, field, attrs, &k))
+            };
             graph.rerank(qv, cands, window, &fetch)
         } else {
             cands.into_iter().take(window).collect()
         }
     };
-    Some(hits.into_iter().filter_map(|(d, id)| entry.key_for_id(id).map(|k| (k.to_string(), -(d as f64)))).collect())
+    Some(
+        hits.into_iter()
+            .filter_map(|(d, id)| entry.key_for_id(id).map(|k| (k.to_string(), -(d as f64))))
+            .collect(),
+    )
 }

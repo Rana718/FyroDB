@@ -9,12 +9,12 @@ path = "src/lib.rs"
 
 [dependencies]
 crossbeam-utils = "0.8.22"
-flurry = "0.5.2"
 foldhash = "0.2.0"
-papaya = "0.2.5"
 rust-zmalloc = { path = "../rust-zmalloc" }
 
 [dev-dependencies]
 dashmap = "6.2"
+flurry = "0.5.2"
+papaya = "0.2.5"
 scc = "3.8"
 ahash = "0.8"

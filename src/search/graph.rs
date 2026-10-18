@@ -132,9 +132,8 @@ fn new_graph(attrs: &VectorAttrs) -> Arc<HnswGraph> {
 /// RaBitQ codebook training sample size (every n-th vector of the scan).
 const TRAIN_SAMPLE: usize = 16_384;
 
-/// Full build: one keyspace scan preparing every vector (memcpy + norm),
-/// then parallel linking on the pool, publishing the entry for partial
-/// search every `PARTIAL_PUBLISH_STEP` linked nodes.
+/// Full build: scan keyspace preparing vectors, then parallel link on the pool,
+/// publishing the entry periodically for partial search.
 fn build_graph_entry(
     ss: &SearchState,
     store: &Store,
@@ -158,9 +157,8 @@ fn build_graph_entry(
         let h = crate::storage::value::FyroDB::as_hash(&val.value)?;
         attrs.decode(h.get(field)?.as_bytes())
     };
-    // Count first so the arena is sized exactly (filling it one id at a
-    // time leaves up to half its capacity as growth slack), then prepare
-    // inside the second scan without buffering every vector.
+    // Count first so the arena is sized exactly, then prepare vectors in the
+    // second scan without buffering everything.
     let mut expected = 0usize;
     store.data.for_each(|k, val| {
         if !val.is_expired()
@@ -239,8 +237,7 @@ impl SearchState {
     }
 
     /// Current vector index for (index, field), applying pending writes.
-    /// None → no usable index yet (first build running or starting): the
-    /// caller answers with the exact keyspace scan.
+    /// Returns None if no index is usable yet (caller scans keyspace directly).
     pub fn vector_index_entry(
         &self,
         store: &Arc<Store>,
@@ -310,9 +307,8 @@ impl SearchState {
                 }
             };
             let entry = build_graph_entry(ss, &store, &def, &field_o, &attrs, &publish);
-            // Publish only if the index still exists with the same
-            // definition: a DROPINDEX / re-CREATE mid-build must not
-            // resurrect a stale graph.
+            // Publish only if the index still exists with the same definition
+            // to avoid resurrecting a stale graph after DROPINDEX / re-CREATE.
             publish(&entry);
             ss.building.lock().remove(&key);
         });
@@ -382,9 +378,8 @@ impl SearchState {
         true
     }
 
-    /// Persistable view of every settled vector index: (index, field,
-    /// id→key, dump). Entries still building are skipped (they rebuild on
-    /// load). The dump compacts tombstones first.
+    /// Persistable view of settled vector indexes: (index, field, id->key, dump).
+    /// Entries still building are skipped and rebuilt on load.
     pub fn graphs_for_snapshot(&self) -> GraphSnapshot {
         let graphs: Vec<((String, String), Arc<GraphEntry>)> =
             self.graphs.read().iter().map(|(k, v)| (k.clone(), Arc::clone(v))).collect();
@@ -416,9 +411,8 @@ impl SearchState {
             .map(|(_, v)| Arc::clone(v))
     }
 
-    /// RediSearch's `indexing` / `percent_indexed`: true while any vector
-    /// field of `def` has a builder in flight, with the searchable share of
-    /// its documents (the minimum across vector fields).
+    /// RediSearch `indexing` / `percent_indexed`: true while any vector field
+    /// has a builder in flight, reporting the minimum indexed document ratio.
     pub fn index_progress(&self, def: &IndexDef, num_docs: u64) -> (bool, f64) {
         let mut indexing = false;
         let mut percent: f64 = 1.0;
@@ -459,9 +453,8 @@ impl SearchState {
         true
     }
 
-    /// Launch a background periodic task that drains dirty keys for all
-    /// vector indexes every 50ms.  Reduces p99 query latency under mixed
-    /// read/write workloads by moving the apply work off the query path.
+    /// Periodic background task draining dirty keys for all vector indexes
+    /// every 50ms, offloading write applications from the query path.
     pub fn start_background_apply(&self, store: &Arc<Store>) {
         if self.bg_apply_running.swap(true, std::sync::atomic::Ordering::AcqRel) {
             return;
@@ -515,9 +508,8 @@ impl SearchState {
     }
 }
 
-/// Bring `entry` up to date for the written `keys`: unchanged vectors are
-/// skipped, rewritten ones tombstone their old node and get a fresh one,
-/// removed ones are tombstoned. New nodes link in parallel.
+/// Updates `entry` for written `keys`: unchanged vectors are skipped, modified
+/// or removed nodes are tombstoned, and new nodes link in parallel.
 fn apply_keys(store: &Store, def: &IndexDef, field: &str, attrs: &VectorAttrs, entry: &GraphEntry, keys: Vec<Box<str>>) {
     let graph = &entry.graph;
     let mut adds: Vec<(Arc<str>, Vec<f32>)> = Vec::new();

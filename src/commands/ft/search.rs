@@ -1,5 +1,7 @@
-use super::doc::{cond_matches, doc_fields, doc_scalar, doc_storage_matches, doc_vector, DocHit, SearchOpts};
-use crate::search::query::{parse_query, Cond};
+use super::doc::{
+    DocHit, SearchOpts, cond_matches, doc_fields, doc_scalar, doc_storage_matches, doc_vector,
+};
+use crate::search::query::{Cond, parse_query};
 use crate::search::{IndexDef, QueryDist, Resolved};
 use crate::storage::store::Store;
 use crate::utils::resp;
@@ -106,9 +108,11 @@ pub(super) fn parse_search_options(
         }
     }
     Ok(opts)
-}pub(super) fn ft_search(parts: &[&str], store: &Arc<Store>, out: &mut Vec<u8>) {
+}
+pub(super) fn ft_search(parts: &[&str], store: &Arc<Store>, out: &mut Vec<u8>) {
     ft_search_impl(parts, &[], store, out)
-}pub(super) fn ft_search_impl(
+}
+pub(super) fn ft_search_impl(
     parts: &[&str],
     binaries: &[(usize, Vec<u8>)],
     store: &Arc<Store>,
@@ -205,15 +209,29 @@ fn ft_search_execute(
         else {
             return resp::write_store_err(out, "ERR query params: missing vector");
         };
-        return knn_search(store, &def, knn, query_vec.as_slice(), &opts, pq.filter, out);
+        return knn_search(
+            store,
+            &def,
+            knn,
+            query_vec.as_slice(),
+            &opts,
+            pq.filter,
+            out,
+        );
     }
     if let Some(range) = &pq.range {
         // Radius: a `$param` or a literal number.
         let radius = range.radius_param.parse::<f64>().ok().or_else(|| {
             opts.params
                 .iter()
-                .find(|(k, _)| k.trim_start_matches('$') == range.radius_param.trim_start_matches('$'))
-                .and_then(|(_, v)| std::str::from_utf8(v).ok().and_then(|s| s.parse::<f64>().ok()))
+                .find(|(k, _)| {
+                    k.trim_start_matches('$') == range.radius_param.trim_start_matches('$')
+                })
+                .and_then(|(_, v)| {
+                    std::str::from_utf8(v)
+                        .ok()
+                        .and_then(|s| s.parse::<f64>().ok())
+                })
         });
         let needle = range.vector_param.trim_start_matches('$');
         let query_vec = opts
@@ -224,9 +242,16 @@ fn ft_search_execute(
         let (Some(radius), Some(query_vec)) = (radius, query_vec) else {
             return resp::write_store_err(out, "ERR query params: missing range params");
         };
-        return range_search(store, &def, range, radius, &query_vec, &opts, (out, pq.filter));
+        return range_search(
+            store,
+            &def,
+            range,
+            radius,
+            &query_vec,
+            &opts,
+            (out, pq.filter),
+        );
     }
-
 
     let filter = pq.filter.as_ref();
     let scan = |from: usize, to: usize| -> Vec<DocHit> {
@@ -250,7 +275,6 @@ fn ft_search_execute(
         });
         hits
     };
-
 
     // Fast path: postings intersection/complement — skips the keyspace scan.
     // Globs, INKEYS/SORTBY, TTL presence, and stale generation fall through above.
@@ -276,9 +300,14 @@ fn ft_search_execute(
                     let ranked = pq.filter.as_ref().and_then(|c| fi.bm25(&def, c, ids));
                     match ranked {
                         Some(scores) => {
-                            let mut order: Vec<(u32, f64)> =
-                                ids.iter().zip(scores).map(|(&d, sc)| (d, sc as f64)).collect();
-                            let cmp = |a: &(u32, f64), b: &(u32, f64)| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0));
+                            let mut order: Vec<(u32, f64)> = ids
+                                .iter()
+                                .zip(scores)
+                                .map(|(&d, sc)| (d, sc as f64))
+                                .collect();
+                            let cmp = |a: &(u32, f64), b: &(u32, f64)| {
+                                b.1.total_cmp(&a.1).then(a.0.cmp(&b.0))
+                            };
                             if e < order.len() {
                                 order.select_nth_unstable_by(e, cmp);
                                 order.truncate(e);
@@ -292,7 +321,12 @@ fn ft_search_execute(
             };
             let hits: Vec<DocHit> = page
                 .iter()
-                .filter_map(|&(id, score)| fi.key(id).map(|key| DocHit { key: key.to_string(), score }))
+                .filter_map(|&(id, score)| {
+                    fi.key(id).map(|key| DocHit {
+                        key: key.to_string(),
+                        score,
+                    })
+                })
                 .collect();
             return emit_search_page(&hits, total, &opts, out, store, &def);
         }
@@ -314,11 +348,7 @@ fn emit_search_results(
             let av = sort_f64(store, def, &a.key, sort_field);
             let bv = sort_f64(store, def, &b.key, sort_field);
             let ord = av.partial_cmp(&bv).unwrap_or(std::cmp::Ordering::Equal);
-            if desc {
-                ord.reverse()
-            } else {
-                ord
-            }
+            if desc { ord.reverse() } else { ord }
         });
     }
 
@@ -427,7 +457,10 @@ fn knn_search(
     };
     let qv: &[f32] = &qv_owned;
     let indexed = vattrs.algorithm == "HNSW" || vattrs.algorithm == "FLAT";
-    if indexed && let Some(entry) = store.search_state().vector_index_entry(store, def, &knn.field)
+    if indexed
+        && let Some(entry) = store
+            .search_state()
+            .vector_index_entry(store, def, &knn.field)
     {
         // Pre-filtered: resolve predicate → postings → allow-set, then search index.
         // Globs and TTL/stale fall through to keyspace scan.
@@ -437,12 +470,16 @@ fn knn_search(
         // deeper head and rerank it with the documents' exact vectors.
         let depth = graph.rerank_depth(knn.k, ef);
         let fetch = |id: usize| {
-            entry
-                .key_for_id(id)
-                .and_then(|key| crate::search::graph::doc_vector(store, def, &knn.field, vattrs, &key))
+            entry.key_for_id(id).and_then(|key| {
+                crate::search::graph::doc_vector(store, def, &knn.field, vattrs, &key)
+            })
         };
         let finish = |r: Vec<(f32, usize)>| -> Vec<(f32, usize)> {
-            if graph.is_quantized() { graph.rerank(qv, r, knn.k, &fetch) } else { r }
+            if graph.is_quantized() {
+                graph.rerank(qv, r, knn.k, &fetch)
+            } else {
+                r
+            }
         };
         // None → unresolvable (scan); Some(None) → unrestricted;
         // Some(Some(ids)) → allow-set of vector ids.
@@ -460,7 +497,9 @@ fn knn_search(
                         let map = fi.vids_for(&knn.field, &entry);
                         let vids: Vec<usize> = docs
                             .iter()
-                            .filter_map(|&d| map.get(d as usize).copied().filter(|&v| v != u32::MAX))
+                            .filter_map(|&d| {
+                                map.get(d as usize).copied().filter(|&v| v != u32::MAX)
+                            })
                             .map(|v| v as usize)
                             .collect();
                         Some(Some(vids))
@@ -480,20 +519,19 @@ fn knn_search(
                 }
                 Some(vids) if vids.is_empty() => (Vec::new(), 0),
                 Some(vids) => {
-                    // Cost-based strategy: estimate brute-force vs graph
-                    // traversal cost from the subset size, graph size, and
-                    // vector dimension to pick the cheapest path.
+                    // Cost-based strategy: pick cheaper path between brute-force
+                    // and graph traversal based on subset and graph size.
                     let n_graph = entry.len().max(1);
                     let selectivity = vids.len() as f64 / n_graph as f64;
                     let dims = graph.dims();
                     // Brute cost ∝ |subset| × dim (memory bandwidth bound).
                     let brute_cost = vids.len() as f64 * dims as f64;
                     // Graph cost ∝ ef × dim (compute bound, fewer nodes).
-                    let graph_ef = (ef.max(depth) as f64 * (1.0 / selectivity.max(0.01)).sqrt()).min(vids.len() as f64);
+                    let graph_ef = (ef.max(depth) as f64 * (1.0 / selectivity.max(0.01)).sqrt())
+                        .min(vids.len() as f64);
                     let graph_cost = graph_ef * dims as f64 * 1.5;
-                    let use_brute = !entry.is_linked()
-                        || vids.len() <= 256
-                        || brute_cost < graph_cost;
+                    let use_brute =
+                        !entry.is_linked() || vids.len() <= 256 || brute_cost < graph_cost;
                     let r = if use_brute {
                         finish(graph.brute_search_ids(qv, depth, vids))
                     } else {
@@ -543,7 +581,9 @@ fn knn_search(
                 if heap.len() < k {
                     heap.push((d, key.to_string()));
                     if heap.len() == k {
-                        heap.sort_unstable_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+                        heap.sort_unstable_by(|a, b| {
+                            a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
+                        });
                         cutoff = heap[k - 1].0;
                     }
                 } else if d < cutoff {
@@ -582,9 +622,7 @@ fn emit_knn(
         field_opts.return_all = false;
     }
 
-    let per_doc = 1
-        + usize::from(opts.with_scores)
-        + usize::from(!opts.no_content);
+    let per_doc = 1 + usize::from(opts.with_scores) + usize::from(!opts.no_content);
     resp::write_array_header(out, 1 + top.len() * per_doc);
     resp::write_integer(out, total as i64);
     for (d, key) in top {
@@ -635,10 +673,11 @@ fn range_search(
         return resp::write_store_err(out, "ERR query vector dim mismatch");
     };
     let radius = radius as f32;
-    let mut heap: Vec<(f32, String)> = match indexed_range(store, def, range, vattrs, &qv, radius, filter.as_ref()) {
-        Some(h) => h,
-        None => scan_range(store, def, range, vattrs, &qv, radius, filter.as_ref()),
-    };
+    let mut heap: Vec<(f32, String)> =
+        match indexed_range(store, def, range, vattrs, &qv, radius, filter.as_ref()) {
+            Some(h) => h,
+            None => scan_range(store, def, range, vattrs, &qv, radius, filter.as_ref()),
+        };
     finish_range(&mut heap, def, range, opts, out, store);
 }
 
@@ -683,10 +722,22 @@ fn indexed_range(
     if graph.is_quantized() {
         // Estimated distances: re-score exactly, then apply the radius.
         let n = hits.len();
-        let fetch = |id: usize| entry.key_for_id(id).and_then(|k| crate::search::graph::doc_vector(store, def, &range.field, vattrs, &k));
-        hits = graph.rerank(qv, hits, n, &fetch).into_iter().filter(|h| h.0 <= radius).collect();
+        let fetch = |id: usize| {
+            entry.key_for_id(id).and_then(|k| {
+                crate::search::graph::doc_vector(store, def, &range.field, vattrs, &k)
+            })
+        };
+        hits = graph
+            .rerank(qv, hits, n, &fetch)
+            .into_iter()
+            .filter(|h| h.0 <= radius)
+            .collect();
     }
-    Some(hits.into_iter().filter_map(|(d, id)| entry.key_for_id(id).map(|k| (d, k.to_string()))).collect())
+    Some(
+        hits.into_iter()
+            .filter_map(|(d, id)| entry.key_for_id(id).map(|k| (d, k.to_string())))
+            .collect(),
+    )
 }
 
 fn scan_range(
@@ -743,9 +794,7 @@ fn finish_range(
     let end = (start + opts.limit_num).min(total);
     let top = &heap[start..end];
 
-    let per_doc = 1
-        + usize::from(opts.with_scores)
-        + usize::from(!opts.no_content);
+    let per_doc = 1 + usize::from(opts.with_scores) + usize::from(!opts.no_content);
     resp::write_array_header(out, 1 + top.len() * per_doc);
     resp::write_integer(out, total as i64);
     for (d, key) in top {

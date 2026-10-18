@@ -56,9 +56,7 @@ fn bench_worker_network_throughput_and_slot_latency() {
     }
     drop(warmup);
 
-    // -------------------------------------------------------------------------
     // Benchmark 1: Pipelined GET (Targeting 10M+ QPS)
-    // -------------------------------------------------------------------------
     let start_get = Instant::now();
     let mut handles = Vec::with_capacity(NUM_CLIENTS);
 
@@ -98,9 +96,7 @@ fn bench_worker_network_throughput_and_slot_latency() {
     let get_qps = (total_ops as f64) / get_elapsed.as_secs_f64();
     let get_us_per_req = (get_elapsed.as_micros() as f64) / (total_ops as f64);
 
-    // -------------------------------------------------------------------------
     // Benchmark 2: Pipelined SET (Targeting 10M+ QPS)
-    // -------------------------------------------------------------------------
     let start_set = Instant::now();
     let mut handles = Vec::with_capacity(NUM_CLIENTS);
 

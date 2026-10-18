@@ -33,7 +33,8 @@ impl Default for SearchOpts {
             ids: Vec::new(),
         }
     }
-}pub(super) struct DocHit {
+}
+pub(super) struct DocHit {
     pub(super) key: String,
     pub(super) score: f64,
 }
@@ -63,7 +64,8 @@ pub(super) fn doc_storage_matches(val: &StoreValue, def: &IndexDef) -> bool {
         StorageKind::Hash => matches!(val.value, FyroDB::Hash(_)),
         StorageKind::Json => matches!(val.value, FyroDB::Json(_)),
     }
-}pub(super) fn doc_vector<'a>(val: &'a StoreValue, def: &IndexDef, field: &str) -> Option<&'a [u8]> {
+}
+pub(super) fn doc_vector<'a>(val: &'a StoreValue, def: &IndexDef, field: &str) -> Option<&'a [u8]> {
     match (&val.value, def.storage) {
         (FyroDB::Hash(h), StorageKind::Hash) => h.get(field).map(|v| v.as_bytes()),
         _ => None,
@@ -139,10 +141,15 @@ pub(super) fn cond_matches(cond: &Cond, val: &StoreValue, def: &IndexDef) -> boo
     }
 }
 
-/// Tag predicate without per-document `Vec<String>` materialization: the
-/// hot (hash) path splits the stored value in place. Used by every filtered
-/// KNN and filter scan, once per key per query.
-pub(super) fn tag_cond(val: &StoreValue, def: &IndexDef, field: &str, any: &[String], negated: bool) -> bool {
+/// Tag predicate without per-document allocations: splits stored values in place.
+/// Used by filtered KNN and filter scans.
+pub(super) fn tag_cond(
+    val: &StoreValue,
+    def: &IndexDef,
+    field: &str,
+    any: &[String],
+    negated: bool,
+) -> bool {
     let sep = def.field(field).map(|f| f.separator).unwrap_or(',');
     let hit = match (&val.value, def.storage) {
         (FyroDB::Hash(h), StorageKind::Hash) => h.get(field).is_some_and(|raw| {
@@ -184,7 +191,10 @@ pub(super) fn text_cond(
                 def.fields
                     .iter()
                     .filter(|f| f.field_type == crate::search::FieldType::Text && !f.no_index)
-                    .any(|f| h.get(&f.name).is_some_and(|text| text_match(t, text.as_str())))
+                    .any(|f| {
+                        h.get(&f.name)
+                            .is_some_and(|text| text_match(t, text.as_str()))
+                    })
             }),
         },
         (FyroDB::Json(s), StorageKind::Json) => {

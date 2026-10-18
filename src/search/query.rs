@@ -1,8 +1,7 @@
 use super::{DistanceMetric, FieldType, IndexDef};
 
-/// Upper bounds for user-supplied KNN parameters. Both size heaps on the
-/// query path; a boundless value (e.g. usize::MAX) would abort the
-/// process on the capacity preallocation.
+/// Upper bounds for user-supplied KNN parameters preventing excessive
+/// heap allocations on query paths.
 pub const MAX_KNN_K: usize = 10_000;
 pub const MAX_EF_RUNTIME: usize = 100_000;
 

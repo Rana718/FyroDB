@@ -36,9 +36,8 @@ impl HllData {
         }
     }
 
-    /// Register byte offset and the rho value an element would write.
-    /// Lets callers mutate a raw register buffer in place without decoding
-    /// the whole 16 KB array into an `HllData`.
+    /// Register byte offset and rho value to mutate raw register buffer in place
+    /// without decoding the full 16 KB array into `HllData`.
     #[inline]
     fn add_target(element: &[u8]) -> (usize, u8) {
         let hash = hll_hash(element);

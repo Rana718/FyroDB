@@ -1,5 +1,5 @@
 use super::doc::{collect_keys, count_docs};
-use crate::search::{parse_field_defs, FieldDef, FieldType, IndexDef, StorageKind};
+use crate::search::{FieldDef, FieldType, IndexDef, StorageKind, parse_field_defs};
 use crate::storage::store::Store;
 use crate::utils::resp;
 use std::sync::Arc;
@@ -15,7 +15,10 @@ pub(super) fn ft_create(parts: &[&str], store: &Arc<Store>, out: &mut Vec<u8>) {
     while i < parts.len() {
         match parts[i].to_ascii_uppercase().as_str() {
             "ON" => {
-                if parts.get(i + 1).is_some_and(|s| s.eq_ignore_ascii_case("JSON")) {
+                if parts
+                    .get(i + 1)
+                    .is_some_and(|s| s.eq_ignore_ascii_case("JSON"))
+                {
                     storage = StorageKind::Json;
                 }
                 i += 2;
@@ -66,9 +69,8 @@ pub(super) fn ft_create(parts: &[&str], store: &Arc<Store>, out: &mut Vec<u8>) {
     };
     match store.search_state().create(def) {
         Ok(()) => {
-            // Kick background graph builds for HNSW fields now: the first
-            // KNN query must not pay the multi-second build, and deferring
-            // it to query time just moves the stall into the warmup loop.
+            // Kick background HNSW graph builds now so the first KNN query
+            // does not stall on graph construction.
             if let Some(def) = store.search_state().def_arc(name) {
                 store.search_state().prefetch_build(store, &def);
             }
@@ -86,9 +88,9 @@ pub(super) fn ft_info(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
         return resp::write_store_err(out, "ERR Unknown index name");
     };
 
-    let num_docs = store.search_state().cached_doc_count(&def.name, store.dbsize(), || {
-        count_docs(store, &def)
-    });
+    let num_docs = store
+        .search_state()
+        .cached_doc_count(&def.name, store.dbsize(), || count_docs(store, &def));
     let doc_str = num_docs.to_string();
     let num_records = num_docs * def.fields.len() as u64;
     let rec_str = num_records.to_string();
@@ -145,7 +147,9 @@ pub(super) fn ft_info(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
 }
 
 pub(super) fn write_field_info(out: &mut Vec<u8>, f: &FieldDef) {
-    if f.field_type == FieldType::Vector && let Some(v) = &f.vector {
+    if f.field_type == FieldType::Vector
+        && let Some(v) = &f.vector
+    {
         resp::write_array_header(out, 22);
         resp::write_bulk(out, "identifier");
         resp::write_bulk(out, &f.name);

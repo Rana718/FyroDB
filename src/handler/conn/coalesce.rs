@@ -46,7 +46,16 @@ pub(super) fn dispatch_set_expire_pair(conn: &mut Conn<'_>, set: &[(*const u8, u
     // Consume and parse the EXPIRE command.
     match conn.parser.parse_one() {
         ParseResult::Complete => {}
-        _ => return PairOutcome::FallThrough,
+        ParseResult::Incomplete => {
+            // SET succeeded; EXPIRE was incomplete and remains in rbuf at start_pos for the next read/parse.
+            conn.store.set_string(key, value, 0);
+            if conn.store.has_replication() {
+                conn.store.record_current_value(key);
+            }
+            conn.parser.wbuf.extend_from_slice(b"+OK\r\n");
+            return PairOutcome::Done;
+        }
+        ParseResult::Error => return PairOutcome::ConnError,
     }
     let raw_ptr = conn.parser.parts_raw.as_ptr();
     let raw_len = conn.parser.parts_raw.len();

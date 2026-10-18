@@ -52,9 +52,8 @@ pub fn distance_bytes(metric: DistanceMetric, a: &[u8], b: &[u8]) -> f32 {
     }
 }
 
-/// Query vector with its norm precomputed once per search. The exact-scan
-/// KNN path calls `distance` once per document; recomputing the query norm
-/// every time tripled cosine cost.
+/// Query vector distance calculator with precomputed query norm per search,
+/// avoiding redundant norm calculations on cosine distance paths.
 #[derive(Clone, Copy)]
 pub struct QueryDist {
     metric: DistanceMetric,

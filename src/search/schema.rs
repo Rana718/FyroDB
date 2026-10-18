@@ -57,9 +57,8 @@ impl VectorAttrs {
     }
 }
 
-/// Bounds for user-supplied HNSW parameters: wide enough for hnswlib's
-/// extremes, narrow enough that a hostile value can't preallocate absurd
-/// memory or stall the build.
+/// Safe bounds for user-supplied HNSW parameters preventing unreasonable
+/// memory preallocation or stalled builds.
 pub const MAX_M: usize = 256;
 pub const MAX_EF_CONSTRUCTION: usize = 10_000;
 

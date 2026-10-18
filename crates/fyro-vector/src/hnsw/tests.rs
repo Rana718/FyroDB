@@ -323,9 +323,8 @@ fn concurrent_flat_queries_are_batched_and_exact() {
     }
 }
 
-/// Regression: FLAT queries submitted as pool jobs (the server's path)
-/// used to deadlock once a scanner, waiting inside `parallel`, picked up
-/// another queued query that then waited for that very scanner.
+/// Regression: ensures concurrent FLAT queries submitted as pool jobs
+/// do not deadlock when waiting inside parallel scans.
 #[test]
 fn flat_queries_as_pool_jobs_do_not_deadlock() {
     use std::sync::Arc;

@@ -44,9 +44,7 @@ fn main() {
     println!("=========================================================================================");
 }
 
-// -----------------------------------------------------------------------------
 // 1. DashMap (Default)
-// -----------------------------------------------------------------------------
 fn bench_dashmap_default(keys: &Arc<Vec<String>>) {
     let map = Arc::new(DashMap::<String, u64>::new());
     for (i, k) in keys.iter().enumerate() {
@@ -100,9 +98,7 @@ fn bench_dashmap_default(keys: &Arc<Vec<String>>) {
     });
 }
 
-// -----------------------------------------------------------------------------
 // 2. DashMap (AHash)
-// -----------------------------------------------------------------------------
 fn bench_dashmap_ahash(keys: &Arc<Vec<String>>) {
     let map = Arc::new(DashMap::<String, u64, RandomState>::with_hasher(RandomState::new()));
     for (i, k) in keys.iter().enumerate() {
@@ -153,9 +149,7 @@ fn bench_dashmap_ahash(keys: &Arc<Vec<String>>) {
     });
 }
 
-// -----------------------------------------------------------------------------
 // 3. scc::HashMap (Default)
-// -----------------------------------------------------------------------------
 fn bench_scc_default(keys: &Arc<Vec<String>>) {
     let map = Arc::new(SccMap::<String, u64>::default());
     for (i, k) in keys.iter().enumerate() {
@@ -206,9 +200,7 @@ fn bench_scc_default(keys: &Arc<Vec<String>>) {
     });
 }
 
-// -----------------------------------------------------------------------------
 // 4. scc::HashMap (AHash)
-// -----------------------------------------------------------------------------
 fn bench_scc_ahash(keys: &Arc<Vec<String>>) {
     let map = Arc::new(SccMap::<String, u64, RandomState>::with_hasher(RandomState::new()));
     for (i, k) in keys.iter().enumerate() {
@@ -259,9 +251,7 @@ fn bench_scc_ahash(keys: &Arc<Vec<String>>) {
     });
 }
 
-// -----------------------------------------------------------------------------
 // 5. FyroDB CustomMap (FoldHash + EBR)
-// -----------------------------------------------------------------------------
 fn bench_fyro_custommap(keys: &Arc<Vec<String>>) {
     // 128 shards, pre-sized capacity for INITIAL_KEYS
     let map = Arc::new(CustomMap::<u64>::with_capacity(128, INITIAL_KEYS * 2));
@@ -316,9 +306,7 @@ fn bench_fyro_custommap(keys: &Arc<Vec<String>>) {
     });
 }
 
-// -----------------------------------------------------------------------------
 // Benchmark Runner Helper
-// -----------------------------------------------------------------------------
 fn run_benchmark<F>(name: &str, task_factory: F)
 where
     F: Fn(usize) + Send + Sync + 'static + Clone,

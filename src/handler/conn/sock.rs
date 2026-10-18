@@ -21,9 +21,8 @@ impl<'a> Conn<'a> {
         self.process_buffered()
     }
 
-    /// Parse and execute every complete command in the read buffer,
-    /// stopping early when one parks the connection (the rest stays
-    /// buffered until it unparks). Returns false on a protocol error.
+    /// Parse and execute commands in read buffer, pausing if parked and
+    /// preserving unparsed bytes. Returns false on protocol error.
     pub fn process_buffered(&mut self) -> bool {
         let mut prefetched = 0usize;
         self.hint_n = 0;

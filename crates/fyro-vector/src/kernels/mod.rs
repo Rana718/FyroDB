@@ -89,9 +89,8 @@ pub fn l2sq_f32(a: &[f32], b: &[f32]) -> f32 {
     unsafe { (KERNELS.l2)(a, b) }
 }
 
-/// A kernel set for monomorphized hot loops. A value can only be obtained
-/// from [`isa`], so holding one proves the CPU runs its instructions; loops
-/// generic over `K` inline the kernel instead of calling through a pointer.
+/// Kernel set for monomorphized hot loops obtained via [`isa`], allowing
+/// generic loops over `K` to inline kernels instead of function pointers.
 pub trait Kernel: Copy + Send + Sync + 'static {
     fn dot(self, a: &[f32], b: &[f32]) -> f32;
     fn l2sq(self, a: &[f32], b: &[f32]) -> f32;

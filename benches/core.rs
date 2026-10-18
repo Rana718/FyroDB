@@ -1,6 +1,5 @@
-//! Micro-benchmarks for the hot paths the Go harness can't isolate:
-//! RESP parsing, keyspace GET/SET, distance kernels, HNSW build/search.
-//!   cargo bench --bench core [-- <filter>]
+//! Micro-benchmarks for isolated hot paths: RESP parsing, keyspace GET/SET,
+//! distance kernels, and HNSW. Run with: cargo bench --bench core
 
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use fyro_db::storage::hnsw::HnswGraph;

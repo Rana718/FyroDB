@@ -17,9 +17,7 @@ pub struct ZAddOptions {
 }
 
 impl Store {
-/// Plain single-member ZADDs under one lock, per-command added flags;
-/// flag variants change replies and stay un-coalesced.
-    /// Wakes connections blocked on `key` after a successful write.
+    /// Executes ZADD returning per-command added flags, waking any blocked connections.
     pub fn zadd_added_flags(&self, key: &str, members: &[(f64, &str)]) -> Result<Vec<bool>, &'static str> {
         let r = self.zadd_added_flags_impl(key, members);
         if r.is_ok() {

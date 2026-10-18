@@ -77,9 +77,8 @@ impl WorkerNotifier {
         }
     }
 
-    /// Pop every queued completion into `out` (same re-arm protocol as
-    /// `drain_pending_into`: no wakeup is lost between the drain and the
-    /// flag reset).
+    /// Pop every queued completion into `out`, using a re-arm protocol so
+    /// no wakeups are lost between draining and resetting the flag.
     pub fn drain_completions(&self, out: &mut Vec<Completion>) {
         loop {
             while let Some(c) = self.completions.pop() {

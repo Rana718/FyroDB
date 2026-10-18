@@ -266,9 +266,7 @@ fn bench_sequential_get_set(num_keys: usize, shard_count: usize) {
         prealloc_rss_delta as f64 / (1024.0 * 1024.0)
     );
 
-    // -------------------------------------------------------------
     // 1. SET (Insert New Keys)
-    // -------------------------------------------------------------
     let sample_rate = (num_keys / 100_000).max(1);
     let mut latencies = Vec::with_capacity(num_keys / sample_rate + 1);
 
@@ -331,9 +329,7 @@ fn bench_sequential_get_set(num_keys: usize, shard_count: usize) {
 
     assert_eq!(map.len(), num_keys);
 
-    // -------------------------------------------------------------
     // 2. GET (Hit 100% - Read Existing Keys)
-    // -------------------------------------------------------------
     let mut get_latencies = Vec::with_capacity(num_keys / sample_rate + 1);
     let start_mem = MemoryInfo::snapshot();
     let start_time = Instant::now();
@@ -390,9 +386,7 @@ fn bench_sequential_get_set(num_keys: usize, shard_count: usize) {
     };
     get_bench.display_summary();
 
-    // -------------------------------------------------------------
     // 3. GET_REF / ZERO-CLONE (Zero-copy read via ValueRef)
-    // -------------------------------------------------------------
     let mut get_ref_latencies = Vec::with_capacity(num_keys / sample_rate + 1);
     let start_mem = MemoryInfo::snapshot();
     let start_time = Instant::now();
@@ -449,9 +443,7 @@ fn bench_sequential_get_set(num_keys: usize, shard_count: usize) {
     };
     get_ref_bench.display_summary();
 
-    // -------------------------------------------------------------
     // 4. SET (Overwrite / Update Existing Keys)
-    // -------------------------------------------------------------
     let mut update_latencies = Vec::with_capacity(num_keys / sample_rate + 1);
     let start_mem = MemoryInfo::snapshot();
     let start_time = Instant::now();
@@ -509,9 +501,7 @@ fn bench_sequential_get_set(num_keys: usize, shard_count: usize) {
     };
     update_bench.display_summary();
 
-    // -------------------------------------------------------------
     // 5. GET (Miss 100% - Non-existent Keys)
-    // -------------------------------------------------------------
     let mut miss_latencies = Vec::with_capacity(num_keys / sample_rate + 1);
     let start_mem = MemoryInfo::snapshot();
     let start_time = Instant::now();
@@ -587,9 +577,7 @@ fn bench_concurrent_get_set(total_keys: usize, threads: usize, shard_count: usiz
     let map = Arc::new(CustomMap::<String>::with_capacity(shard_count, total_keys));
     let keys_per_thread = total_keys / threads;
 
-    // -------------------------------------------------------------
     // 1. Concurrent Multi-Threaded SET
-    // -------------------------------------------------------------
     force_collect();
     let start_mem = MemoryInfo::snapshot();
     let start_time = Instant::now();
@@ -650,9 +638,7 @@ fn bench_concurrent_get_set(total_keys: usize, threads: usize, shard_count: usiz
 
     assert_eq!(map.len(), total_keys);
 
-    // -------------------------------------------------------------
     // 2. Concurrent Multi-Threaded GET
-    // -------------------------------------------------------------
     force_collect();
     let start_mem = MemoryInfo::snapshot();
     let start_time = Instant::now();
@@ -709,9 +695,7 @@ fn bench_concurrent_get_set(total_keys: usize, threads: usize, shard_count: usiz
     };
     concurrent_get_bench.display_summary();
 
-    // -------------------------------------------------------------
     // 3. Concurrent Mixed Workload (90% GET / 10% SET)
-    // -------------------------------------------------------------
     force_collect();
     let start_mem = MemoryInfo::snapshot();
     let start_time = Instant::now();
