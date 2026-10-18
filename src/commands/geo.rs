@@ -45,7 +45,7 @@ pub fn geoadd(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
         if !(-180.0..=180.0).contains(&lon) || !(-85.05112878..=85.05112878).contains(&lat) {
             return resp::write_err(out, "invalid longitude,latitude pair");
         }
-        items.push((lon, lat, chunk[2].to_string()));
+        items.push((lon, lat, chunk[2]));
     }
 
     resp::write_integer(

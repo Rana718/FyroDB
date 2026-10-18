@@ -4,9 +4,15 @@ impl<'a> Conn<'a> {
     pub fn do_read(&mut self) -> bool {
         loop {
             let buf = self.parser.read_buf();
+            let cap = buf.len();
             match self.stream.read(buf) {
                 Ok(0) => return false,
-                Ok(n) => self.parser.did_fill(n),
+                Ok(n) => {
+                    self.parser.did_fill(n);
+                    if n < cap {
+                        break;
+                    }
+                }
                 Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => break,
                 Err(_) => return false,
             }
@@ -36,39 +42,42 @@ impl<'a> Conn<'a> {
                     if self.authenticated
                         && !self.store.cluster.enabled
                         && !self.store.at_key_capacity()
-                        && is_coalescible_queue(raw)
                     {
-                        match dispatch_queue_run(self, raw) {
-                            QueueRunOutcome::Done => continue,
-                            QueueRunOutcome::ConnError => return false,
+                        let cmd_len = if raw.is_empty() { 0 } else { raw[0].1 };
+                        let cmd = if raw.is_empty() { &[][..] } else { unsafe { part_bytes(raw[0]) } };
+
+                        if cmd_len == 3 && cmd.eq_ignore_ascii_case(b"GET") {
+                            dispatch_raw(self, raw);
+                            continue;
                         }
-                    }
-                    if self.authenticated
-                        && !self.store.cluster.enabled
-                        && !self.store.at_key_capacity()
-                        && is_set_expire_pair(raw)
-                    {
-                        match dispatch_set_expire_pair(self, raw) {
-                            PairOutcome::Done => continue,
-                            PairOutcome::FallThrough => {}
-                            PairOutcome::ConnError => return false,
+
+                        if (cmd_len == 4 || cmd_len == 5) && is_coalescible_queue(raw) {
+                            match dispatch_queue_run(self, raw) {
+                                QueueRunOutcome::Done => continue,
+                                QueueRunOutcome::ConnError => return false,
+                            }
                         }
-                    }
-                    if self.authenticated && !self.store.cluster.enabled && is_publish_run(raw) {
-                        match dispatch_publish_run(self, raw) {
-                            QueueRunOutcome::Done => continue,
-                            QueueRunOutcome::ConnError => return false,
+                        if cmd_len == 3 && cmd.eq_ignore_ascii_case(b"SET") && is_set_expire_pair(raw) {
+                            match dispatch_set_expire_pair(self, raw) {
+                                PairOutcome::Done => continue,
+                                PairOutcome::FallThrough => {}
+                                PairOutcome::ConnError => return false,
+                            }
                         }
-                    }
-                    if self.authenticated
-                        && !self.store.cluster.enabled
-                        && !self.store.at_key_capacity()
-                        && is_write_run(raw)
-                        && self.next_is_same_write(raw)
-                    {
-                        match dispatch_write_run(self, raw) {
-                            QueueRunOutcome::Done => continue,
-                            QueueRunOutcome::ConnError => return false,
+                        if cmd_len == 7 && cmd.eq_ignore_ascii_case(b"PUBLISH") && is_publish_run(raw) {
+                            match dispatch_publish_run(self, raw) {
+                                QueueRunOutcome::Done => continue,
+                                QueueRunOutcome::ConnError => return false,
+                            }
+                        }
+                        if (cmd_len == 3 || cmd_len == 4 || cmd_len == 5)
+                            && is_write_run(raw)
+                            && self.next_is_same_write(raw)
+                        {
+                            match dispatch_write_run(self, raw) {
+                                QueueRunOutcome::Done => continue,
+                                QueueRunOutcome::ConnError => return false,
+                            }
                         }
                     }
                     dispatch_raw(self, raw);

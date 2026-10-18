@@ -29,41 +29,85 @@ pub fn write_bulk(out: &mut Vec<u8>, s: &str) {
     write_bulk_bytes(out, s.as_bytes());
 }
 
-#[inline]
+#[inline(always)]
 pub fn write_bulk_bytes(out: &mut Vec<u8>, s: &[u8]) {
     let len = s.len();
-    out.reserve(1 + 5 + 2 + len + 2);
-    match len {
-        0..10 => {
-            out.push(b'$');
-            out.push(b'0' + len as u8);
-            out.extend_from_slice(b"\r\n");
+    if len < 10 {
+        let old_len = out.len();
+        let total = 4 + len + 2;
+        out.reserve(total);
+        unsafe {
+            let p = out.as_mut_ptr().add(old_len);
+            *p = b'$';
+            *p.add(1) = b'0' + len as u8;
+            *p.add(2) = b'\r';
+            *p.add(3) = b'\n';
+            std::ptr::copy_nonoverlapping(s.as_ptr(), p.add(4), len);
+            *p.add(4 + len) = b'\r';
+            *p.add(5 + len) = b'\n';
+            out.set_len(old_len + total);
         }
-        10..100 => {
-            out.push(b'$');
-            out.push(b'0' + (len / 10) as u8);
-            out.push(b'0' + (len % 10) as u8);
-            out.extend_from_slice(b"\r\n");
-        }
-        _ => {
-            out.push(b'$');
-            write_usize(out, len);
-            out.extend_from_slice(b"\r\n");
-        }
+        return;
     }
+    if len < 100 {
+        let old_len = out.len();
+        let total = 5 + len + 2;
+        out.reserve(total);
+        unsafe {
+            let p = out.as_mut_ptr().add(old_len);
+            *p = b'$';
+            *p.add(1) = b'0' + (len / 10) as u8;
+            *p.add(2) = b'0' + (len % 10) as u8;
+            *p.add(3) = b'\r';
+            *p.add(4) = b'\n';
+            std::ptr::copy_nonoverlapping(s.as_ptr(), p.add(5), len);
+            *p.add(5 + len) = b'\r';
+            *p.add(6 + len) = b'\n';
+            out.set_len(old_len + total);
+        }
+        return;
+    }
+    out.reserve(1 + 10 + 2 + len + 2);
+    out.push(b'$');
+    write_usize(out, len);
+    out.extend_from_slice(b"\r\n");
     out.extend_from_slice(s);
     out.extend_from_slice(b"\r\n");
 }
 
-#[inline]
+#[inline(always)]
 pub fn write_integer(out: &mut Vec<u8>, n: i64) {
     if (0..10).contains(&n) {
         out.extend_from_slice(INT_CACHE[n as usize]);
         return;
     }
-    out.push(b':');
-    write_i64(out, n);
-    out.extend_from_slice(b"\r\n");
+    let mut buf = [0u8; 32];
+    buf[0] = b':';
+    let mut pos = 1;
+    let mut val = if n < 0 {
+        buf[pos] = b'-';
+        pos += 1;
+        (-n) as u64
+    } else {
+        n as u64
+    };
+    let mut digits = [0u8; 20];
+    let mut d_pos = 20;
+    loop {
+        d_pos -= 1;
+        digits[d_pos] = b'0' + (val % 10) as u8;
+        val /= 10;
+        if val == 0 {
+            break;
+        }
+    }
+    let d_len = 20 - d_pos;
+    buf[pos..pos + d_len].copy_from_slice(&digits[d_pos..]);
+    pos += d_len;
+    buf[pos] = b'\r';
+    buf[pos + 1] = b'\n';
+    pos += 2;
+    out.extend_from_slice(&buf[..pos]);
 }
 
 #[inline]

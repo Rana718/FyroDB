@@ -39,7 +39,7 @@ pub fn run_worker(
     let mut listener = make_listener(addr);
 
     let mut poll = Poll::new().unwrap();
-    let mut events = Events::with_capacity(128);
+    let mut events = Events::with_capacity(512);
 
     poll.registry()
         .register(&mut listener, LISTENER_TOKEN, Interest::READABLE)

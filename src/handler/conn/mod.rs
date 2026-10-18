@@ -11,7 +11,7 @@ use super::dispatch::dispatch;
 use super::subscription::do_full_unsubscribe;
 
 pub(crate) const SUB_WRITE_BATCH_BYTES: usize = 256 * 1024;
-const RETAINED_WRITE_BUFFER: usize = 32 * 1024;
+const RETAINED_WRITE_BUFFER: usize = 256 * 1024;
 
 mod coalesce;
 mod fast_path;
@@ -50,8 +50,13 @@ pub struct Conn<'a> {
     pub uid: u64,
     /// Set while the current command waits off-worker or on a key.
     pub park: Option<park::Parked>,
+    #[allow(dead_code)]
     hints: [prefetch::Hint; customhash::PREFETCH_BATCH],
-    hint_n: u8,
+    #[allow(dead_code)]
+    pub(crate) hint_n: u8,
+    #[allow(dead_code)]
+    pub(crate) hint_idx: u8,
+    #[allow(dead_code)]
     pf_backoff: u8,
     topology_cache: Option<(
         u64,
@@ -72,9 +77,11 @@ impl<'a> Conn<'a> {
     ) -> Self {
         store.client_connected();
         let authenticated = auth.is_none();
+        let mut parser = RespParser::new();
+        parser.wbuf.reserve(128 * 1024);
         Self {
             stream,
-            parser: RespParser::new(),
+            parser,
             store,
             pubsub,
             write_offset: 0,
@@ -90,6 +97,7 @@ impl<'a> Conn<'a> {
             park: None,
             hints: [prefetch::Hint::default(); customhash::PREFETCH_BATCH],
             hint_n: 0,
+            hint_idx: 0,
             pf_backoff: 0,
             topology_cache: None,
         }
@@ -139,6 +147,9 @@ pub(super) unsafe fn part_bytes<'a>(part: (*const u8, usize)) -> &'a [u8] {
 #[inline(always)]
 pub(super) fn part_str<'a>(out: &mut Vec<u8>, part: (*const u8, usize)) -> Option<&'a str> {
     let bytes: &'a [u8] = unsafe { part_bytes(part) };
+    if bytes.is_ascii() {
+        return Some(unsafe { std::str::from_utf8_unchecked(bytes) });
+    }
     match std::str::from_utf8(bytes) {
         Ok(s) => Some(s),
         Err(_) => {

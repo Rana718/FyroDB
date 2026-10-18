@@ -1154,17 +1154,17 @@ impl Store {
         }
     }
 
-    pub fn xadd(
+    pub fn xadd<K: AsRef<str>, V: AsRef<str>>(
         &self,
         key: &str,
         id_str: &str,
-        fields: Vec<(String, String)>,
+        fields: &[(K, V)],
         trim: Option<Trim>,
         nomkstream: bool,
     ) -> Result<Option<String>, &'static str> {
         let spec = IdSpec::parse(id_str).ok_or(ERR_INVALID_ID)?;
         let apply = |s: &mut StreamData| {
-            let id = s.add(spec, &fields)?;
+            let id = s.add(spec, fields)?;
             if let Some(t) = trim {
                 s.trim(t);
             }

@@ -569,6 +569,65 @@ func runVector() {
 	recordResult("Vector HNSW KNN-10", int64(VEC_QUERIES), hnnElapsed)
 	recalls["hnsw"] = vecRecall(conn, r, hnnCmd, gtAll)
 
+	// ── Concurrent HNSW KNN (32 clients) ────────────────────────────────────
+	const concHnsw = 32
+	hnswConns := make([]*net.TCPConn, concHnsw)
+	hnswReaders := make([]*bufio.Reader, concHnsw)
+	for i := range concHnsw {
+		hnswConns[i] = dialTCP(200 + i)
+		hnswReaders[i] = bufio.NewReaderSize(hnswConns[i], 1<<20)
+		writeFull(hnswConns[i], hnnCmd)
+		skipReply(hnswReaders[i])
+	}
+	hnswOpsPerClient := 1000
+	concHnswStart := time.Now()
+	for i := range concHnsw {
+		wg.Go(func() {
+			for range hnswOpsPerClient {
+				writeFull(hnswConns[i], hnnCmd)
+				skipReply(hnswReaders[i])
+			}
+		})
+	}
+	wg.Wait()
+	concHnswElapsed := time.Since(concHnswStart)
+	for _, c := range hnswConns {
+		c.Close()
+	}
+	recordResult("Vector HNSW (32 clients)", int64(hnswOpsPerClient*concHnsw), concHnswElapsed)
+
+	// ── Pipelined HNSW KNN (32 clients × pipe 16) ───────────────────────────
+	const pipeHnswN = 32
+	const pipeHnswBatch = 16
+	pipeHnswConns := make([]*net.TCPConn, pipeHnswN)
+	pipeHnswReaders := make([]*bufio.Reader, pipeHnswN)
+	for i := range pipeHnswN {
+		pipeHnswConns[i] = dialTCP(300 + i)
+		pipeHnswReaders[i] = bufio.NewReaderSize(pipeHnswConns[i], 1<<20)
+	}
+	pipeBuf := make([]byte, 0, len(hnnCmd)*pipeHnswBatch)
+	for range pipeHnswBatch {
+		pipeBuf = append(pipeBuf, hnnCmd...)
+	}
+	pipeTotalOpsPerClient := 3200
+	pipeHnswStart := time.Now()
+	for i := range pipeHnswN {
+		wg.Go(func() {
+			for sent := 0; sent < pipeTotalOpsPerClient; sent += pipeHnswBatch {
+				writeFull(pipeHnswConns[i], pipeBuf)
+				for range pipeHnswBatch {
+					skipReply(pipeHnswReaders[i])
+				}
+			}
+		})
+	}
+	wg.Wait()
+	pipeHnswElapsed := time.Since(pipeHnswStart)
+	for _, c := range pipeHnswConns {
+		c.Close()
+	}
+	recordResult("Vector HNSW (32 clients, pipe-16)", int64(pipeTotalOpsPerClient*pipeHnswN), pipeHnswElapsed)
+
 	// Same corpus, doubled connectivity: M=32 doubles level-0 edges and
 	// EF_CONSTRUCTION=200 widens the candidate search during the build.
 	h32BuildElapsed := createHnsw(vecIndexName+"H32", 32, 200)

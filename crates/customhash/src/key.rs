@@ -86,6 +86,29 @@ impl CompactKey {
             }
         }
     }
+
+    #[inline(always)]
+    pub(crate) fn eq_str(&self, other: &str) -> bool {
+        let other_len = other.len();
+        if self.tag != Tag::Heap {
+            let len = self.tag as usize;
+            if len != other_len {
+                return false;
+            }
+            unsafe {
+                self.data.get_unchecked(..len) == other.as_bytes()
+            }
+        } else {
+            let len_val = Self::read_heap_len(&self.data);
+            if len_val != other_len {
+                return false;
+            }
+            let ptr_val = usize::from_ne_bytes(self.data[..8].try_into().unwrap()) as *const u8;
+            unsafe {
+                std::slice::from_raw_parts(ptr_val, len_val) == other.as_bytes()
+            }
+        }
+    }
 }
 
 impl Drop for CompactKey {
@@ -105,7 +128,7 @@ impl Drop for CompactKey {
 impl PartialEq<&str> for CompactKey {
     #[inline(always)]
     fn eq(&self, other: &&str) -> bool {
-        self.as_str() == *other
+        self.eq_str(*other)
     }
 }
 

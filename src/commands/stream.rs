@@ -74,14 +74,28 @@ pub fn xadd(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
     if field_parts.is_empty() || field_parts.len() % 2 != 0 {
         return resp::write_wrong_args(out, "xadd");
     }
-    let fields: Vec<(String, String)> = field_parts
-        .chunks(2)
-        .map(|c| (c[0].to_string(), c[1].to_string()))
-        .collect();
-    match store.xadd(key, id_str, fields, trim, nomkstream) {
-        Ok(Some(id)) => resp::write_bulk(out, &id),
-        Ok(None) => resp::write_nil(out),
-        Err(e) => resp::write_store_err(out, e),
+    const STACK_FIELDS: usize = 16;
+    let n_pairs = field_parts.len() / 2;
+    if n_pairs <= STACK_FIELDS {
+        let mut stack_fields = [("", ""); STACK_FIELDS];
+        for (idx, c) in field_parts.chunks_exact(2).enumerate() {
+            stack_fields[idx] = (c[0], c[1]);
+        }
+        match store.xadd(key, id_str, &stack_fields[..n_pairs], trim, nomkstream) {
+            Ok(Some(id)) => resp::write_bulk(out, &id),
+            Ok(None) => resp::write_nil(out),
+            Err(e) => resp::write_store_err(out, e),
+        }
+    } else {
+        let fields: Vec<(&str, &str)> = field_parts
+            .chunks_exact(2)
+            .map(|c| (c[0], c[1]))
+            .collect();
+        match store.xadd(key, id_str, &fields, trim, nomkstream) {
+            Ok(Some(id)) => resp::write_bulk(out, &id),
+            Ok(None) => resp::write_nil(out),
+            Err(e) => resp::write_store_err(out, e),
+        }
     }
 }
 

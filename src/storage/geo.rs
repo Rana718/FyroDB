@@ -6,35 +6,47 @@ impl Store {
     pub fn geoadd(
         &self,
         key: &str,
-        items: &[(f64, f64, String)],
+        items: &[(f64, f64, &str)],
         nx: bool,
         xx: bool,
         ch: bool,
     ) -> Result<usize, &'static str> {
-        // Geohash interning: distinct members may hash to the same score, so
-        // members are owned by this Vec while zadd borrows them.
-        let owned: Vec<(f64, String)> = items
-            .iter()
-            .map(|(lon, lat, member)| {
+        const STACK_MEMBERS: usize = 16;
+        if items.len() <= STACK_MEMBERS {
+            let mut stack_members = [(0.0f64, ""); STACK_MEMBERS];
+            for (idx, (lon, lat, member)) in items.iter().enumerate() {
                 let hash = geohash_encode(*lon, *lat);
-                (f64::from_bits(hash), member.clone())
-            })
-            .collect();
-        let members: Vec<(f64, &str)> = owned
-            .iter()
-            .map(|(score, member)| (*score, member.as_str()))
-            .collect();
-
-        self.zadd(
-            key,
-            &members,
-            crate::storage::zset::ZAddOptions {
-                nx,
-                xx,
-                ch,
-                ..Default::default()
-            },
-        )
+                stack_members[idx] = (f64::from_bits(hash), *member);
+            }
+            self.zadd(
+                key,
+                &stack_members[..items.len()],
+                crate::storage::zset::ZAddOptions {
+                    nx,
+                    xx,
+                    ch,
+                    ..Default::default()
+                },
+            )
+        } else {
+            let members: Vec<(f64, &str)> = items
+                .iter()
+                .map(|(lon, lat, member)| {
+                    let hash = geohash_encode(*lon, *lat);
+                    (f64::from_bits(hash), *member)
+                })
+                .collect();
+            self.zadd(
+                key,
+                &members,
+                crate::storage::zset::ZAddOptions {
+                    nx,
+                    xx,
+                    ch,
+                    ..Default::default()
+                },
+            )
+        }
     }
 
     pub fn geopos(

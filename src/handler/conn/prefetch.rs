@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use super::*;
 
 const BATCH: usize = customhash::PREFETCH_BATCH;
@@ -121,6 +123,7 @@ impl Conn<'_> {
     #[inline]
     pub(super) fn prefetch_ahead(&mut self) -> usize {
         self.hint_n = 0;
+        self.hint_idx = 0;
         let p = &self.parser;
         let buf = &p.rbuf[p.pos..p.filled];
         if buf.len() < 16 {
@@ -141,25 +144,85 @@ impl Conn<'_> {
                 *h = Hint { ptr: k.as_ptr() as usize, len: k.len(), hash };
             }
             self.hint_n = n as u8;
+            self.hint_idx = 0;
         }
         next
     }
 
+    #[inline(always)]
     pub(super) fn next_is_same_write(&self, raw: &[(*const u8, usize)]) -> bool {
         let p = &self.parser;
-        let Some((cmd, key)) = peek_cmd_key(&p.rbuf[p.pos..p.filled]) else {
-            return true;
-        };
+        if p.pos >= p.filled {
+            return false;
+        }
+        let buf = &p.rbuf[p.pos..p.filled];
+        let arity = raw.len();
+        if arity < 2 || arity >= 10 {
+            return false;
+        }
         let (cur_cmd, cur_key) = unsafe { (part_bytes(raw[0]), part_bytes(raw[1])) };
-        cmd.eq_ignore_ascii_case(cur_cmd) && key == cur_key
+        let cmd_len = cur_cmd.len();
+        let key_len = cur_key.len();
+        if cmd_len >= 10 {
+            return false;
+        }
+        let cmd_hdr_len = 4 + 4 + cmd_len + 2;
+        if buf.len() < cmd_hdr_len + 4 + key_len + 2 {
+            return false;
+        }
+        if buf[0] != b'*' || buf[1] != b'0' + arity as u8 || buf[2] != b'\r' || buf[3] != b'\n' {
+            return false;
+        }
+        if buf[4] != b'$' || buf[5] != b'0' + cmd_len as u8 || buf[6] != b'\r' || buf[7] != b'\n' {
+            return false;
+        }
+        if !buf[8..8 + cmd_len].eq_ignore_ascii_case(cur_cmd) || buf[8 + cmd_len] != b'\r' || buf[9 + cmd_len] != b'\n' {
+            return false;
+        }
+        let k_hdr = &buf[cmd_hdr_len..];
+        if key_len < 10 {
+            if k_hdr[0] != b'$' || k_hdr[1] != b'0' + key_len as u8 || k_hdr[2] != b'\r' || k_hdr[3] != b'\n' {
+                return false;
+            }
+            if &k_hdr[4..4 + key_len] != cur_key || k_hdr[4 + key_len] != b'\r' || k_hdr[5 + key_len] != b'\n' {
+                return false;
+            }
+            true
+        } else if key_len < 100 {
+            if k_hdr[0] != b'$' || k_hdr[1] != b'0' + (key_len / 10) as u8 || k_hdr[2] != b'0' + (key_len % 10) as u8 || k_hdr[3] != b'\r' || k_hdr[4] != b'\n' {
+                return false;
+            }
+            if &k_hdr[5..5 + key_len] != cur_key || k_hdr[5 + key_len] != b'\r' || k_hdr[6] != b'\n' {
+                return false;
+            }
+            true
+        } else {
+            let Some((cmd, key)) = peek_cmd_key(buf) else {
+                return false;
+            };
+            cmd.eq_ignore_ascii_case(cur_cmd) && key == cur_key
+        }
     }
 
-    #[inline]
-    pub(super) fn hint_for(&self, part: (*const u8, usize)) -> Option<u64> {
-        self.hints[..self.hint_n as usize]
-            .iter()
-            .find(|h| h.ptr == part.0 as usize && h.len == part.1 && h.hash != 0)
-            .map(|h| h.hash)
+    #[inline(always)]
+    pub(super) fn hint_for(&mut self, part: (*const u8, usize)) -> Option<u64> {
+        let idx = self.hint_idx as usize;
+        let n = self.hint_n as usize;
+        if idx < n {
+            let h = &self.hints[idx];
+            if h.ptr == part.0 as usize && h.len == part.1 && h.hash != 0 {
+                self.hint_idx += 1;
+                return Some(h.hash);
+            }
+        }
+        for i in 0..n {
+            let h = &self.hints[i];
+            if h.ptr == part.0 as usize && h.len == part.1 && h.hash != 0 {
+                self.hint_idx = (i + 1) as u8;
+                return Some(h.hash);
+            }
+        }
+        None
     }
 }
 

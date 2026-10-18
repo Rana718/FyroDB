@@ -216,7 +216,7 @@ impl Config {
         };
         let shards = env_usize("FYRODB_SHARDS", 0);
         let shards = if shards == 0 {
-            (workers * 4).next_power_of_two()
+            (workers * 4).max(128).next_power_of_two()
         } else {
             shards.next_power_of_two()
         };
