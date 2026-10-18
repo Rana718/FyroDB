@@ -919,8 +919,36 @@ pub(super) fn ft_offload_generic(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]
 }
 
 pub(super) fn ft_search_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
-    // Owned copies: the job outlives this read buffer. Binary PARAMS
-    // (query vectors) travel as bytes with an empty placeholder in `parts`.
+    let inline = !search_offloaded() || (raw.len() >= 2 && {
+        let idx = unsafe { std::str::from_utf8_unchecked(part_bytes(raw[1])) };
+        conn.store.search_state().hnsw_graph_is_clean(idx)
+    });
+
+    if inline {
+        const STACK_PARTS: usize = 32;
+        if raw.len() <= STACK_PARTS {
+            let mut stack_parts = [""; STACK_PARTS];
+            let mut binaries: Vec<(usize, Vec<u8>)> = Vec::new();
+            for (i, &part) in raw.iter().enumerate() {
+                let bytes = unsafe { part_bytes(part) };
+                match std::str::from_utf8(bytes) {
+                    Ok(s) => stack_parts[i] = s,
+                    Err(_) if i >= 3 => {
+                        binaries.push((i, bytes.to_vec()));
+                        stack_parts[i] = "";
+                    }
+                    Err(_) => {
+                        conn.parser.wbuf.extend_from_slice(b"-ERR invalid UTF-8 in request\r\n");
+                        return;
+                    }
+                }
+            }
+            crate::commands::ft::search_dispatch(&stack_parts[..raw.len()], &binaries, conn.store, &mut conn.parser.wbuf);
+            return;
+        }
+    }
+
+    // Owned copies: the job outlives this read buffer when submitted to pool.
     let mut parts: Vec<String> = Vec::with_capacity(raw.len());
     let mut binaries: Vec<(usize, Vec<u8>)> = Vec::new();
     for (i, &part) in raw.iter().enumerate() {
@@ -942,18 +970,8 @@ pub(super) fn ft_search_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
         let refs: Vec<&str> = parts.iter().map(String::as_str).collect();
         crate::commands::ft::search_dispatch(&refs, &binaries, &store, out);
     };
-    if search_offloaded() {
-        // Inline fast path: HNSW queries on a clean graph are so fast
-        // (~25μs) that pool submission overhead doubles the latency.
-        let inline = raw.len() >= 2 && {
-            let idx = unsafe { std::str::from_utf8_unchecked(part_bytes(raw[1])) };
-            conn.store.search_state().hnsw_graph_is_clean(idx)
-        };
-        if inline {
-            run(&mut conn.parser.wbuf);
-        } else {
-            conn.submit(run);
-        }
+    if search_offloaded() && !inline {
+        conn.submit(run);
     } else {
         run(&mut conn.parser.wbuf);
     }

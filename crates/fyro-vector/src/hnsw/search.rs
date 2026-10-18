@@ -296,19 +296,21 @@ impl HnswGraph {
         for level in (1..=top).rev() {
             (cur, cur_d) = self.greedy(kern, g, sc, q, cur, cur_d, level);
         }
-        let mut eps_buf: Vec<(f32, u32)> = Vec::with_capacity(4);
-        eps_buf.push((cur_d, cur));
+        let mut eps_buf: [(f32, u32); 4] = [(0.0, 0); 4];
+        let mut eps_len = 1;
+        eps_buf[0] = (cur_d, cur);
         if g.len >= 2000 {
             let stride = g.len / 3;
             for s in 1..3usize {
                 let hint = (stride * s) as u32;
                 if hint != cur && (g.flag(hint) & F_DELETED == 0) {
                     let d = self.dist(kern, g, q, hint);
-                    eps_buf.push((d, hint));
+                    eps_buf[eps_len] = (d, hint);
+                    eps_len += 1;
                 }
             }
         }
-        self.search_layer(kern, g, sc, q, &eps_buf, ef, 0, collect, out);
+        self.search_layer(kern, g, sc, q, &eps_buf[..eps_len], ef, 0, collect, out);
         out.truncate(k);
     }
 
