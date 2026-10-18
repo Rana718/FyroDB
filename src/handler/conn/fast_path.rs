@@ -17,15 +17,17 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
     if !conn.store.cluster.enabled && !conn.store.at_key_capacity() {
         if cmd_len == 3 {
             if cmd.eq_ignore_ascii_case(b"GET") && raw.len() == 2 {
+                let hint = conn.hint_for(raw[1]);
                 let out = &mut conn.parser.wbuf;
                 let Some(key) = part_str(out, raw[1]) else {
                     return;
                 };
-                if !conn.store.get_to_buf_hinted(key, None, out) {
+                if !conn.store.get_to_buf_hinted(key, hint, out) {
                     out.extend_from_slice(b"$-1\r\n");
                 }
                 return;
             } else if cmd.eq_ignore_ascii_case(b"SET") && raw.len() == 3 {
+                let hint = conn.hint_for(raw[1]);
                 let out = &mut conn.parser.wbuf;
                 let Some(key) = part_str(out, raw[1]) else {
                     return;
@@ -33,7 +35,7 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
                 let Some(value) = part_str(out, raw[2]) else {
                     return;
                 };
-                conn.store.set_string_hinted(key, None, value, 0);
+                conn.store.set_string_hinted(key, hint, value, 0);
                 if conn.store.has_replication() {
                     conn.store.record_current_value(key);
                 }

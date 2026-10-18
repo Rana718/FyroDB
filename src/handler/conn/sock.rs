@@ -25,10 +25,14 @@ impl<'a> Conn<'a> {
     /// stopping early when one parks the connection (the rest stays
     /// buffered until it unparks). Returns false on a protocol error.
     pub fn process_buffered(&mut self) -> bool {
+        let mut prefetched = 0usize;
         self.hint_n = 0;
         loop {
             if self.park.is_some() {
                 return true;
+            }
+            if self.parser.pos >= prefetched && !self.parser.in_partial() {
+                prefetched = self.prefetch_ahead();
             }
             match self.parser.parse_one() {
                 ParseResult::Complete => {
