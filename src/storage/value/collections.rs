@@ -1,7 +1,7 @@
 use super::small_str::SmallStr;
 use foldhash::{HashMap, HashMapExt, HashSet};
 
-pub(crate) const COMPACT_THRESHOLD: usize = 64;
+pub(crate) const COMPACT_THRESHOLD: usize = 128;
 
 #[derive(Clone)]
 pub enum HashInner {

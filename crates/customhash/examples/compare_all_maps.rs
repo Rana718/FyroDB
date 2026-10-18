@@ -263,8 +263,8 @@ fn bench_scc_ahash(keys: &Arc<Vec<String>>) {
 // 5. FyroDB CustomMap (FoldHash + EBR)
 // -----------------------------------------------------------------------------
 fn bench_fyro_custommap(keys: &Arc<Vec<String>>) {
-    // 64 shards, pre-sized capacity for INITIAL_KEYS
-    let map = Arc::new(CustomMap::<u64>::with_capacity(64, INITIAL_KEYS * 2));
+    // 128 shards, pre-sized capacity for INITIAL_KEYS
+    let map = Arc::new(CustomMap::<u64>::with_capacity(128, INITIAL_KEYS * 2));
     for (i, k) in keys.iter().enumerate() {
         map.insert(k.clone(), i as u64);
     }
@@ -304,7 +304,7 @@ fn bench_fyro_custommap(keys: &Arc<Vec<String>>) {
     });
 
     // 100% Inserts
-    let map_w = Arc::new(CustomMap::<u64>::with_capacity(64, NUM_THREADS * OPS_PER_THREAD));
+    let map_w = Arc::new(CustomMap::<u64>::with_capacity(128, NUM_THREADS * OPS_PER_THREAD));
     run_benchmark("FyroDB CustomMap - 100% Inserts", {
         let map = map_w.clone();
         move |tid| {

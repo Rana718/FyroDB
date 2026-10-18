@@ -109,6 +109,12 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
         }
     }
 
+    pub const DEFAULT_SHARDS: usize = 128;
+
+    pub fn new() -> Self {
+        Self::with_shards(Self::DEFAULT_SHARDS)
+    }
+
     pub fn with_shards(n: usize) -> Self {
         Self::build(
             n.next_power_of_two().max(1),
@@ -629,6 +635,12 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
 
 unsafe impl<V: Send + Sync> Sync for CustomMap<V> {}
 unsafe impl<V: Send + Sync> Send for CustomMap<V> {}
+
+impl<V: Clone + Send + Sync + 'static> Default for CustomMap<V> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 pub const PREFETCH_BATCH: usize = 16;
 

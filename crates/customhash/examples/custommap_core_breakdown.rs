@@ -22,7 +22,7 @@ fn main() {
         println!("│  THREAD COUNT: {:2} WORKERS / THREADS                                                   │", threads);
         println!("├─────────────────────────────────────────────────────────────────────────────────────────┤");
 
-        let map = Arc::new(CustomMap::<u64>::with_capacity(64, INITIAL_KEYS * 2));
+        let map = Arc::new(CustomMap::<u64>::with_capacity(128, INITIAL_KEYS * 2));
         for (i, k) in keys.iter().enumerate() {
             map.insert(k.clone(), i as u64);
         }
