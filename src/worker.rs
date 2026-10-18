@@ -162,10 +162,8 @@ pub fn run_worker(
                         }
                     }
                     notifier.drain_pending_into(&mut sub_dirty);
+                    fanout_seen.fill(false);
                     fanout_seen.resize(conns.len(), false);
-                    for seen in fanout_seen.iter_mut() {
-                        *seen = false;
-                    }
                     deliver_fanout(
                         &notifier,
                         &mut conns,
