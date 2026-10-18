@@ -57,6 +57,9 @@ fn bench_4_workers_2_cores() {
         (32, 512),
         (32, 1024),
         (36, 1024),
+        (48, 1024),
+        (64, 1024),
+        (48, 2048),
     ] {
         let total_ops = 1_536_000;
         let req_per_client = total_ops / clients;

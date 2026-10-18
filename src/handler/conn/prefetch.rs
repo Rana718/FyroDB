@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use super::*;
 
 const BATCH: usize = customhash::PREFETCH_BATCH;
@@ -147,8 +149,11 @@ impl Conn<'_> {
 
     pub(super) fn next_is_same_write(&self, raw: &[(*const u8, usize)]) -> bool {
         let p = &self.parser;
+        if p.pos >= p.filled {
+            return false;
+        }
         let Some((cmd, key)) = peek_cmd_key(&p.rbuf[p.pos..p.filled]) else {
-            return true;
+            return false;
         };
         let (cur_cmd, cur_key) = unsafe { (part_bytes(raw[0]), part_bytes(raw[1])) };
         cmd.eq_ignore_ascii_case(cur_cmd) && key == cur_key

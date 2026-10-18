@@ -14,6 +14,85 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
         return;
     }
 
+    if !conn.store.cluster.enabled && !conn.store.at_key_capacity() {
+        if cmd_len == 3 {
+            if cmd.eq_ignore_ascii_case(b"GET") && raw.len() == 2 {
+                let out = &mut conn.parser.wbuf;
+                let Some(key) = part_str(out, raw[1]) else {
+                    return;
+                };
+                if !conn.store.get_to_buf_hinted(key, None, out) {
+                    out.extend_from_slice(b"$-1\r\n");
+                }
+                return;
+            } else if cmd.eq_ignore_ascii_case(b"SET") && raw.len() == 3 {
+                let out = &mut conn.parser.wbuf;
+                let Some(key) = part_str(out, raw[1]) else {
+                    return;
+                };
+                let Some(value) = part_str(out, raw[2]) else {
+                    return;
+                };
+                conn.store.set_string_hinted(key, None, value, 0);
+                if conn.store.has_replication() {
+                    conn.store.record_current_value(key);
+                }
+                out.extend_from_slice(b"+OK\r\n");
+                return;
+            } else if cmd.eq_ignore_ascii_case(b"DEL") && raw.len() == 2 {
+                let out = &mut conn.parser.wbuf;
+                let Some(key) = part_str(out, raw[1]) else {
+                    return;
+                };
+                if conn.store.del(key) {
+                    out.extend_from_slice(b":1\r\n");
+                } else {
+                    out.extend_from_slice(b":0\r\n");
+                }
+                return;
+            }
+        } else if cmd_len == 4 {
+            if cmd.eq_ignore_ascii_case(b"HGET") && raw.len() == 3 {
+                let out = &mut conn.parser.wbuf;
+                let Some(key) = part_str(out, raw[1]) else {
+                    return;
+                };
+                let Some(field) = part_str(out, raw[2]) else {
+                    return;
+                };
+                match conn.store.hget_to_buf(key, field, out) {
+                    Ok(true) => {}
+                    Ok(false) => crate::utils::resp::write_nil(out),
+                    Err(_) => crate::utils::resp::write_wrong_type(out),
+                }
+                return;
+            } else if cmd.eq_ignore_ascii_case(b"HSET") && raw.len() == 4 {
+                let out = &mut conn.parser.wbuf;
+                let Some(key) = part_str(out, raw[1]) else {
+                    return;
+                };
+                let pair = [(
+                    unsafe { part_bytes(raw[2]) },
+                    unsafe { part_bytes(raw[3]) },
+                )];
+                crate::commands::hash::hset_raw(key, &pair, conn.store, out);
+                if conn.store.has_replication() {
+                    conn.store.record_current_value(key);
+                }
+                return;
+            } else if cmd.eq_ignore_ascii_case(b"PING") {
+                if raw.len() == 1 {
+                    conn.parser.wbuf.extend_from_slice(crate::utils::resp::PONG);
+                    return;
+                } else if raw.len() == 2 {
+                    let msg = unsafe { part_bytes(raw[1]) };
+                    crate::utils::resp::write_bulk_bytes(&mut conn.parser.wbuf, msg);
+                    return;
+                }
+            }
+        }
+    }
+
     // Only pay for the write gate when cluster is actually enabled and the
     // command is a write.
     let cluster_is_write = conn.store.cluster.enabled && crate::cluster::is_write_command(cmd);
@@ -144,24 +223,67 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
             return;
         }
     } else if cmd_len == 4 {
-        if cmd.eq_ignore_ascii_case(b"HSET") && raw.len() >= 4 && (raw.len() - 2).is_multiple_of(2) {
+        if cmd.eq_ignore_ascii_case(b"HGET") && raw.len() == 3 {
             let out = &mut conn.parser.wbuf;
             let Some(key) = part_str(out, raw[1]) else {
                 return;
             };
-            let n_pairs = (raw.len() - 2) / 2;
-            let mut pairs: Vec<(&[u8], &[u8])> = Vec::with_capacity(n_pairs);
-            for i in 0..n_pairs {
-                pairs.push((
-                    unsafe { part_bytes(raw[2 + i * 2]) },
-                    unsafe { part_bytes(raw[3 + i * 2]) },
-                ));
+            let Some(field) = part_str(out, raw[2]) else {
+                return;
+            };
+            match conn.store.hget_to_buf(key, field, out) {
+                Ok(true) => {}
+                Ok(false) => crate::utils::resp::write_nil(out),
+                Err(_) => crate::utils::resp::write_wrong_type(out),
             }
-            crate::commands::hash::hset_raw(key, &pairs, conn.store, &mut conn.parser.wbuf);
+            return;
+        } else if cmd.eq_ignore_ascii_case(b"HSET") && raw.len() >= 4 && (raw.len() - 2).is_multiple_of(2) {
+            let out = &mut conn.parser.wbuf;
+            let Some(key) = part_str(out, raw[1]) else {
+                return;
+            };
+            if raw.len() == 4 {
+                let pair = [(
+                    unsafe { part_bytes(raw[2]) },
+                    unsafe { part_bytes(raw[3]) },
+                )];
+                crate::commands::hash::hset_raw(key, &pair, conn.store, &mut conn.parser.wbuf);
+            } else {
+                let n_pairs = (raw.len() - 2) / 2;
+                const STACK_PAIRS: usize = 16;
+                if n_pairs <= STACK_PAIRS {
+                    let mut stack_pairs = [(&[][..], &[][..]); STACK_PAIRS];
+                    for i in 0..n_pairs {
+                        stack_pairs[i] = (
+                            unsafe { part_bytes(raw[2 + i * 2]) },
+                            unsafe { part_bytes(raw[3 + i * 2]) },
+                        );
+                    }
+                    crate::commands::hash::hset_raw(key, &stack_pairs[..n_pairs], conn.store, &mut conn.parser.wbuf);
+                } else {
+                    let mut pairs: Vec<(&[u8], &[u8])> = Vec::with_capacity(n_pairs);
+                    for i in 0..n_pairs {
+                        pairs.push((
+                            unsafe { part_bytes(raw[2 + i * 2]) },
+                            unsafe { part_bytes(raw[3 + i * 2]) },
+                        ));
+                    }
+                    crate::commands::hash::hset_raw(key, &pairs, conn.store, &mut conn.parser.wbuf);
+                }
+            }
             if conn.store.has_replication() {
                 conn.store.record_current_value(key);
             }
             return;
+        } else if cmd.eq_ignore_ascii_case(b"PING") {
+            if raw.len() == 1 {
+                conn.parser.wbuf.extend_from_slice(crate::utils::resp::PONG);
+                return;
+            } else if raw.len() == 2 {
+                let msg = unsafe { part_bytes(raw[1]) };
+                crate::utils::resp::write_bulk_bytes(&mut conn.parser.wbuf, msg);
+                return;
+            }
         } else if cmd.eq_ignore_ascii_case(b"INCR") && raw.len() == 2 {
             let out = &mut conn.parser.wbuf;
             let Some(key) = part_str(out, raw[1]) else {

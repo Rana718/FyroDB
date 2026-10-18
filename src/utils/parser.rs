@@ -58,7 +58,10 @@ impl RespParser {
     }
 
     pub fn read_buf(&mut self) -> &mut [u8] {
-        if self.rbuf.len() - self.filled < 1024 {
+        if self.pos == self.filled && self.partial.is_none() {
+            self.pos = 0;
+            self.filled = 0;
+        } else if self.rbuf.len() - self.filled < 1024 {
             if self.pos > 0 {
                 self.rbuf.copy_within(self.pos..self.filled, 0);
                 self.filled -= self.pos;
@@ -68,6 +71,9 @@ impl RespParser {
                 let grown = (self.rbuf.len() * 2).max(Self::IDLE_READ_BUFFER);
                 self.rbuf.resize(grown, 0);
             }
+        }
+        if self.rbuf.is_empty() {
+            self.rbuf.resize(Self::IDLE_READ_BUFFER, 0);
         }
         &mut self.rbuf[self.filled..]
     }
@@ -1076,12 +1082,14 @@ impl RespParser {
     }
 
     pub fn release_read_buffer(&mut self) {
-        if self.pos == self.filled && self.partial.is_none() && self.rbuf.len() > 16 * 1024 {
+        if self.pos == self.filled && self.partial.is_none() {
             self.parts_raw.clear();
-            self.rbuf.truncate(Self::IDLE_READ_BUFFER);
-            self.rbuf.shrink_to(Self::IDLE_READ_BUFFER);
             self.filled = 0;
             self.pos = 0;
+            if self.rbuf.len() > 16 * 1024 {
+                self.rbuf.truncate(Self::IDLE_READ_BUFFER);
+                self.rbuf.shrink_to(Self::IDLE_READ_BUFFER);
+            }
         }
     }
 

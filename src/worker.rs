@@ -39,7 +39,7 @@ pub fn run_worker(
     let mut listener = make_listener(addr);
 
     let mut poll = Poll::new().unwrap();
-    let mut events = Events::with_capacity(128);
+    let mut events = Events::with_capacity(512);
 
     poll.registry()
         .register(&mut listener, LISTENER_TOKEN, Interest::READABLE)
@@ -62,8 +62,8 @@ pub fn run_worker(
     let busy_window = std::env::var("FYRODB_BUSY_POLL_US")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
-        .filter(|&us| us > 0)
-        .map(std::time::Duration::from_micros);
+        .map(std::time::Duration::from_micros)
+        .or(Some(std::time::Duration::from_millis(50)));
     let mut last_active = std::time::Instant::now();
     #[cfg(feature = "io-uring")]
     let mut send_ring = crate::handler::uring::SendRing::from_env();
@@ -125,6 +125,24 @@ pub fn run_worker(
                             }
 
                             let _ = stream.set_nodelay(true);
+                            let sock_ref = socket2::SockRef::from(&stream);
+                            let _ = sock_ref.set_recv_buffer_size(524_288);
+                            let _ = sock_ref.set_send_buffer_size(524_288);
+                            #[cfg(target_os = "linux")]
+                            {
+                                use std::os::unix::io::AsRawFd;
+                                let fd = stream.as_raw_fd();
+                                unsafe {
+                                    let one: libc::c_int = 1;
+                                    let _ = libc::setsockopt(
+                                        fd,
+                                        libc::IPPROTO_TCP,
+                                        libc::TCP_QUICKACK,
+                                        &one as *const _ as *const libc::c_void,
+                                        std::mem::size_of_val(&one) as libc::socklen_t,
+                                    );
+                                }
+                            }
                             let id = alloc_slot(&mut free, &mut next_token, &mut conns);
                             poll.registry()
                                 .register(&mut stream, Token(id), Interest::READABLE)
@@ -357,6 +375,8 @@ fn make_listener(addr: SocketAddr) -> TcpListener {
     socket.set_reuse_address(true).unwrap();
     socket.set_reuse_port(true).unwrap();
     socket.set_nonblocking(true).unwrap();
+    let _ = socket.set_recv_buffer_size(524_288);
+    let _ = socket.set_send_buffer_size(524_288);
     socket.bind(&addr.into()).unwrap();
     socket.listen(8192).unwrap();
     TcpListener::from_std(std::net::TcpListener::from(socket))

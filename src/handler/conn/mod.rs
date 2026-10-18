@@ -11,7 +11,7 @@ use super::dispatch::dispatch;
 use super::subscription::do_full_unsubscribe;
 
 pub(crate) const SUB_WRITE_BATCH_BYTES: usize = 256 * 1024;
-const RETAINED_WRITE_BUFFER: usize = 32 * 1024;
+const RETAINED_WRITE_BUFFER: usize = 256 * 1024;
 
 mod coalesce;
 mod fast_path;
@@ -50,8 +50,11 @@ pub struct Conn<'a> {
     pub uid: u64,
     /// Set while the current command waits off-worker or on a key.
     pub park: Option<park::Parked>,
+    #[allow(dead_code)]
     hints: [prefetch::Hint; customhash::PREFETCH_BATCH],
+    #[allow(dead_code)]
     hint_n: u8,
+    #[allow(dead_code)]
     pf_backoff: u8,
     topology_cache: Option<(
         u64,
@@ -72,9 +75,11 @@ impl<'a> Conn<'a> {
     ) -> Self {
         store.client_connected();
         let authenticated = auth.is_none();
+        let mut parser = RespParser::new();
+        parser.wbuf.reserve(128 * 1024);
         Self {
             stream,
-            parser: RespParser::new(),
+            parser,
             store,
             pubsub,
             write_offset: 0,
