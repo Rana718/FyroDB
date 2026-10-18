@@ -50,6 +50,12 @@ tasks:
       cmds:
          - cargo build --release --features io-uring
 
+   run-io:
+      desc: "Build and run FyroDB with the io_uring batched-send path enabled"
+      cmds:
+         - task: build-uring
+         - FYRODB_IO_URING=1 target/release/{{.BINARY}}
+
    run-pinned:
       desc: "Run with workers and the vector pool pinned to disjoint cores (FYRODB_AFFINITY=auto) and a 50us busy-poll window"
       cmds:
@@ -190,7 +196,7 @@ tasks:
    without-tcp:
       desc: "Full in-memory benchmark suite against FyroDB engine directly without TCP/network bottleneck"
       cmds:
-         - cargo run --release --bin without_tcp -- {{.CLI_ARGS}}
+         - cargo run --release --features bench-tools --bin without_tcp -- {{.CLI_ARGS}}
 
    bench-fyrodb:
       desc: "Full suite against FyroDB: KV, Pub/Sub, INCR, Hash, List, Set, ZSet, JSON, TTL, HotKey, Queue, Stream, Bitmap, HLL, Geo"

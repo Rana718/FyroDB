@@ -65,7 +65,8 @@ func runPubSub(addr string) {
 			subReady.Done()
 			<-startSignal
 
-			bytesRead, err := io.CopyN(io.Discard, conn, totalMsgs*messageFrameBytes)
+			buf := make([]byte, 256*1024)
+			bytesRead, err := io.CopyBuffer(io.Discard, io.LimitReader(conn, totalMsgs*messageFrameBytes), buf)
 			localCount := bytesRead / messageFrameBytes
 			if err == nil {
 				localCount = totalMsgs

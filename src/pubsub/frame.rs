@@ -23,6 +23,24 @@ pub fn encode_message(channel: &str, message: &str) -> Arc<[u8]> {
    out.into()
 }
 
+pub fn encode_batch(channel: &str, messages: &[&str]) -> Arc<[u8]> {
+   let ch_len = channel.len();
+   let ch_bytes = channel.as_bytes();
+   let ch_hdr_len = 1 + resp_int_len(ch_len) + 2 + ch_len + 2;
+   let mut total = 0;
+   for m in messages {
+      let m_len = m.len();
+      total += 15 + ch_hdr_len + 1 + resp_int_len(m_len) + 2 + m_len + 2;
+   }
+   let mut out = Vec::with_capacity(total);
+   for m in messages {
+      out.extend_from_slice(b"*3\r\n$7\r\nmessage\r\n");
+      bulk_into(&mut out, ch_bytes);
+      bulk_into(&mut out, m.as_bytes());
+   }
+   out.into()
+}
+
 pub fn encode_pmessage(pattern: &str, channel: &str, message: &str) -> Arc<[u8]> {
    let pat_len = pattern.len();
    let ch_len = channel.len();

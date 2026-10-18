@@ -78,6 +78,10 @@ func main() {
 	noFlush := flag.Bool("f", false, "skip FLUSHALL between phases; keyspace accumulates so peak RSS measures true steady-state memory")
 	jsonOut := flag.String("json", "", "write all results (throughput, latency, memory) as JSON to this path")
 
+	flag.IntVar(&PUB_SUBSCRIBERS, "pub-subs", PUB_SUBSCRIBERS, "pub/sub subscribers")
+	flag.IntVar(&PUB_PUBLISHERS, "pub-pubs", PUB_PUBLISHERS, "pub/sub publishers")
+	flag.IntVar(&PUB_MSGS_EACH, "pub-msgs", PUB_MSGS_EACH, "pub/sub messages per publisher")
+
 	flag.IntVar(&latCfg.rate, "rate", latCfg.rate, "lat: target total ops/sec (0 = closed loop)")
 	flag.DurationVar(&latCfg.duration, "dur", latCfg.duration, "lat: measurement duration")
 	flag.IntVar(&latCfg.conns, "conns", latCfg.conns, "lat: connections")

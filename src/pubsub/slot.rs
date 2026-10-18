@@ -8,14 +8,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 pub struct FanEntry {
    pub channel: Arc<str>,
    pub frame: Arc<[u8]>,
-   pub extra: Vec<Arc<[u8]>>,
-}
-
-impl FanEntry {
-   #[inline]
-   pub fn frames(&self) -> impl Iterator<Item = &Arc<[u8]>> {
-      std::iter::once(&self.frame).chain(self.extra.iter())
-   }
 }
 
 /// Work finished elsewhere for a connection parked on this worker.

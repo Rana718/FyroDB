@@ -355,18 +355,12 @@ fn deliver_fanout(
             if !subscribed {
                continue;
             }
-            // Batch cap applies per frame; overflow spills like unbatched delivery.
-            let mut spilled = false;
-            for frame in entry.frames() {
-               if !spilled
-                  && conn.parser.wbuf.len() + frame.len()
-                     <= crate::handler::conn::SUB_WRITE_BATCH_BYTES
-               {
-                  conn.parser.wbuf.extend_from_slice(frame);
-               } else if let crate::handler::conn::ConnMode::Subscribed { slot, .. } = &conn.mode {
-                  slot.push(Arc::clone(frame));
-                  spilled = true;
-               }
+            if conn.parser.wbuf.len() + entry.frame.len()
+               <= crate::handler::conn::SUB_WRITE_BATCH_BYTES
+            {
+               conn.parser.wbuf.extend_from_slice(&entry.frame);
+            } else if let crate::handler::conn::ConnMode::Subscribed { slot, .. } = &conn.mode {
+               slot.push(Arc::clone(&entry.frame));
             }
             if !seen[token] {
                seen[token] = true;

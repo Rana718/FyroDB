@@ -6,82 +6,37 @@ use std::hash::BuildHasher;
 
 use crate::utils::util::glob_match_bytes;
 
-use super::frame::{encode_message, encode_pmessage};
+use super::frame::{encode_batch, encode_message, encode_pmessage};
 use super::slot::{FanEntry, SubSlot, WorkerNotifier};
 
-const FANOUT_GROUP_RATIO: usize = 8;
-
-fn fan_out(ch: &ChannelData, encode: &dyn Fn() -> Arc<[u8]>) {
-   let mut reps: [Option<&Arc<WorkerNotifier>>; 64] = [const { None }; 64];
-   let mut overflow: Vec<&Arc<WorkerNotifier>> = Vec::new();
-   for slot in &ch.slots {
+fn extract_workers(slots: &[Arc<SubSlot>]) -> Vec<Arc<WorkerNotifier>> {
+   let mut reps: [Option<Arc<WorkerNotifier>>; 64] = [const { None }; 64];
+   let mut overflow: Vec<Arc<WorkerNotifier>> = Vec::new();
+   for slot in slots {
       let notifier = slot.notifier();
       let idx = notifier.worker_index();
       if idx < 64 {
          if reps[idx].is_none() {
-            reps[idx] = Some(notifier);
+            reps[idx] = Some(Arc::clone(notifier));
          }
-      } else if !overflow.iter().any(|&n| Arc::ptr_eq(n, notifier)) {
-         overflow.push(notifier);
+      } else if !overflow.iter().any(|n| Arc::ptr_eq(n, notifier)) {
+         overflow.push(Arc::clone(notifier));
       }
    }
-   let distinct = reps.iter().flatten().count() + overflow.len();
-
-   if ch.slots.len() <= FANOUT_GROUP_RATIO * distinct {
-      let frame = encode();
-      for slot in &ch.slots {
-         slot.push(Arc::clone(&frame));
-      }
-      return;
+   let mut workers = Vec::with_capacity(reps.iter().flatten().count() + overflow.len());
+   for w in reps.into_iter().flatten() {
+      workers.push(w);
    }
-
-   let frame = encode();
-   for notifier in reps.iter().flatten() {
-      notifier.notify_fanout(FanEntry {
-         channel: Arc::clone(&ch.name),
-         frame: Arc::clone(&frame),
-         extra: Vec::new(),
-      });
-   }
-   for notifier in overflow {
-      notifier.notify_fanout(FanEntry {
-         channel: Arc::clone(&ch.name),
-         frame: Arc::clone(&frame),
-         extra: Vec::new(),
-      });
-   }
+   workers.extend(overflow);
+   workers
 }
 
-fn fan_out_multi(ch: &ChannelData, frames: &[Arc<[u8]>]) {
-   let mut reps: [Option<&Arc<WorkerNotifier>>; 64] = [const { None }; 64];
-   let mut overflow: Vec<&Arc<WorkerNotifier>> = Vec::new();
-   for slot in &ch.slots {
-      let notifier = slot.notifier();
-      let idx = notifier.worker_index();
-      if idx < 64 {
-         if reps[idx].is_none() {
-            reps[idx] = Some(notifier);
-         }
-      } else if !overflow.iter().any(|&n| Arc::ptr_eq(n, notifier)) {
-         overflow.push(notifier);
-      }
-   }
-
-   let (first, rest) = frames
-      .split_first()
-      .expect("publish_batch checked non-empty");
-   for notifier in reps.iter().flatten() {
+#[inline]
+fn fan_out(ch: &ChannelData, frame: Arc<[u8]>) {
+   for notifier in &ch.workers {
       notifier.notify_fanout(FanEntry {
          channel: Arc::clone(&ch.name),
-         frame: Arc::clone(first),
-         extra: rest.iter().map(Arc::clone).collect(),
-      });
-   }
-   for notifier in overflow {
-      notifier.notify_fanout(FanEntry {
-         channel: Arc::clone(&ch.name),
-         frame: Arc::clone(first),
-         extra: rest.iter().map(Arc::clone).collect(),
+         frame: Arc::clone(&frame),
       });
    }
 }
@@ -100,6 +55,7 @@ unsafe fn drop_snapshot_box(ptr: *mut u8) {
 struct ChannelData {
    name: Arc<str>,
    slots: Vec<Arc<SubSlot>>,
+   workers: Vec<Arc<WorkerNotifier>>,
 }
 
 type Snapshot = Arc<Vec<ChannelData>>;
@@ -152,14 +108,14 @@ impl ChannelShard {
    }
 
    #[inline(always)]
-   pub fn publish(&self, channel: &str, frame: &dyn Fn() -> Arc<[u8]>) -> usize {
+   pub fn publish(&self, channel: &str, frame_fn: &dyn Fn() -> Arc<[u8]>) -> usize {
       let mut n = 0;
       self.with_snapshot(|snap| {
          for ch in snap {
             if ch.name.as_ref() == channel {
                n = ch.slots.len();
                if n != 0 {
-                  fan_out(ch, frame);
+                  fan_out(ch, frame_fn());
                }
                return;
             }
@@ -178,22 +134,28 @@ impl ChannelShard {
          if ch.name.as_ref() == channel {
             let mut new_slots = ch.slots.clone();
             new_slots.push(slot.clone());
+            let workers = extract_workers(&new_slots);
             new_vec.push(ChannelData {
                name: ch.name.clone(),
                slots: new_slots,
+               workers,
             });
             found = true;
          } else {
             new_vec.push(ChannelData {
                name: ch.name.clone(),
                slots: ch.slots.clone(),
+               workers: ch.workers.clone(),
             });
          }
       }
       if !found {
+         let new_slots = vec![slot];
+         let workers = extract_workers(&new_slots);
          new_vec.push(ChannelData {
             name: Arc::from(channel),
-            slots: vec![slot],
+            slots: new_slots,
+            workers,
          });
       }
 
@@ -214,15 +176,18 @@ impl ChannelShard {
                .cloned()
                .collect();
             if !new_slots.is_empty() {
+               let workers = extract_workers(&new_slots);
                new_vec.push(ChannelData {
                   name: ch.name.clone(),
                   slots: new_slots,
+                  workers,
                });
             }
          } else {
             new_vec.push(ChannelData {
                name: ch.name.clone(),
                slots: ch.slots.clone(),
+               workers: ch.workers.clone(),
             });
          }
       }
@@ -399,7 +364,8 @@ impl PubSub {
       count
    }
 
-   /// Pattern subscribers keep the single-publish path per message: their
+   /// Batches messages into a single contiguous frame for direct worker fanout.
+   /// Falls back to single publishes if pattern subscribers exist.
    pub fn publish_batch(&self, channel: &str, messages: &[&str]) -> usize {
       if messages.is_empty() {
          return 0;
@@ -417,17 +383,14 @@ impl PubSub {
          return n;
       }
 
-      let frames: Vec<Arc<[u8]>> = messages
-         .iter()
-         .map(|m| encode_message(channel, m))
-         .collect();
+      let frame = encode_batch(channel, messages);
       let mut n = 0;
       self.shard_for(channel).with_snapshot(|snap| {
          for ch in snap {
             if ch.name.as_ref() == channel {
                n = ch.slots.len();
                if n != 0 {
-                  fan_out_multi(ch, &frames);
+                  fan_out(ch, frame);
                }
                return;
             }

@@ -13,7 +13,7 @@ impl SendRing {
       if !on {
          return None;
       }
-      match IoUring::new(256) {
+      match IoUring::new(1024) {
          Ok(ring) => Some(Self { ring, inflight: 0 }),
          Err(e) => {
             eprintln!("fyrodb: io_uring unavailable ({e}); using write(2)");
@@ -45,12 +45,31 @@ impl SendRing {
    }
 
    pub fn complete(&mut self, out: &mut Vec<(u64, i32)>) {
+      if self.inflight == 0 {
+         return;
+      }
+      loop {
+         match self.ring.submit() {
+            Ok(_) => break,
+            Err(e) if e.raw_os_error() == Some(libc::EINTR) => continue,
+            Err(e) => {
+               eprintln!("fyrodb: io_uring submit failed: {e}");
+               self.inflight = 0;
+               return;
+            }
+         }
+      }
+      for cqe in self.ring.completion() {
+         out.push((cqe.user_data(), cqe.result()));
+         self.inflight -= 1;
+      }
       while self.inflight > 0 {
-         if let Err(e) = self.ring.submit_and_wait(self.inflight) {
+         if let Err(e) = self.ring.submit_and_wait(1) {
             if e.raw_os_error() == Some(libc::EINTR) {
                continue;
             }
-            eprintln!("fyrodb: io_uring submit failed: {e}");
+            eprintln!("fyrodb: io_uring wait failed: {e}");
+            self.inflight = 0;
             return;
          }
          for cqe in self.ring.completion() {
