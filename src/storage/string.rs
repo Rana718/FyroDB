@@ -7,6 +7,53 @@ use customhash::Full;
 
 const MAX_STRING_BYTES: usize = 512 * 1024 * 1024;
 
+fn lcs_last_row(a: &[u8], b: &[u8]) -> Vec<u16> {
+    let n = b.len();
+    let mut prev = vec![0u16; n + 1];
+    let mut curr = vec![0u16; n + 1];
+    for &ai in a {
+        for j in 1..=n {
+            curr[j] = if ai == b[j - 1] {
+                prev[j - 1] + 1
+            } else {
+                prev[j].max(curr[j - 1])
+            };
+        }
+        std::mem::swap(&mut prev, &mut curr);
+        curr.fill(0);
+    }
+    prev
+}
+
+fn hirschberg(a: &[u8], b: &[u8], out: &mut Vec<u8>) {
+    if a.is_empty() || b.is_empty() {
+        return;
+    }
+    if a.len() == 1 {
+        if b.contains(&a[0]) {
+            out.push(a[0]);
+        }
+        return;
+    }
+    let mid = a.len() / 2;
+    let row_top = lcs_last_row(&a[..mid], b);
+    let a_bot: Vec<u8> = a[mid..].iter().copied().rev().collect();
+    let b_rev: Vec<u8> = b.iter().copied().rev().collect();
+    let row_bot = lcs_last_row(&a_bot, &b_rev);
+    let n = b.len();
+    let mut best_j = 0;
+    let mut best_score = 0u16;
+    for j in 0..=n {
+        let score = row_top[j] + row_bot[n - j];
+        if score >= best_score {
+            best_score = score;
+            best_j = j;
+        }
+    }
+    hirschberg(&a[..mid], &b[..best_j], out);
+    hirschberg(&a[mid..], &b[best_j..], out);
+}
+
 impl Store {
     pub fn set(&self, key: String, value: StoreValue) {
         if value.expires_ms != 0 {
@@ -414,64 +461,54 @@ impl Store {
             },
         };
 
+        let mut result = Vec::new();
+        hirschberg(s1.as_bytes(), s2.as_bytes(), &mut result);
+        Ok(String::from_utf8(result).unwrap_or_default())
+    }
+
+    pub fn lcs_len(&self, key1: &str, key2: &str) -> Result<usize, &'static str> {
+        let ref1 = self.data.get_ref(key1);
+        let ref2 = self.data.get_ref(key2);
+
+        let s1 = match ref1.as_deref() {
+            None => "",
+            Some(e) if e.is_expired() => "",
+            Some(e) => match e.value.as_string() {
+                Some(s) => s.as_str(),
+                None => return Err("WRONGTYPE"),
+            },
+        };
+        let s2 = match ref2.as_deref() {
+            None => "",
+            Some(e) if e.is_expired() => "",
+            Some(e) => match e.value.as_string() {
+                Some(s) => s.as_str(),
+                None => return Err("WRONGTYPE"),
+            },
+        };
+
         let b1 = s1.as_bytes();
         let b2 = s2.as_bytes();
         let m = b1.len();
         let n = b2.len();
 
         if m == 0 || n == 0 {
-            return Ok(String::new());
+            return Ok(0);
         }
 
         let mut prev = vec![0u16; n + 1];
         let mut curr = vec![0u16; n + 1];
-
         for i in 1..=m {
             for j in 1..=n {
-                if b1[i - 1] == b2[j - 1] {
-                    curr[j] = prev[j - 1] + 1;
+                curr[j] = if b1[i - 1] == b2[j - 1] {
+                    prev[j - 1] + 1
                 } else {
-                    curr[j] = prev[j].max(curr[j - 1]);
-                }
+                    prev[j].max(curr[j - 1])
+                };
             }
             std::mem::swap(&mut prev, &mut curr);
             curr.fill(0);
         }
-
-        let lcs_len = prev[n] as usize;
-        let mut result = Vec::with_capacity(lcs_len);
-
-        let mut dp = vec![vec![0u16; n + 1]; m + 1];
-        for i in 1..=m {
-            for j in 1..=n {
-                if b1[i - 1] == b2[j - 1] {
-                    dp[i][j] = dp[i - 1][j - 1] + 1;
-                } else {
-                    dp[i][j] = dp[i - 1][j].max(dp[i][j - 1]);
-                }
-            }
-        }
-
-        let mut i = m;
-        let mut j = n;
-        while i > 0 && j > 0 {
-            if b1[i - 1] == b2[j - 1] {
-                result.push(b1[i - 1]);
-                i -= 1;
-                j -= 1;
-            } else if dp[i - 1][j] > dp[i][j - 1] {
-                i -= 1;
-            } else {
-                j -= 1;
-            }
-        }
-        result.reverse();
-
-        Ok(String::from_utf8(result).unwrap_or_default())
-    }
-
-    pub fn lcs_len(&self, key1: &str, key2: &str) -> Result<usize, &'static str> {
-        let s = self.lcs(key1, key2)?;
-        Ok(s.len())
+        Ok(prev[n] as usize)
     }
 }

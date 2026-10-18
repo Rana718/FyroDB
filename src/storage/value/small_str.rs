@@ -218,7 +218,17 @@ impl SmallStr {
 
     #[inline]
     pub fn from_bytes(bytes: Vec<u8>) -> Self {
-        Self::from_slice(&bytes)
+        if bytes.len() <= SMALL_STR_CAP {
+            let mut data = [0u8; SMALL_STR_CAP];
+            data[..bytes.len()].copy_from_slice(&bytes);
+            return Self { data, len: Tag::inline(bytes.len()) };
+        }
+        let len = bytes.len();
+        let ptr = Box::into_raw(bytes.into_boxed_slice()) as *mut u8;
+        let mut data = [0u8; SMALL_STR_CAP];
+        data[..8].copy_from_slice(&(ptr as usize).to_ne_bytes());
+        Self::store_heap_len(&mut data, len);
+        Self { data, len: Tag::Heap }
     }
 
     #[inline]

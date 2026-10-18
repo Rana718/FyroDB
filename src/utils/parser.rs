@@ -1259,6 +1259,9 @@ impl RespParser {
                 self.rbuf.shrink_to(Self::IDLE_READ_BUFFER);
             }
         }
+        if self.wbuf.is_empty() && self.wbuf.capacity() > Self::IDLE_READ_BUFFER {
+            self.wbuf = Vec::new();
+        }
     }
 
     #[inline(always)]
@@ -1304,7 +1307,7 @@ fn parse_usize(s: &[u8], max: usize) -> Option<usize> {
     if s.is_empty() {
         return None;
     }
-    if s.len() <= 3 {
+    if s.len() <= 18 {
         let mut n: usize = 0;
         for &b in s {
             if !b.is_ascii_digit() {

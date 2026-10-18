@@ -16,6 +16,22 @@ pub enum SetInner {
     Full(Box<HashSet<SmallStr>>),
 }
 
+#[inline]
+fn compact_find(v: &[SmallStr], field: &str) -> Result<usize, usize> {
+    let n = v.len() / 2;
+    let mut lo = 0usize;
+    let mut hi = n;
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2;
+        match v[mid * 2].as_str().cmp(field) {
+            std::cmp::Ordering::Less => lo = mid + 1,
+            std::cmp::Ordering::Equal => return Ok(mid),
+            std::cmp::Ordering::Greater => hi = mid,
+        }
+    }
+    Err(lo)
+}
+
 impl Default for HashInner {
     fn default() -> Self {
         Self::new()
@@ -31,16 +47,7 @@ impl HashInner {
     #[inline]
     pub fn get(&self, field: &str) -> Option<&SmallStr> {
         match self {
-            Self::Compact(v) => {
-                let mut i = 0;
-                while i < v.len() {
-                    if v[i] == field {
-                        return Some(&v[i + 1]);
-                    }
-                    i += 2;
-                }
-                None
-            }
+            Self::Compact(v) => compact_find(v, field).ok().map(|i| &v[i * 2 + 1]),
             Self::Full(m) => m.get(field),
         }
     }
@@ -63,22 +70,21 @@ impl HashInner {
 
     pub fn insert_field(&mut self, field: &str, value: SmallStr) -> bool {
         match self {
-            Self::Compact(v) => {
-                let mut i = 0;
-                while i < v.len() {
-                    if v[i] == field {
-                        v[i + 1] = value;
-                        return false;
+            Self::Compact(v) => match compact_find(v, field) {
+                Ok(pair_idx) => {
+                    v[pair_idx * 2 + 1] = value;
+                    false
+                }
+                Err(pos) => {
+                    let idx = pos * 2;
+                    v.insert(idx, SmallStr::new(field));
+                    v.insert(idx + 1, value);
+                    if v.len() / 2 > COMPACT_THRESHOLD {
+                        self.promote_hash();
                     }
-                    i += 2;
+                    true
                 }
-                v.push(SmallStr::new(field));
-                v.push(value);
-                if v.len() / 2 > COMPACT_THRESHOLD {
-                    self.promote_hash();
-                }
-                true
-            }
+            },
             Self::Full(m) => match m.get_mut(field) {
                 Some(slot) => {
                     *slot = value;
@@ -94,22 +100,21 @@ impl HashInner {
 
     pub fn insert_small(&mut self, field: SmallStr, value: SmallStr) -> bool {
         match self {
-            Self::Compact(v) => {
-                let mut i = 0;
-                while i < v.len() {
-                    if v[i] == field {
-                        v[i + 1] = value;
-                        return false;
+            Self::Compact(v) => match compact_find(v, field.as_str()) {
+                Ok(pair_idx) => {
+                    v[pair_idx * 2 + 1] = value;
+                    false
+                }
+                Err(pos) => {
+                    let idx = pos * 2;
+                    v.insert(idx, field);
+                    v.insert(idx + 1, value);
+                    if v.len() / 2 > COMPACT_THRESHOLD {
+                        self.promote_hash();
                     }
-                    i += 2;
+                    true
                 }
-                v.push(field);
-                v.push(value);
-                if v.len() / 2 > COMPACT_THRESHOLD {
-                    self.promote_hash();
-                }
-                true
-            }
+            },
             Self::Full(m) => m.insert(field, value).is_none(),
         }
     }
@@ -117,24 +122,18 @@ impl HashInner {
     #[inline]
     pub fn remove(&mut self, field: &str) -> Option<String> {
         match self {
-            Self::Compact(v) => {
-                let mut i = 0;
-                while i < v.len() {
-                    if v[i] == field {
-                        let len = v.len();
-                        v.swap(i, len - 2);
-                        v.swap(i + 1, len - 1);
-                        v.pop();
-                        let out = v.pop().map(|s| s.into_string());
-                        if v.capacity() > v.len().saturating_mul(2).max(8) {
-                            v.shrink_to_fit();
-                        }
-                        return out;
+            Self::Compact(v) => match compact_find(v, field) {
+                Ok(pair_idx) => {
+                    let idx = pair_idx * 2;
+                    v.remove(idx);
+                    let val = v.remove(idx).into_string();
+                    if v.capacity() > v.len().saturating_mul(2).max(8) {
+                        v.shrink_to_fit();
                     }
-                    i += 2;
+                    Some(val)
                 }
-                None
-            }
+                Err(_) => None,
+            },
             Self::Full(m) => {
                 let out = m.remove(field).map(|s| s.into_string());
                 if m.len() <= COMPACT_THRESHOLD / 2 {
@@ -203,8 +202,10 @@ impl HashInner {
         if m.len() > COMPACT_THRESHOLD / 2 {
             return;
         }
-        let mut v = Vec::with_capacity(m.len() * 2);
-        for (k, val) in std::mem::take(m).into_iter() {
+        let mut pairs: Vec<(SmallStr, SmallStr)> = std::mem::take(m).into_iter().collect();
+        pairs.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
+        let mut v = Vec::with_capacity(pairs.len() * 2);
+        for (k, val) in pairs {
             v.push(k);
             v.push(val);
         }
@@ -280,19 +281,22 @@ impl SetInner {
                     let mut strings = Vec::with_capacity(v.len() + 1);
                     strings.extend(v.drain(..).map(|n| SmallStr::from_string(n.to_string())));
                     strings.push(member);
+                    strings.sort_by(|a, b| a.as_str().cmp(b.as_str()));
                     *self = Self::Compact(strings);
                     true
                 }
             }
             Self::Compact(v) => {
-                if v.contains(&member) {
-                    return false;
+                match v.binary_search_by(|m| m.as_str().cmp(member.as_str())) {
+                    Ok(_) => false,
+                    Err(pos) => {
+                        v.insert(pos, member);
+                        if v.len() > COMPACT_THRESHOLD {
+                            self.promote_set();
+                        }
+                        true
+                    }
                 }
-                v.push(member);
-                if v.len() > COMPACT_THRESHOLD {
-                    self.promote_set();
-                }
-                true
             }
             Self::Full(s) => s.insert(member),
         }
@@ -309,14 +313,15 @@ impl SetInner {
                 })
                 .unwrap_or(false),
             Self::Compact(v) => {
-                if let Some(pos) = v.iter().position(|m| m == member) {
-                    v.swap_remove(pos);
-                    if v.capacity() > v.len().saturating_mul(2).max(8) {
-                        v.shrink_to_fit();
+                match v.binary_search_by(|m| m.as_str().cmp(member)) {
+                    Ok(pos) => {
+                        v.remove(pos);
+                        if v.capacity() > v.len().saturating_mul(2).max(8) {
+                            v.shrink_to_fit();
+                        }
+                        true
                     }
-                    true
-                } else {
-                    false
+                    Err(_) => false,
                 }
             }
             Self::Full(s) => {
@@ -333,7 +338,7 @@ impl SetInner {
     pub fn contains(&self, member: &str) -> bool {
         match self {
             Self::Integers(v) => canonical_i64(member).is_some_and(|n| v.binary_search(&n).is_ok()),
-            Self::Compact(v) => v.iter().any(|m| m == member),
+            Self::Compact(v) => v.binary_search_by(|m| m.as_str().cmp(member)).is_ok(),
             Self::Full(s) => s.contains(member),
         }
     }
@@ -376,7 +381,8 @@ impl SetInner {
         if s.len() > COMPACT_THRESHOLD / 2 {
             return;
         }
-        let v = std::mem::take(s).into_iter().collect();
+        let mut v: Vec<SmallStr> = std::mem::take(s).into_iter().collect();
+        v.sort_by(|a, b| a.as_str().cmp(b.as_str()));
         *self = Self::Compact(v);
     }
 }

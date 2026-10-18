@@ -202,35 +202,41 @@ pub fn write_simple(out: &mut Vec<u8>, s: &str) {
 }
 
 #[inline(always)]
-pub fn write_usize(out: &mut Vec<u8>, mut n: usize) {
-    if n == 0 {
-        out.push(b'0');
+pub fn write_usize(out: &mut Vec<u8>, n: usize) {
+    if n < 10 {
+        out.push(b'0' + n as u8);
         return;
     }
-    let start = out.len();
-    while n > 0 {
-        out.push(b'0' + (n % 10) as u8);
-        n /= 10;
+    let mut buf = [0u8; 20];
+    let mut pos = 20;
+    let mut v = n;
+    while v > 0 {
+        pos -= 1;
+        buf[pos] = b'0' + (v % 10) as u8;
+        v /= 10;
     }
-    out[start..].reverse();
+    out.extend_from_slice(&buf[pos..]);
 }
 
 #[inline(always)]
-pub fn write_i64(out: &mut Vec<u8>, mut n: i64) {
-    if n < 0 {
-        out.push(b'-');
-        let start = out.len();
-        loop {
-            out.push(b'0' + (-(n % 10)) as u8);
-            n /= 10;
-            if n == 0 {
-                break;
-            }
-        }
-        out[start..].reverse();
-    } else {
+pub fn write_i64(out: &mut Vec<u8>, n: i64) {
+    if n >= 0 {
         write_usize(out, n as usize);
+        return;
     }
+    out.push(b'-');
+    let mut buf = [0u8; 20];
+    let mut pos = 20;
+    let mut v = n;
+    loop {
+        pos -= 1;
+        buf[pos] = b'0' + (-(v % 10)) as u8;
+        v /= 10;
+        if v == 0 {
+            break;
+        }
+    }
+    out.extend_from_slice(&buf[pos..]);
 }
 
 #[inline]

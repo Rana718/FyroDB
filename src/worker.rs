@@ -161,10 +161,28 @@ pub fn run_worker(
                             close_conn(&mut conns, &mut poll, &mut free, token);
                         }
                     }
-                    notifier.drain_pending_into(&mut sub_dirty);
                     fanout_seen.resize(conns.len(), false);
                     for seen in fanout_seen.iter_mut() {
                         *seen = false;
+                    }
+                    for &id in &sub_dirty {
+                        if id < fanout_seen.len() {
+                            fanout_seen[id] = true;
+                        }
+                    }
+                    let pre_drain = sub_dirty.len();
+                    notifier.drain_pending_into(&mut sub_dirty);
+                    {
+                        let mut w = pre_drain;
+                        for r in pre_drain..sub_dirty.len() {
+                            let id = sub_dirty[r];
+                            if id < fanout_seen.len() && !fanout_seen[id] {
+                                fanout_seen[id] = true;
+                                sub_dirty[w] = id;
+                                w += 1;
+                            }
+                        }
+                        sub_dirty.truncate(w);
                     }
                     deliver_fanout(
                         &notifier,
@@ -173,8 +191,6 @@ pub fn run_worker(
                         &mut fanout_scratch,
                         &mut fanout_seen,
                     );
-                    sub_dirty.sort_unstable();
-                    sub_dirty.dedup();
                 }
 
                 token => {
@@ -280,6 +296,15 @@ pub fn run_worker(
             } else {
                 sub_dirty.swap_remove(i);
             }
+        }
+
+        if free.len() > conns.len() / 2 && conns.len() > 1024 {
+            while conns.last().is_some_and(|s| s.is_none()) {
+                conns.pop();
+            }
+            free.retain(|&id| id < conns.len());
+            next_token = conns.len();
+            conns.shrink_to_fit();
         }
     }
 }
