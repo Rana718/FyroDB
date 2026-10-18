@@ -175,20 +175,15 @@ impl ChannelShard {
         let mut new_vec: Vec<ChannelData> = Vec::with_capacity(old_snap.len() + 1);
         let mut found = false;
         for ch in old_snap.iter() {
+            let mut slots = ch.slots.clone();
             if ch.name.as_ref() == channel {
-                let mut new_slots = ch.slots.clone();
-                new_slots.push(slot.clone());
-                new_vec.push(ChannelData {
-                    name: ch.name.clone(),
-                    slots: new_slots,
-                });
+                slots.push(slot.clone());
                 found = true;
-            } else {
-                new_vec.push(ChannelData {
-                    name: ch.name.clone(),
-                    slots: ch.slots.clone(),
-                });
             }
+            new_vec.push(ChannelData {
+                name: ch.name.clone(),
+                slots,
+            });
         }
         if !found {
             new_vec.push(ChannelData {
@@ -232,25 +227,19 @@ impl ChannelShard {
 
     fn active_channels(&self, pattern: Option<&str>) -> Vec<String> {
         let snap = self.load_snapshot();
-        let mut result = Vec::new();
-        for ch in snap.iter() {
-            if !ch.slots.is_empty()
-                && pattern.is_none_or(|p| glob_match_bytes(p.as_bytes(), ch.name.as_bytes()))
-            {
-                result.push(ch.name.to_string());
-            }
-        }
-        result
+        snap.iter()
+            .filter(|ch|
+              !ch.slots.is_empty() && pattern.is_none_or(|p| glob_match_bytes(p.as_bytes(), ch.name.as_bytes())))
+            .map(|ch| ch.name.to_string())
+            .collect()
     }
 
     fn count_for(&self, channel: &str) -> usize {
         let snap = self.load_snapshot();
-        for ch in snap.iter() {
-            if ch.name.as_ref() == channel {
-                return ch.slots.len();
-            }
-        }
-        0
+        snap.iter()
+            .find(|ch| ch.name.as_ref() == channel)
+            .map(|ch| ch.slots.len())
+            .unwrap_or(0)
     }
 }
 
