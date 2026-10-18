@@ -139,6 +139,9 @@ pub(super) unsafe fn part_bytes<'a>(part: (*const u8, usize)) -> &'a [u8] {
 #[inline(always)]
 pub(super) fn part_str<'a>(out: &mut Vec<u8>, part: (*const u8, usize)) -> Option<&'a str> {
     let bytes: &'a [u8] = unsafe { part_bytes(part) };
+    if bytes.is_ascii() {
+        return Some(unsafe { std::str::from_utf8_unchecked(bytes) });
+    }
     match std::str::from_utf8(bytes) {
         Ok(s) => Some(s),
         Err(_) => {

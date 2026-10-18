@@ -4,9 +4,15 @@ impl<'a> Conn<'a> {
     pub fn do_read(&mut self) -> bool {
         loop {
             let buf = self.parser.read_buf();
+            let cap = buf.len();
             match self.stream.read(buf) {
                 Ok(0) => return false,
-                Ok(n) => self.parser.did_fill(n),
+                Ok(n) => {
+                    self.parser.did_fill(n);
+                    if n < cap {
+                        break;
+                    }
+                }
                 Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => break,
                 Err(_) => return false,
             }
