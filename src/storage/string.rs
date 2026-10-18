@@ -307,11 +307,16 @@ impl Store {
         }
     }
 
+    #[inline]
     fn int_op(&self, key: &str, delta: i64) -> Result<i64, &'static str> {
+        self.int_op_hinted(key, None, delta)
+    }
+
+    fn int_op_hinted(&self, key: &str, hash: Option<u64>, delta: i64) -> Result<i64, &'static str> {
         loop {
             let result = self
                 .data
-                .update_with(key, |val| match val.value.as_string() {
+                .update_with_hinted(key, hash, |val| match val.value.as_string() {
                     Some(s) => {
                         let n = match s.parse::<i64>() {
                             Ok(n) => n,
@@ -330,8 +335,9 @@ impl Store {
             }
             // Absent: lock-free create. Losing the insert race just means the
             // key now exists, so the loop retries the in-place update.
-            if self.data.insert_if_absent_str(
+            if self.data.insert_if_absent_str_hinted(
                 key,
+                hash,
                 StoreValue::string_small(SmallStr::from_int(delta)),
             ) {
                 return Ok(delta);
@@ -339,8 +345,13 @@ impl Store {
         }
     }
 
+    #[inline]
     pub fn incr(&self, key: &str) -> Result<i64, &'static str> {
-        self.int_op(key, 1)
+        self.int_op_hinted(key, None, 1)
+    }
+    #[inline]
+    pub fn incr_hinted(&self, key: &str, hash: Option<u64>) -> Result<i64, &'static str> {
+        self.int_op_hinted(key, hash, 1)
     }
     pub fn decr(&self, key: &str) -> Result<i64, &'static str> {
         self.int_op(key, -1)

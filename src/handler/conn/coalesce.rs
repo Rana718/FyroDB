@@ -19,6 +19,17 @@ pub(super) fn is_set_expire_pair(raw: &[(*const u8, usize)]) -> bool {
 }
 
 pub(super) fn dispatch_set_expire_pair(conn: &mut Conn<'_>, set: &[(*const u8, usize)]) -> PairOutcome {
+    // Zero-copy peek: the EXPIRE header is fixed-width, so a prefix check
+    // on the unparsed remainder decides without consuming or doing UTF-8 parsing on set parts.
+    const EXPIRE_PREFIX: &[u8] = b"*3\r\n$6\r\nEXPIRE\r\n";
+    if !conn
+        .parser
+        .peek_remaining(EXPIRE_PREFIX.len())
+        .starts_with(EXPIRE_PREFIX)
+    {
+        return PairOutcome::FallThrough;
+    }
+
     let (key, value): (&str, &str);
     {
         let out = &mut conn.parser.wbuf;
@@ -30,17 +41,6 @@ pub(super) fn dispatch_set_expire_pair(conn: &mut Conn<'_>, set: &[(*const u8, u
         };
         key = k;
         value = v;
-    }
-
-// Zero-copy peek: the EXPIRE header is fixed-width, so a prefix check
-// on the unparsed remainder decides without consuming.
-    const EXPIRE_PREFIX: &[u8] = b"*3\r\n$6\r\nEXPIRE\r\n";
-    if !conn
-        .parser
-        .peek_remaining(EXPIRE_PREFIX.len())
-        .starts_with(EXPIRE_PREFIX)
-    {
-        return PairOutcome::FallThrough;
     }
 
     // Consume and parse the EXPIRE command.
@@ -737,28 +737,58 @@ pub(super) fn execute_queue_run(
 
     match op {
         QueueOp::PushFront | QueueOp::PushBack => {
-            let mut values: Vec<&str> = Vec::with_capacity(parts.len());
-            for &part in parts {
-                let Some(v) = part_str(out, part) else {
-                    return Err(());
+            const STACK_VALUES: usize = 64;
+            if parts.len() <= STACK_VALUES {
+                let mut stack_vals = [""; STACK_VALUES];
+                for (i, &part) in parts.iter().enumerate() {
+                    let Some(v) = part_str(out, part) else {
+                        return Err(());
+                    };
+                    stack_vals[i] = v;
+                }
+                let values = &stack_vals[..parts.len()];
+                let result = if op == QueueOp::PushFront {
+                    store.lpush(key, values)
+                } else {
+                    store.rpush(key, values)
                 };
-                values.push(v);
-            }
-            let result = if op == QueueOp::PushFront {
-                store.lpush(key, &values)
-            } else {
-                store.rpush(key, &values)
-            };
-            match result {
-                Ok(final_len) => {
-                    let start = final_len.saturating_sub(values.len());
-                    for i in 0..values.len() {
-                        crate::utils::resp::write_integer(out, (start + i + 1) as i64);
+                match result {
+                    Ok(final_len) => {
+                        let start = final_len.saturating_sub(values.len());
+                        for i in 0..values.len() {
+                            crate::utils::resp::write_integer(out, (start + i + 1) as i64);
+                        }
+                    }
+                    Err(_) => {
+                        for _ in values {
+                            crate::utils::resp::write_wrong_type(out);
+                        }
                     }
                 }
-                Err(_) => {
-                    for _ in values {
-                        crate::utils::resp::write_wrong_type(out);
+            } else {
+                let mut values: Vec<&str> = Vec::with_capacity(parts.len());
+                for &part in parts {
+                    let Some(v) = part_str(out, part) else {
+                        return Err(());
+                    };
+                    values.push(v);
+                }
+                let result = if op == QueueOp::PushFront {
+                    store.lpush(key, &values)
+                } else {
+                    store.rpush(key, &values)
+                };
+                match result {
+                    Ok(final_len) => {
+                        let start = final_len.saturating_sub(values.len());
+                        for i in 0..values.len() {
+                            crate::utils::resp::write_integer(out, (start + i + 1) as i64);
+                        }
+                    }
+                    Err(_) => {
+                        for _ in values {
+                            crate::utils::resp::write_wrong_type(out);
+                        }
                     }
                 }
             }

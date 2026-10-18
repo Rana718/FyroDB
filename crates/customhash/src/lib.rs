@@ -507,8 +507,16 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
     }
 
     #[inline]
-    pub fn update_with<R>(&self, key: &str, mut f: impl FnMut(&mut V) -> R) -> Option<R> {
-        let (h, idx) = self.locate(key);
+    pub fn update_with<R>(&self, key: &str, f: impl FnMut(&mut V) -> R) -> Option<R> {
+        self.update_with_hinted(key, None, f)
+    }
+
+    #[inline]
+    pub fn update_with_hinted<R>(&self, key: &str, hash: Option<u64>, mut f: impl FnMut(&mut V) -> R) -> Option<R> {
+        let (h, idx) = match hash {
+            Some(h) => (h, self.shard_of(h)),
+            None => self.locate(key),
+        };
         let _guard = ebr::pin();
         let entry = unsafe { self.shards.get_unchecked(idx) }.find(key, h)?;
 
@@ -585,7 +593,15 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
     /// (≤15 byte) keys, one boxed allocation for longer ones.
     #[inline]
     pub fn insert_if_absent_str(&self, key: &str, value: V) -> bool {
-        let (h, idx) = self.locate(key);
+        self.insert_if_absent_str_hinted(key, None, value)
+    }
+
+    #[inline]
+    pub fn insert_if_absent_str_hinted(&self, key: &str, hash: Option<u64>, value: V) -> bool {
+        let (h, idx) = match hash {
+            Some(h) => (h, self.shard_of(h)),
+            None => self.locate(key),
+        };
         let _guard = ebr::pin();
         let shard = unsafe { self.shards.get_unchecked(idx) };
         let is_new = shard.set_key_with_overwrite(key, h, value, false, || CompactKey::from_str(key));

@@ -745,6 +745,169 @@ impl RespParser {
     }
 
     #[inline(always)]
+    fn try_fast_parse_5_at(&mut self, buf: *const u8, avail: usize) -> Option<ParseResult> {
+        const CRLF: u16 = u16::from_ne_bytes(*b"\r\n");
+        if avail < 30 {
+            return None;
+        }
+        if unsafe { *buf.add(4) } != b'$' {
+            return None;
+        }
+        let c1_digit = unsafe { *buf.add(5) };
+        if !c1_digit.is_ascii_digit() || unsafe { std::ptr::read_unaligned(buf.add(6) as *const u16) } != CRLF {
+            return None;
+        }
+        let c1_len = (c1_digit - b'0') as usize;
+        let c1_total = 4 + 4 + c1_len + 2;
+        if avail < c1_total + 4 {
+            return None;
+        }
+        if unsafe { std::ptr::read_unaligned(buf.add(c1_total - 2) as *const u16) } != CRLF {
+            return None;
+        }
+        let cmd_ptr = unsafe { buf.add(8) };
+
+        // Parse element 2
+        let p2 = unsafe { buf.add(c1_total) };
+        if unsafe { *p2 } != b'$' {
+            return None;
+        }
+        let mut idx = 1;
+        let mut e2_len = 0usize;
+        while idx < 6 && (c1_total + idx) < avail {
+            let b = unsafe { *p2.add(idx) };
+            if b == b'\r' {
+                break;
+            }
+            if !b.is_ascii_digit() {
+                return None;
+            }
+            e2_len = e2_len * 10 + (b - b'0') as usize;
+            idx += 1;
+        }
+        if (c1_total + idx + 1) >= avail || unsafe { std::ptr::read_unaligned(p2.add(idx) as *const u16) } != CRLF {
+            return None;
+        }
+        let e2_data_offset = c1_total + idx + 2;
+        let e2_total = e2_data_offset + e2_len + 2;
+        if avail < e2_total + 4 {
+            return None;
+        }
+        if unsafe { std::ptr::read_unaligned(buf.add(e2_total - 2) as *const u16) } != CRLF {
+            return None;
+        }
+        let e2_ptr = unsafe { buf.add(e2_data_offset) };
+
+        // Parse element 3
+        let p3 = unsafe { buf.add(e2_total) };
+        if unsafe { *p3 } != b'$' {
+            return None;
+        }
+        let mut idx3 = 1;
+        let mut e3_len = 0usize;
+        while idx3 < 7 && (e2_total + idx3) < avail {
+            let b = unsafe { *p3.add(idx3) };
+            if b == b'\r' {
+                break;
+            }
+            if !b.is_ascii_digit() {
+                return None;
+            }
+            e3_len = e3_len * 10 + (b - b'0') as usize;
+            idx3 += 1;
+        }
+        if (e2_total + idx3 + 1) >= avail || unsafe { std::ptr::read_unaligned(p3.add(idx3) as *const u16) } != CRLF {
+            return None;
+        }
+        let e3_data_offset = e2_total + idx3 + 2;
+        let e3_total = e3_data_offset + e3_len + 2;
+        if avail < e3_total + 4 {
+            return None;
+        }
+        if unsafe { std::ptr::read_unaligned(buf.add(e3_total - 2) as *const u16) } != CRLF {
+            return None;
+        }
+        let e3_ptr = unsafe { buf.add(e3_data_offset) };
+
+        // Parse element 4
+        let p4 = unsafe { buf.add(e3_total) };
+        if unsafe { *p4 } != b'$' {
+            return None;
+        }
+        let mut idx4 = 1;
+        let mut e4_len = 0usize;
+        while idx4 < 7 && (e3_total + idx4) < avail {
+            let b = unsafe { *p4.add(idx4) };
+            if b == b'\r' {
+                break;
+            }
+            if !b.is_ascii_digit() {
+                return None;
+            }
+            e4_len = e4_len * 10 + (b - b'0') as usize;
+            idx4 += 1;
+        }
+        if (e3_total + idx4 + 1) >= avail || unsafe { std::ptr::read_unaligned(p4.add(idx4) as *const u16) } != CRLF {
+            return None;
+        }
+        let e4_data_offset = e3_total + idx4 + 2;
+        let e4_total = e4_data_offset + e4_len + 2;
+        if avail < e4_total + 4 {
+            return None;
+        }
+        if unsafe { std::ptr::read_unaligned(buf.add(e4_total - 2) as *const u16) } != CRLF {
+            return None;
+        }
+        let e4_ptr = unsafe { buf.add(e4_data_offset) };
+
+        // Parse element 5
+        let p5 = unsafe { buf.add(e4_total) };
+        if unsafe { *p5 } != b'$' {
+            return None;
+        }
+        let mut idx5 = 1;
+        let mut e5_len = 0usize;
+        while idx5 < 7 && (e4_total + idx5) < avail {
+            let b = unsafe { *p5.add(idx5) };
+            if b == b'\r' {
+                break;
+            }
+            if !b.is_ascii_digit() {
+                return None;
+            }
+            e5_len = e5_len * 10 + (b - b'0') as usize;
+            idx5 += 1;
+        }
+        if (e4_total + idx5 + 1) >= avail || unsafe { std::ptr::read_unaligned(p5.add(idx5) as *const u16) } != CRLF {
+            return None;
+        }
+        let e5_data_offset = e4_total + idx5 + 2;
+        let total_cmd_len = e5_data_offset + e5_len + 2;
+        if avail < total_cmd_len {
+            return Some(ParseResult::Incomplete);
+        }
+        if unsafe { std::ptr::read_unaligned(buf.add(total_cmd_len - 2) as *const u16) } != CRLF {
+            return None;
+        }
+        let e5_ptr = unsafe { buf.add(e5_data_offset) };
+
+        unsafe {
+            if self.parts_raw.capacity() < 5 {
+                self.parts_raw.reserve(5);
+            }
+            let ptr = self.parts_raw.as_mut_ptr();
+            std::ptr::write(ptr, (cmd_ptr, c1_len));
+            std::ptr::write(ptr.add(1), (e2_ptr, e2_len));
+            std::ptr::write(ptr.add(2), (e3_ptr, e3_len));
+            std::ptr::write(ptr.add(3), (e4_ptr, e4_len));
+            std::ptr::write(ptr.add(4), (e5_ptr, e5_len));
+            self.parts_raw.set_len(5);
+        }
+        self.pos += total_cmd_len;
+        Some(ParseResult::Complete)
+    }
+
+    #[inline(always)]
     fn try_fast_parse_2_at(&mut self, buf: *const u8, avail: usize) -> Option<ParseResult> {
         const CRLF: u16 = u16::from_ne_bytes(*b"\r\n");
         if avail < 16 {
@@ -936,6 +1099,7 @@ impl RespParser {
             const T2: u32 = u32::from_ne_bytes(*b"*2\r\n");
             const T3: u32 = u32::from_ne_bytes(*b"*3\r\n");
             const T4: u32 = u32::from_ne_bytes(*b"*4\r\n");
+            const T5: u32 = u32::from_ne_bytes(*b"*5\r\n");
 
             if tag == T2 {
                 if let Some(res) = self.try_fast_get_at(buf, avail) {
@@ -962,6 +1126,10 @@ impl RespParser {
                     return res;
                 }
                 if let Some(res) = self.try_fast_parse_4_at(buf, avail) {
+                    return res;
+                }
+            } else if tag == T5 {
+                if let Some(res) = self.try_fast_parse_5_at(buf, avail) {
                     return res;
                 }
             } else if tag == T1 {
@@ -1338,4 +1506,13 @@ mod tests {
         }
         assert_eq!(parsed, 64);
     }
+
+    #[test]
+    fn fast_parser_parses_5_part_command() {
+        let mut parser = RespParser::new();
+        feed(&mut parser, b"*5\r\n$4\r\nXADD\r\n$6\r\nstream\r\n$1\r\n*\r\n$1\r\nf\r\n$3\r\n100\r\n");
+        assert!(matches!(parser.parse_one(), ParseResult::Complete));
+        assert_eq!(parts_of(&parser), vec!["XADD", "stream", "*", "f", "100"]);
+    }
 }
+

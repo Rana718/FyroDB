@@ -53,7 +53,9 @@ pub struct Conn<'a> {
     #[allow(dead_code)]
     hints: [prefetch::Hint; customhash::PREFETCH_BATCH],
     #[allow(dead_code)]
-    hint_n: u8,
+    pub(crate) hint_n: u8,
+    #[allow(dead_code)]
+    pub(crate) hint_idx: u8,
     #[allow(dead_code)]
     pf_backoff: u8,
     topology_cache: Option<(
@@ -95,6 +97,7 @@ impl<'a> Conn<'a> {
             park: None,
             hints: [prefetch::Hint::default(); customhash::PREFETCH_BATCH],
             hint_n: 0,
+            hint_idx: 0,
             pf_backoff: 0,
             topology_cache: None,
         }

@@ -91,6 +91,350 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
                     crate::utils::resp::write_bulk_bytes(&mut conn.parser.wbuf, msg);
                     return;
                 }
+            } else if cmd.eq_ignore_ascii_case(b"INCR") && raw.len() == 2 {
+                let hint = conn.hint_for(raw[1]);
+                let out = &mut conn.parser.wbuf;
+                let Some(key) = part_str(out, raw[1]) else {
+                    return;
+                };
+                match conn.store.incr_hinted(key, hint) {
+                    Ok(n) => {
+                        if conn.store.has_replication() {
+                            conn.store.record_current_value(key);
+                        }
+                        crate::utils::resp::write_integer(out, n)
+                    }
+                    Err(e) => crate::utils::resp::write_err(out, e),
+                }
+                return;
+            } else if cmd.eq_ignore_ascii_case(b"RPOP") && raw.len() == 2 {
+                let out = &mut conn.parser.wbuf;
+                let Some(key) = part_str(out, raw[1]) else {
+                    return;
+                };
+                match conn.store.pop_one_to_buf(key, true, out) {
+                    Ok(true) => {
+                        if conn.store.has_replication() {
+                            conn.store.record_current_value(key);
+                        }
+                    }
+                    Ok(false) => out.extend_from_slice(b"$-1\r\n"),
+                    Err(_) => crate::utils::resp::write_wrong_type(out),
+                }
+                return;
+            } else if cmd.eq_ignore_ascii_case(b"LPOP") && raw.len() == 2 {
+                let out = &mut conn.parser.wbuf;
+                let Some(key) = part_str(out, raw[1]) else {
+                    return;
+                };
+                match conn.store.pop_one_to_buf(key, false, out) {
+                    Ok(true) => {
+                        if conn.store.has_replication() {
+                            conn.store.record_current_value(key);
+                        }
+                    }
+                    Ok(false) => out.extend_from_slice(b"$-1\r\n"),
+                    Err(_) => crate::utils::resp::write_wrong_type(out),
+                }
+                return;
+            } else if cmd.eq_ignore_ascii_case(b"SADD") && raw.len() == 3 {
+                let out = &mut conn.parser.wbuf;
+                let Some(key) = part_str(out, raw[1]) else {
+                    return;
+                };
+                let Some(member) = part_str(out, raw[2]) else {
+                    return;
+                };
+                match conn.store.sadd(key, &[member]) {
+                    Ok(n) => {
+                        if conn.store.has_replication() {
+                            conn.store.record_current_value(key);
+                        }
+                        crate::utils::resp::write_integer(out, n as i64)
+                    }
+                    Err(_) => crate::utils::resp::write_wrong_type(out),
+                }
+                return;
+            } else if cmd.eq_ignore_ascii_case(b"ZADD") && raw.len() == 4 {
+                let out = &mut conn.parser.wbuf;
+                let Some(key) = part_str(out, raw[1]) else {
+                    return;
+                };
+                let Some(score_str) = part_str(out, raw[2]) else {
+                    return;
+                };
+                let Some(member) = part_str(out, raw[3]) else {
+                    return;
+                };
+                if let Ok(score) = score_str.parse::<f64>() {
+                    match conn.store.zadd(key, &[(score, member)], Default::default()) {
+                        Ok(n) => {
+                            if conn.store.has_replication() {
+                                conn.store.record_current_value(key);
+                            }
+                            crate::utils::resp::write_integer(out, n as i64)
+                        }
+                        Err(_) => crate::utils::resp::write_wrong_type(out),
+                    }
+                } else {
+                    out.extend_from_slice(b"-ERR value is not a valid float\r\n");
+                }
+                return;
+            } else if cmd.eq_ignore_ascii_case(b"XADD") && raw.len() == 5 {
+                let out = &mut conn.parser.wbuf;
+                let Some(key) = part_str(out, raw[1]) else {
+                    return;
+                };
+                let Some(id_str) = part_str(out, raw[2]) else {
+                    return;
+                };
+                let Some(f) = part_str(out, raw[3]) else {
+                    return;
+                };
+                let Some(v) = part_str(out, raw[4]) else {
+                    return;
+                };
+                match conn.store.xadd(key, id_str, &[(f, v)], None, false) {
+                    Ok(Some(id)) => crate::utils::resp::write_bulk(out, &id),
+                    Ok(None) => crate::utils::resp::write_nil(out),
+                    Err(e) => crate::utils::resp::write_store_err(out, e),
+                }
+                if conn.store.has_replication() {
+                    conn.store.record_current_value(key);
+                }
+                return;
+            }
+        } else if cmd_len == 5 {
+            if cmd.eq_ignore_ascii_case(b"LPUSH") && raw.len() == 3 {
+                let out = &mut conn.parser.wbuf;
+                let Some(key) = part_str(out, raw[1]) else {
+                    return;
+                };
+                let Some(value) = part_str(out, raw[2]) else {
+                    return;
+                };
+                match conn.store.lpush(key, &[value]) {
+                    Ok(n) => {
+                        if conn.store.has_replication() {
+                            conn.store.record_current_value(key);
+                        }
+                        crate::utils::resp::write_integer(out, n as i64)
+                    }
+                    Err(_) => crate::utils::resp::write_wrong_type(out),
+                }
+                return;
+            } else if cmd.eq_ignore_ascii_case(b"RPUSH") && raw.len() == 3 {
+                let out = &mut conn.parser.wbuf;
+                let Some(key) = part_str(out, raw[1]) else {
+                    return;
+                };
+                let Some(value) = part_str(out, raw[2]) else {
+                    return;
+                };
+                match conn.store.rpush(key, &[value]) {
+                    Ok(n) => {
+                        if conn.store.has_replication() {
+                            conn.store.record_current_value(key);
+                        }
+                        crate::utils::resp::write_integer(out, n as i64)
+                    }
+                    Err(_) => crate::utils::resp::write_wrong_type(out),
+                }
+                return;
+            } else if cmd.eq_ignore_ascii_case(b"PFADD") && raw.len() == 3 {
+                let out = &mut conn.parser.wbuf;
+                let Some(key) = part_str(out, raw[1]) else {
+                    return;
+                };
+                let Some(elem) = part_str(out, raw[2]) else {
+                    return;
+                };
+                match conn.store.pfadd(key, &[elem]) {
+                    Ok(changed) => {
+                        if conn.store.has_replication() {
+                            conn.store.record_current_value(key);
+                        }
+                        crate::utils::resp::write_boolean(out, changed);
+                    }
+                    Err(e) => crate::utils::resp::write_store_err(out, e),
+                }
+                return;
+            }
+        } else if cmd_len == 6 {
+            if cmd.eq_ignore_ascii_case(b"EXPIRE") && raw.len() == 3 {
+                let out = &mut conn.parser.wbuf;
+                let Some(key) = part_str(out, raw[1]) else {
+                    return;
+                };
+                let Some(secs) = part_str(out, raw[2]) else {
+                    return;
+                };
+                let reply = match secs
+                    .parse::<u64>()
+                    .ok()
+                    .and_then(crate::storage::value::expiry_from_secs)
+                {
+                    Some(exp) => {
+                        let ok = conn.store.expire_ms(key, exp);
+                        if conn.store.has_replication() {
+                            conn.store.record_current_value(key);
+                        }
+                        if ok {
+                            crate::utils::resp::ONE
+                        } else {
+                            crate::utils::resp::ZERO
+                        }
+                    }
+                    None => b"-ERR invalid expire time in 'expire' command\r\n" as &[u8],
+                };
+                out.extend_from_slice(reply);
+                return;
+            } else if cmd.eq_ignore_ascii_case(b"SETBIT") && raw.len() == 4 {
+                let out = &mut conn.parser.wbuf;
+                let Some(key) = part_str(out, raw[1]) else {
+                    return;
+                };
+                let Some(offset_str) = part_str(out, raw[2]) else {
+                    return;
+                };
+                let Some(value_str) = part_str(out, raw[3]) else {
+                    return;
+                };
+                if let (Ok(off), Ok(val)) = (offset_str.parse::<u64>(), value_str.parse::<u8>()) {
+                    if val <= 1 {
+                        match conn.store.setbit(key, off, val == 1) {
+                            Ok(prev) => {
+                                if conn.store.has_replication() {
+                                    conn.store.record_current_value(key);
+                                }
+                                crate::utils::resp::write_integer(out, prev as i64);
+                            }
+                            Err(e) => crate::utils::resp::write_store_err(out, e),
+                        }
+                    } else {
+                        out.extend_from_slice(b"-ERR bit is not an integer or out of range\r\n");
+                    }
+                } else {
+                    out.extend_from_slice(b"-ERR value is not an integer or out of range\r\n");
+                }
+                return;
+            } else if cmd.eq_ignore_ascii_case(b"GEOADD") && raw.len() == 5 {
+                let out = &mut conn.parser.wbuf;
+                let Some(key) = part_str(out, raw[1]) else {
+                    return;
+                };
+                let Some(lon_str) = part_str(out, raw[2]) else {
+                    return;
+                };
+                let Some(lat_str) = part_str(out, raw[3]) else {
+                    return;
+                };
+                let Some(member) = part_str(out, raw[4]) else {
+                    return;
+                };
+                if let (Ok(lon), Ok(lat)) = (lon_str.parse::<f64>(), lat_str.parse::<f64>()) {
+                    if (-180.0..=180.0).contains(&lon) && (-85.05112878..=85.05112878).contains(&lat) {
+                        match conn.store.geoadd(key, &[(lon, lat, member)], false, false, false) {
+                            Ok(n) => {
+                                if conn.store.has_replication() {
+                                    conn.store.record_current_value(key);
+                                }
+                                crate::utils::resp::write_integer(out, n as i64);
+                            }
+                            Err(e) => crate::utils::resp::write_store_err(out, e),
+                        }
+                    } else {
+                        out.extend_from_slice(b"-ERR invalid longitude,latitude pair\r\n");
+                    }
+                } else {
+                    out.extend_from_slice(b"-ERR value is not a valid float\r\n");
+                }
+                return;
+            }
+        } else if cmd_len == 7 {
+            if cmd.eq_ignore_ascii_case(b"PFCOUNT") && raw.len() == 2 {
+                let out = &mut conn.parser.wbuf;
+                let Some(key) = part_str(out, raw[1]) else {
+                    return;
+                };
+                match conn.store.pfcount(&[key]) {
+                    Ok(n) => crate::utils::resp::write_integer(out, n as i64),
+                    Err(e) => crate::utils::resp::write_store_err(out, e),
+                }
+                return;
+            } else if cmd.eq_ignore_ascii_case(b"GEODIST") && raw.len() == 4 {
+                let out = &mut conn.parser.wbuf;
+                let Some(key) = part_str(out, raw[1]) else {
+                    return;
+                };
+                let Some(m1) = part_str(out, raw[2]) else {
+                    return;
+                };
+                let Some(m2) = part_str(out, raw[3]) else {
+                    return;
+                };
+                match conn.store.geodist(key, m1, m2, crate::storage::geo::GeoUnit::M) {
+                    Ok(Some(d)) => crate::utils::resp::write_bulk(out, &crate::utils::util::format_float(d)),
+                    Ok(None) => crate::utils::resp::write_nil(out),
+                    Err(e) => crate::utils::resp::write_store_err(out, e),
+                }
+                return;
+            }
+        } else if cmd_len == 8 {
+            if cmd.eq_ignore_ascii_case(b"BITCOUNT") && raw.len() == 2 {
+                let out = &mut conn.parser.wbuf;
+                let Some(key) = part_str(out, raw[1]) else {
+                    return;
+                };
+                match conn.store.bitcount(key, 0, -1, false) {
+                    Ok(c) => crate::utils::resp::write_integer(out, c as i64),
+                    Err(_) => crate::utils::resp::write_wrong_type(out),
+                }
+                return;
+            } else if cmd.eq_ignore_ascii_case(b"JSON.SET") && raw.len() == 4 {
+                let out = &mut conn.parser.wbuf;
+                let Some(key) = part_str(out, raw[1]) else {
+                    return;
+                };
+                let Some(path) = part_str(out, raw[2]) else {
+                    return;
+                };
+                let Some(value) = part_str(out, raw[3]) else {
+                    return;
+                };
+                match conn.store.json_set(key, path, value, false, false) {
+                    Ok(true) => {
+                        if conn.store.has_replication() {
+                            conn.store.record_current_value(key);
+                        }
+                        crate::utils::resp::write_ok(out);
+                    }
+                    Ok(false) => crate::utils::resp::write_nil(out),
+                    Err(e) => crate::utils::resp::write_store_err(out, e),
+                }
+                return;
+            } else if cmd.eq_ignore_ascii_case(b"JSON.GET") {
+                let out = &mut conn.parser.wbuf;
+                let Some(key) = part_str(out, raw[1]) else {
+                    return;
+                };
+                let res = if raw.len() == 2 {
+                    conn.store.json_get_to_buf(key, &[], out)
+                } else if raw.len() == 3 {
+                    let Some(path) = part_str(out, raw[2]) else {
+                        return;
+                    };
+                    conn.store.json_get_to_buf(key, &[path], out)
+                } else {
+                    crate::utils::resp::write_wrong_args(out, "json.get");
+                    return;
+                };
+                match res {
+                    Ok(true) => {}
+                    Ok(false) => crate::utils::resp::write_nil(out),
+                    Err(e) => crate::utils::resp::write_store_err(out, e),
+                }
+                return;
             }
         }
     }
