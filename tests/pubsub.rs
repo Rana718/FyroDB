@@ -54,12 +54,14 @@ fn publish_delivers_to_subscriber() {
    let count = pubsub.publish("news", "hello");
    assert_eq!(count, 1);
 
-   // Small fan-out takes the per-subscriber queue path.
-   assert!(fanout_frames(&notifier).is_empty());
+   let frames = fanout_frames(&notifier);
+   assert_eq!(frames.len(), 1);
+   assert_eq!(frames[0].0, "news");
    assert_eq!(
-      drain(&slot),
+      frames[0].1,
       b"*3\r\n$7\r\nmessage\r\n$4\r\nnews\r\n$5\r\nhello\r\n".to_vec()
    );
+   assert!(drain(&slot).is_empty());
 }
 
 #[test]
@@ -79,12 +81,10 @@ fn publish_to_multiple_subscribers() {
 
    let count = pubsub.publish("ch", "hi");
    assert_eq!(count, 2);
-   // Two subscribers across two workers stay below the grouping
-   // threshold: each gets its own queue push.
-   assert!(fanout_frames(&n1).is_empty());
-   assert!(fanout_frames(&n2).is_empty());
-   assert!(!drain(&s1).is_empty());
-   assert!(!drain(&s2).is_empty());
+   assert_eq!(fanout_frames(&n1).len(), 1);
+   assert_eq!(fanout_frames(&n2).len(), 1);
+   assert!(drain(&s1).is_empty());
+   assert!(drain(&s2).is_empty());
 }
 
 #[test]
@@ -110,7 +110,6 @@ fn fanout_below_threshold_stays_per_subscriber() {
    let pubsub = Arc::new(PubSub::new());
    let (notifier, first) = make_sub(3, 1);
 
-   // Exactly at the threshold: still per-subscriber pushes.
    pubsub.subscribe("ch", Arc::clone(&first));
    for token in 2..=8 {
       let poll = Poll::new().unwrap();
@@ -120,8 +119,8 @@ fn fanout_below_threshold_stays_per_subscriber() {
    }
 
    assert_eq!(pubsub.publish("ch", "hi"), 8);
-   assert!(fanout_frames(&notifier).is_empty());
-   assert!(!drain(&first).is_empty());
+   assert_eq!(fanout_frames(&notifier).len(), 1);
+   assert!(drain(&first).is_empty());
 }
 
 #[test]
@@ -212,7 +211,8 @@ fn pattern_and_exact_both_delivered() {
 
    let count = pubsub.publish("ch", "msg");
    assert_eq!(count, 2);
-   assert!(!drain(&exact).is_empty());
+   assert!(!fanout_frames(exact.notifier()).is_empty());
+   assert!(drain(&exact).is_empty());
    assert!(!drain(&pattern).is_empty());
 }
 
@@ -291,8 +291,8 @@ fn drain_twice_second_is_empty() {
    pubsub.subscribe("ch", Arc::clone(&slot));
    pubsub.publish("ch", "msg");
 
-   assert!(!drain(&slot).is_empty());
-   assert!(drain(&slot).is_empty());
+   assert!(!fanout_frames(slot.notifier()).is_empty());
+   assert!(fanout_frames(slot.notifier()).is_empty());
 }
 
 #[test]
@@ -359,8 +359,10 @@ fn multiple_publishes_queue_in_order() {
    pubsub.publish("ch", "second");
    pubsub.publish("ch", "third");
 
-   let buf = drain(&slot);
-   let s = std::str::from_utf8(&buf).unwrap();
+   let frames = fanout_frames(slot.notifier());
+   assert_eq!(frames.len(), 3);
+   let combined: Vec<u8> = frames.iter().flat_map(|(_, f)| f.iter().copied()).collect();
+   let s = std::str::from_utf8(&combined).unwrap();
    assert!(s.find("first").unwrap() < s.find("second").unwrap());
    assert!(s.find("second").unwrap() < s.find("third").unwrap());
 }

@@ -1,4 +1,3 @@
-
 #[test]
 fn binary_values_round_trip_across_inline_and_heap_storage() {
    for size in [0, 1, 23, 24, 4096] {

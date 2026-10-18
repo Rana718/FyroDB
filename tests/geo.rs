@@ -6,8 +6,8 @@ use fyro_db::storage::geo::{GeoCenter, GeoSearchQuery, GeoShape, GeoUnit};
 fn geoadd_creates_key() {
    let s = store();
    let items = vec![
-      (13.361389, 38.115556, "Palermo".to_string()),
-      (15.087269, 37.502669, "Catania".to_string()),
+      (13.361389, 38.115556, "Palermo"),
+      (15.087269, 37.502669, "Catania"),
    ];
    assert_eq!(s.geoadd("k", &items, false, false, false), Ok(2));
 }
@@ -15,9 +15,9 @@ fn geoadd_creates_key() {
 #[test]
 fn geoadd_updates_existing() {
    let s = store();
-   let items = vec![(13.361389, 38.115556, "Palermo".to_string())];
+   let items = vec![(13.361389, 38.115556, "Palermo")];
    s.geoadd("k", &items, false, false, false).unwrap();
-   let items2 = vec![(13.5, 38.2, "Palermo".to_string())];
+   let items2 = vec![(13.5, 38.2, "Palermo")];
    assert_eq!(s.geoadd("k", &items2, false, false, false), Ok(0));
 }
 
@@ -25,8 +25,8 @@ fn geoadd_updates_existing() {
 fn geopos_existing_members() {
    let s = store();
    let items = vec![
-      (13.361389, 38.115556, "Palermo".to_string()),
-      (15.087269, 37.502669, "Catania".to_string()),
+      (13.361389, 38.115556, "Palermo"),
+      (15.087269, 37.502669, "Catania"),
    ];
    s.geoadd("k", &items, false, false, false).unwrap();
    let positions = s.geopos("k", &["Palermo", "Catania"]).unwrap();
@@ -40,7 +40,7 @@ fn geopos_existing_members() {
 #[test]
 fn geopos_missing_member() {
    let s = store();
-   let items = vec![(13.361389, 38.115556, "Palermo".to_string())];
+   let items = vec![(13.361389, 38.115556, "Palermo")];
    s.geoadd("k", &items, false, false, false).unwrap();
    let positions = s.geopos("k", &["missing"]).unwrap();
    assert_eq!(positions[0], None);
@@ -57,8 +57,8 @@ fn geopos_missing_key() {
 fn geodist_between_members() {
    let s = store();
    let items = vec![
-      (13.361389, 38.115556, "Palermo".to_string()),
-      (15.087269, 37.502669, "Catania".to_string()),
+      (13.361389, 38.115556, "Palermo"),
+      (15.087269, 37.502669, "Catania"),
    ];
    s.geoadd("k", &items, false, false, false).unwrap();
    let dist = s
@@ -71,7 +71,7 @@ fn geodist_between_members() {
 #[test]
 fn geodist_missing_member() {
    let s = store();
-   let items = vec![(13.361389, 38.115556, "Palermo".to_string())];
+   let items = vec![(13.361389, 38.115556, "Palermo")];
    s.geoadd("k", &items, false, false, false).unwrap();
    assert_eq!(s.geodist("k", "Palermo", "missing", GeoUnit::M), Ok(None));
 }
@@ -79,7 +79,7 @@ fn geodist_missing_member() {
 #[test]
 fn geodist_units() {
    let s = store();
-   let items = vec![(0.0, 0.0, "a".to_string()), (1.0, 0.0, "b".to_string())];
+   let items = vec![(0.0, 0.0, "a"), (1.0, 0.0, "b")];
    s.geoadd("k", &items, false, false, false).unwrap();
    let dist_m = s.geodist("k", "a", "b", GeoUnit::M).unwrap().unwrap();
    let dist_km = s.geodist("k", "a", "b", GeoUnit::Km).unwrap().unwrap();
@@ -89,7 +89,7 @@ fn geodist_units() {
 #[test]
 fn geohash_returns_string() {
    let s = store();
-   let items = vec![(13.361389, 38.115556, "Palermo".to_string())];
+   let items = vec![(13.361389, 38.115556, "Palermo")];
    s.geoadd("k", &items, false, false, false).unwrap();
    let hashes = s.geohash("k", &["Palermo"]).unwrap();
    assert!(hashes[0].is_some());
@@ -99,7 +99,7 @@ fn geohash_returns_string() {
 #[test]
 fn geohash_missing_member() {
    let s = store();
-   let items = vec![(13.361389, 38.115556, "Palermo".to_string())];
+   let items = vec![(13.361389, 38.115556, "Palermo")];
    s.geoadd("k", &items, false, false, false).unwrap();
    let hashes = s.geohash("k", &["missing"]).unwrap();
    assert_eq!(hashes[0], None);
@@ -109,9 +109,9 @@ fn geohash_missing_member() {
 fn geosearch_by_radius() {
    let s = store();
    let items = vec![
-      (13.361389, 38.115556, "Palermo".to_string()),
-      (15.087269, 37.502669, "Catania".to_string()),
-      (2.349014, 48.864716, "Paris".to_string()),
+      (13.361389, 38.115556, "Palermo"),
+      (15.087269, 37.502669, "Catania"),
+      (2.349014, 48.864716, "Paris"),
    ];
    s.geoadd("k", &items, false, false, false).unwrap();
    let results = s
@@ -135,9 +135,9 @@ fn geosearch_by_radius() {
 fn geosearch_by_radius_with_count() {
    let s = store();
    let items = vec![
-      (13.361389, 38.115556, "Palermo".to_string()),
-      (15.087269, 37.502669, "Catania".to_string()),
-      (14.0, 37.8, "Middle".to_string()),
+      (13.361389, 38.115556, "Palermo"),
+      (15.087269, 37.502669, "Catania"),
+      (14.0, 37.8, "Middle"),
    ];
    s.geoadd("k", &items, false, false, false).unwrap();
    let results = s
@@ -158,8 +158,8 @@ fn geosearch_by_radius_with_count() {
 fn geosearch_from_member() {
    let s = store();
    let items = vec![
-      (13.361389, 38.115556, "Palermo".to_string()),
-      (15.087269, 37.502669, "Catania".to_string()),
+      (13.361389, 38.115556, "Palermo"),
+      (15.087269, 37.502669, "Catania"),
    ];
    s.geoadd("k", &items, false, false, false).unwrap();
    let results = s
@@ -180,8 +180,8 @@ fn geosearch_from_member() {
 fn geosearchstore_stores_results() {
    let s = store();
    let items = vec![
-      (13.361389, 38.115556, "Palermo".to_string()),
-      (15.087269, 37.502669, "Catania".to_string()),
+      (13.361389, 38.115556, "Palermo"),
+      (15.087269, 37.502669, "Catania"),
    ];
    s.geoadd("k", &items, false, false, false).unwrap();
    let count = s
@@ -205,6 +205,6 @@ fn geosearchstore_stores_results() {
 fn geoadd_wrong_type() {
    let s = store();
    set_str(&s, "k", "val");
-   let items = vec![(1.0, 1.0, "a".to_string())];
+   let items = vec![(1.0, 1.0, "a")];
    assert_eq!(s.geoadd("k", &items, false, false, false), Err("WRONGTYPE"));
 }

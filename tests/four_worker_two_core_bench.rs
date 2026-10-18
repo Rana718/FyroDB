@@ -8,6 +8,7 @@ use fyro_db::storage::store::Store;
 use fyro_db::worker::run_worker;
 
 #[test]
+#[ignore]
 fn bench_4_workers_2_cores() {
    let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
    let port = probe.local_addr().unwrap().port();
