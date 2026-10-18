@@ -8,17 +8,17 @@ pub use kernels::convert::ElemType;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum DistanceMetric {
-    L2,
-    Cosine,
-    Ip,
+   L2,
+   Cosine,
+   Ip,
 }
 
 impl DistanceMetric {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            DistanceMetric::L2 => "L2",
-            DistanceMetric::Cosine => "COSINE",
-            DistanceMetric::Ip => "IP",
-        }
-    }
+   pub fn as_str(self) -> &'static str {
+      match self {
+         DistanceMetric::L2 => "L2",
+         DistanceMetric::Cosine => "COSINE",
+         DistanceMetric::Ip => "IP",
+      }
+   }
 }

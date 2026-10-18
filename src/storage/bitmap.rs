@@ -2,308 +2,317 @@ use crate::storage::store::Store;
 use crate::storage::value::{FyroDB, SmallStr, StoreValue};
 
 impl Store {
-    pub fn setbit(&self, key: &str, offset: u64, value: bool) -> Result<u8, &'static str> {
-        let byte_idx = (offset / 8) as usize;
-        let bit_idx = 7 - (offset % 8) as u8;
+   pub fn setbit(&self, key: &str, offset: u64, value: bool) -> Result<u8, &'static str> {
+      let byte_idx = (offset / 8) as usize;
+      let bit_idx = 7 - (offset % 8) as u8;
 
-        let result = self.data.update_with(key, |val| {
-            if val.is_expired() {
-                let mut bytes = vec![0u8; byte_idx + 1];
-                if value {
-                    bytes[byte_idx] |= 1 << bit_idx;
-                }
-                val.value = FyroDB::String(SmallStr::from_bytes(bytes));
-                val.expires_ms = 0;
-                return Ok(0u8);
+      let result = self.data.update_with(key, |val| {
+         if val.is_expired() {
+            let mut bytes = vec![0u8; byte_idx + 1];
+            if value {
+               bytes[byte_idx] |= 1 << bit_idx;
             }
-            match val.value.as_string_mut() {
-                Some(s) => {
-                    s.ensure_len(byte_idx + 1);
-                    let bytes = s.as_bytes_mut();
-                    let old = (bytes[byte_idx] >> bit_idx) & 1;
-                    if value {
-                        bytes[byte_idx] |= 1 << bit_idx;
-                    } else {
-                        bytes[byte_idx] &= !(1 << bit_idx);
-                    }
-                    Ok(old)
-                }
-                None => Err("WRONGTYPE"),
+            val.value = FyroDB::String(SmallStr::from_bytes(bytes));
+            val.expires_ms = 0;
+            return Ok(0u8);
+         }
+         match val.value.as_string_mut() {
+            Some(s) => {
+               s.ensure_len(byte_idx + 1);
+               let bytes = s.as_bytes_mut();
+               let old = (bytes[byte_idx] >> bit_idx) & 1;
+               if value {
+                  bytes[byte_idx] |= 1 << bit_idx;
+               } else {
+                  bytes[byte_idx] &= !(1 << bit_idx);
+               }
+               Ok(old)
             }
-        });
+            None => Err("WRONGTYPE"),
+         }
+      });
 
-        match result {
-            Some(r) => r,
-            None => {
-                let mut bytes = vec![0u8; byte_idx + 1];
-                if value {
-                    bytes[byte_idx] |= 1 << bit_idx;
-                }
-                self.data.insert_str(
-                    key,
-                    StoreValue::string(unsafe { String::from_utf8_unchecked(bytes) }),
-                );
-                Ok(0)
+      match result {
+         Some(r) => r,
+         None => {
+            let mut bytes = vec![0u8; byte_idx + 1];
+            if value {
+               bytes[byte_idx] |= 1 << bit_idx;
             }
-        }
-    }
+            self.data.insert_str(
+               key,
+               StoreValue::string(unsafe { String::from_utf8_unchecked(bytes) }),
+            );
+            Ok(0)
+         }
+      }
+   }
 
-    pub fn getbit(&self, key: &str, offset: u64) -> Result<u8, &'static str> {
-        match self.data.get_ref(key) {
-            None => Ok(0),
-            Some(e) if e.is_expired() => Ok(0),
+   pub fn getbit(&self, key: &str, offset: u64) -> Result<u8, &'static str> {
+      match self.data.get_ref(key) {
+         None => Ok(0),
+         Some(e) if e.is_expired() => Ok(0),
+         Some(e) => match e.value.as_string() {
+            Some(s) => {
+               let byte_idx = (offset / 8) as usize;
+               let bit_idx = 7 - (offset % 8) as u8;
+               let bytes = s.as_bytes();
+               if byte_idx >= bytes.len() {
+                  Ok(0)
+               } else {
+                  Ok((bytes[byte_idx] >> bit_idx) & 1)
+               }
+            }
+            None => Err("WRONGTYPE"),
+         },
+      }
+   }
+
+   pub fn bitcount(
+      &self,
+      key: &str,
+      start: i64,
+      end: i64,
+      use_bit: bool,
+   ) -> Result<usize, &'static str> {
+      match self.data.get_ref(key) {
+         None => Ok(0),
+         Some(e) if e.is_expired() => Ok(0),
+         Some(e) => match e.value.as_string() {
+            Some(s) => {
+               let bytes = s.as_bytes();
+               if bytes.is_empty() {
+                  return Ok(0);
+               }
+               if use_bit {
+                  let bit_len = bytes.len() * 8;
+                  let s_idx = normalize_bit_index(start, bit_len);
+                  let e_idx = normalize_bit_index(end, bit_len);
+                  if s_idx > e_idx {
+                     return Ok(0);
+                  }
+                  let s_byte = s_idx / 8;
+                  let e_byte = e_idx / 8;
+                  let count = if s_byte == e_byte {
+                     let mask = (0xFF_u8 >> (s_idx % 8)) & (0xFF_u8 << (7 - e_idx % 8));
+                     (bytes[s_byte] & mask).count_ones() as usize
+                  } else {
+                     let head = (bytes[s_byte] & (0xFF_u8 >> (s_idx % 8))).count_ones() as usize;
+                     let mid: usize = bytes[s_byte + 1..e_byte]
+                        .iter()
+                        .map(|b| b.count_ones() as usize)
+                        .sum();
+                     let tail =
+                        (bytes[e_byte] & (0xFF_u8 << (7 - e_idx % 8))).count_ones() as usize;
+                     head + mid + tail
+                  };
+                  Ok(count)
+               } else {
+                  let len = bytes.len() as i64;
+                  let s_idx = if start < 0 {
+                     (len + start).max(0)
+                  } else {
+                     start.min(len)
+                  } as usize;
+                  let e_idx = if end < 0 {
+                     (len + end).max(0)
+                  } else {
+                     end.min(len - 1)
+                  } as usize;
+                  if s_idx > e_idx {
+                     return Ok(0);
+                  }
+                  let count = bytes[s_idx..=e_idx]
+                     .iter()
+                     .map(|b| b.count_ones() as usize)
+                     .sum();
+                  Ok(count)
+               }
+            }
+            None => Err("WRONGTYPE"),
+         },
+      }
+   }
+
+   pub fn bitpos(
+      &self,
+      key: &str,
+      bit: u8,
+      start: i64,
+      end: i64,
+      has_end: bool,
+      use_bit: bool,
+   ) -> Result<i64, &'static str> {
+      match self.data.get_ref(key) {
+         None => {
+            if bit == 0 {
+               Ok(0)
+            } else {
+               Ok(-1)
+            }
+         }
+         Some(e) if e.is_expired() => {
+            if bit == 0 {
+               Ok(0)
+            } else {
+               Ok(-1)
+            }
+         }
+         Some(e) => match e.value.as_string() {
+            Some(s) => {
+               let bytes = s.as_bytes();
+               if bytes.is_empty() {
+                  return Ok(if bit == 0 { 0 } else { -1 });
+               }
+               if use_bit {
+                  let bit_len = bytes.len() * 8;
+                  let s_idx = normalize_bit_index(start, bit_len);
+                  let e_idx = normalize_bit_index(end, bit_len);
+                  if s_idx > e_idx {
+                     return Ok(-1);
+                  }
+                  let s_byte = s_idx / 8;
+                  let e_byte = e_idx / 8;
+                  for byte_i in s_byte..=e_byte {
+                     if byte_i >= bytes.len() {
+                        break;
+                     }
+                     let lo = if byte_i == s_byte { s_idx % 8 } else { 0 };
+                     let hi = if byte_i == e_byte { e_idx % 8 } else { 7 };
+                     let mask = (0xFF_u8 >> lo) & (0xFF_u8 << (7 - hi));
+                     let target = if bit == 1 {
+                        bytes[byte_i] & mask
+                     } else {
+                        !bytes[byte_i] & mask
+                     };
+                     if target != 0 {
+                        return Ok((byte_i * 8 + target.leading_zeros() as usize) as i64);
+                     }
+                  }
+                  Ok(-1)
+               } else {
+                  let len = bytes.len() as i64;
+                  let s_idx = if start < 0 {
+                     (len + start).max(0)
+                  } else {
+                     start.min(len)
+                  } as usize;
+                  let e_idx = if end < 0 {
+                     (len + end).max(0) as usize
+                  } else if has_end {
+                     end.min(len - 1) as usize
+                  } else {
+                     bytes.len() - 1
+                  };
+                  if s_idx > e_idx {
+                     return Ok(-1);
+                  }
+                  for (byte_idx, &b) in bytes.iter().enumerate().take(e_idx + 1).skip(s_idx) {
+                     let target = if bit == 1 { b } else { !b };
+                     if target != 0 {
+                        return Ok((byte_idx * 8 + target.leading_zeros() as usize) as i64);
+                     }
+                  }
+                  if bit == 0 && !has_end {
+                     Ok((bytes.len() * 8) as i64)
+                  } else {
+                     Ok(-1)
+                  }
+               }
+            }
+            None => Err("WRONGTYPE"),
+         },
+      }
+   }
+
+   pub fn bitop(&self, op: BitOp, dest: &str, keys: &[&str]) -> Result<usize, &'static str> {
+      let mut max_len = 0usize;
+      let mut buffers: Vec<Vec<u8>> = Vec::with_capacity(keys.len());
+
+      for &k in keys {
+         match self.data.get_ref(k) {
+            None => buffers.push(vec![]),
+            Some(e) if e.is_expired() => buffers.push(vec![]),
             Some(e) => match e.value.as_string() {
-                Some(s) => {
-                    let byte_idx = (offset / 8) as usize;
-                    let bit_idx = 7 - (offset % 8) as u8;
-                    let bytes = s.as_bytes();
-                    if byte_idx >= bytes.len() {
-                        Ok(0)
-                    } else {
-                        Ok((bytes[byte_idx] >> bit_idx) & 1)
-                    }
-                }
-                None => Err("WRONGTYPE"),
+               Some(s) => {
+                  let b = s.as_bytes().to_vec();
+                  max_len = max_len.max(b.len());
+                  buffers.push(b);
+               }
+               None => return Err("WRONGTYPE"),
             },
-        }
-    }
+         }
+      }
 
-    pub fn bitcount(
-        &self,
-        key: &str,
-        start: i64,
-        end: i64,
-        use_bit: bool,
-    ) -> Result<usize, &'static str> {
-        match self.data.get_ref(key) {
-            None => Ok(0),
-            Some(e) if e.is_expired() => Ok(0),
-            Some(e) => match e.value.as_string() {
-                Some(s) => {
-                    let bytes = s.as_bytes();
-                    if bytes.is_empty() {
-                        return Ok(0);
-                    }
-                    if use_bit {
-                        let bit_len = bytes.len() * 8;
-                        let s_idx = normalize_bit_index(start, bit_len);
-                        let e_idx = normalize_bit_index(end, bit_len);
-                        if s_idx > e_idx {
-                            return Ok(0);
-                        }
-                        let s_byte = s_idx / 8;
-                        let e_byte = e_idx / 8;
-                        let count = if s_byte == e_byte {
-                            let mask = (0xFF_u8 >> (s_idx % 8)) & (0xFF_u8 << (7 - e_idx % 8));
-                            (bytes[s_byte] & mask).count_ones() as usize
-                        } else {
-                            let head = (bytes[s_byte] & (0xFF_u8 >> (s_idx % 8))).count_ones() as usize;
-                            let mid: usize = bytes[s_byte + 1..e_byte].iter().map(|b| b.count_ones() as usize).sum();
-                            let tail = (bytes[e_byte] & (0xFF_u8 << (7 - e_idx % 8))).count_ones() as usize;
-                            head + mid + tail
-                        };
-                        Ok(count)
-                    } else {
-                        let len = bytes.len() as i64;
-                        let s_idx = if start < 0 {
-                            (len + start).max(0)
-                        } else {
-                            start.min(len)
-                        } as usize;
-                        let e_idx = if end < 0 {
-                            (len + end).max(0)
-                        } else {
-                            end.min(len - 1)
-                        } as usize;
-                        if s_idx > e_idx {
-                            return Ok(0);
-                        }
-                        let count = bytes[s_idx..=e_idx]
-                            .iter()
-                            .map(|b| b.count_ones() as usize)
-                            .sum();
-                        Ok(count)
-                    }
-                }
-                None => Err("WRONGTYPE"),
-            },
-        }
-    }
+      if buffers.is_empty() {
+         self
+            .data
+            .insert(dest.to_string(), StoreValue::string(String::new()));
+         return Ok(0);
+      }
 
-    pub fn bitpos(
-        &self,
-        key: &str,
-        bit: u8,
-        start: i64,
-        end: i64,
-        has_end: bool,
-        use_bit: bool,
-    ) -> Result<i64, &'static str> {
-        match self.data.get_ref(key) {
-            None => {
-                if bit == 0 {
-                    Ok(0)
-                } else {
-                    Ok(-1)
-                }
+      let mut result = vec![0u8; max_len];
+
+      match op {
+         BitOp::And => {
+            result = vec![0xFF; max_len];
+            for buf in &buffers {
+               for i in 0..max_len {
+                  let b = if i < buf.len() { buf[i] } else { 0 };
+                  result[i] &= b;
+               }
             }
-            Some(e) if e.is_expired() => {
-                if bit == 0 {
-                    Ok(0)
-                } else {
-                    Ok(-1)
-                }
+         }
+         BitOp::Or => {
+            for buf in &buffers {
+               for i in 0..buf.len() {
+                  result[i] |= buf[i];
+               }
             }
-            Some(e) => match e.value.as_string() {
-                Some(s) => {
-                    let bytes = s.as_bytes();
-                    if bytes.is_empty() {
-                        return Ok(if bit == 0 { 0 } else { -1 });
-                    }
-                    if use_bit {
-                        let bit_len = bytes.len() * 8;
-                        let s_idx = normalize_bit_index(start, bit_len);
-                        let e_idx = normalize_bit_index(end, bit_len);
-                        if s_idx > e_idx {
-                            return Ok(-1);
-                        }
-                        let s_byte = s_idx / 8;
-                        let e_byte = e_idx / 8;
-                        for byte_i in s_byte..=e_byte {
-                            if byte_i >= bytes.len() {
-                                break;
-                            }
-                            let lo = if byte_i == s_byte { s_idx % 8 } else { 0 };
-                            let hi = if byte_i == e_byte { e_idx % 8 } else { 7 };
-                            let mask = (0xFF_u8 >> lo) & (0xFF_u8 << (7 - hi));
-                            let target = if bit == 1 { bytes[byte_i] & mask } else { !bytes[byte_i] & mask };
-                            if target != 0 {
-                                return Ok((byte_i * 8 + target.leading_zeros() as usize) as i64);
-                            }
-                        }
-                        Ok(-1)
-                    } else {
-                        let len = bytes.len() as i64;
-                        let s_idx = if start < 0 {
-                            (len + start).max(0)
-                        } else {
-                            start.min(len)
-                        } as usize;
-                        let e_idx = if end < 0 {
-                            (len + end).max(0) as usize
-                        } else if has_end {
-                            end.min(len - 1) as usize
-                        } else {
-                            bytes.len() - 1
-                        };
-                        if s_idx > e_idx {
-                            return Ok(-1);
-                        }
-                        for (byte_idx, &b) in bytes.iter().enumerate().take(e_idx + 1).skip(s_idx) {
-                            let target = if bit == 1 { b } else { !b };
-                            if target != 0 {
-                                return Ok((byte_idx * 8 + target.leading_zeros() as usize) as i64);
-                            }
-                        }
-                        if bit == 0 && !has_end {
-                            Ok((bytes.len() * 8) as i64)
-                        } else {
-                            Ok(-1)
-                        }
-                    }
-                }
-                None => Err("WRONGTYPE"),
-            },
-        }
-    }
-
-    pub fn bitop(&self, op: BitOp, dest: &str, keys: &[&str]) -> Result<usize, &'static str> {
-        let mut max_len = 0usize;
-        let mut buffers: Vec<Vec<u8>> = Vec::with_capacity(keys.len());
-
-        for &k in keys {
-            match self.data.get_ref(k) {
-                None => buffers.push(vec![]),
-                Some(e) if e.is_expired() => buffers.push(vec![]),
-                Some(e) => match e.value.as_string() {
-                    Some(s) => {
-                        let b = s.as_bytes().to_vec();
-                        max_len = max_len.max(b.len());
-                        buffers.push(b);
-                    }
-                    None => return Err("WRONGTYPE"),
-                },
+         }
+         BitOp::Xor => {
+            for buf in &buffers {
+               for i in 0..buf.len() {
+                  result[i] ^= buf[i];
+               }
             }
-        }
-
-        if buffers.is_empty() {
-            self.data
-                .insert(dest.to_string(), StoreValue::string(String::new()));
-            return Ok(0);
-        }
-
-        let mut result = vec![0u8; max_len];
-
-        match op {
-            BitOp::And => {
-                result = vec![0xFF; max_len];
-                for buf in &buffers {
-                    for i in 0..max_len {
-                        let b = if i < buf.len() { buf[i] } else { 0 };
-                        result[i] &= b;
-                    }
-                }
+         }
+         BitOp::Not => {
+            if buffers.len() != 1 {
+               return Err("BITOP NOT requires one source key");
             }
-            BitOp::Or => {
-                for buf in &buffers {
-                    for i in 0..buf.len() {
-                        result[i] |= buf[i];
-                    }
-                }
+            for i in 0..max_len {
+               result[i] = if i < buffers[0].len() {
+                  !buffers[0][i]
+               } else {
+                  0xFF
+               };
             }
-            BitOp::Xor => {
-                for buf in &buffers {
-                    for i in 0..buf.len() {
-                        result[i] ^= buf[i];
-                    }
-                }
-            }
-            BitOp::Not => {
-                if buffers.len() != 1 {
-                    return Err("BITOP NOT requires one source key");
-                }
-                for i in 0..max_len {
-                    result[i] = if i < buffers[0].len() {
-                        !buffers[0][i]
-                    } else {
-                        0xFF
-                    };
-                }
-            }
-        }
+         }
+      }
 
-        let len = result.len();
-        self.data.insert(
-            dest.to_string(),
-            StoreValue::string(unsafe { String::from_utf8_unchecked(result) }),
-        );
-        Ok(len)
-    }
+      let len = result.len();
+      self.data.insert(
+         dest.to_string(),
+         StoreValue::string(unsafe { String::from_utf8_unchecked(result) }),
+      );
+      Ok(len)
+   }
 }
 
 #[derive(Clone, Copy)]
 pub enum BitOp {
-    And,
-    Or,
-    Xor,
-    Not,
+   And,
+   Or,
+   Xor,
+   Not,
 }
 
 #[inline]
 fn normalize_bit_index(idx: i64, bit_len: usize) -> usize {
-    if idx < 0 {
-        (bit_len as i64 + idx).max(0) as usize
-    } else {
-        (idx as usize).min(bit_len.saturating_sub(1))
-    }
+   if idx < 0 {
+      (bit_len as i64 + idx).max(0) as usize
+   } else {
+      (idx as usize).min(bit_len.saturating_sub(1))
+   }
 }
