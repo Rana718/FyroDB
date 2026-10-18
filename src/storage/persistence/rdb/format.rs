@@ -25,99 +25,98 @@ pub(super) const CLUSTER_VERSION: u8 = 1;
 
 #[inline]
 pub(super) fn fsync_file(f: &File) -> io::Result<()> {
-    let ret = unsafe { libc::fsync(f.as_raw_fd()) };
-    if ret == 0 {
-        Ok(())
-    } else {
-        Err(io::Error::last_os_error())
-    }
+   let ret = unsafe { libc::fsync(f.as_raw_fd()) };
+   if ret == 0 {
+      Ok(())
+   } else {
+      Err(io::Error::last_os_error())
+   }
 }
 
 #[inline]
 pub(super) fn write_u8(w: &mut impl Write, v: u8) -> io::Result<()> {
-    w.write_all(&[v])
+   w.write_all(&[v])
 }
 #[inline]
 pub(super) fn write_u32(w: &mut impl Write, v: u32) -> io::Result<()> {
-    w.write_all(&v.to_le_bytes())
+   w.write_all(&v.to_le_bytes())
 }
 #[inline]
 pub(super) fn write_u64(w: &mut impl Write, v: u64) -> io::Result<()> {
-    w.write_all(&v.to_le_bytes())
+   w.write_all(&v.to_le_bytes())
 }
 #[inline]
 pub(super) fn write_bytes(w: &mut impl Write, b: &[u8]) -> io::Result<()> {
-    write_u32(w, b.len() as u32)?;
-    w.write_all(b)
+   write_u32(w, b.len() as u32)?;
+   w.write_all(b)
 }
 #[inline]
 pub(super) fn read_u8(r: &mut impl Read) -> io::Result<u8> {
-    let mut b = [0u8];
-    r.read_exact(&mut b)?;
-    Ok(b[0])
+   let mut b = [0u8];
+   r.read_exact(&mut b)?;
+   Ok(b[0])
 }
 #[inline]
 pub(super) fn read_u32(r: &mut impl Read) -> io::Result<u32> {
-    let mut b = [0u8; 4];
-    r.read_exact(&mut b)?;
-    Ok(u32::from_le_bytes(b))
+   let mut b = [0u8; 4];
+   r.read_exact(&mut b)?;
+   Ok(u32::from_le_bytes(b))
 }
 #[inline]
 pub(super) fn read_u64(r: &mut impl Read) -> io::Result<u64> {
-    let mut b = [0u8; 8];
-    r.read_exact(&mut b)?;
-    Ok(u64::from_le_bytes(b))
+   let mut b = [0u8; 8];
+   r.read_exact(&mut b)?;
+   Ok(u64::from_le_bytes(b))
 }
 
 pub(super) fn read_string_bounded(r: &mut impl Read) -> io::Result<String> {
-    let len = read_u32(r)?;
-    if len > MAX_LOAD_STRING {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "string length exceeds maximum in RDB",
-        ));
-    }
-    let len = len as usize;
-    let mut buf = vec![0u8; len];
-    r.read_exact(&mut buf)?;
-    String::from_utf8(buf).map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid utf8"))
+   let len = read_u32(r)?;
+   if len > MAX_LOAD_STRING {
+      return Err(io::Error::new(
+         io::ErrorKind::InvalidData,
+         "string length exceeds maximum in RDB",
+      ));
+   }
+   let len = len as usize;
+   let mut buf = vec![0u8; len];
+   r.read_exact(&mut buf)?;
+   String::from_utf8(buf).map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid utf8"))
 }
 
 pub(super) fn read_bytes_bounded(r: &mut impl Read) -> io::Result<Vec<u8>> {
-    let len = read_u32(r)?;
-    if len > MAX_LOAD_STRING {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "string length exceeds maximum in RDB",
-        ));
-    }
-    let len = len as usize;
-    let mut buf = vec![0u8; len];
-    r.read_exact(&mut buf)?;
-    Ok(buf)
+   let len = read_u32(r)?;
+   if len > MAX_LOAD_STRING {
+      return Err(io::Error::new(
+         io::ErrorKind::InvalidData,
+         "string length exceeds maximum in RDB",
+      ));
+   }
+   let len = len as usize;
+   let mut buf = vec![0u8; len];
+   r.read_exact(&mut buf)?;
+   Ok(buf)
 }
-
 
 #[inline]
 pub(super) fn read_count_bounded(r: &mut impl Read) -> io::Result<u32> {
-    let count = read_u32(r)?;
-    if count > MAX_LOAD_ELEMENTS {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "collection element count exceeds maximum in replication value",
-        ));
-    }
-    Ok(count)
+   let count = read_u32(r)?;
+   if count > MAX_LOAD_ELEMENTS {
+      return Err(io::Error::new(
+         io::ErrorKind::InvalidData,
+         "collection element count exceeds maximum in replication value",
+      ));
+   }
+   Ok(count)
 }
 
 pub(super) fn skip_string(r: &mut impl Read) -> io::Result<()> {
-    let len = read_u32(r)? as u64;
-    let mut remaining = len;
-    let mut skip_buf = [0u8; 8192];
-    while remaining > 0 {
-        let chunk = remaining.min(8192) as usize;
-        r.read_exact(&mut skip_buf[..chunk])?;
-        remaining -= chunk as u64;
-    }
-    Ok(())
+   let len = read_u32(r)? as u64;
+   let mut remaining = len;
+   let mut skip_buf = [0u8; 8192];
+   while remaining > 0 {
+      let chunk = remaining.min(8192) as usize;
+      r.read_exact(&mut skip_buf[..chunk])?;
+      remaining -= chunk as u64;
+   }
+   Ok(())
 }

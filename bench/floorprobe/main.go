@@ -1,10 +1,5 @@
-// Protocol-floor probe: PING (no store access) vs SET vs GET at the same
-// client shape (100 conns, pipeline 100). The gap between PING and GET is
-// the store-read cost; between GET and SET the store-write cost. Whatever
-// PING costs is the parse/dispatch/epoll/syscall floor no store-side change
-// can remove.
-//
-// Usage: go run ./floorprobe [-ops 1000000]
+// Protocol-floor probe: measures PING vs SET vs GET (100 conns, pipeline 100)
+// to isolate parsing/epoll baseline from storage access costs.
 package main
 
 import (

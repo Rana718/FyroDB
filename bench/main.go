@@ -19,7 +19,7 @@ const (
 var (
 	CLIENTS = 100
 
-	OPS_CLIENT = 10000
+	OPS_CLIENT = 100_000
 
 	PUB_SUBSCRIBERS = 50
 	PUB_PUBLISHERS  = 10
@@ -77,6 +77,10 @@ func main() {
 	dockerName := flag.String("docker", "", "docker container name/ID to monitor (auto-detect if empty)")
 	noFlush := flag.Bool("f", false, "skip FLUSHALL between phases; keyspace accumulates so peak RSS measures true steady-state memory")
 	jsonOut := flag.String("json", "", "write all results (throughput, latency, memory) as JSON to this path")
+
+	flag.IntVar(&PUB_SUBSCRIBERS, "pub-subs", PUB_SUBSCRIBERS, "pub/sub subscribers")
+	flag.IntVar(&PUB_PUBLISHERS, "pub-pubs", PUB_PUBLISHERS, "pub/sub publishers")
+	flag.IntVar(&PUB_MSGS_EACH, "pub-msgs", PUB_MSGS_EACH, "pub/sub messages per publisher")
 
 	flag.IntVar(&latCfg.rate, "rate", latCfg.rate, "lat: target total ops/sec (0 = closed loop)")
 	flag.DurationVar(&latCfg.duration, "dur", latCfg.duration, "lat: measurement duration")

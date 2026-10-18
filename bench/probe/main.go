@@ -1,9 +1,4 @@
-// Subscriber-scaling probe for the pub/sub publish path. Not part of the
-// standard benchmark: exists to answer "does publish cost scale with
-// subscriber count?", which separates fan-out cost from fixed per-publish
-// cost.
-//
-// Usage: go run ./probe [-subs 10] [-pubs 10] [-msgs 20000]
+// Subscriber-scaling probe for pub/sub publish to measure fan-out cost vs subscriber count.
 package main
 
 import (
@@ -79,9 +74,7 @@ func main() {
 	// One delivery frame, fixed size: *3\r\n$7\r\nmessage\r\n$4\r\nchan\r\n$3\r\nmsg\r\n
 	frameBytes := int64(len("*3\r\n$7\r\nmessage\r\n$4\r\nchan\r\n$3\r\nmsg\r\n"))
 	totalMsgs := int64(*pubs) * int64(*msgs)
-	// Subscribe synchronously: publishers starting concurrently would race
-	// their first batch past the SUBSCRIBE, and the subscriber would then
-	// wait forever for messages that were never routed to it.
+	// Subscribe synchronously before publishers start to avoid missed messages.
 	for _, c := range subConns {
 		c.SetReadDeadline(time.Now().Add(5 * time.Second))
 		r := bufio.NewReaderSize(c, 512)

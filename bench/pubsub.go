@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"io"
 	"net"
@@ -64,7 +65,8 @@ func runPubSub(addr string) {
 			subReady.Done()
 			<-startSignal
 
-			bytesRead, err := io.CopyN(io.Discard, conn, totalMsgs*messageFrameBytes)
+			buf := make([]byte, 256*1024)
+			bytesRead, err := io.CopyBuffer(io.Discard, io.LimitReader(conn, totalMsgs*messageFrameBytes), buf)
 			localCount := bytesRead / messageFrameBytes
 			if err == nil {
 				localCount = totalMsgs
@@ -104,16 +106,12 @@ func runPubSub(addr string) {
 
 			conn.SetDeadline(time.Now().Add(30 * time.Second))
 			r := bufio.NewReaderSize(conn, 128<<10)
-			requests := make([]byte, 0, PUB_PIPE_SIZE*len(pubCmd))
+			pubBatch := bytes.Repeat(pubCmd, PUB_PIPE_SIZE)
 
 			sent := 0
 			for sent < PUB_MSGS_EACH {
 				batch := min(PUB_PIPE_SIZE, PUB_MSGS_EACH-sent)
-				requests = requests[:0]
-				for range batch {
-					requests = append(requests, pubCmd...)
-				}
-				writeFull(conn, requests)
+				writeFull(conn, pubBatch[:batch*len(pubCmd)])
 				skipLines(r, batch)
 				sent += batch
 			}

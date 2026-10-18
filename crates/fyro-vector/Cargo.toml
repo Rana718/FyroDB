@@ -1,6 +1,6 @@
 [package]
 name = "fyro-vector"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2024"
 license = "Apache-2.0"
 description = "FyroDB vector engine: SIMD distance kernels, quantization, HNSW and exact (FLAT) search"

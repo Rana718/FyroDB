@@ -2,6 +2,8 @@ package main
 
 import (
 	"bufio"
+	"bytes"
+	"encoding/binary"
 	"fmt"
 	"net"
 	"strconv"
@@ -102,8 +104,8 @@ func preDialCluster(nClients int) clusterConns {
 				}
 				tc := c.(*net.TCPConn)
 				tc.SetNoDelay(true)
-				tc.SetWriteBuffer(1 << 18)
-				tc.SetReadBuffer(1 << 18)
+				tc.SetWriteBuffer(1 << 20)
+				tc.SetReadBuffer(1 << 20)
 				cc[i][n] = tc
 			}
 		})
@@ -146,8 +148,8 @@ func preDialTo(n, node int) []*net.TCPConn {
 			}
 			tc := c.(*net.TCPConn)
 			tc.SetNoDelay(true)
-			tc.SetWriteBuffer(1 << 18)
-			tc.SetReadBuffer(1 << 18)
+			tc.SetWriteBuffer(1 << 20)
+			tc.SetReadBuffer(1 << 20)
 			conns[i] = tc
 		})
 	}
@@ -170,8 +172,8 @@ func dialTCP(id int) *net.TCPConn {
 	}
 	tc := c.(*net.TCPConn)
 	tc.SetNoDelay(true)
-	tc.SetWriteBuffer(1 << 18)
-	tc.SetReadBuffer(1 << 18)
+	tc.SetWriteBuffer(1 << 20)
+	tc.SetReadBuffer(1 << 20)
 	return tc
 }
 
@@ -193,39 +195,23 @@ func runKV() {
 
 	totalOps := int64(CLIENTS * OPS_CLIENT)
 
-	seqCC := preDialCluster(CLIENTS)
-	pipeSetCC := preDialCluster(CLIENTS)
-	pipeGetCC := preDialCluster(CLIENTS)
-	defer closeCluster(seqCC)
-	defer closeCluster(pipeSetCC)
-	defer closeCluster(pipeGetCC)
+	seqConns := preDial(CLIENTS)
+	defer closeAll(seqConns)
 
 	var wg sync.WaitGroup
 
 	seqStart := time.Now()
 	for i := range CLIENTS {
 		wg.Go(func() {
-			conns := seqCC[i]
-			readers := makeReaders(conns, 128<<10)
-
-			nodeReqs := makeNodeBufs(len(conns), seqBatch*40)
-			nodeCnts := make([]int, len(conns))
-
-			var kb [32]byte
+			conn := seqConns[i]
+			r := bufio.NewReaderSize(conn, 256<<10)
+			buf := make([]byte, 0, seqBatch*48)
 			base := i * OPS_CLIENT
 			for sent := 0; sent < OPS_CLIENT; {
 				batch := min(seqBatch, OPS_CLIENT-sent)
-				resetBufs(nodeReqs, nodeCnts)
-				for j := range batch {
-					kn := appendLen(kb[:0], base+sent+j)
-					n := nodeForKey(kn)
-					nodeReqs[n] = appendSetBytes(nodeReqs[n], kn)
-					nodeCnts[n]++
-				}
-				// Write all nodes first, then read all replies, to
-				// overlap I/O across nodes instead of serialising it.
-				flushAll(conns, nodeReqs, nodeCnts)
-				readSetReplies(readers, nodeCnts)
+				buf = buildBatchFastSet(base+sent, batch, buf[:0])
+				writeFull(conn, buf)
+				discardN(r, batch*5)
 				sent += batch
 			}
 		})
@@ -234,30 +220,17 @@ func runKV() {
 	seqElapsed := time.Since(seqStart)
 	printResult("Pipeline-64 SET", totalOps, seqElapsed)
 
+	pipeSetConns := preDial(CLIENTS)
+	defer closeAll(pipeSetConns)
+
 	pipeSetStart := time.Now()
 	for i := range CLIENTS {
 		wg.Go(func() {
-			conns := pipeSetCC[i]
-			readers := makeReaders(conns, 128<<10)
-
-			nodeReqs := makeNodeBufs(len(conns), PIPE_SIZE*40)
-			nodeCnts := make([]int, len(conns))
-
-			var kb [32]byte
 			base := i * OPS_CLIENT
-			for sent := 0; sent < OPS_CLIENT; {
-				batch := min(PIPE_SIZE, OPS_CLIENT-sent)
-				resetBufs(nodeReqs, nodeCnts)
-				for j := range batch {
-					kn := appendLen(kb[:0], base+sent+j)
-					n := nodeForKey(kn)
-					nodeReqs[n] = appendSetBytes(nodeReqs[n], kn)
-					nodeCnts[n]++
-				}
-				flushAll(conns, nodeReqs, nodeCnts)
-				readSetReplies(readers, nodeCnts)
-				sent += batch
-			}
+			runAsyncPipeline(pipeSetConns[i], OPS_CLIENT,
+				func(offset, count int, out []byte) []byte {
+					return buildBatchFastSet(base+offset, count, out)
+				}, 5) // "+OK\r\n" = 5 bytes
 		})
 	}
 	wg.Wait()
@@ -265,30 +238,17 @@ func runKV() {
 	printResult("Pipelined SET", totalOps, pipeSetElapsed)
 
 	// GET the same keys written in the pipelined SET phase.
+	pipeGetConns := preDial(CLIENTS)
+	defer closeAll(pipeGetConns)
+
 	pipeGetStart := time.Now()
 	for i := range CLIENTS {
 		wg.Go(func() {
-			conns := pipeGetCC[i]
-			readers := makeReaders(conns, 256<<10)
-
-			nodeReqs := makeNodeBufs(len(conns), PIPE_SIZE*32)
-			nodeCnts := make([]int, len(conns))
-
-			var kb [32]byte
 			base := i * OPS_CLIENT
-			for sent := 0; sent < OPS_CLIENT; {
-				batch := min(PIPE_SIZE, OPS_CLIENT-sent)
-				resetBufs(nodeReqs, nodeCnts)
-				for j := range batch {
-					kn := appendLen(kb[:0], base+sent+j)
-					n := nodeForKey(kn)
-					nodeReqs[n] = appendGetBytes(nodeReqs[n], kn)
-					nodeCnts[n]++
-				}
-				flushAll(conns, nodeReqs, nodeCnts)
-				readGetReplies(readers, nodeCnts)
-				sent += batch
-			}
+			runAsyncPipeline(pipeGetConns[i], OPS_CLIENT,
+				func(offset, count int, out []byte) []byte {
+					return buildBatchFastGet(base+offset, count, out)
+				}, 11) // "$5\r\nvalue\r\n" = 11 bytes
 		})
 	}
 	wg.Wait()
@@ -532,13 +492,253 @@ var (
 )
 
 const (
-	fastGetFrame  = "$5\r\nvalue\r\n"
-	fastPopFrame  = "$7\r\npayload\r\n"
-	fastHgetFrame = "$1\r\nv\r\n"
-	fastNilFrame  = "$-1\r\n"
-	fastOneLine   = ":1\r\n"
-	fastOKLine    = "+OK\r\n"
+	fastGetFrame   = "$5\r\nvalue\r\n"
+	fast16GetFrame = "$16\r\n0123456789abcdef\r\n"
+	fastPopFrame   = "$7\r\npayload\r\n"
+	fastHgetFrame  = "$1\r\nv\r\n"
+	fastNilFrame   = "$-1\r\n"
+	fastOneLine    = ":1\r\n"
+	fastOKLine     = "+OK\r\n"
 )
+
+var (
+	fastGetFrameB   = []byte(fastGetFrame)
+	fast16GetFrameB = []byte(fast16GetFrame)
+	fastPopFrameB   = []byte(fastPopFrame)
+	fastHgetFrameB  = []byte(fastHgetFrame)
+	fastNilFrameB   = []byte(fastNilFrame)
+	fastOneLineB    = []byte(fastOneLine)
+	fastOKLineB     = []byte(fastOKLine)
+)
+
+var setHdrDigits = [11][]byte{
+	0: nil,
+	1: []byte("*3\r\n$3\r\nSET\r\n$1\r\n"),
+	2: []byte("*3\r\n$3\r\nSET\r\n$2\r\n"),
+	3: []byte("*3\r\n$3\r\nSET\r\n$3\r\n"),
+	4: []byte("*3\r\n$3\r\nSET\r\n$4\r\n"),
+	5: []byte("*3\r\n$3\r\nSET\r\n$5\r\n"),
+	6: []byte("*3\r\n$3\r\nSET\r\n$6\r\n"),
+	7: []byte("*3\r\n$3\r\nSET\r\n$7\r\n"),
+	8: []byte("*3\r\n$3\r\nSET\r\n$8\r\n"),
+	9: []byte("*3\r\n$3\r\nSET\r\n$9\r\n"),
+	10: []byte("*3\r\n$3\r\nSET\r\n$10\r\n"),
+}
+
+var getHdrDigits = [11][]byte{
+	0: nil,
+	1: []byte("*2\r\n$3\r\nGET\r\n$1\r\n"),
+	2: []byte("*2\r\n$3\r\nGET\r\n$2\r\n"),
+	3: []byte("*2\r\n$3\r\nGET\r\n$3\r\n"),
+	4: []byte("*2\r\n$3\r\nGET\r\n$4\r\n"),
+	5: []byte("*2\r\n$3\r\nGET\r\n$5\r\n"),
+	6: []byte("*2\r\n$3\r\nGET\r\n$6\r\n"),
+	7: []byte("*2\r\n$3\r\nGET\r\n$7\r\n"),
+	8: []byte("*2\r\n$3\r\nGET\r\n$8\r\n"),
+	9: []byte("*2\r\n$3\r\nGET\r\n$9\r\n"),
+	10: []byte("*2\r\n$3\r\nGET\r\n$10\r\n"),
+}
+
+const digits100 = "" +
+	"00010203040506070809" +
+	"10111213141516171819" +
+	"20212223242526272829" +
+	"30313233343536373839" +
+	"40414243444546474849" +
+	"50515253545556575859" +
+	"60616263646566676869" +
+	"70717273747576777879" +
+	"80818283848586878889" +
+	"90919293949596979899"
+
+type hdrWords struct {
+	w0   uint64
+	w1   uint64
+	tail byte
+	len  int
+}
+
+var setHdrWords [11]hdrWords
+var getHdrWords [11]hdrWords
+
+var valPartW0 uint64
+var valPartW1 uint64
+
+func init() {
+	if len(valPart) >= 13 {
+		valPartW0 = binary.LittleEndian.Uint64(valPart[0:8])
+		valPartW1 = binary.LittleEndian.Uint64(valPart[len(valPart)-8:])
+	}
+	for d := 1; d <= 10; d++ {
+		sh := setHdrDigits[d]
+		if len(sh) >= 16 {
+			setHdrWords[d].w0 = binary.LittleEndian.Uint64(sh[0:8])
+			setHdrWords[d].w1 = binary.LittleEndian.Uint64(sh[8:16])
+			if len(sh) > 16 {
+				setHdrWords[d].tail = sh[16]
+			}
+			setHdrWords[d].len = len(sh)
+		}
+		gh := getHdrDigits[d]
+		if len(gh) >= 16 {
+			getHdrWords[d].w0 = binary.LittleEndian.Uint64(gh[0:8])
+			getHdrWords[d].w1 = binary.LittleEndian.Uint64(gh[8:16])
+			if len(gh) > 16 {
+				getHdrWords[d].tail = gh[16]
+			}
+			getHdrWords[d].len = len(gh)
+		}
+	}
+}
+
+func fastIntDigits(n int) int {
+	if n < 10 {
+		return 1
+	}
+	if n < 100 {
+		return 2
+	}
+	if n < 1000 {
+		return 3
+	}
+	if n < 10000 {
+		return 4
+	}
+	if n < 100000 {
+		return 5
+	}
+	if n < 1000000 {
+		return 6
+	}
+	if n < 10000000 {
+		return 7
+	}
+	if n < 100000000 {
+		return 8
+	}
+	if n < 1000000000 {
+		return 9
+	}
+	return 10
+}
+
+func buildBatchFastSet(base, count int, buf []byte) []byte {
+	out := buf
+	valLen := len(valPart)
+	valOffset := valLen - 8
+	for j := 0; j < count; j++ {
+		n := base + j
+		d := fastIntDigits(n)
+		hw := &setHdrWords[d]
+		pos := len(out)
+		tot := hw.len + d + valLen
+		out = out[:pos+tot]
+
+		binary.LittleEndian.PutUint64(out[pos:], hw.w0)
+		binary.LittleEndian.PutUint64(out[pos+8:], hw.w1)
+		if hw.len > 16 {
+			out[pos+16] = hw.tail
+		}
+
+		kStart := pos + hw.len
+		kEnd := kStart + d
+		curr := n
+		idx := kEnd
+		for curr >= 100 {
+			q := curr / 100
+			r := (curr - q*100) * 2
+			curr = q
+			idx -= 2
+			out[idx] = digits100[r]
+			out[idx+1] = digits100[r+1]
+		}
+		if curr < 10 {
+			out[kStart] = byte('0' + curr)
+		} else {
+			r := curr * 2
+			out[kStart] = digits100[r]
+			out[kStart+1] = digits100[r+1]
+		}
+
+		binary.LittleEndian.PutUint64(out[kEnd:], valPartW0)
+		binary.LittleEndian.PutUint64(out[kEnd+valOffset:], valPartW1)
+	}
+	return out
+}
+
+func buildBatchFastGet(base, count int, buf []byte) []byte {
+	out := buf
+	for j := 0; j < count; j++ {
+		n := base + j
+		d := fastIntDigits(n)
+		hw := &getHdrWords[d]
+		pos := len(out)
+		tot := hw.len + d + 2
+		out = out[:pos+tot]
+
+		binary.LittleEndian.PutUint64(out[pos:], hw.w0)
+		binary.LittleEndian.PutUint64(out[pos+8:], hw.w1)
+		if hw.len > 16 {
+			out[pos+16] = hw.tail
+		}
+
+		kStart := pos + hw.len
+		kEnd := kStart + d
+		curr := n
+		idx := kEnd
+		for curr >= 100 {
+			q := curr / 100
+			r := (curr - q*100) * 2
+			curr = q
+			idx -= 2
+			out[idx] = digits100[r]
+			out[idx+1] = digits100[r+1]
+		}
+		if curr < 10 {
+			out[kStart] = byte('0' + curr)
+		} else {
+			r := curr * 2
+			out[kStart] = digits100[r]
+			out[kStart+1] = digits100[r+1]
+		}
+		out[kEnd] = '\r'
+		out[kEnd+1] = '\n'
+	}
+	return out
+}
+
+// runAsyncPipeline saturates a connection with independent writer and reader goroutines.
+// buildBatch encodes commands; replyBytesPerOp is the byte size per reply for bulk discard.
+func runAsyncPipeline(
+	conn *net.TCPConn,
+	totalOps int,
+	buildBatch func(base, count int, out []byte) []byte,
+	replyBytesPerOp int,
+) {
+	const batchSize = 2500
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		buf := make([]byte, 0, batchSize*50)
+		sent := 0
+		for sent < totalOps {
+			n := min(batchSize, totalOps-sent)
+			buf = buildBatch(sent, n, buf[:0])
+			writeFull(conn, buf)
+			sent += n
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		r := bufio.NewReaderSize(conn, 4<<20)
+		discardN(r, totalOps*replyBytesPerOp)
+	}()
+
+	wg.Wait()
+}
 
 func appendSetBytes(out, key []byte) []byte {
 	out = append(out, setHdr...)
@@ -597,91 +797,191 @@ func discardN(r *bufio.Reader, n int) {
 }
 
 func skipGetReplies(r *bufio.Reader, n int) {
-	for i := 0; i < n; i++ {
-		if r.Buffered() >= len(fastPopFrame) {
-			p, _ := r.Peek(len(fastPopFrame))
-			if string(p[:len(fastGetFrame)]) == fastGetFrame {
-				r.Discard(len(fastGetFrame))
-				continue
-			}
-			if string(p) == fastPopFrame {
-				r.Discard(len(fastPopFrame))
-				continue
-			}
-			if string(p[:len(fastHgetFrame)]) == fastHgetFrame {
-				r.Discard(len(fastHgetFrame))
-				continue
-			}
-			if string(p[:len(fastNilFrame)]) == fastNilFrame {
-				r.Discard(len(fastNilFrame))
-				continue
-			}
-		}
-		b, err := r.ReadByte()
-		if err != nil {
-			panic(err)
-		}
-		switch b {
-		case '$':
-			line, err := r.ReadSlice('\n')
+	for n > 0 {
+		avail := r.Buffered()
+		if avail == 0 {
+			b, err := r.ReadByte()
 			if err != nil {
 				panic(err)
 			}
-			if len(line) >= 2 && line[0] == '-' {
-				continue
+			if b == '-' {
+				line, _ := r.ReadString('\n')
+				panic("Redis error reply: " + string(b) + line)
 			}
-			vlen := 0
-			for _, c := range line {
-				if c >= '0' && c <= '9' {
-					vlen = vlen*10 + int(c-'0')
-				} else {
-					break
+			r.UnreadByte()
+			avail = r.Buffered()
+		}
+		buf, _ := r.Peek(avail)
+		repliesInBuf := 0
+		pos := 0
+
+		for pos < len(buf) && repliesInBuf < n {
+			switch buf[pos] {
+			case '$':
+				rem := len(buf) - pos
+				// Fast path matches for common static frame shapes
+				if rem >= len(fastGetFrameB) && bytes.Equal(buf[pos:pos+len(fastGetFrameB)], fastGetFrameB) {
+					pos += len(fastGetFrameB)
+					repliesInBuf++
+					continue
 				}
+				if rem >= len(fastHgetFrameB) && bytes.Equal(buf[pos:pos+len(fastHgetFrameB)], fastHgetFrameB) {
+					pos += len(fastHgetFrameB)
+					repliesInBuf++
+					continue
+				}
+				if rem >= len(fastPopFrameB) && bytes.Equal(buf[pos:pos+len(fastPopFrameB)], fastPopFrameB) {
+					pos += len(fastPopFrameB)
+					repliesInBuf++
+					continue
+				}
+				if rem >= len(fastNilFrameB) && bytes.Equal(buf[pos:pos+len(fastNilFrameB)], fastNilFrameB) {
+					pos += len(fastNilFrameB)
+					repliesInBuf++
+					continue
+				}
+				if rem >= len(fast16GetFrameB) && bytes.Equal(buf[pos:pos+len(fast16GetFrameB)], fast16GetFrameB) {
+					pos += len(fast16GetFrameB)
+					repliesInBuf++
+					continue
+				}
+
+				// General bulk string: $<len>\r\n<data>\r\n
+				crlf := bytes.IndexByte(buf[pos:min(pos+32, len(buf))], '\n')
+				if crlf < 0 {
+					goto flushAndRefill
+				}
+				hdrLen := crlf + 1
+				// Check for null bulk string: $-1\r\n
+				if hdrLen == 5 && buf[pos+1] == '-' && buf[pos+2] == '1' {
+					pos += 5
+					repliesInBuf++
+					continue
+				}
+				vlen := 0
+				for k := pos + 1; k < pos+hdrLen-2; k++ {
+					c := buf[k]
+					if c >= '0' && c <= '9' {
+						vlen = vlen*10 + int(c-'0')
+					}
+				}
+				totalLen := hdrLen + vlen + 2
+				if rem < totalLen {
+					goto flushAndRefill
+				}
+				pos += totalLen
+				repliesInBuf++
+
+			case '+', ':':
+				crlf := bytes.IndexByte(buf[pos:], '\n')
+				if crlf < 0 {
+					goto flushAndRefill
+				}
+				pos += crlf + 1
+				repliesInBuf++
+
+			case '-':
+				panic("Redis error: " + string(buf[pos:]))
+
+			default:
+				goto flushAndRefill
 			}
-			discardN(r, vlen+2) // value + trailing CRLF
-		default:
-			isError := b == '-'
-			for {
-				line, e := r.ReadSlice('\n')
-				if e != nil && e != bufio.ErrBufferFull {
-					panic(e)
+		}
+
+	flushAndRefill:
+		if repliesInBuf > 0 {
+			r.Discard(pos)
+			n -= repliesInBuf
+		} else {
+			b, err := r.ReadByte()
+			if err != nil {
+				panic(err)
+			}
+			switch b {
+			case '$':
+				line, err := r.ReadSlice('\n')
+				if err != nil {
+					panic(err)
 				}
-				if isError {
-					panic("Redis error reply: " + string(line))
+				if len(line) >= 2 && line[0] == '-' {
+					n--
+					continue
 				}
-				if e != bufio.ErrBufferFull {
-					break
+				vlen := 0
+				for _, c := range line {
+					if c >= '0' && c <= '9' {
+						vlen = vlen*10 + int(c-'0')
+					} else {
+						break
+					}
 				}
+				discardN(r, vlen+2)
+				n--
+			case '+', ':':
+				for {
+					_, e := r.ReadSlice('\n')
+					if e != nil && e != bufio.ErrBufferFull {
+						panic(e)
+					}
+					if e != bufio.ErrBufferFull {
+						n--
+						break
+					}
+				}
+			case '-':
+				line, _ := r.ReadString('\n')
+				panic("Redis error reply: " + line)
+			default:
+				panic("unexpected RESP type byte: " + string([]byte{b}))
 			}
 		}
 	}
 }
 
 func skipLines(r *bufio.Reader, n int) {
-	for i := 0; i < n; i++ {
-		if r.Buffered() >= len(fastOKLine) {
-			p, _ := r.Peek(len(fastOKLine))
-			if string(p[:len(fastOneLine)]) == fastOneLine {
-				r.Discard(len(fastOneLine))
-				continue
+	for n > 0 {
+		avail := r.Buffered()
+		if avail == 0 {
+			b, err := r.ReadByte()
+			if err != nil {
+				panic(err)
 			}
-			if string(p) == fastOKLine {
-				r.Discard(len(fastOKLine))
-				continue
+			if b == '-' {
+				line, _ := r.ReadString('\n')
+				panic("Redis error reply: " + string(b) + line)
 			}
+			r.UnreadByte()
+			avail = r.Buffered()
 		}
-		first := true
-		for {
+		buf, _ := r.Peek(avail)
+		linesInBuf := 0
+		lastPos := 0
+		for i := 0; i < len(buf) && linesInBuf < n; {
+			if buf[i] == '-' {
+				line, _ := r.ReadString('\n')
+				panic("Redis error reply: " + line)
+			}
+			idx := bytes.IndexByte(buf[i:], '\n')
+			if idx < 0 {
+				break
+			}
+			linesInBuf++
+			lastPos = i + idx + 1
+			i = lastPos
+		}
+		if linesInBuf > 0 {
+			r.Discard(lastPos)
+			n -= linesInBuf
+		} else {
 			line, err := r.ReadSlice('\n')
 			if err != nil && err != bufio.ErrBufferFull {
 				panic(err)
 			}
-			if first && len(line) > 0 && line[0] == '-' {
+			if len(line) > 0 && line[0] == '-' {
 				panic("Redis error reply: " + string(line))
 			}
-			first = false
 			if err != bufio.ErrBufferFull {
-				break
+				n--
 			}
 		}
 	}

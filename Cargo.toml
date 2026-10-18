@@ -1,6 +1,6 @@
 [package]
 name = "fyro_db"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2024"
 license = "Apache-2.0"
 
@@ -41,9 +41,19 @@ bytemuck = "1"
 io-uring = { version = "0.7", optional = true }
 pprof = { version = "0.15", optional = true, default-features = false, features = ["frame-pointer"] }
 
+[[bin]]
+name = "fyro_db"
+path = "src/main.rs"
+
+[[bin]]
+name = "without_tcp"
+path = "src/bin/without_tcp.rs"
+required-features = ["bench-tools"]
+
 [features]
 io-uring = ["dep:io-uring"]
 profiling = ["dep:pprof"]
+bench-tools = []
 
 [dev-dependencies]
 criterion = { version = "0.7", default-features = false, features = ["cargo_bench_support"] }

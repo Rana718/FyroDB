@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"net"
 	"os"
@@ -12,12 +13,12 @@ import (
 	"time"
 )
 
-const MIX_PIPE = 100
+const MIX_PIPE = 500
 
 var (
-	MIX_OPS_CLIENT = 10000
-	MIX_HOTKEY_OPS = 50000
-	MIX_QUEUE_OPS  = 10000
+	MIX_OPS_CLIENT = 20_000
+	MIX_HOTKEY_OPS = 100_000
+	MIX_QUEUE_OPS  = 20_000
 )
 
 var (
@@ -38,6 +39,13 @@ var (
 	lpushBody   = []byte("\r\n$7\r\npayload\r\n")
 	expireTTL   = []byte("\r\n$2\r\n60\r\n")
 	flushCmd    = []byte("*1\r\n$8\r\nFLUSHALL\r\n")
+
+	jsonSetCmdHdr = []byte("*4\r\n$8\r\nJSON.SET\r\n$")
+	jsonGetCmdHdr = []byte("*3\r\n$8\r\nJSON.GET\r\n$")
+	// $27\r\n + 27-byte doc + \r\n  (path="."; value stored verbatim)
+	jsonDocPart  = []byte("\r\n$1\r\n.\r\n$27\r\n{\"name\":\"test\",\"score\":100}\r\n")
+	jsonGetPath  = []byte("\r\n$1\r\n.\r\n")
+	jsonKeyPfx   = []byte("json:")
 )
 
 type benchResult struct {
@@ -171,6 +179,7 @@ func printSummaryTable() {
 	fmt.Println()
 }
 
+
 func runBenchMixed() {
 	if len(addrs) > 1 {
 		runClusterMixed()
@@ -184,27 +193,19 @@ func runBenchMixed() {
 	var wg sync.WaitGroup
 	for i, conn := range conns {
 		wg.Go(func() {
-			r := bufio.NewReaderSize(conn, 256<<10)
+			r := bufio.NewReaderSize(conn, 2<<20)
 			buf := make([]byte, 0, MIX_PIPE*48)
-			var kb [32]byte
 			base := i * MIX_OPS_CLIENT
 
 			for sent := 0; sent < MIX_OPS_CLIENT; {
 				batch := min(MIX_PIPE, MIX_OPS_CLIENT-sent)
-				buf = buf[:0]
 				sets := (batch + 1) / 2
 				gets := batch / 2
-				for j := range sets {
-					kn := appendLen(append(kb[:0], "mix:"...), base+(sent/2)+j)
-					buf = appendSetBytes(buf, kn)
-				}
-				for j := range gets {
-					kn := appendLen(append(kb[:0], "mix:"...), base+(sent/2)+j)
-					buf = appendGetBytes(buf, kn)
-				}
+				kBase := base + (sent / 2)
+				buf = buildBatchFastSet(kBase, sets, buf[:0])
+				buf = buildBatchFastGet(kBase, gets, buf)
 				writeFull(conn, buf)
-				discardN(r, sets*5)
-				skipGetReplies(r, gets)
+				discardN(r, sets*5+gets*11)
 				sent += batch
 			}
 		})
@@ -222,7 +223,7 @@ func runClusterMixed() {
 	for id, nodeConns := range conns {
 		wg.Go(func() {
 			conns := nodeConns
-			readers := makeReaders(conns, 128<<10)
+			readers := makeReaders(conns, 1<<20)
 			bufs := makeNodeBufs(len(conns), MIX_PIPE*64)
 			cnts := make([]int, len(conns))
 			tags := clusterHashTags()
@@ -249,8 +250,7 @@ func runClusterMixed() {
 				}
 				flushAll(conns, bufs, cnts)
 				for n := range conns {
-					discardN(readers[n], sets[n]*5)
-					skipGetReplies(readers[n], gets[n])
+					discardN(readers[n], sets[n]*5+gets[n]*11)
 				}
 				sent += batch
 			}
@@ -269,22 +269,20 @@ func runBenchIncr() {
 	var wg sync.WaitGroup
 	for i, conn := range conns {
 		wg.Go(func() {
-			r := bufio.NewReaderSize(conn, 64<<10)
-			buf := make([]byte, 0, MIX_PIPE*28)
+			r := bufio.NewReaderSize(conn, 512<<10)
 			var kb [32]byte
 			key := clientKey("incr:", i%100, kb[:])
+			single := make([]byte, 0, len(incrHdr)+len(key)+16)
+			single = append(single, incrHdr...)
+			single = appendLen(single, len(key))
+			single = append(single, crlfB...)
+			single = append(single, key...)
+			single = append(single, crlfB...)
+			batchBuf := bytes.Repeat(single, MIX_PIPE)
 
 			for sent := 0; sent < MIX_OPS_CLIENT; {
 				batch := min(MIX_PIPE, MIX_OPS_CLIENT-sent)
-				buf = buf[:0]
-				for range batch {
-					buf = append(buf, incrHdr...)
-					buf = appendLen(buf, len(key))
-					buf = append(buf, crlfB...)
-					buf = append(buf, key...)
-					buf = append(buf, crlfB...)
-				}
-				writeFull(conn, buf)
+				writeFull(conn, batchBuf[:batch*len(single)])
 				skipLines(r, batch)
 				sent += batch
 			}
@@ -303,38 +301,35 @@ func runBenchHash() {
 	var wg sync.WaitGroup
 	for i, conn := range conns {
 		wg.Go(func() {
-			r := bufio.NewReaderSize(conn, 128<<10)
-			buf := make([]byte, 0, MIX_PIPE*64)
+			r := bufio.NewReaderSize(conn, 1<<20)
 			var kb [32]byte
 			key := clientKey("sess:", i, kb[:])
 
+			singleHset := make([]byte, 0, len(hsetHdr)+len(key)+len(fieldSuffix)+8)
+			singleHset = append(singleHset, hsetHdr...)
+			singleHset = appendLen(singleHset, len(key))
+			singleHset = append(singleHset, crlfB...)
+			singleHset = append(singleHset, key...)
+			singleHset = append(singleHset, fieldSuffix...)
+
+			singleHget := make([]byte, 0, len(hgetHdr)+len(key)+len(fieldGet)+8)
+			singleHget = append(singleHget, hgetHdr...)
+			singleHget = appendLen(singleHget, len(key))
+			singleHget = append(singleHget, crlfB...)
+			singleHget = append(singleHget, key...)
+			singleHget = append(singleHget, fieldGet...)
+
+			halfPipe := (MIX_PIPE + 1) / 2
+			hsetBatch := bytes.Repeat(singleHset, halfPipe)
+			hgetBatch := bytes.Repeat(singleHget, halfPipe)
+			fullBatch := append(append([]byte(nil), hsetBatch...), hgetBatch...)
+
 			for sent := 0; sent < MIX_OPS_CLIENT; {
 				batch := min(MIX_PIPE, MIX_OPS_CLIENT-sent)
-				buf = buf[:0]
 				hsets := (batch + 1) / 2
 				hgets := batch / 2
-				for phase := 0; phase < 2; phase++ {
-					count := hsets
-					if phase == 1 {
-						count = hgets
-					}
-					for j := 0; j < count; j++ {
-						if phase == 0 {
-							buf = append(buf, hsetHdr...)
-							buf = appendLen(buf, len(key))
-							buf = append(buf, crlfB...)
-							buf = append(buf, key...)
-							buf = append(buf, fieldSuffix...)
-						} else {
-							buf = append(buf, hgetHdr...)
-							buf = appendLen(buf, len(key))
-							buf = append(buf, crlfB...)
-							buf = append(buf, key...)
-							buf = append(buf, fieldGet...)
-						}
-					}
-				}
-				writeFull(conn, buf)
+				totalBytes := hsets*len(singleHset) + hgets*len(singleHget)
+				writeFull(conn, fullBatch[:totalBytes])
 				skipLines(r, hsets)
 				skipGetReplies(r, hgets)
 				sent += batch
@@ -354,38 +349,35 @@ func runBenchList() {
 	var wg sync.WaitGroup
 	for i, conn := range conns {
 		wg.Go(func() {
-			r := bufio.NewReaderSize(conn, 128<<10)
-			buf := make([]byte, 0, MIX_PIPE*48)
+			r := bufio.NewReaderSize(conn, 1<<20)
 			var kb [32]byte
 			qkey := clientKey("q:", i, kb[:])
 
+			singleLpush := make([]byte, 0, len(lpushHdr)+len(qkey)+len(lpushBody)+8)
+			singleLpush = append(singleLpush, lpushHdr...)
+			singleLpush = appendLen(singleLpush, len(qkey))
+			singleLpush = append(singleLpush, crlfB...)
+			singleLpush = append(singleLpush, qkey...)
+			singleLpush = append(singleLpush, lpushBody...)
+
+			singleRpop := make([]byte, 0, len(rpopHdr)+len(qkey)+8)
+			singleRpop = append(singleRpop, rpopHdr...)
+			singleRpop = appendLen(singleRpop, len(qkey))
+			singleRpop = append(singleRpop, crlfB...)
+			singleRpop = append(singleRpop, qkey...)
+			singleRpop = append(singleRpop, crlfB...)
+
+			halfPipe := (MIX_PIPE + 1) / 2
+			lpushBatch := bytes.Repeat(singleLpush, halfPipe)
+			rpopBatch := bytes.Repeat(singleRpop, halfPipe)
+			fullBatch := append(append([]byte(nil), lpushBatch...), rpopBatch...)
+
 			for sent := 0; sent < MIX_OPS_CLIENT; {
 				batch := min(MIX_PIPE, MIX_OPS_CLIENT-sent)
-				buf = buf[:0]
 				pushes := (batch + 1) / 2
 				pops := batch / 2
-				for phase := 0; phase < 2; phase++ {
-					count := pushes
-					if phase == 1 {
-						count = pops
-					}
-					for j := 0; j < count; j++ {
-						if phase == 0 {
-							buf = append(buf, lpushHdr...)
-							buf = appendLen(buf, len(qkey))
-							buf = append(buf, crlfB...)
-							buf = append(buf, qkey...)
-							buf = append(buf, lpushBody...)
-						} else {
-							buf = append(buf, rpopHdr...)
-							buf = appendLen(buf, len(qkey))
-							buf = append(buf, crlfB...)
-							buf = append(buf, qkey...)
-							buf = append(buf, crlfB...)
-						}
-					}
-				}
-				writeFull(conn, buf)
+				totalBytes := pushes*len(singleLpush) + pops*len(singleRpop)
+				writeFull(conn, fullBatch[:totalBytes])
 				skipLines(r, pushes)
 				skipGetReplies(r, pops)
 				sent += batch
@@ -405,21 +397,23 @@ func runBenchSet() {
 	var wg sync.WaitGroup
 	for i, conn := range conns {
 		wg.Go(func() {
-			r := bufio.NewReaderSize(conn, 128<<10)
+			r := bufio.NewReaderSize(conn, 1<<20)
 			buf := make([]byte, 0, MIX_PIPE*48)
 			var kb, mb [32]byte
 			setkey := clientKey("s:", i, kb[:])
+			saddPrefix := make([]byte, 0, len(saddHdr)+len(setkey)+16)
+			saddPrefix = append(saddPrefix, saddHdr...)
+			saddPrefix = appendLen(saddPrefix, len(setkey))
+			saddPrefix = append(saddPrefix, crlfB...)
+			saddPrefix = append(saddPrefix, setkey...)
+			saddPrefix = append(saddPrefix, "\r\n$"...)
 
 			for sent := 0; sent < MIX_OPS_CLIENT; {
 				batch := min(MIX_PIPE, MIX_OPS_CLIENT-sent)
 				buf = buf[:0]
 				for j := range batch {
 					member := appendLen(mb[:0], sent+j)
-					buf = append(buf, saddHdr...)
-					buf = appendLen(buf, len(setkey))
-					buf = append(buf, crlfB...)
-					buf = append(buf, setkey...)
-					buf = append(buf, "\r\n$"...)
+					buf = append(buf, saddPrefix...)
 					buf = appendLen(buf, len(member))
 					buf = append(buf, crlfB...)
 					buf = append(buf, member...)
@@ -444,21 +438,23 @@ func runBenchZSet() {
 	var wg sync.WaitGroup
 	for i, conn := range conns {
 		wg.Go(func() {
-			r := bufio.NewReaderSize(conn, 128<<10)
+			r := bufio.NewReaderSize(conn, 1<<20)
 			buf := make([]byte, 0, MIX_PIPE*64)
 			var kb, mb [32]byte
 			lbkey := clientKey("lb:", i, kb[:])
+			zaddPrefix := make([]byte, 0, len(zaddHdr)+len(lbkey)+16)
+			zaddPrefix = append(zaddPrefix, zaddHdr...)
+			zaddPrefix = appendLen(zaddPrefix, len(lbkey))
+			zaddPrefix = append(zaddPrefix, crlfB...)
+			zaddPrefix = append(zaddPrefix, lbkey...)
+			zaddPrefix = append(zaddPrefix, "\r\n$"...)
 
 			for sent := 0; sent < MIX_OPS_CLIENT; {
 				batch := min(MIX_PIPE, MIX_OPS_CLIENT-sent)
 				buf = buf[:0]
 				for j := range batch {
 					member := appendLen(mb[:0], sent+j)
-					buf = append(buf, zaddHdr...)
-					buf = appendLen(buf, len(lbkey))
-					buf = append(buf, crlfB...)
-					buf = append(buf, lbkey...)
-					buf = append(buf, "\r\n$"...)
+					buf = append(buf, zaddPrefix...)
 					buf = appendLen(buf, len(member))
 					buf = append(buf, crlfB...)
 					buf = append(buf, member...)
@@ -487,7 +483,7 @@ func runBenchExpire() {
 	var wg sync.WaitGroup
 	for i, conn := range conns {
 		wg.Go(func() {
-			r := bufio.NewReaderSize(conn, 128<<10)
+			r := bufio.NewReaderSize(conn, 1<<20)
 			buf := make([]byte, 0, MIX_PIPE*80)
 			var kb [32]byte
 			base := i * MIX_OPS_CLIENT
@@ -528,23 +524,21 @@ func runBenchHotKey() {
 	hotkey := sharedClusterKey("hot")
 	for _, conn := range conns {
 		wg.Go(func() {
-			r := bufio.NewReaderSize(conn, 64<<10)
-			buf := make([]byte, 0, MIX_PIPE*32)
+			r := bufio.NewReaderSize(conn, 512<<10)
+			singleSet := appendSetBytes(nil, hotkey)
+			singleGet := appendGetBytes(nil, hotkey)
+			halfPipe := (MIX_PIPE + 1) / 2
+			setBatch := bytes.Repeat(singleSet, halfPipe)
+			getBatch := bytes.Repeat(singleGet, halfPipe)
+			fullBatch := append(append([]byte(nil), setBatch...), getBatch...)
 
 			for sent := 0; sent < MIX_HOTKEY_OPS; {
 				batch := min(MIX_PIPE, MIX_HOTKEY_OPS-sent)
-				buf = buf[:0]
 				sets := (batch + 1) / 2
 				gets := batch / 2
-				for range sets {
-					buf = appendSetBytes(buf, hotkey)
-				}
-				for range gets {
-					buf = appendGetBytes(buf, hotkey)
-				}
-				writeFull(conn, buf)
-				discardN(r, sets*5)
-				skipGetReplies(r, gets)
+				totalBytes := sets*len(singleSet) + gets*len(singleGet)
+				writeFull(conn, fullBatch[:totalBytes])
+				discardN(r, sets*5+gets*11)
 				sent += batch
 			}
 		})
@@ -571,20 +565,18 @@ func runBenchQueue() {
 	for i := range half {
 		wg.Go(func() {
 			conn := producers[i]
-			r := bufio.NewReaderSize(conn, 64<<10)
-			buf := make([]byte, 0, MIX_PIPE*40)
+			r := bufio.NewReaderSize(conn, 512<<10)
+			singleLpush := make([]byte, 0, len(lpushHdr)+len(qkey)+len(lpushBody)+8)
+			singleLpush = append(singleLpush, lpushHdr...)
+			singleLpush = appendLen(singleLpush, len(qkey))
+			singleLpush = append(singleLpush, crlfB...)
+			singleLpush = append(singleLpush, qkey...)
+			singleLpush = append(singleLpush, lpushBody...)
+			lpushBatch := bytes.Repeat(singleLpush, MIX_PIPE)
 
 			for sent := 0; sent < MIX_QUEUE_OPS; {
 				batch := min(MIX_PIPE, MIX_QUEUE_OPS-sent)
-				buf = buf[:0]
-				for range batch {
-					buf = append(buf, lpushHdr...)
-					buf = appendLen(buf, len(qkey))
-					buf = append(buf, crlfB...)
-					buf = append(buf, qkey...)
-					buf = append(buf, lpushBody...)
-				}
-				writeFull(conn, buf)
+				writeFull(conn, lpushBatch[:batch*len(singleLpush)])
 				skipLines(r, batch)
 				sent += batch
 			}
@@ -594,20 +586,18 @@ func runBenchQueue() {
 	for i := range half {
 		wg.Go(func() {
 			conn := consumers[i]
-			r := bufio.NewReaderSize(conn, 64<<10)
-			buf := make([]byte, 0, MIX_PIPE*28)
+			r := bufio.NewReaderSize(conn, 512<<10)
+			singleRpop := make([]byte, 0, len(rpopHdr)+len(qkey)+8)
+			singleRpop = append(singleRpop, rpopHdr...)
+			singleRpop = appendLen(singleRpop, len(qkey))
+			singleRpop = append(singleRpop, crlfB...)
+			singleRpop = append(singleRpop, qkey...)
+			singleRpop = append(singleRpop, crlfB...)
+			rpopBatch := bytes.Repeat(singleRpop, MIX_PIPE)
 
 			for sent := 0; sent < MIX_QUEUE_OPS; {
 				batch := min(MIX_PIPE, MIX_QUEUE_OPS-sent)
-				buf = buf[:0]
-				for range batch {
-					buf = append(buf, rpopHdr...)
-					buf = appendLen(buf, len(qkey))
-					buf = append(buf, crlfB...)
-					buf = append(buf, qkey...)
-					buf = append(buf, crlfB...)
-				}
-				writeFull(conn, buf)
+				writeFull(conn, rpopBatch[:batch*len(singleRpop)])
 				skipGetReplies(r, batch)
 				sent += batch
 			}
@@ -616,6 +606,32 @@ func runBenchQueue() {
 
 	wg.Wait()
 	recordResult("Producer/Consumer (50+50)", total, time.Since(start))
+}
+
+func buildJsonSetBatch(base, count int, out []byte) []byte {
+	var kb [32]byte
+	for i := range count {
+		kn := appendLen(append(kb[:0], jsonKeyPfx...), base+i)
+		out = append(out, jsonSetCmdHdr...)
+		out = appendLen(out, len(kn))
+		out = append(out, crlfB...)
+		out = append(out, kn...)
+		out = append(out, jsonDocPart...)
+	}
+	return out
+}
+
+func buildJsonGetBatch(base, count int, out []byte) []byte {
+	var kb [32]byte
+	for i := range count {
+		kn := appendLen(append(kb[:0], jsonKeyPfx...), base+i)
+		out = append(out, jsonGetCmdHdr...)
+		out = appendLen(out, len(kn))
+		out = append(out, crlfB...)
+		out = append(out, kn...)
+		out = append(out, jsonGetPath...)
+	}
+	return out
 }
 
 func runBenchJson() {
@@ -651,116 +667,58 @@ func runBenchJson() {
 	defer closeAll(conns)
 	total := int64(CLIENTS * MIX_OPS_CLIENT)
 
-	jsonSetHdr := []byte("*4\r\n$8\r\nJSON.SET\r\n$")
-	jsonGetHdr := []byte("*3\r\n$8\r\nJSON.GET\r\n$")
-	pathDot := []byte("\r\n$1\r\n.\r\n")
-	pathDotVal := []byte("\r\n$1\r\n.\r\n$27\r\n{\"name\":\"test\",\"score\":100}\r\n")
-
-	start := time.Now()
 	var wg sync.WaitGroup
-	for i, conn := range conns {
-		wg.Go(func() {
-			r := bufio.NewReaderSize(conn, 128<<10)
-			buf := make([]byte, 0, MIX_PIPE*96)
-			var kb [32]byte
-			base := i * MIX_OPS_CLIENT
-			prefix := []byte("json:")
-			if len(addrs) > 1 {
-				prefix = append(append([]byte(nil), clusterHashTags()[i%len(addrs)]...), prefix...)
-			}
 
-			for sent := 0; sent < MIX_OPS_CLIENT; {
-				batch := min(MIX_PIPE, MIX_OPS_CLIENT-sent)
-				buf = buf[:0]
-				sets := (batch + 1) / 2
-				gets := batch / 2
-				for j := range sets {
-					kn := appendLen(append(kb[:0], prefix...), base+(sent/2)+j)
-					buf = append(buf, jsonSetHdr...)
-					buf = appendLen(buf, len(kn))
-					buf = append(buf, crlfB...)
-					buf = append(buf, kn...)
-					buf = append(buf, pathDotVal...)
-				}
-				for j := range gets {
-					kn := appendLen(append(kb[:0], prefix...), base+(sent/2)+j)
-					buf = append(buf, jsonGetHdr...)
-					buf = appendLen(buf, len(kn))
-					buf = append(buf, crlfB...)
-					buf = append(buf, kn...)
-					buf = append(buf, pathDot...)
-				}
-				writeFull(conn, buf)
-				skipLines(r, sets)
-				skipGetReplies(r, gets)
-				sent += batch
-			}
+	setStart := time.Now()
+	for i := range CLIENTS {
+		wg.Go(func() {
+			base := i * MIX_OPS_CLIENT
+			runAsyncPipeline(conns[i], MIX_OPS_CLIENT,
+				func(offset, count int, out []byte) []byte {
+					return buildJsonSetBatch(base+offset, count, out)
+				}, 5)
 		})
 	}
 	wg.Wait()
-	recordResult("JSON.SET/GET (documents)", total, time.Since(start))
+	setElapsed := time.Since(setStart)
+
+	getStart := time.Now()
+	for i := range CLIENTS {
+		wg.Go(func() {
+			base := i * MIX_OPS_CLIENT
+			runAsyncPipeline(conns[i], MIX_OPS_CLIENT,
+				func(offset, count int, out []byte) []byte {
+					return buildJsonGetBatch(base+offset, count, out)
+				}, 34)
+		})
+	}
+	wg.Wait()
+	getElapsed := time.Since(getStart)
+
+	recordResult("JSON.SET (documents)", total, setElapsed)
+	recordResult("JSON.GET (documents)", total, getElapsed)
 }
 
-// Each client pipelined-appends entries to its own stream key. XADD returns a
-// variable-length entry-ID bulk string, so use skipBulkReply, not skipGetReplies.
-
+// Each client pipelined-appends entries to its own stream key.
 var xaddHdr = []byte("*5\r\n$4\r\nXADD\r\n$")
 
 func appendXADD(out, key []byte, seq int) []byte {
-	// XADD <key> * f <seq>
 	out = append(out, xaddHdr...)
 	out = appendLen(out, len(key))
 	out = append(out, crlfB...)
 	out = append(out, key...)
 	out = append(out, "\r\n$1\r\n*\r\n$1\r\nf\r\n$"...)
-	sv := strconv.AppendInt(nil, int64(seq), 10)
-	out = appendLen(out, len(sv))
+	d := fastIntDigits(seq)
+	out = appendLen(out, d)
 	out = append(out, crlfB...)
-	out = append(out, sv...)
+	out = appendLen(out, seq)
 	out = append(out, crlfB...)
 	return out
 }
 
 // skipBulkReply drains n RESP bulk-string replies ($<len>\r\n<data>\r\n).
 func skipBulkReply(r *bufio.Reader, n int) {
-	for i := 0; i < n; i++ {
-		b, err := r.ReadByte()
-		if err != nil {
-			panic(err)
-		}
-		switch b {
-		case '$':
-			line, err := r.ReadSlice('\n')
-			if err != nil {
-				panic(err)
-			}
-			vlen := 0
-			for _, c := range line {
-				if c >= '0' && c <= '9' {
-					vlen = vlen*10 + int(c-'0')
-				} else {
-					break
-				}
-			}
-			if vlen < 0 {
-				continue // null bulk string ($-1\r\n)
-			}
-			discardN(r, vlen+2)
-		case '+', ':', '-':
-			// simple string, integer, or error: read to end of line
-			for {
-				line, e := r.ReadSlice('\n')
-				if e != bufio.ErrBufferFull {
-					if b == '-' {
-						panic("Redis error: " + string(line))
-					}
-					break
-				}
-			}
-		default:
-			panic("unexpected RESP type byte: " + string([]byte{b}))
-		}
-	}
+	skipGetReplies(r, n)
 }
 
 func runBenchStream() {
@@ -772,7 +730,7 @@ func runBenchStream() {
 	var wg sync.WaitGroup
 	for i, conn := range conns {
 		wg.Go(func() {
-			r := bufio.NewReaderSize(conn, 256<<10)
+			r := bufio.NewReaderSize(conn, 2<<20)
 			buf := make([]byte, 0, MIX_PIPE*80)
 			var kb [32]byte
 			skey := clientKey("stream:", i, kb[:])
@@ -784,7 +742,7 @@ func runBenchStream() {
 					buf = appendXADD(buf, skey, sent+j)
 				}
 				writeFull(conn, buf)
-				skipBulkReply(r, batch)
+				skipGetReplies(r, batch)
 				sent += batch
 			}
 		})
@@ -793,9 +751,7 @@ func runBenchStream() {
 	recordResult("XADD (streams)", total, time.Since(start))
 }
 
-// Bitmap: each client sets MIX_OPS_CLIENT bits on its own key, then one
-// BITCOUNT. Ops counted = SETBIT calls.
-
+// Bitmap: each client sets MIX_OPS_CLIENT bits on its own key, then runs BITCOUNT.
 var (
 	setbitHdr   = []byte("*4\r\n$6\r\nSETBIT\r\n$")
 	bitcountHdr = []byte("*2\r\n$8\r\nBITCOUNT\r\n$")
@@ -810,33 +766,33 @@ func runBenchBitmap() {
 	var wg sync.WaitGroup
 	for i, conn := range conns {
 		wg.Go(func() {
-			r := bufio.NewReaderSize(conn, 256<<10)
+			r := bufio.NewReaderSize(conn, 2<<20)
 			buf := make([]byte, 0, MIX_PIPE*64)
-			var kb [32]byte
+			var kb, ob [32]byte
 			bkey := clientKey("bmap:", i, kb[:])
+			bitPrefix := make([]byte, 0, len(setbitHdr)+len(bkey)+16)
+			bitPrefix = append(bitPrefix, setbitHdr...)
+			bitPrefix = appendLen(bitPrefix, len(bkey))
+			bitPrefix = append(bitPrefix, crlfB...)
+			bitPrefix = append(bitPrefix, bkey...)
+			bitPrefix = append(bitPrefix, "\r\n$"...)
 
-			// Phase 1: SETBIT <key> <offset> 1
 			for sent := 0; sent < MIX_OPS_CLIENT; {
 				batch := min(MIX_PIPE, MIX_OPS_CLIENT-sent)
 				buf = buf[:0]
 				for j := range batch {
-					offset := strconv.AppendInt(nil, int64(sent+j), 10)
-					buf = append(buf, setbitHdr...)
-					buf = appendLen(buf, len(bkey))
-					buf = append(buf, crlfB...)
-					buf = append(buf, bkey...)
-					buf = append(buf, "\r\n$"...)
+					offset := appendLen(ob[:0], sent+j)
+					buf = append(buf, bitPrefix...)
 					buf = appendLen(buf, len(offset))
 					buf = append(buf, crlfB...)
 					buf = append(buf, offset...)
 					buf = append(buf, "\r\n$1\r\n1\r\n"...)
 				}
 				writeFull(conn, buf)
-				skipLines(r, batch) // SETBIT returns :0 or :1
+				skipLines(r, batch)
 				sent += batch
 			}
 
-			// Phase 2: BITCOUNT <key>
 			buf = buf[:0]
 			buf = append(buf, bitcountHdr...)
 			buf = appendLen(buf, len(bkey))
@@ -851,9 +807,7 @@ func runBenchBitmap() {
 	recordResult("SETBIT/BITCOUNT (bitmap)", total, time.Since(start))
 }
 
-// HyperLogLog: each client adds MIX_OPS_CLIENT distinct elements to its own
-// key, then reads the count. Ops counted = PFADD calls.
-
+// HyperLogLog: each client adds MIX_OPS_CLIENT distinct elements to its key, then reads count.
 var (
 	pfaddHdr   = []byte("*3\r\n$5\r\nPFADD\r\n$")
 	pfcountHdr = []byte("*2\r\n$7\r\nPFCOUNT\r\n$")
@@ -868,33 +822,33 @@ func runBenchHLL() {
 	var wg sync.WaitGroup
 	for i, conn := range conns {
 		wg.Go(func() {
-			r := bufio.NewReaderSize(conn, 128<<10)
+			r := bufio.NewReaderSize(conn, 1<<20)
 			buf := make([]byte, 0, MIX_PIPE*56)
 			var kb, mb [32]byte
 			hkey := clientKey("hll:", i, kb[:])
+			pfPrefix := make([]byte, 0, len(pfaddHdr)+len(hkey)+16)
+			pfPrefix = append(pfPrefix, pfaddHdr...)
+			pfPrefix = appendLen(pfPrefix, len(hkey))
+			pfPrefix = append(pfPrefix, crlfB...)
+			pfPrefix = append(pfPrefix, hkey...)
+			pfPrefix = append(pfPrefix, "\r\n$"...)
 
-			// Phase 1: PFADD <key> <element>
 			for sent := 0; sent < MIX_OPS_CLIENT; {
 				batch := min(MIX_PIPE, MIX_OPS_CLIENT-sent)
 				buf = buf[:0]
 				for j := range batch {
 					elem := appendLen(mb[:0], sent+j)
-					buf = append(buf, pfaddHdr...)
-					buf = appendLen(buf, len(hkey))
-					buf = append(buf, crlfB...)
-					buf = append(buf, hkey...)
-					buf = append(buf, "\r\n$"...)
+					buf = append(buf, pfPrefix...)
 					buf = appendLen(buf, len(elem))
 					buf = append(buf, crlfB...)
 					buf = append(buf, elem...)
 					buf = append(buf, crlfB...)
 				}
 				writeFull(conn, buf)
-				skipLines(r, batch) // PFADD returns :0 or :1
+				skipLines(r, batch)
 				sent += batch
 			}
 
-			// Phase 2: PFCOUNT <key>
 			buf = buf[:0]
 			buf = append(buf, pfcountHdr...)
 			buf = appendLen(buf, len(hkey))
@@ -909,9 +863,7 @@ func runBenchHLL() {
 	recordResult("PFADD/PFCOUNT (HyperLogLog)", total, time.Since(start))
 }
 
-// Geospatial: each client adds MIX_OPS_CLIENT members with synthetic (lon, lat)
-// coords, then queries GEODIST between two members. Ops counted = GEOADD calls.
-
+// Geospatial: each client adds members with synthetic coordinates, then queries GEODIST.
 var geoadd5Hdr = []byte("*5\r\n$6\r\nGEOADD\r\n$")
 
 func runBenchGeo() {
@@ -923,12 +875,17 @@ func runBenchGeo() {
 	var wg sync.WaitGroup
 	for i, conn := range conns {
 		wg.Go(func() {
-			r := bufio.NewReaderSize(conn, 128<<10)
+			r := bufio.NewReaderSize(conn, 1<<20)
 			buf := make([]byte, 0, MIX_PIPE*96)
-			var kb, mb [32]byte
+			var kb, mb, lonBuf, latBuf [32]byte
 			gkey := clientKey("geo:", i, kb[:])
+			geoPrefix := make([]byte, 0, len(geoadd5Hdr)+len(gkey)+16)
+			geoPrefix = append(geoPrefix, geoadd5Hdr...)
+			geoPrefix = appendLen(geoPrefix, len(gkey))
+			geoPrefix = append(geoPrefix, crlfB...)
+			geoPrefix = append(geoPrefix, gkey...)
+			geoPrefix = append(geoPrefix, "\r\n$"...)
 
-			// Phase 1: GEOADD <key> <lon> <lat> <member>
 			for sent := 0; sent < MIX_OPS_CLIENT; {
 				batch := min(MIX_PIPE, MIX_OPS_CLIENT-sent)
 				buf = buf[:0]
@@ -936,15 +893,11 @@ func runBenchGeo() {
 					idx := sent + j
 					lon := float64(idx%360) - 180.0
 					lat := float64(idx%170) - 85.0
-					lonStr := strconv.AppendFloat(nil, lon, 'f', 4, 64)
-					latStr := strconv.AppendFloat(nil, lat, 'f', 4, 64)
+					lonStr := strconv.AppendFloat(lonBuf[:0], lon, 'f', 4, 64)
+					latStr := strconv.AppendFloat(latBuf[:0], lat, 'f', 4, 64)
 					member := appendLen(mb[:0], idx)
 
-					buf = append(buf, geoadd5Hdr...)
-					buf = appendLen(buf, len(gkey))
-					buf = append(buf, crlfB...)
-					buf = append(buf, gkey...)
-					buf = append(buf, "\r\n$"...)
+					buf = append(buf, geoPrefix...)
 					buf = appendLen(buf, len(lonStr))
 					buf = append(buf, crlfB...)
 					buf = append(buf, lonStr...)
@@ -959,11 +912,10 @@ func runBenchGeo() {
 					buf = append(buf, crlfB...)
 				}
 				writeFull(conn, buf)
-				skipLines(r, batch) // GEOADD returns :N
+				skipLines(r, batch)
 				sent += batch
 			}
 
-			// Phase 2: GEODIST <key> 0 1 km
 			mem0 := appendLen(mb[:0], 0)
 			mem1 := appendLen(mb[:0], 1)
 			buf = buf[:0]
@@ -981,7 +933,7 @@ func runBenchGeo() {
 			buf = append(buf, mem1...)
 			buf = append(buf, "\r\n$2\r\nkm\r\n"...)
 			writeFull(conn, buf)
-			skipGetReplies(r, 1) // GEODIST returns bulk string or nil
+			skipGetReplies(r, 1)
 		})
 	}
 	wg.Wait()

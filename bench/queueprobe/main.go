@@ -1,15 +1,5 @@
-// Queue-scaling probe: isolates WHY the Producer/Consumer phase doesn't
-// scale with cores. Three configurations over the same server:
-//
-//   mode=single   one connection, interleaved LPUSH+RPOP on one key
-//   mode=shared   50 producers + 50 consumers, all on ONE shared key
-//   mode=parallel 50 producer/consumer pairs, each on its OWN key
-//
-// If parallel >> shared, the server parallelizes fine and the shared-key
-// phase is inherently serialized by the single entry lock (Amdahl with a
-// ~100% serial fraction); nothing except less lock hold time can help.
-//
-// Usage: go run ./queueprobe [-mode single|shared|parallel] [-ops 1000000]
+// Queue-scaling probe comparing single, shared, and parallel producer/consumer
+// configurations to isolate lock contention vs dispatch coalescing.
 package main
 
 import (
@@ -52,9 +42,7 @@ func rpopCmd(key string) []byte {
 	return []byte("*2\r\n$4\r\nRPOP\r\n$" + strconv.Itoa(len(key)) + "\r\n" + key + "\r\n")
 }
 
-// One LPUSH carrying k values: the wire-level equivalent of what
-// dispatch-level coalescing would execute — a single lock acquisition for
-// k pushes.
+// lpushMultiCmd builds one LPUSH carrying k values for single-lock batching.
 func lpushMultiCmd(key string, k int) []byte {
 	b := []byte("*" + strconv.Itoa(2+k) + "\r\n$5\r\nLPUSH\r\n$" + strconv.Itoa(len(key)) + "\r\n" + key + "\r\n")
 	for i := 0; i < k; i++ {
@@ -200,11 +188,7 @@ func main() {
 			go func(c net.Conn) { defer wg.Done(); runWorker(c, rpopCmd(key), perSide) }(cc)
 		}
 	case "variadic":
-		// Same shape and value count as "shared" (50 producers + 50
-		// consumers on ONE key), but each side batches 100 values per
-		// command — one lock acquisition per 100 values. This is the
-		// measured ceiling of dispatch-level coalescing: the wire says
-		// "batch", the server does what a coalescer would do.
+		// Shared key with 100 values batched per command to measure dispatch coalescing ceiling.
 		const half = 50
 		pushVals := *ops / 2
 		popVals := *ops - pushVals
