@@ -722,12 +722,11 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
                } else {
                   value.take().expect("value taken once")
                };
-               drop(insert_guard);
-
                state_lock(&e.state);
                let was_occupied = state_occupied(&e.state, Ordering::Relaxed);
                if !overwrite && was_occupied {
                   state_unlock(&e.state);
+                  drop(insert_guard);
                   return false;
                }
                self.snap.before_write(e);
@@ -737,6 +736,7 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
                }
                unsafe { (*e.value.get()).write(val) };
                write_end(&e.state, true);
+               drop(insert_guard);
 
                if !was_occupied {
                   self.len.fetch_add(1, Ordering::Relaxed);
@@ -860,12 +860,11 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
                } else {
                   value.take().expect("value taken once")
                };
-               drop(insert_guard);
-
                state_lock(&e.state);
                let was_occupied = state_occupied(&e.state, Ordering::Relaxed);
                if !overwrite && was_occupied {
                   state_unlock(&e.state);
+                  drop(insert_guard);
                   return false;
                }
                self.snap.before_write(e);
@@ -875,6 +874,7 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
                }
                unsafe { (*e.value.get()).write(val) };
                write_end(&e.state, true);
+               drop(insert_guard);
 
                if !was_occupied {
                   self.len.fetch_add(1, Ordering::Relaxed);

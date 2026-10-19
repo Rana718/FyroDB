@@ -8,12 +8,29 @@ pub struct SendRing {
 
 impl SendRing {
    pub fn from_env() -> Option<Self> {
-      let on =
-         std::env::var("FYRODB_IO_URING").is_ok_and(|v| matches!(v.as_str(), "1" | "yes" | "true"));
-      if !on {
+      let disabled = std::env::var("FYRODB_IO_URING")
+         .is_ok_and(|v| matches!(v.as_str(), "0" | "no" | "false" | "off"));
+      if disabled {
          return None;
       }
-      match IoUring::new(1024) {
+
+      // Try highest performance configuration: single issuer + defer taskrun + cqsize 4096.
+      let ring = IoUring::<io_uring::squeue::Entry, io_uring::cqueue::Entry>::builder()
+         .setup_single_issuer()
+         .setup_defer_taskrun()
+         .setup_cqsize(4096)
+         .build(2048)
+         .or_else(|_| {
+            IoUring::<io_uring::squeue::Entry, io_uring::cqueue::Entry>::builder()
+               .setup_single_issuer()
+               .setup_coop_taskrun()
+               .setup_taskrun_flag()
+               .setup_cqsize(2048)
+               .build(1024)
+         })
+         .or_else(|_| IoUring::new(1024));
+
+      match ring {
          Ok(ring) => Some(Self { ring, inflight: 0 }),
          Err(e) => {
             eprintln!("fyrodb: io_uring unavailable ({e}); using write(2)");
@@ -22,6 +39,7 @@ impl SendRing {
       }
    }
 
+   #[inline(always)]
    pub fn push(
       &mut self,
       fd: RawFd,
@@ -44,6 +62,18 @@ impl SendRing {
       }
    }
 
+   #[inline(always)]
+   pub fn submit_and_reap(&mut self, out: &mut Vec<(u64, i32)>) {
+      if self.inflight == 0 {
+         return;
+      }
+      let _ = self.ring.submit_and_wait(0);
+      for cqe in self.ring.completion() {
+         out.push((cqe.user_data(), cqe.result()));
+         self.inflight = self.inflight.saturating_sub(1);
+      }
+   }
+
    pub fn complete(&mut self, out: &mut Vec<(u64, i32)>) {
       if self.inflight == 0 {
          return;
@@ -61,21 +91,23 @@ impl SendRing {
       }
       for cqe in self.ring.completion() {
          out.push((cqe.user_data(), cqe.result()));
-         self.inflight -= 1;
+         self.inflight = self.inflight.saturating_sub(1);
       }
-      while self.inflight > 0 {
-         if let Err(e) = self.ring.submit_and_wait(1) {
-            if e.raw_os_error() == Some(libc::EINTR) {
-               continue;
-            }
-            eprintln!("fyrodb: io_uring wait failed: {e}");
-            self.inflight = 0;
-            return;
-         }
-         for cqe in self.ring.completion() {
-            out.push((cqe.user_data(), cqe.result()));
-            self.inflight -= 1;
-         }
-      }
+   }
+}
+
+#[cfg(test)]
+mod tests {
+   use super::*;
+
+   #[test]
+   fn test_builder() {
+      let ring = IoUring::<io_uring::squeue::Entry, io_uring::cqueue::Entry>::builder()
+         .setup_single_issuer()
+         .setup_defer_taskrun()
+         .setup_cqsize(4096)
+         .build(2048);
+      println!("builder with single_issuer + defer_taskrun + cqsize 4096: {:?}", ring.as_ref().map(|_| "ok"));
+      assert!(ring.is_ok());
    }
 }

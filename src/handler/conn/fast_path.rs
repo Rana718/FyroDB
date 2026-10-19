@@ -22,7 +22,7 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
             let Some(key) = part_str(out, raw[1]) else {
                return;
             };
-            if !conn.store.get_to_buf_hinted(key, hint, out) {
+            if !conn.store.get_to_buf_hinted_pinned(key, hint, out) {
                out.extend_from_slice(b"$-1\r\n");
             }
             return;
@@ -35,7 +35,7 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
             let Some(value) = part_str(out, raw[2]) else {
                return;
             };
-            conn.store.set_string_hinted(key, hint, value, 0);
+            conn.store.set_string_hinted_pinned(key, hint, value, 0);
             if conn.store.has_replication() {
                conn.store.record_current_value(key);
             }
@@ -547,7 +547,7 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
             return;
          };
          if raw.len() == 3 {
-            conn.store.set_string_hinted(key, hint, value, 0);
+            conn.store.set_string_hinted_pinned(key, hint, value, 0);
             if conn.store.has_replication() {
                conn.store.record_current_value(key);
             }
@@ -560,11 +560,8 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
          let Some(key) = part_str(out, raw[1]) else {
             return;
          };
-         if !conn
-            .store
-            .get_to_buf_hinted(key, hint, &mut conn.parser.wbuf)
-         {
-            conn.parser.wbuf.extend_from_slice(b"$-1\r\n");
+         if !conn.store.get_to_buf_hinted_pinned(key, hint, out) {
+            out.extend_from_slice(b"$-1\r\n");
          }
          return;
       } else if cmd.eq_ignore_ascii_case(b"DEL") && raw.len() == 2 {

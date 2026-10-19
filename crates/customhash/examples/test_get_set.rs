@@ -54,40 +54,33 @@ pub struct MemoryInfo {
 
 impl MemoryInfo {
    pub fn snapshot() -> Self {
-      let mut info = Self::default();
-      info.heap_bytes = heap_allocated_bytes();
+      let mut info = Self {
+         heap_bytes: heap_allocated_bytes(),
+         ..Default::default()
+      };
 
       if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
          for line in status.lines() {
-            if let Some(rest) = line.strip_prefix("VmRSS:") {
-               if let Some(kb) = parse_kb(rest) {
-                  info.rss_bytes = kb * 1024;
-               }
-            } else if let Some(rest) = line.strip_prefix("RssAnon:") {
-               if let Some(kb) = parse_kb(rest) {
-                  info.rss_anon_bytes = kb * 1024;
-               }
-            } else if let Some(rest) = line.strip_prefix("VmSize:") {
-               if let Some(kb) = parse_kb(rest) {
-                  info.vm_size_bytes = kb * 1024;
-               }
-            } else if let Some(rest) = line.strip_prefix("VmPeak:") {
-               if let Some(kb) = parse_kb(rest) {
-                  info.vm_peak_bytes = kb * 1024;
-               }
+            if let Some(kb) = line.strip_prefix("VmRSS:").and_then(parse_kb) {
+               info.rss_bytes = kb * 1024;
+            } else if let Some(kb) = line.strip_prefix("RssAnon:").and_then(parse_kb) {
+               info.rss_anon_bytes = kb * 1024;
+            } else if let Some(kb) = line.strip_prefix("VmSize:").and_then(parse_kb) {
+               info.vm_size_bytes = kb * 1024;
+            } else if let Some(kb) = line.strip_prefix("VmPeak:").and_then(parse_kb) {
+               info.vm_peak_bytes = kb * 1024;
             }
          }
       }
 
       if info.rss_bytes == 0 {
-         if let Ok(statm) = std::fs::read_to_string("/proc/self/statm") {
-            if let Some(pages) = statm
-               .split_whitespace()
-               .nth(1)
-               .and_then(|s| s.parse::<usize>().ok())
-            {
-               info.rss_bytes = pages * 4096;
-            }
+         let statm = std::fs::read_to_string("/proc/self/statm").unwrap_or_default();
+         if let Some(pages) = statm
+            .split_whitespace()
+            .nth(1)
+            .and_then(|s| s.parse::<usize>().ok())
+         {
+            info.rss_bytes = pages * 4096;
          }
       }
 
@@ -108,8 +101,7 @@ impl MemoryInfo {
 }
 
 fn parse_kb(s: &str) -> Option<usize> {
-   s.trim_start()
-      .split_whitespace()
+   s.split_whitespace()
       .next()?
       .parse::<usize>()
       .ok()
@@ -190,13 +182,11 @@ impl BenchResult {
 fn format_count(n: usize) -> String {
    let s = n.to_string();
    let mut out = String::new();
-   let mut count = 0;
-   for c in s.chars().rev() {
+   for (count, c) in s.chars().rev().enumerate() {
       if count > 0 && count % 3 == 0 {
          out.push(',');
       }
       out.push(c);
-      count += 1;
    }
    out.chars().rev().collect()
 }

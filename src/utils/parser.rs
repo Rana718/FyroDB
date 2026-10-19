@@ -1390,8 +1390,8 @@ impl RespParser {
             self.rbuf.shrink_to(Self::IDLE_READ_BUFFER);
          }
       }
-      if self.wbuf.is_empty() && self.wbuf.capacity() > Self::IDLE_READ_BUFFER {
-         self.wbuf = Vec::new();
+      if self.wbuf.is_empty() && self.wbuf.capacity() > 256 * 1024 {
+         self.wbuf.shrink_to(256 * 1024);
       }
    }
 

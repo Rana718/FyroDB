@@ -733,8 +733,16 @@ func runAsyncPipeline(
 
 	go func() {
 		defer wg.Done()
-		r := bufio.NewReaderSize(conn, 4<<20)
-		discardN(r, totalOps*replyBytesPerOp)
+		buf := make([]byte, 128*1024)
+		rem := totalOps * replyBytesPerOp
+		for rem > 0 {
+			toRead := min(len(buf), rem)
+			n, err := conn.Read(buf[:toRead])
+			if err != nil {
+				panic(err)
+			}
+			rem -= n
+		}
 	}()
 
 	wg.Wait()

@@ -18,12 +18,23 @@ impl<'a> Conn<'a> {
          }
       }
 
-      self.process_buffered()
+      if !self.process_buffered() {
+         return false;
+      }
+      #[cfg(not(feature = "io-uring"))]
+      {
+         self.do_write()
+      }
+      #[cfg(feature = "io-uring")]
+      {
+         true
+      }
    }
 
    /// Parse and execute commands in read buffer, pausing if parked and
    /// preserving unparsed bytes. Returns false on protocol error.
    pub fn process_buffered(&mut self) -> bool {
+      let _guard = customhash::pin();
       let mut prefetched = 0usize;
       self.hint_n = 0;
       loop {
@@ -113,6 +124,12 @@ impl<'a> Conn<'a> {
                if self.write_offset >= self.parser.wbuf.len() {
                   self.parser.wbuf.clear();
                   self.write_offset = 0;
+                  if let ConnMode::Subscribed { ref slot, .. } = self.mode
+                     && slot.has_pending()
+                  {
+                     slot.drain_into_limit(&mut self.parser.wbuf, SUB_WRITE_BATCH_BYTES);
+                     continue;
+                  }
                   if self.parser.wbuf.capacity() > RETAINED_WRITE_BUFFER {
                      self.parser.wbuf.shrink_to(RETAINED_WRITE_BUFFER);
                   }

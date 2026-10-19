@@ -125,7 +125,12 @@ pub fn run_worker(
                         continue;
                      }
 
-                     let _ = stream.set_nodelay(true);
+                     let sock_ref = socket2::SockRef::from(&stream);
+                     let _ = sock_ref.set_tcp_nodelay(true);
+                     let _ = sock_ref.set_recv_buffer_size(1024 * 1024);
+                     let _ = sock_ref.set_send_buffer_size(1024 * 1024);
+                     #[cfg(target_os = "linux")]
+                     let _ = sock_ref.set_tcp_quickack(true);
                      let id = alloc_slot(&mut free, &mut next_token, &mut conns);
                      poll
                         .registry()
@@ -237,46 +242,56 @@ pub fn run_worker(
       dirty.dedup();
       #[cfg(feature = "io-uring")]
       if let Some(ring) = send_ring.as_mut() {
-         let pending_count = dirty
-            .iter()
-            .filter(|&&id| {
-               conns
-                  .get(id)
-                  .and_then(|s| s.as_ref())
-                  .is_some_and(|c| c.parser.wbuf.len() > c.write_offset)
-            })
-            .count();
-         if pending_count >= 2 {
-            sent.clear();
-            for &id in &dirty {
-               if let Some(Some(conn)) = conns.get_mut(id)
-                  && let Some((fd, ptr, len)) = conn.prepare_send()
-               {
-                  ring.push(fd, ptr, len, id as u64, &mut sent);
-               }
+         sent.clear();
+         for &id in &dirty {
+            if let Some(Some(conn)) = conns.get_mut(id)
+               && let Some((fd, ptr, len)) = conn.prepare_send()
+            {
+               ring.push(fd, ptr, len, id as u64, &mut sent);
             }
-            ring.complete(&mut sent);
-            for &(id, res) in &sent {
-               let id = id as usize;
-               let keep = conns
-                  .get_mut(id)
-                  .and_then(|s| s.as_mut())
-                  .is_some_and(|conn| conn.finish_send(res));
-               if !keep {
-                  close_conn(&mut conns, &mut poll, &mut free, id);
-               }
-            }
-            dirty.retain(|&id| {
-               if sent.iter().any(|&(tok, _)| tok as usize == id) {
-                  if conns.get(id).is_some_and(|s| s.is_some()) {
-                     sync_write_interest(&mut conns, &mut poll, id);
-                  }
-                  false
-               } else {
-                  true
-               }
-            });
          }
+         let mut w = 0;
+         for r in 0..sub_dirty.len() {
+            let id = sub_dirty[r];
+            if let Some(Some(conn)) = conns.get_mut(id) {
+               if is_slow_subscriber(conn) {
+                  close_conn(&mut conns, &mut poll, &mut free, id);
+                  continue;
+               }
+               if let Some((fd, ptr, len)) = conn.prepare_send() {
+                  ring.push(fd, ptr, len, id as u64, &mut sent);
+                  sub_dirty[w] = id;
+                  w += 1;
+               }
+            }
+         }
+         sub_dirty.truncate(w);
+
+         ring.submit_and_reap(&mut sent);
+         for &(id, res) in &sent {
+            let id = id as usize;
+            let keep = conns
+               .get_mut(id)
+               .and_then(|s| s.as_mut())
+               .is_some_and(|conn| conn.finish_send(res));
+            if !keep {
+               close_conn(&mut conns, &mut poll, &mut free, id);
+            } else {
+               sync_write_interest(&mut conns, &mut poll, id);
+            }
+         }
+         dirty.retain(|&id| {
+            conns
+               .get(id)
+               .and_then(|s| s.as_ref())
+               .is_some_and(|c| c.has_pending_write())
+         });
+         sub_dirty.retain(|&id| {
+            conns
+               .get(id)
+               .and_then(|s| s.as_ref())
+               .is_some_and(|c| c.has_pending_write())
+         });
       }
       for id in dirty.drain(..) {
          let close = match conns.get_mut(id).and_then(|s| s.as_mut()) {
@@ -392,6 +407,8 @@ fn make_listener(addr: SocketAddr) -> TcpListener {
    socket.set_reuse_address(true).unwrap();
    socket.set_reuse_port(true).unwrap();
    socket.set_nonblocking(true).unwrap();
+   let _ = socket.set_recv_buffer_size(1024 * 1024);
+   let _ = socket.set_send_buffer_size(1024 * 1024);
    socket.bind(&addr.into()).unwrap();
    socket.listen(8192).unwrap();
    TcpListener::from_std(std::net::TcpListener::from(socket))
