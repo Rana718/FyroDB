@@ -121,6 +121,61 @@ impl Store {
       self.data.shard_count()
    }
 
+   #[inline(always)]
+   pub fn prefetch_batch<K: AsRef<[u8]>>(&self, keys: &[K], hashes: &mut [u64]) {
+      self.data.prefetch_batch(keys, hashes);
+   }
+
+   #[inline(always)]
+   pub fn prefetch_batch_entries<K: AsRef<[u8]>>(
+      &self,
+      keys: &[K],
+      hashes: &mut [u64],
+      entries: &mut [*const ()],
+   ) {
+      self.data.prefetch_batch_entries(keys, hashes, entries);
+   }
+
+   #[inline(always)]
+   pub fn prefetch_slots<K: AsRef<[u8]>>(
+      &self,
+      keys: &[K],
+      hashes: &mut [u64],
+      tables: &mut [*const ()],
+   ) {
+      self.data.prefetch_slots(keys, hashes, tables);
+   }
+
+   #[inline(always)]
+   pub fn prefetch_slots_write<K: AsRef<[u8]>>(
+      &self,
+      keys: &[K],
+      hashes: &mut [u64],
+      tables: &mut [*const ()],
+   ) {
+      self.data.prefetch_slots_write(keys, hashes, tables);
+   }
+
+   #[inline(always)]
+   pub fn probe_and_prefetch_entries(
+      &self,
+      tables: &[*const ()],
+      hashes: &[u64],
+      entries: &mut [*const ()],
+   ) {
+      self.data.probe_and_prefetch_entries(tables, hashes, entries);
+   }
+
+   #[inline(always)]
+   pub fn probe_and_prefetch_entries_write(
+      &self,
+      tables: &[*const ()],
+      hashes: &[u64],
+      entries: &mut [*const ()],
+   ) {
+      self.data.probe_and_prefetch_entries_write(tables, hashes, entries);
+   }
+
    /// Single relaxed load, constant-false with no limit configured.
    #[inline(always)]
    pub fn at_key_capacity(&self) -> bool {

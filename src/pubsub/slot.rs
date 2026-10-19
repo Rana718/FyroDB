@@ -91,7 +91,9 @@ impl WorkerNotifier {
    #[inline]
    pub fn notify_fanout(&self, entry: FanEntry) {
       self.fanout.push(entry);
-      if !self.fanout_pending.swap(true, Ordering::AcqRel) {
+      if !self.fanout_pending.load(Ordering::Relaxed)
+         && !self.fanout_pending.swap(true, Ordering::AcqRel)
+      {
          let _ = self.waker.wake();
       }
    }

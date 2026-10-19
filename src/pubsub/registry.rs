@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicPtr, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 
 use foldhash::fast::RandomState;
 use std::hash::BuildHasher;
@@ -33,12 +33,35 @@ fn extract_workers(slots: &[Arc<SubSlot>]) -> Vec<Arc<WorkerNotifier>> {
 
 #[inline]
 fn fan_out(ch: &ChannelData, frame: Arc<[u8]>) {
-   for notifier in &ch.workers {
-      notifier.notify_fanout(FanEntry {
+   let workers = &ch.workers;
+   let n = workers.len();
+   if n == 0 {
+      return;
+   }
+   if n == 1 {
+      workers[0].notify_fanout(FanEntry {
+         channel: Arc::clone(&ch.name),
+         frame,
+      });
+      return;
+   }
+   #[cfg(target_os = "linux")]
+   let start = (unsafe { libc::sched_getcpu() }.max(0) as usize) % n;
+   #[cfg(not(target_os = "linux"))]
+   let start = 0;
+
+   for i in 0..n - 1 {
+      let idx = (start + i) % n;
+      workers[idx].notify_fanout(FanEntry {
          channel: Arc::clone(&ch.name),
          frame: Arc::clone(&frame),
       });
    }
+   let last_idx = (start + n - 1) % n;
+   workers[last_idx].notify_fanout(FanEntry {
+      channel: Arc::clone(&ch.name),
+      frame,
+   });
 }
 
 struct PatternEntry {
@@ -233,6 +256,7 @@ impl Drop for ChannelShard {
 pub struct PubSub {
    shards: Box<[ChannelShard]>,
    patterns: std::sync::RwLock<PatternIndex>,
+   pattern_count: AtomicUsize,
    hasher: RandomState,
 }
 
@@ -298,6 +322,7 @@ impl PubSub {
       Self {
          shards,
          patterns: std::sync::RwLock::new(PatternIndex::new()),
+         pattern_count: AtomicUsize::new(0),
          hasher: RandomState::default(),
       }
    }
@@ -319,11 +344,13 @@ impl PubSub {
    pub fn psubscribe(&self, pattern: &str, slot: Arc<SubSlot>) {
       let mut idx = self.patterns.write().unwrap_or_else(|e| e.into_inner());
       idx.add(pattern.to_string(), slot);
+      self.pattern_count.store(idx.len(), Ordering::Release);
    }
 
    pub fn punsubscribe(&self, pattern: &str, slot: &Arc<SubSlot>) {
       let mut idx = self.patterns.write().unwrap_or_else(|e| e.into_inner());
       idx.remove(pattern, slot);
+      self.pattern_count.store(idx.len(), Ordering::Release);
    }
 
    #[inline]
@@ -334,28 +361,30 @@ impl PubSub {
          .shard_for(channel)
          .publish(channel, &|| encode_message(channel, message));
 
-      let guard = self.patterns.read().unwrap_or_else(|e| e.into_inner());
-      if !guard.is_empty() {
-         let chan_b = channel.as_bytes();
-         let check = |entry: &PatternEntry| {
-            if glob_match_bytes(entry.pattern.as_bytes(), chan_b) {
-               let pframe: Arc<[u8]> = encode_pmessage(&entry.pattern, channel, message);
-               entry.slot.push(pframe);
-               true
-            } else {
-               false
-            }
-         };
+      if self.pattern_count.load(Ordering::Relaxed) != 0 {
+         let guard = self.patterns.read().unwrap_or_else(|e| e.into_inner());
+         if !guard.is_empty() {
+            let chan_b = channel.as_bytes();
+            let check = |entry: &PatternEntry| {
+               if glob_match_bytes(entry.pattern.as_bytes(), chan_b) {
+                  let pframe: Arc<[u8]> = encode_pmessage(&entry.pattern, channel, message);
+                  entry.slot.push(pframe);
+                  true
+               } else {
+                  false
+               }
+            };
 
-         for entry in &guard.wildcard {
-            if check(entry) {
-               count += 1;
-            }
-         }
-         if let Some(&first_byte) = chan_b.first() {
-            for entry in &guard.buckets[first_byte as usize] {
+            for entry in &guard.wildcard {
                if check(entry) {
                   count += 1;
+               }
+            }
+            if let Some(&first_byte) = chan_b.first() {
+               for entry in &guard.buckets[first_byte as usize] {
+                  if check(entry) {
+                     count += 1;
+                  }
                }
             }
          }
@@ -370,11 +399,12 @@ impl PubSub {
       if messages.is_empty() {
          return 0;
       }
-      if !self
-         .patterns
-         .read()
-         .unwrap_or_else(|e| e.into_inner())
-         .is_empty()
+      if self.pattern_count.load(Ordering::Relaxed) != 0
+         && !self
+            .patterns
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_empty()
       {
          let mut n = 0;
          for message in messages {

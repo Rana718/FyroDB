@@ -37,33 +37,38 @@ static ALLOCATED: [Stripe; STRIPES] =
    [const { Stripe(std::sync::atomic::AtomicI64::new(0)) }; STRIPES];
 
 thread_local! {
-    static LOCAL_STRIPE: std::cell::Cell<usize> = const { std::cell::Cell::new(usize::MAX) };
+    static DELTA: std::cell::Cell<i64> = const { std::cell::Cell::new(0) };
+    static STRIPE: std::cell::Cell<usize> = const { std::cell::Cell::new(usize::MAX) };
 }
 
-#[inline(always)]
-fn stripe() -> &'static std::sync::atomic::AtomicI64 {
-   let index = LOCAL_STRIPE
-      .try_with(|slot| {
-         let index = slot.get();
-         if index != usize::MAX {
-            return index;
-         }
+#[cold]
+#[inline(never)]
+fn record_slow(d: i64) {
+   STRIPE.with(|s_cell| {
+      let mut stripe = s_cell.get();
+      if stripe == usize::MAX {
          #[cfg(target_os = "linux")]
-         let index = unsafe { libc::sched_getcpu() }.max(0) as usize % STRIPES;
+         let idx = unsafe { libc::sched_getcpu() }.max(0) as usize % STRIPES;
          #[cfg(not(target_os = "linux"))]
-         let index = 0;
-         slot.set(index);
-         index
-      })
-      .unwrap_or(0);
-   &ALLOCATED[index].0
+         let idx = 0;
+         stripe = idx;
+         s_cell.set(stripe);
+      }
+      ALLOCATED[stripe].0.fetch_add(d, Ordering::Relaxed);
+   });
 }
 
 #[inline(always)]
 fn record(delta: i64) {
-   if delta != 0 {
-      stripe().fetch_add(delta, Ordering::Relaxed);
-   }
+   DELTA.with(|cell| {
+      let d = cell.get() + delta;
+      if d.unsigned_abs() >= 65536 {
+         record_slow(d);
+         cell.set(0);
+      } else {
+         cell.set(d);
+      }
+   });
 }
 
 pub struct Zmalloc;

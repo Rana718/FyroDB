@@ -87,6 +87,68 @@ impl Store {
       }
    }
 
+   #[inline(always)]
+   pub fn set_string_hinted_pinned(&self, key: &str, hash: Option<u64>, value: &str, expires_ms: u64) {
+      let store_val = StoreValue {
+         value: crate::storage::value::FyroDB::String(SmallStr::new(value)),
+         expires_ms,
+      };
+      self.data.set_str_hinted_pinned(key, hash, store_val);
+      if expires_ms != 0 {
+         self.add_ttl();
+      }
+   }
+
+   #[inline(always)]
+   pub fn set_string_hinted_slot(
+      &self,
+      key: &str,
+      hash: u64,
+      _slot_hint: *const (),
+      value: &str,
+      expires_ms: u64,
+   ) {
+      let store_val = StoreValue {
+         value: crate::storage::value::FyroDB::String(SmallStr::new(value)),
+         expires_ms,
+      };
+      if self.data.insert_slot_fast(hash, key, store_val) {
+         self.data.touched(key);
+         if expires_ms != 0 {
+            self.add_ttl();
+         }
+         return;
+      }
+      self.set_string_hinted_pinned(key, Some(hash), value, expires_ms);
+   }
+
+   #[cold]
+   #[inline(never)]
+   fn set_string_fallback(&self, key: &str, hash: u64, value: &str, expires_ms: u64) {
+      let store_val = StoreValue {
+         value: crate::storage::value::FyroDB::String(SmallStr::new(value)),
+         expires_ms,
+      };
+      self.data.set_str_hinted_pinned(key, Some(hash), store_val);
+      if expires_ms != 0 {
+         self.add_ttl();
+      }
+   }
+
+   #[inline(always)]
+   pub fn set_string_with_hint(
+      &self,
+      key: &str,
+      hash: u64,
+      entry_hint: *const (),
+      value: &str,
+      expires_ms: u64,
+   ) {
+      unsafe {
+         self.set_string_fast_entry(key, hash, entry_hint.cast(), value, expires_ms);
+      }
+   }
+
    #[inline]
    pub fn try_set_string(&self, key: &str, value: &str, expires_ms: u64) -> Result<(), Full> {
       let store_val = StoreValue {
@@ -148,6 +210,143 @@ impl Store {
          }
          _ => false,
       }
+   }
+
+   #[cold]
+   #[inline(never)]
+   fn get_to_buf_fallback(&self, key: &str, hash: u64, out: &mut Vec<u8>) -> bool {
+      let (h, idx) = (hash, self.data.shard_of(hash));
+      let mut expired = false;
+      let matched = self.data.with_entry_pinned(key, h, idx, |val| {
+         if val.expires_ms != 0 && val.is_expired() {
+            expired = true;
+            return false;
+         }
+         if let crate::storage::value::FyroDB::String(s) = &val.value {
+            crate::utils::resp::write_bulk_bytes(out, s.as_bytes());
+            return true;
+         }
+         false
+      });
+      if expired {
+         self.data.remove(key);
+         return false;
+      }
+      matched.unwrap_or(false)
+   }
+
+   /// # Safety
+   ///
+   /// `p` must be null or point to a valid `Entry<StoreValue>`.
+   #[inline(always)]
+   pub unsafe fn get_to_buf_fast_entry(
+      &self,
+      key: &str,
+      hash: u64,
+      p: *const customhash::Entry<StoreValue>,
+      out: &mut Vec<u8>,
+   ) -> bool {
+      if !p.is_null() {
+         let e = unsafe { &*p };
+         let state = e.state.load(std::sync::atomic::Ordering::Relaxed);
+         let expected = ((hash as u32 as u64) << 32) | customhash::STATE_OCCUPIED;
+         if (state & customhash::STATE_MATCH_MASK) == expected && e.key.eq_str(key) {
+            let val = unsafe { (*e.value.get()).assume_init_ref() };
+            if val.expires_ms == 0 || !val.is_expired() {
+               if let crate::storage::value::FyroDB::String(s) = &val.value {
+                  s.write_resp(out);
+                  return true;
+               }
+            } else {
+               self.data.remove(key);
+               return false;
+            }
+         }
+      }
+      self.get_to_buf_fallback(key, hash, out)
+   }
+
+   /// # Safety
+   ///
+   /// `p` must be null or point to a valid `Entry<StoreValue>`.
+   #[inline(always)]
+   pub unsafe fn set_string_fast_entry(
+      &self,
+      key: &str,
+      hash: u64,
+      p: *const customhash::Entry<StoreValue>,
+      value: &str,
+      expires_ms: u64,
+   ) {
+      if !p.is_null() {
+         let e = unsafe { &*p };
+         let current = e.state.load(std::sync::atomic::Ordering::Relaxed);
+         let expected = ((hash as u32 as u64) << 32) | customhash::STATE_OCCUPIED;
+         if (current & customhash::STATE_MATCH_MASK) == expected && e.key.eq_str(key) {
+            let locked = customhash::bump_seq(current) | customhash::STATE_LOCK;
+            if e.state
+               .compare_exchange_weak(
+                  current,
+                  locked,
+                  std::sync::atomic::Ordering::Acquire,
+                  std::sync::atomic::Ordering::Relaxed,
+               )
+               .is_ok()
+            {
+               self.data.snap_before_write(e);
+               let val = unsafe { (*e.value.get()).assume_init_mut() };
+               val.expires_ms = expires_ms;
+               if let crate::storage::value::FyroDB::String(ref mut s) = val.value {
+                  s.overwrite_str(value);
+               } else {
+                  val.value = crate::storage::value::FyroDB::String(SmallStr::new(value));
+               }
+               customhash::unlock_write(&e.state, locked, true);
+               self.data.touched(key);
+               if expires_ms != 0 {
+                  self.add_ttl();
+               }
+               return;
+            }
+         }
+      }
+      self.set_string_fallback(key, hash, value, expires_ms);
+   }
+
+   #[inline(always)]
+   pub fn get_to_buf_with_hint(
+      &self,
+      key: &str,
+      hash: u64,
+      entry_hint: *const (),
+      out: &mut Vec<u8>,
+   ) -> bool {
+      unsafe { self.get_to_buf_fast_entry(key, hash, entry_hint.cast(), out) }
+   }
+
+   #[inline(always)]
+   pub fn get_to_buf_hinted_pinned(&self, key: &str, hash: Option<u64>, out: &mut Vec<u8>) -> bool {
+      let (h, idx) = match hash {
+         Some(h) => (h, self.data.shard_of(h)),
+         None => self.data.locate_key(key),
+      };
+      let mut expired = false;
+      let matched = self.data.with_entry_pinned(key, h, idx, |val| {
+         if val.expires_ms != 0 && val.is_expired() {
+            expired = true;
+            return false;
+         }
+         if let crate::storage::value::FyroDB::String(s) = &val.value {
+            s.write_resp(out);
+            return true;
+         }
+         false
+      });
+      if expired {
+         self.data.remove(key);
+         return false;
+      }
+      matched.unwrap_or(false)
    }
 
    pub fn getdel(&self, key: &str) -> Option<String> {

@@ -1,4 +1,4 @@
-pub(crate) const INLINE_CAP: usize = 23;
+pub(crate) const INLINE_CAP: usize = 15;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
@@ -20,27 +20,19 @@ pub(crate) enum Tag {
    L13,
    L14,
    L15,
-   L16,
-   L17,
-   L18,
-   L19,
-   L20,
-   L21,
-   L22,
-   L23,
    Heap = 0xFF,
 }
 
 impl Tag {
    #[inline(always)]
    pub(crate) fn inline(n: usize) -> Tag {
-      assert!(n <= 23);
+      assert!(n <= 15);
       unsafe { std::mem::transmute::<u8, Tag>(n as u8) }
    }
 }
 
 #[repr(C)]
-pub(crate) struct CompactKey {
+pub struct CompactKey {
    data: [u8; INLINE_CAP],
    tag: Tag,
 }
@@ -81,14 +73,18 @@ impl CompactKey {
    }
 
    /// No allocation for inline (≤15B) keys; one box for longer ones.
-   #[inline]
-   pub(crate) fn from_str(s: &str) -> Self {
-      if s.len() <= INLINE_CAP {
+   #[inline(always)]
+   #[allow(clippy::should_implement_trait)]
+   pub fn from_str(s: &str) -> Self {
+      let len = s.len();
+      if len <= INLINE_CAP {
          let mut data = [0u8; INLINE_CAP];
-         data[..s.len()].copy_from_slice(s.as_bytes());
+         unsafe {
+            std::ptr::copy_nonoverlapping(s.as_bytes().as_ptr(), data.as_mut_ptr(), len);
+         }
          Self {
             data,
-            tag: Tag::inline(s.len()),
+            tag: Tag::inline(len),
          }
       } else {
          Self::from_string(String::from(s))
@@ -96,7 +92,7 @@ impl CompactKey {
    }
 
    #[inline(always)]
-   pub(crate) fn as_str(&self) -> &str {
+   pub fn as_str(&self) -> &str {
       if self.tag != Tag::Heap {
          unsafe { std::str::from_utf8_unchecked(&self.data[..self.tag as usize]) }
       } else {
@@ -109,14 +105,35 @@ impl CompactKey {
    }
 
    #[inline(always)]
-   pub(crate) fn eq_str(&self, other: &str) -> bool {
+   pub fn eq_str(&self, other: &str) -> bool {
       let other_len = other.len();
       if self.tag != Tag::Heap {
          let len = self.tag as usize;
          if len != other_len {
             return false;
          }
-         unsafe { self.data.get_unchecked(..len) == other.as_bytes() }
+         let a = self.data.as_ptr();
+         let b = other.as_bytes().as_ptr();
+         unsafe {
+            if len >= 8 {
+               let w1 = std::ptr::read_unaligned(a.cast::<u64>()) == std::ptr::read_unaligned(b.cast::<u64>());
+               let w2 = std::ptr::read_unaligned(a.add(len - 8).cast::<u64>())
+                  == std::ptr::read_unaligned(b.add(len - 8).cast::<u64>());
+               w1 && w2
+            } else if len >= 4 {
+               let w1 = std::ptr::read_unaligned(a.cast::<u32>()) == std::ptr::read_unaligned(b.cast::<u32>());
+               let w2 = std::ptr::read_unaligned(a.add(len - 4).cast::<u32>())
+                  == std::ptr::read_unaligned(b.add(len - 4).cast::<u32>());
+               w1 && w2
+            } else if len == 0 {
+               true
+            } else if len == 1 {
+               *a == *b
+            } else {
+               let w1 = std::ptr::read_unaligned(a.cast::<u16>()) == std::ptr::read_unaligned(b.cast::<u16>());
+               w1 && (*a.add(len - 1) == *b.add(len - 1))
+            }
+         }
       } else {
          let len_val = Self::read_heap_len(&self.data);
          if len_val != other_len {

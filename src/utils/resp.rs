@@ -29,22 +29,26 @@ pub fn write_bulk(out: &mut Vec<u8>, s: &str) {
    write_bulk_bytes(out, s.as_bytes());
 }
 
+#[cold]
+#[inline(never)]
+fn reserve_resp(out: &mut Vec<u8>, total: usize) {
+   out.reserve(total);
+}
+
 #[inline(always)]
 pub fn write_bulk_bytes(out: &mut Vec<u8>, s: &[u8]) {
    let len = s.len();
    if len < 10 {
       let old_len = out.len();
       let total = 4 + len + 2;
-      out.reserve(total);
+      if out.capacity() - old_len < total {
+         reserve_resp(out, total);
+      }
       unsafe {
          let p = out.as_mut_ptr().add(old_len);
-         *p = b'$';
-         *p.add(1) = b'0' + len as u8;
-         *p.add(2) = b'\r';
-         *p.add(3) = b'\n';
+         p.cast::<u32>().write_unaligned(u32::from_ne_bytes([b'$', b'0' + len as u8, b'\r', b'\n']));
          std::ptr::copy_nonoverlapping(s.as_ptr(), p.add(4), len);
-         *p.add(4 + len) = b'\r';
-         *p.add(5 + len) = b'\n';
+         p.add(4 + len).cast::<u16>().write_unaligned(u16::from_ne_bytes(*b"\r\n"));
          out.set_len(old_len + total);
       }
       return;
@@ -52,7 +56,9 @@ pub fn write_bulk_bytes(out: &mut Vec<u8>, s: &[u8]) {
    if len < 100 {
       let old_len = out.len();
       let total = 5 + len + 2;
-      out.reserve(total);
+      if out.capacity() - old_len < total {
+         reserve_resp(out, total);
+      }
       unsafe {
          let p = out.as_mut_ptr().add(old_len);
          *p = b'$';

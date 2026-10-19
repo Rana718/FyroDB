@@ -1,6 +1,5 @@
 use ahash::RandomState as AHashBuild;
 use foldhash::fast::RandomState as FoldHashBuild;
-use std::collections::hash_map::DefaultHasher;
 use std::hash::{BuildHasher, Hasher};
 use std::time::Instant;
 
