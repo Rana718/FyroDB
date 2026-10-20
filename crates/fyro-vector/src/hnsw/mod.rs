@@ -1044,7 +1044,7 @@ impl HnswGraph {
          self.compact();
       }
       let _m = self.maint.lock();
-      let g = self.inner.read();
+      let mut g = self.inner.write();
       let n = g.len;
       let mut links = Vec::new();
       let degree = |id: u32, buf: &mut Vec<u32>| -> usize {
@@ -1101,6 +1101,9 @@ impl HnswGraph {
       for (new, &old) in order.iter().enumerate() {
          map[old as usize] = new as u32;
       }
+      g.flat_int8 = Vec::new();
+      g.flat_scales = Vec::new();
+      g.raw = Vec::new();
       let out = HnswGraph::with_quant(
          self.metric,
          g.dims,

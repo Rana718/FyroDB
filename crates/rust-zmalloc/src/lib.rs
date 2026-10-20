@@ -36,38 +36,40 @@ struct Stripe(std::sync::atomic::AtomicI64);
 static ALLOCATED: [Stripe; STRIPES] =
    [const { Stripe(std::sync::atomic::AtomicI64::new(0)) }; STRIPES];
 
+#[derive(Clone, Copy)]
+struct ThreadTracking {
+   delta: i64,
+   stripe: u32,
+}
+
 thread_local! {
-    static DELTA: std::cell::Cell<i64> = const { std::cell::Cell::new(0) };
-    static STRIPE: std::cell::Cell<usize> = const { std::cell::Cell::new(usize::MAX) };
+   static TRACK: std::cell::Cell<ThreadTracking> = const {
+      std::cell::Cell::new(ThreadTracking { delta: 0, stripe: u32::MAX })
+   };
 }
 
 #[cold]
 #[inline(never)]
-fn record_slow(d: i64) {
-   STRIPE.with(|s_cell| {
-      let mut stripe = s_cell.get();
-      if stripe == usize::MAX {
-         #[cfg(target_os = "linux")]
-         let idx = unsafe { libc::sched_getcpu() }.max(0) as usize % STRIPES;
-         #[cfg(not(target_os = "linux"))]
-         let idx = 0;
-         stripe = idx;
-         s_cell.set(stripe);
-      }
-      ALLOCATED[stripe].0.fetch_add(d, Ordering::Relaxed);
-   });
+fn record_slow(t: &mut ThreadTracking, d: i64) {
+   if t.stripe == u32::MAX {
+      static NEXT_STRIPE: AtomicUsize = AtomicUsize::new(0);
+      t.stripe = (NEXT_STRIPE.fetch_add(1, Ordering::Relaxed) % STRIPES) as u32;
+   }
+   ALLOCATED[t.stripe as usize].0.fetch_add(d, Ordering::Relaxed);
+   t.delta = 0;
 }
 
 #[inline(always)]
 fn record(delta: i64) {
-   DELTA.with(|cell| {
-      let d = cell.get() + delta;
-      if d.unsigned_abs() >= 65536 {
-         record_slow(d);
-         cell.set(0);
+   TRACK.with(|cell| {
+      let mut t = cell.get();
+      let d = t.delta + delta;
+      if d.unsigned_abs() >= 262_144 {
+         record_slow(&mut t, d);
       } else {
-         cell.set(d);
+         t.delta = d;
       }
+      cell.set(t);
    });
 }
 
@@ -160,14 +162,20 @@ pub fn configure_allocator() {
          fn mi_option_set(option: i32, value: i64);
       }
       unsafe {
+         // mi_option_eager_commit = 3: 0 (don't eagerly commit segments)
+         mi_option_set(3, 0);
+         // mi_option_arena_eager_commit = 4: 0 (don't eagerly commit arenas)
+         mi_option_set(4, 0);
+         // mi_option_purge_decommits = 5: 1 (use MADV_DONTNEED on linux for immediate RSS return)
+         mi_option_set(5, 1);
+         // mi_option_abandoned_page_purge = 12: 1 (immediately purge delayed purges on thread exit)
+         mi_option_set(12, 1);
          // mi_option_purge_delay = 15: 0 (immediate purge of unused pages to OS)
          mi_option_set(15, 0);
          // mi_option_arena_reserve = 23: 0 (don't pre-reserve 1GB arena upfront)
          mi_option_set(23, 0);
-         // mi_option_arena_eager_commit = 4: 0 (don't eagerly commit arenas)
-         mi_option_set(4, 0);
-         // mi_option_eager_commit = 3: 0 (don't eagerly commit segments)
-         mi_option_set(3, 0);
+         // mi_option_allow_thp = 37: 0 (disable THP to avoid 2MB page fragmentation/RSS blowup)
+         mi_option_set(37, 0);
       }
    });
 }
