@@ -618,13 +618,18 @@ fn emit_knn(
    let per_doc = 1 + usize::from(opts.with_scores) + usize::from(!opts.no_content);
    resp::write_array_header(out, 1 + top.len() * per_doc);
    resp::write_integer(out, total as i64);
+   let mut sbuf = [0u8; 32];
    for (d, key) in top {
       resp::write_bulk_bytes(out, key.as_bytes());
       if opts.with_scores {
-         resp::write_bulk(out, &format!("{:.6}", d));
+         use std::io::Write;
+         let mut cur = &mut sbuf[..];
+         let _ = write!(cur, "{:.6}", d);
+         let len = 32 - cur.len();
+         resp::write_bulk_bytes(out, &sbuf[..len]);
       }
       if !opts.no_content {
-         let mut fields = store
+         let fields = store
             .data
             .get_ref(key)
             .map(|val| doc_fields(&val, def, &field_opts))
@@ -633,15 +638,22 @@ fn emit_knn(
          for (k, _) in &fields {
             if k == score_alias {
                seen = true;
+               break;
             }
          }
-         if !seen {
-            fields.push((score_alias.to_string(), format!("{:.6}", d).into_bytes()));
-         }
-         resp::write_array_header(out, fields.len() * 2);
+         let extra = if seen { 0 } else { 1 };
+         resp::write_array_header(out, (fields.len() + extra) * 2);
          for (k2, v2) in &fields {
             resp::write_bulk_bytes(out, k2.as_bytes());
             resp::write_bulk_bytes(out, v2);
+         }
+         if !seen {
+            resp::write_bulk_bytes(out, score_alias.as_bytes());
+            use std::io::Write;
+            let mut cur = &mut sbuf[..];
+            let _ = write!(cur, "{:.6}", d);
+            let len = 32 - cur.len();
+            resp::write_bulk_bytes(out, &sbuf[..len]);
          }
       }
    }

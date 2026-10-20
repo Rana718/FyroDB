@@ -211,6 +211,7 @@ pub(super) fn execute_publish_run(
    parts: &[(*const u8, usize)],
 ) -> Result<(), ()> {
    let out = &mut conn.parser.wbuf;
+   out.reserve(cmds * 8);
    let mut messages: Vec<&str> = Vec::with_capacity(parts.len());
    for &part in parts {
       let Some(m) = part_str(out, part) else {
@@ -398,11 +399,13 @@ pub(super) fn execute_write_run(
          match conn.store.incrby(key, cmds as i64) {
             Ok(final_value) => {
                let out = &mut conn.parser.wbuf;
+               out.reserve(cmds * 24);
                for i in 1..=cmds as i64 {
                   crate::utils::resp::write_integer(out, final_value - (cmds as i64 - i));
                }
             }
             Err("increment or decrement would overflow") => {
+               conn.parser.wbuf.reserve(cmds * 24);
                for _ in 0..cmds {
                   match conn.store.incr(key) {
                      Ok(n) => crate::utils::resp::write_integer(&mut conn.parser.wbuf, n),
@@ -412,6 +415,7 @@ pub(super) fn execute_write_run(
             }
             Err(e) => {
                let out = &mut conn.parser.wbuf;
+               out.reserve(cmds * 32);
                for _ in 0..cmds {
                   crate::utils::resp::write_err(out, e);
                }
@@ -434,12 +438,14 @@ pub(super) fn execute_write_run(
          match conn.store.hset_bytes_added_flags(key, &fields) {
             Ok(flags) => {
                let out = &mut conn.parser.wbuf;
+               out.reserve(flags.len() * 4);
                for added in flags {
                   crate::utils::resp::write_integer(out, added as i64);
                }
             }
             Err(e) => {
                let out = &mut conn.parser.wbuf;
+               out.reserve(cmds * 32);
                for _ in 0..cmds {
                   crate::utils::resp::write_err(out, e);
                }
@@ -463,12 +469,14 @@ pub(super) fn execute_write_run(
          match conn.store.sadd_added_flags(key, &members) {
             Ok(flags) => {
                let out = &mut conn.parser.wbuf;
+               out.reserve(flags.len() * 4);
                for added in flags {
                   crate::utils::resp::write_integer(out, added as i64);
                }
             }
             Err(e) => {
                let out = &mut conn.parser.wbuf;
+               out.reserve(cmds * 32);
                for _ in 0..cmds {
                   crate::utils::resp::write_err(out, e);
                }
@@ -492,6 +500,7 @@ pub(super) fn execute_write_run(
          match conn.store.pfadd_run(key, &elements) {
             Ok(flags) => {
                let out = &mut conn.parser.wbuf;
+               out.reserve(flags.len() * 4);
                for changed in flags {
                   crate::utils::resp::write_integer(out, changed as i64);
                }

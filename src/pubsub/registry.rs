@@ -45,20 +45,14 @@ fn fan_out(ch: &ChannelData, frame: Arc<[u8]>) {
       });
       return;
    }
-   #[cfg(target_os = "linux")]
-   let start = (unsafe { libc::sched_getcpu() }.max(0) as usize) % n;
-   #[cfg(not(target_os = "linux"))]
-   let start = 0;
 
-   for i in 0..n - 1 {
-      let idx = (start + i) % n;
-      workers[idx].notify_fanout(FanEntry {
+   for w in &workers[..n - 1] {
+      w.notify_fanout(FanEntry {
          channel: Arc::clone(&ch.name),
          frame: Arc::clone(&frame),
       });
    }
-   let last_idx = (start + n - 1) % n;
-   workers[last_idx].notify_fanout(FanEntry {
+   workers[n - 1].notify_fanout(FanEntry {
       channel: Arc::clone(&ch.name),
       frame,
    });

@@ -9,6 +9,12 @@ static INT_CACHE: [&[u8]; 10] = [
    b":8\r\n", b":9\r\n",
 ];
 
+const DIGITS100: &[u8; 200] = b"0001020304050607080910111213141516171819\
+2021222324252627282930313233343536373839\
+4041424344454647484950515253545556575859\
+6061626364656667686970717273747576777879\
+8081828384858687888990919293949596979899";
+
 #[inline]
 pub fn write_ok(out: &mut Vec<u8>) {
    out.extend_from_slice(OK);
@@ -94,33 +100,45 @@ pub fn write_integer(out: &mut Vec<u8>, n: i64) {
       out.extend_from_slice(INT_CACHE[n as usize]);
       return;
    }
-   let mut buf = [0u8; 32];
-   buf[0] = b':';
-   let mut pos = 1;
-   let mut val = if n < 0 {
-      buf[pos] = b'-';
-      pos += 1;
-      (-n) as u64
-   } else {
-      n as u64
-   };
-   let mut digits = [0u8; 20];
-   let mut d_pos = 20;
-   loop {
-      d_pos -= 1;
-      digits[d_pos] = b'0' + (val % 10) as u8;
-      val /= 10;
-      if val == 0 {
-         break;
-      }
+   let old_len = out.len();
+   if out.capacity() - old_len < 32 {
+      out.reserve(32);
    }
-   let d_len = 20 - d_pos;
-   buf[pos..pos + d_len].copy_from_slice(&digits[d_pos..]);
-   pos += d_len;
-   buf[pos] = b'\r';
-   buf[pos + 1] = b'\n';
-   pos += 2;
-   out.extend_from_slice(&buf[..pos]);
+   unsafe {
+      let base = out.as_mut_ptr().add(old_len);
+      *base = b':';
+      let (mut val, mut pos) = if n < 0 {
+         *base.add(1) = b'-';
+         (n.unsigned_abs(), 2)
+      } else {
+         (n as u64, 1)
+      };
+
+      let mut digits = [0u8; 20];
+      let mut d_pos = 20;
+      while val >= 100 {
+         let rem = (val % 100) as usize * 2;
+         val /= 100;
+         d_pos -= 2;
+         digits[d_pos] = DIGITS100[rem];
+         digits[d_pos + 1] = DIGITS100[rem + 1];
+      }
+      if val < 10 {
+         d_pos -= 1;
+         digits[d_pos] = b'0' + val as u8;
+      } else {
+         let rem = val as usize * 2;
+         d_pos -= 2;
+         digits[d_pos] = DIGITS100[rem];
+         digits[d_pos + 1] = DIGITS100[rem + 1];
+      }
+      let d_len = 20 - d_pos;
+      std::ptr::copy_nonoverlapping(digits.as_ptr().add(d_pos), base.add(pos), d_len);
+      pos += d_len;
+      *base.add(pos) = b'\r';
+      *base.add(pos + 1) = b'\n';
+      out.set_len(old_len + pos + 2);
+   }
 }
 
 #[inline]
