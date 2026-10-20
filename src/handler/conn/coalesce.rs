@@ -17,7 +17,10 @@ pub(super) fn is_set_expire_pair(conn: &Conn<'_>, raw: &[(*const u8, usize)]) ->
       return false;
    }
    const EXPIRE_PREFIX: &[u8] = b"*3\r\n$6\r\n";
-   conn.parser.peek_remaining(EXPIRE_PREFIX.len()).starts_with(EXPIRE_PREFIX)
+   conn
+      .parser
+      .peek_remaining(EXPIRE_PREFIX.len())
+      .starts_with(EXPIRE_PREFIX)
 }
 
 pub(super) fn dispatch_set_expire_pair(

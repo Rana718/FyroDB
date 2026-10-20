@@ -160,9 +160,21 @@ pub fn encode_batch(channel: &str, messages: &[&str]) -> Arc<[u8]> {
       let mut block_buf = [0u8; 128];
       if block_len <= 128 && is_uniform_ptr {
          unsafe {
-            std::ptr::copy_nonoverlapping(combined_hdr.as_ptr(), block_buf.as_mut_ptr(), combined_hdr.len());
-            std::ptr::copy_nonoverlapping(first.as_ptr(), block_buf.as_mut_ptr().add(combined_hdr.len()), first_len);
-            std::ptr::copy_nonoverlapping(b"\r\n".as_ptr(), block_buf.as_mut_ptr().add(combined_hdr.len() + first_len), 2);
+            std::ptr::copy_nonoverlapping(
+               combined_hdr.as_ptr(),
+               block_buf.as_mut_ptr(),
+               combined_hdr.len(),
+            );
+            std::ptr::copy_nonoverlapping(
+               first.as_ptr(),
+               block_buf.as_mut_ptr().add(combined_hdr.len()),
+               first_len,
+            );
+            std::ptr::copy_nonoverlapping(
+               b"\r\n".as_ptr(),
+               block_buf.as_mut_ptr().add(combined_hdr.len() + first_len),
+               2,
+            );
 
             let src = block_buf.as_ptr();
             for _ in 0..messages.len() {
@@ -292,4 +304,3 @@ pub(crate) fn push_usize(out: &mut Vec<u8>, mut n: usize) {
    }
    out[start..].reverse();
 }
-

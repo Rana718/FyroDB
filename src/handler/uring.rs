@@ -107,7 +107,10 @@ mod tests {
          .setup_defer_taskrun()
          .setup_cqsize(4096)
          .build(2048);
-      println!("builder with single_issuer + defer_taskrun + cqsize 4096: {:?}", ring.as_ref().map(|_| "ok"));
+      println!(
+         "builder with single_issuer + defer_taskrun + cqsize 4096: {:?}",
+         ring.as_ref().map(|_| "ok")
+      );
       assert!(ring.is_ok());
    }
 }

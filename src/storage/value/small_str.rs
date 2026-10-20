@@ -253,9 +253,18 @@ impl SmallStr {
          }
          unsafe {
             let p = out.as_mut_ptr().add(old_len);
-            p.cast::<u32>().write_unaligned(u32::from_ne_bytes([b'$', b'0' + len as u8, b'\r', b'\n']));
-            p.add(4).cast::<u64>().write_unaligned(self.data.as_ptr().cast::<u64>().read_unaligned());
-            p.add(4 + len).cast::<u16>().write_unaligned(u16::from_ne_bytes(*b"\r\n"));
+            p.cast::<u32>().write_unaligned(u32::from_ne_bytes([
+               b'$',
+               b'0' + len as u8,
+               b'\r',
+               b'\n',
+            ]));
+            p.add(4)
+               .cast::<u64>()
+               .write_unaligned(self.data.as_ptr().cast::<u64>().read_unaligned());
+            p.add(4 + len)
+               .cast::<u16>()
+               .write_unaligned(u16::from_ne_bytes(*b"\r\n"));
             out.set_len(old_len + total);
          }
          return;
@@ -273,7 +282,9 @@ impl SmallStr {
             let d2 = b'0' + (len % 10) as u8;
             std::ptr::copy_nonoverlapping([b'$', d1, d2, b'\r', b'\n'].as_ptr(), p, 5);
             std::ptr::copy_nonoverlapping(self.data.as_ptr(), p.add(5), len);
-            p.add(5 + len).cast::<u16>().write_unaligned(u16::from_ne_bytes(*b"\r\n"));
+            p.add(5 + len)
+               .cast::<u16>()
+               .write_unaligned(u16::from_ne_bytes(*b"\r\n"));
             out.set_len(old_len + total);
          }
          return;

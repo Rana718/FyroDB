@@ -115,12 +115,14 @@ impl CompactKey {
          let b = other.as_bytes().as_ptr();
          unsafe {
             if other_len >= 8 {
-               let d1 = std::ptr::read_unaligned(a.cast::<u64>()) ^ std::ptr::read_unaligned(b.cast::<u64>());
+               let d1 = std::ptr::read_unaligned(a.cast::<u64>())
+                  ^ std::ptr::read_unaligned(b.cast::<u64>());
                let d2 = std::ptr::read_unaligned(a.add(other_len - 8).cast::<u64>())
                   ^ std::ptr::read_unaligned(b.add(other_len - 8).cast::<u64>());
                (d1 | d2) == 0
             } else if other_len >= 4 {
-               let d1 = std::ptr::read_unaligned(a.cast::<u32>()) ^ std::ptr::read_unaligned(b.cast::<u32>());
+               let d1 = std::ptr::read_unaligned(a.cast::<u32>())
+                  ^ std::ptr::read_unaligned(b.cast::<u32>());
                let d2 = std::ptr::read_unaligned(a.add(other_len - 4).cast::<u32>())
                   ^ std::ptr::read_unaligned(b.add(other_len - 4).cast::<u32>());
                (d1 | d2) == 0
@@ -129,7 +131,8 @@ impl CompactKey {
             } else if other_len == 1 {
                *a == *b
             } else {
-               let d1 = (std::ptr::read_unaligned(a.cast::<u16>()) ^ std::ptr::read_unaligned(b.cast::<u16>())) as usize;
+               let d1 = (std::ptr::read_unaligned(a.cast::<u16>())
+                  ^ std::ptr::read_unaligned(b.cast::<u16>())) as usize;
                let d2 = (*a.add(other_len - 1) ^ *b.add(other_len - 1)) as usize;
                (d1 | d2) == 0
             }

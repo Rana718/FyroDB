@@ -23,13 +23,11 @@ pub(super) fn dispatch_get_run(conn: &mut Conn<'_>, first_key: (*const u8, usize
       if tag != T2 {
          break;
       }
-      match conn.parser.try_fast_get_at(buf, avail) {
-         Some(crate::utils::parser::ParseResult::Complete) => {
-            let k_ptr = conn.parser.parts_raw[1];
-            keys[count] = unsafe { std::slice::from_raw_parts(k_ptr.0, k_ptr.1) };
-            count += 1;
-         }
-         _ => break,
+      if let Some(k_ptr) = conn.parser.try_fast_get_key_at(buf, avail) {
+         keys[count] = unsafe { std::slice::from_raw_parts(k_ptr.0, k_ptr.1) };
+         count += 1;
+      } else {
+         break;
       }
    }
 
@@ -61,8 +59,12 @@ pub(super) fn dispatch_get_run(conn: &mut Conn<'_>, first_key: (*const u8, usize
       return;
    }
 
-   conn.store.prefetch_slots(&keys[..count], &mut hashes[..count], &mut tables[..count]);
-   conn.store.probe_and_prefetch_entries(&tables[..count], &hashes[..count], &mut entries[..count]);
+   conn
+      .store
+      .prefetch_slots(&keys[..count], &mut hashes[..count], &mut tables[..count]);
+   conn
+      .store
+      .probe_and_prefetch_entries(&tables[..count], &hashes[..count], &mut entries[..count]);
    let out = &mut conn.parser.wbuf;
    out.reserve(count * 32);
    for i in 0..count {
@@ -70,7 +72,10 @@ pub(super) fn dispatch_get_run(conn: &mut Conn<'_>, first_key: (*const u8, usize
          crate::utils::resp::write_err(out, "invalid UTF-8 in request");
          continue;
       };
-      if !conn.store.get_to_buf_auto(key_str, Some(hashes[i]), entries[i], out) {
+      if !conn
+         .store
+         .get_to_buf_auto(key_str, Some(hashes[i]), entries[i], out)
+      {
          out.extend_from_slice(b"$-1\r\n");
       }
    }
@@ -105,15 +110,12 @@ pub(super) fn dispatch_set_run(
       if tag != T3 {
          break;
       }
-      match conn.parser.try_fast_set_at(buf, avail) {
-         Some(crate::utils::parser::ParseResult::Complete) => {
-            let k_ptr = conn.parser.parts_raw[1];
-            let v_ptr = conn.parser.parts_raw[2];
-            keys[count] = unsafe { std::slice::from_raw_parts(k_ptr.0, k_ptr.1) };
-            vals[count] = v_ptr;
-            count += 1;
-         }
-         _ => break,
+      if let Some((k_ptr, v_ptr)) = conn.parser.try_fast_set_key_val_at(buf, avail) {
+         keys[count] = unsafe { std::slice::from_raw_parts(k_ptr.0, k_ptr.1) };
+         vals[count] = v_ptr;
+         count += 1;
+      } else {
+         break;
       }
    }
 
@@ -150,32 +152,45 @@ pub(super) fn dispatch_set_run(
       return;
    }
 
-   conn.store.prefetch_slots_write(&keys[..count], &mut hashes[..count], &mut tables[..count]);
-   conn.store.probe_and_prefetch_entries_write(&tables[..count], &hashes[..count], &mut entries[..count]);
+   conn
+      .store
+      .prefetch_slots_write(&keys[..count], &mut hashes[..count], &mut tables[..count]);
+   conn.store.probe_and_prefetch_entries_write(
+      &tables[..count],
+      &hashes[..count],
+      &mut entries[..count],
+   );
    let out = &mut conn.parser.wbuf;
    out.reserve(count * 5);
+   let old_len = out.len();
+   let mut success = true;
    for i in 0..count {
       let Ok(key_str) = std::str::from_utf8(keys[i]) else {
          crate::utils::resp::write_err(out, "invalid UTF-8 in request");
+         success = false;
          continue;
       };
       let val_bytes = unsafe { std::slice::from_raw_parts(vals[i].0, vals[i].1) };
       let Ok(val_str) = std::str::from_utf8(val_bytes) else {
          crate::utils::resp::write_err(out, "invalid UTF-8 in request");
+         success = false;
          continue;
       };
-      conn.store.set_string_auto(key_str, Some(hashes[i]), entries[i], val_str, 0);
+      conn
+         .store
+         .set_string_auto(key_str, Some(hashes[i]), entries[i], val_str, 0);
       if conn.store.has_replication() {
          conn.store.record_current_value(key_str);
       }
    }
-   let old_len = out.len();
-   unsafe {
-      out.set_len(old_len + count * 5);
-      let mut p = out.as_mut_ptr().add(old_len);
-      for _ in 0..count {
-         std::ptr::copy_nonoverlapping(b"+OK\r\n".as_ptr(), p, 5);
-         p = p.add(5);
+   if success {
+      unsafe {
+         out.set_len(old_len + count * 5);
+         let mut p = out.as_mut_ptr().add(old_len);
+         for _ in 0..count {
+            std::ptr::copy_nonoverlapping(b"+OK\r\n".as_ptr(), p, 5);
+            p = p.add(5);
+         }
       }
    }
 }

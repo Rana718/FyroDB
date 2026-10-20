@@ -163,7 +163,9 @@ impl Store {
       hashes: &[u64],
       entries: &mut [*const ()],
    ) {
-      self.data.probe_and_prefetch_entries(tables, hashes, entries);
+      self
+         .data
+         .probe_and_prefetch_entries(tables, hashes, entries);
    }
 
    #[inline(always)]
@@ -173,7 +175,9 @@ impl Store {
       hashes: &[u64],
       entries: &mut [*const ()],
    ) {
-      self.data.probe_and_prefetch_entries_write(tables, hashes, entries);
+      self
+         .data
+         .probe_and_prefetch_entries_write(tables, hashes, entries);
    }
 
    /// Single relaxed load, constant-false with no limit configured.

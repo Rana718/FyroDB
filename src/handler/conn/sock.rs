@@ -18,6 +18,12 @@ impl<'a> Conn<'a> {
          }
       }
 
+      #[cfg(target_os = "linux")]
+      if self.parser.filled > self.parser.pos {
+         let sock = socket2::SockRef::from(&self.stream);
+         let _ = sock.set_tcp_quickack(true);
+      }
+
       if !self.process_buffered() {
          return false;
       }
@@ -120,7 +126,9 @@ impl<'a> Conn<'a> {
          slot.drain_into_limit(&mut self.parser.wbuf, SUB_WRITE_BATCH_BYTES);
       }
 
-      if self.parser.wbuf.is_empty() {
+      if self.write_offset >= self.parser.wbuf.len() {
+         self.parser.wbuf.clear();
+         self.write_offset = 0;
          return true;
       }
 
@@ -145,7 +153,8 @@ impl<'a> Conn<'a> {
                }
             }
             Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-               if self.write_offset > 0 {
+               // Only compact if write_offset has advanced past a threshold to avoid memmove churn.
+               if self.write_offset > 512 * 1024 && self.write_offset > self.parser.wbuf.len() / 2 {
                   self.parser.wbuf.drain(..self.write_offset);
                   self.write_offset = 0;
                }
@@ -174,10 +183,6 @@ impl<'a> Conn<'a> {
    #[cfg(feature = "io-uring")]
    pub fn finish_send(&mut self, res: i32) -> bool {
       if res == -libc::EAGAIN || res == -libc::EINTR {
-         if self.write_offset > 0 {
-            self.parser.wbuf.drain(..self.write_offset);
-            self.write_offset = 0;
-         }
          return true;
       }
       if res <= 0 {
@@ -190,7 +195,7 @@ impl<'a> Conn<'a> {
          if self.parser.wbuf.capacity() > RETAINED_WRITE_BUFFER {
             self.parser.wbuf.shrink_to(RETAINED_WRITE_BUFFER);
          }
-      } else {
+      } else if self.write_offset > 512 * 1024 && self.write_offset > self.parser.wbuf.len() / 2 {
          self.parser.wbuf.drain(..self.write_offset);
          self.write_offset = 0;
       }
@@ -198,7 +203,7 @@ impl<'a> Conn<'a> {
    }
 
    pub fn has_pending_write(&self) -> bool {
-      !self.parser.wbuf.is_empty()
+      self.write_offset < self.parser.wbuf.len()
          || matches!(&self.mode, ConnMode::Subscribed { slot, .. } if slot.has_pending())
    }
 }

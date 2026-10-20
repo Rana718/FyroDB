@@ -1,13 +1,8 @@
 mod ebr;
-pub mod flat;
 mod key;
 mod ops;
 mod shard;
 mod snap;
-pub use flat::{
-   Chunk, ChunkMap, ChunkSlot, ChunkTable, FastHasher, FastState, FlatShard, FlatSlot, FlatSwissMap,
-   TieredSwissMap,
-};
 pub use snap::SnapSink;
 
 #[repr(align(128))]
@@ -32,8 +27,8 @@ use foldhash::fast::RandomState;
 pub use key::CompactKey;
 use std::hash::BuildHasher;
 
-pub use shard::{Entry, STATE_LOCK, STATE_MATCH_MASK, STATE_OCCUPIED, bump_seq, unlock_write};
 use shard::*;
+pub use shard::{Entry, STATE_LOCK, STATE_MATCH_MASK, STATE_OCCUPIED, bump_seq, unlock_write};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Full;
@@ -250,14 +245,46 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
          let sf6 = unsafe { &*sf_base.add(idx6) };
          let sf7 = unsafe { &*sf_base.add(idx7) };
 
-         let s0 = unsafe { sf0.slots.load(Ordering::Relaxed).add((h0 as usize) & sf0.mask.load(Ordering::Relaxed)) };
-         let s1 = unsafe { sf1.slots.load(Ordering::Relaxed).add((h1 as usize) & sf1.mask.load(Ordering::Relaxed)) };
-         let s2 = unsafe { sf2.slots.load(Ordering::Relaxed).add((h2 as usize) & sf2.mask.load(Ordering::Relaxed)) };
-         let s3 = unsafe { sf3.slots.load(Ordering::Relaxed).add((h3 as usize) & sf3.mask.load(Ordering::Relaxed)) };
-         let s4 = unsafe { sf4.slots.load(Ordering::Relaxed).add((h4 as usize) & sf4.mask.load(Ordering::Relaxed)) };
-         let s5 = unsafe { sf5.slots.load(Ordering::Relaxed).add((h5 as usize) & sf5.mask.load(Ordering::Relaxed)) };
-         let s6 = unsafe { sf6.slots.load(Ordering::Relaxed).add((h6 as usize) & sf6.mask.load(Ordering::Relaxed)) };
-         let s7 = unsafe { sf7.slots.load(Ordering::Relaxed).add((h7 as usize) & sf7.mask.load(Ordering::Relaxed)) };
+         let s0 = unsafe {
+            sf0.slots
+               .load(Ordering::Relaxed)
+               .add((h0 as usize) & sf0.mask.load(Ordering::Relaxed))
+         };
+         let s1 = unsafe {
+            sf1.slots
+               .load(Ordering::Relaxed)
+               .add((h1 as usize) & sf1.mask.load(Ordering::Relaxed))
+         };
+         let s2 = unsafe {
+            sf2.slots
+               .load(Ordering::Relaxed)
+               .add((h2 as usize) & sf2.mask.load(Ordering::Relaxed))
+         };
+         let s3 = unsafe {
+            sf3.slots
+               .load(Ordering::Relaxed)
+               .add((h3 as usize) & sf3.mask.load(Ordering::Relaxed))
+         };
+         let s4 = unsafe {
+            sf4.slots
+               .load(Ordering::Relaxed)
+               .add((h4 as usize) & sf4.mask.load(Ordering::Relaxed))
+         };
+         let s5 = unsafe {
+            sf5.slots
+               .load(Ordering::Relaxed)
+               .add((h5 as usize) & sf5.mask.load(Ordering::Relaxed))
+         };
+         let s6 = unsafe {
+            sf6.slots
+               .load(Ordering::Relaxed)
+               .add((h6 as usize) & sf6.mask.load(Ordering::Relaxed))
+         };
+         let s7 = unsafe {
+            sf7.slots
+               .load(Ordering::Relaxed)
+               .add((h7 as usize) & sf7.mask.load(Ordering::Relaxed))
+         };
 
          prefetch_line(s0);
          prefetch_line(s1);
@@ -340,14 +367,46 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
          let sf6 = unsafe { &*sf_base.add(idx6) };
          let sf7 = unsafe { &*sf_base.add(idx7) };
 
-         let s0 = unsafe { sf0.slots.load(Ordering::Relaxed).add((h0 as usize) & sf0.mask.load(Ordering::Relaxed)) };
-         let s1 = unsafe { sf1.slots.load(Ordering::Relaxed).add((h1 as usize) & sf1.mask.load(Ordering::Relaxed)) };
-         let s2 = unsafe { sf2.slots.load(Ordering::Relaxed).add((h2 as usize) & sf2.mask.load(Ordering::Relaxed)) };
-         let s3 = unsafe { sf3.slots.load(Ordering::Relaxed).add((h3 as usize) & sf3.mask.load(Ordering::Relaxed)) };
-         let s4 = unsafe { sf4.slots.load(Ordering::Relaxed).add((h4 as usize) & sf4.mask.load(Ordering::Relaxed)) };
-         let s5 = unsafe { sf5.slots.load(Ordering::Relaxed).add((h5 as usize) & sf5.mask.load(Ordering::Relaxed)) };
-         let s6 = unsafe { sf6.slots.load(Ordering::Relaxed).add((h6 as usize) & sf6.mask.load(Ordering::Relaxed)) };
-         let s7 = unsafe { sf7.slots.load(Ordering::Relaxed).add((h7 as usize) & sf7.mask.load(Ordering::Relaxed)) };
+         let s0 = unsafe {
+            sf0.slots
+               .load(Ordering::Relaxed)
+               .add((h0 as usize) & sf0.mask.load(Ordering::Relaxed))
+         };
+         let s1 = unsafe {
+            sf1.slots
+               .load(Ordering::Relaxed)
+               .add((h1 as usize) & sf1.mask.load(Ordering::Relaxed))
+         };
+         let s2 = unsafe {
+            sf2.slots
+               .load(Ordering::Relaxed)
+               .add((h2 as usize) & sf2.mask.load(Ordering::Relaxed))
+         };
+         let s3 = unsafe {
+            sf3.slots
+               .load(Ordering::Relaxed)
+               .add((h3 as usize) & sf3.mask.load(Ordering::Relaxed))
+         };
+         let s4 = unsafe {
+            sf4.slots
+               .load(Ordering::Relaxed)
+               .add((h4 as usize) & sf4.mask.load(Ordering::Relaxed))
+         };
+         let s5 = unsafe {
+            sf5.slots
+               .load(Ordering::Relaxed)
+               .add((h5 as usize) & sf5.mask.load(Ordering::Relaxed))
+         };
+         let s6 = unsafe {
+            sf6.slots
+               .load(Ordering::Relaxed)
+               .add((h6 as usize) & sf6.mask.load(Ordering::Relaxed))
+         };
+         let s7 = unsafe {
+            sf7.slots
+               .load(Ordering::Relaxed)
+               .add((h7 as usize) & sf7.mask.load(Ordering::Relaxed))
+         };
 
          prefetch_line(s0);
          prefetch_line(s1);
@@ -716,13 +775,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
    }
 
    #[inline(always)]
-   pub fn set_with_hint(
-      &self,
-      key: &str,
-      hash: u64,
-      entry_hint: *const (),
-      value: V,
-   ) -> bool {
+   pub fn set_with_hint(&self, key: &str, hash: u64, entry_hint: *const (), value: V) -> bool {
       if !entry_hint.is_null() {
          let p = entry_hint.cast::<Entry<V>>();
          let e = unsafe { &*p };
@@ -730,13 +783,9 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
          let expected = ((hash as u32 as u64) << 32) | STATE_OCCUPIED;
          if (current & STATE_MATCH_MASK) == expected && e.key.eq_str(key) {
             let locked = bump_seq(current) | STATE_LOCK;
-            if e.state
-               .compare_exchange_weak(
-                  current,
-                  locked,
-                  Ordering::Acquire,
-                  Ordering::Relaxed,
-               )
+            if e
+               .state
+               .compare_exchange_weak(current, locked, Ordering::Acquire, Ordering::Relaxed)
                .is_ok()
             {
                self.snap_before_write(e);
@@ -767,13 +816,9 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
          let expected = ((hash as u32 as u64) << 32) | STATE_OCCUPIED;
          if (current & STATE_MATCH_MASK) == expected && e.key.eq_str(key) {
             let locked = bump_seq(current) | STATE_LOCK;
-            if e.state
-               .compare_exchange_weak(
-                  current,
-                  locked,
-                  Ordering::Acquire,
-                  Ordering::Relaxed,
-               )
+            if e
+               .state
+               .compare_exchange_weak(current, locked, Ordering::Acquire, Ordering::Relaxed)
                .is_ok()
             {
                self.snap.before_write(e);
@@ -789,13 +834,9 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
          let current = e.state.load(Ordering::Relaxed);
          if (current & (STATE_OCCUPIED | STATE_LOCK)) == STATE_OCCUPIED {
             let locked = bump_seq(current) | STATE_LOCK;
-            if e.state
-               .compare_exchange_weak(
-                  current,
-                  locked,
-                  Ordering::Acquire,
-                  Ordering::Relaxed,
-               )
+            if e
+               .state
+               .compare_exchange_weak(current, locked, Ordering::Acquire, Ordering::Relaxed)
                .is_ok()
             {
                self.snap.before_write(e);
@@ -1192,7 +1233,6 @@ fn prefetch_line_write<T>(p: *const T) {
    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
    let _ = p;
 }
-
 
 pub const fn entry_size<V>() -> usize {
    std::mem::size_of::<shard::Entry<V>>()

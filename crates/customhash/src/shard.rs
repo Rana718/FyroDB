@@ -470,7 +470,6 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
       unsafe { &*self.table.load(Ordering::Acquire) }
    }
 
-
    #[inline(always)]
    fn enter_insert(&self) -> InsertGuard<'_> {
       loop {
@@ -569,12 +568,7 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
 
    #[allow(dead_code)]
    #[inline(always)]
-   pub(crate) fn insert_slot_fast(
-      &self,
-      hash: u64,
-      key: &str,
-      value: V,
-   ) -> bool {
+   pub(crate) fn insert_slot_fast(&self, hash: u64, key: &str, value: V) -> bool {
       if self.insert_gate.load(Ordering::Relaxed) & GROWING != 0 {
          return false;
       }
@@ -671,11 +665,7 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
                      None => (key_owned.take().expect("key_owned called once"))(),
                   };
                   let val = value.take().expect("value taken once");
-                  entry = alloc_entry(
-                     owned_key,
-                     self.snap.fresh_state() | hash_bits(hash),
-                     val,
-                  );
+                  entry = alloc_entry(owned_key, self.snap.fresh_state() | hash_bits(hash), val);
                }
 
                if slot.claim(entry, hash) {
@@ -799,11 +789,7 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
                if entry.is_null() {
                   let owned_key = key.take().expect("key taken once");
                   let val = value.take().expect("value taken once");
-                  entry = alloc_entry(
-                     owned_key,
-                     self.snap.fresh_state() | hash_bits(hash),
-                     val,
-                  );
+                  entry = alloc_entry(owned_key, self.snap.fresh_state() | hash_bits(hash), val);
                }
 
                if slot.claim(entry, hash) {
@@ -1011,11 +997,7 @@ mod tests {
 
    #[test]
    fn tags_round_trip_and_never_collide_with_the_pointer() {
-      let mut entry = Entry::<u32>::new(
-         CompactKey::from_string("k".to_owned()),
-         STATE_OCCUPIED,
-         7,
-      );
+      let mut entry = Entry::<u32>::new(CompactKey::from_string("k".to_owned()), STATE_OCCUPIED, 7);
       let raw: *mut Entry<u32> = &mut entry;
       let slot = TaggedSlot::<u32>::null();
 

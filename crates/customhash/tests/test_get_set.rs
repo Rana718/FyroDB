@@ -107,10 +107,7 @@ impl MemoryInfo {
 }
 
 fn parse_kb(s: &str) -> Option<usize> {
-   s.split_whitespace()
-      .next()?
-      .parse::<usize>()
-      .ok()
+   s.split_whitespace().next()?.parse::<usize>().ok()
 }
 
 /// Latency and throughput benchmark statistics.

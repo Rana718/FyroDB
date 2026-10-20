@@ -88,7 +88,13 @@ impl Store {
    }
 
    #[inline(always)]
-   pub fn set_string_hinted_pinned(&self, key: &str, hash: Option<u64>, value: &str, expires_ms: u64) {
+   pub fn set_string_hinted_pinned(
+      &self,
+      key: &str,
+      hash: Option<u64>,
+      value: &str,
+      expires_ms: u64,
+   ) {
       let store_val = StoreValue {
          value: crate::storage::value::FyroDB::String(SmallStr::new(value)),
          expires_ms,
@@ -300,8 +306,10 @@ impl Store {
                      } else {
                         val.value = crate::storage::value::FyroDB::String(SmallStr::new(value));
                      }
-                     let unlocked = (customhash::bump_seq(locked) & !customhash::STATE_LOCK) | customhash::STATE_OCCUPIED;
-                     e.state.store(unlocked, std::sync::atomic::Ordering::Release);
+                     let unlocked = (customhash::bump_seq(locked) & !customhash::STATE_LOCK)
+                        | customhash::STATE_OCCUPIED;
+                     e.state
+                        .store(unlocked, std::sync::atomic::Ordering::Release);
                      self.data.touched(key);
                      if expires_ms != 0 {
                         self.add_ttl();

@@ -147,13 +147,55 @@ fn exec_insert_batch<const N: usize>(
    let mut j = 0;
    while j + 8 <= len {
       store.set_string_hinted_slot(keys[j].as_str(), hashes[j], tables[j], "value", 0);
-      store.set_string_hinted_slot(keys[j + 1].as_str(), hashes[j + 1], tables[j + 1], "value", 0);
-      store.set_string_hinted_slot(keys[j + 2].as_str(), hashes[j + 2], tables[j + 2], "value", 0);
-      store.set_string_hinted_slot(keys[j + 3].as_str(), hashes[j + 3], tables[j + 3], "value", 0);
-      store.set_string_hinted_slot(keys[j + 4].as_str(), hashes[j + 4], tables[j + 4], "value", 0);
-      store.set_string_hinted_slot(keys[j + 5].as_str(), hashes[j + 5], tables[j + 5], "value", 0);
-      store.set_string_hinted_slot(keys[j + 6].as_str(), hashes[j + 6], tables[j + 6], "value", 0);
-      store.set_string_hinted_slot(keys[j + 7].as_str(), hashes[j + 7], tables[j + 7], "value", 0);
+      store.set_string_hinted_slot(
+         keys[j + 1].as_str(),
+         hashes[j + 1],
+         tables[j + 1],
+         "value",
+         0,
+      );
+      store.set_string_hinted_slot(
+         keys[j + 2].as_str(),
+         hashes[j + 2],
+         tables[j + 2],
+         "value",
+         0,
+      );
+      store.set_string_hinted_slot(
+         keys[j + 3].as_str(),
+         hashes[j + 3],
+         tables[j + 3],
+         "value",
+         0,
+      );
+      store.set_string_hinted_slot(
+         keys[j + 4].as_str(),
+         hashes[j + 4],
+         tables[j + 4],
+         "value",
+         0,
+      );
+      store.set_string_hinted_slot(
+         keys[j + 5].as_str(),
+         hashes[j + 5],
+         tables[j + 5],
+         "value",
+         0,
+      );
+      store.set_string_hinted_slot(
+         keys[j + 6].as_str(),
+         hashes[j + 6],
+         tables[j + 6],
+         "value",
+         0,
+      );
+      store.set_string_hinted_slot(
+         keys[j + 7].as_str(),
+         hashes[j + 7],
+         tables[j + 7],
+         "value",
+         0,
+      );
       j += 8;
    }
    while j < len {
@@ -173,13 +215,55 @@ fn exec_pipelined_set<const N: usize>(
    let mut j = 0;
    while j + 8 <= len {
       store.set_string_with_hint(keys[j].as_str(), hashes[j], entries[j], "value", 0);
-      store.set_string_with_hint(keys[j + 1].as_str(), hashes[j + 1], entries[j + 1], "value", 0);
-      store.set_string_with_hint(keys[j + 2].as_str(), hashes[j + 2], entries[j + 2], "value", 0);
-      store.set_string_with_hint(keys[j + 3].as_str(), hashes[j + 3], entries[j + 3], "value", 0);
-      store.set_string_with_hint(keys[j + 4].as_str(), hashes[j + 4], entries[j + 4], "value", 0);
-      store.set_string_with_hint(keys[j + 5].as_str(), hashes[j + 5], entries[j + 5], "value", 0);
-      store.set_string_with_hint(keys[j + 6].as_str(), hashes[j + 6], entries[j + 6], "value", 0);
-      store.set_string_with_hint(keys[j + 7].as_str(), hashes[j + 7], entries[j + 7], "value", 0);
+      store.set_string_with_hint(
+         keys[j + 1].as_str(),
+         hashes[j + 1],
+         entries[j + 1],
+         "value",
+         0,
+      );
+      store.set_string_with_hint(
+         keys[j + 2].as_str(),
+         hashes[j + 2],
+         entries[j + 2],
+         "value",
+         0,
+      );
+      store.set_string_with_hint(
+         keys[j + 3].as_str(),
+         hashes[j + 3],
+         entries[j + 3],
+         "value",
+         0,
+      );
+      store.set_string_with_hint(
+         keys[j + 4].as_str(),
+         hashes[j + 4],
+         entries[j + 4],
+         "value",
+         0,
+      );
+      store.set_string_with_hint(
+         keys[j + 5].as_str(),
+         hashes[j + 5],
+         entries[j + 5],
+         "value",
+         0,
+      );
+      store.set_string_with_hint(
+         keys[j + 6].as_str(),
+         hashes[j + 6],
+         entries[j + 6],
+         "value",
+         0,
+      );
+      store.set_string_with_hint(
+         keys[j + 7].as_str(),
+         hashes[j + 7],
+         entries[j + 7],
+         "value",
+         0,
+      );
       j += 8;
    }
    while j < len {
@@ -326,7 +410,11 @@ fn run_kv(store: &Arc<Store>, results: &mut Vec<BenchResult>) {
             let mut cur = 0;
             let b_curr = BATCH_SET.min(worker_ops);
             fill_batch_keys(&mut keys[cur], op_start, b_curr);
-            store.prefetch_slots_write(&keys[cur][..b_curr], &mut hashes[cur][..b_curr], &mut tables[cur][..b_curr]);
+            store.prefetch_slots_write(
+               &keys[cur][..b_curr],
+               &mut hashes[cur][..b_curr],
+               &mut tables[cur][..b_curr],
+            );
             let mut sent = b_curr;
             let mut len_curr = b_curr;
 
@@ -334,7 +422,11 @@ fn run_kv(store: &Arc<Store>, results: &mut Vec<BenchResult>) {
                let nxt = cur ^ 1;
                let b_next = BATCH_SET.min(worker_ops - sent);
                fill_batch_keys(&mut keys[nxt], op_start + sent, b_next);
-               store.prefetch_slots_write(&keys[nxt][..b_next], &mut hashes[nxt][..b_next], &mut tables[nxt][..b_next]);
+               store.prefetch_slots_write(
+                  &keys[nxt][..b_next],
+                  &mut hashes[nxt][..b_next],
+                  &mut tables[nxt][..b_next],
+               );
 
                exec_insert_batch(&store, &keys[cur], &hashes[cur], &tables[cur], len_curr);
 
@@ -374,7 +466,11 @@ fn run_kv(store: &Arc<Store>, results: &mut Vec<BenchResult>) {
 
             let b0 = BATCH.min(worker_ops - sent);
             fill_batch_keys(&mut keys[fill_idx], op_start + sent, b0);
-            store.prefetch_slots_write(&keys[fill_idx][..b0], &mut hashes[fill_idx][..b0], &mut tables[fill_idx][..b0]);
+            store.prefetch_slots_write(
+               &keys[fill_idx][..b0],
+               &mut hashes[fill_idx][..b0],
+               &mut tables[fill_idx][..b0],
+            );
             lens[fill_idx] = b0;
             sent += b0;
             let mut probe_idx = fill_idx;
@@ -384,15 +480,27 @@ fn run_kv(store: &Arc<Store>, results: &mut Vec<BenchResult>) {
             if sent < worker_ops {
                let b1 = BATCH.min(worker_ops - sent);
                fill_batch_keys(&mut keys[fill_idx], op_start + sent, b1);
-               store.prefetch_slots_write(&keys[fill_idx][..b1], &mut hashes[fill_idx][..b1], &mut tables[fill_idx][..b1]);
+               store.prefetch_slots_write(
+                  &keys[fill_idx][..b1],
+                  &mut hashes[fill_idx][..b1],
+                  &mut tables[fill_idx][..b1],
+               );
                lens[fill_idx] = b1;
                sent += b1;
-               store.probe_and_prefetch_entries_write(&tables[probe_idx][..lens[probe_idx]], &hashes[probe_idx][..lens[probe_idx]], &mut entries[probe_idx][..lens[probe_idx]]);
+               store.probe_and_prefetch_entries_write(
+                  &tables[probe_idx][..lens[probe_idx]],
+                  &hashes[probe_idx][..lens[probe_idx]],
+                  &mut entries[probe_idx][..lens[probe_idx]],
+               );
                exec_idx = probe_idx;
                probe_idx = fill_idx;
                fill_idx = (fill_idx + 1) % 3;
             } else {
-               store.probe_and_prefetch_entries_write(&tables[probe_idx][..lens[probe_idx]], &hashes[probe_idx][..lens[probe_idx]], &mut entries[probe_idx][..lens[probe_idx]]);
+               store.probe_and_prefetch_entries_write(
+                  &tables[probe_idx][..lens[probe_idx]],
+                  &hashes[probe_idx][..lens[probe_idx]],
+                  &mut entries[probe_idx][..lens[probe_idx]],
+               );
                exec_idx = probe_idx;
                probe_idx = usize::MAX;
             }
@@ -400,13 +508,27 @@ fn run_kv(store: &Arc<Store>, results: &mut Vec<BenchResult>) {
             while sent < worker_ops {
                let b_nxt = BATCH.min(worker_ops - sent);
                fill_batch_keys(&mut keys[fill_idx], op_start + sent, b_nxt);
-               store.prefetch_slots_write(&keys[fill_idx][..b_nxt], &mut hashes[fill_idx][..b_nxt], &mut tables[fill_idx][..b_nxt]);
+               store.prefetch_slots_write(
+                  &keys[fill_idx][..b_nxt],
+                  &mut hashes[fill_idx][..b_nxt],
+                  &mut tables[fill_idx][..b_nxt],
+               );
                lens[fill_idx] = b_nxt;
                sent += b_nxt;
 
-               store.probe_and_prefetch_entries_write(&tables[probe_idx][..lens[probe_idx]], &hashes[probe_idx][..lens[probe_idx]], &mut entries[probe_idx][..lens[probe_idx]]);
+               store.probe_and_prefetch_entries_write(
+                  &tables[probe_idx][..lens[probe_idx]],
+                  &hashes[probe_idx][..lens[probe_idx]],
+                  &mut entries[probe_idx][..lens[probe_idx]],
+               );
 
-               exec_pipelined_set(&store, &keys[exec_idx], &hashes[exec_idx], &entries[exec_idx], lens[exec_idx]);
+               exec_pipelined_set(
+                  &store,
+                  &keys[exec_idx],
+                  &hashes[exec_idx],
+                  &entries[exec_idx],
+                  lens[exec_idx],
+               );
 
                exec_idx = probe_idx;
                probe_idx = fill_idx;
@@ -414,14 +536,30 @@ fn run_kv(store: &Arc<Store>, results: &mut Vec<BenchResult>) {
             }
 
             if probe_idx != usize::MAX {
-               store.probe_and_prefetch_entries_write(&tables[probe_idx][..lens[probe_idx]], &hashes[probe_idx][..lens[probe_idx]], &mut entries[probe_idx][..lens[probe_idx]]);
+               store.probe_and_prefetch_entries_write(
+                  &tables[probe_idx][..lens[probe_idx]],
+                  &hashes[probe_idx][..lens[probe_idx]],
+                  &mut entries[probe_idx][..lens[probe_idx]],
+               );
                if exec_idx != usize::MAX {
-                  exec_pipelined_set(&store, &keys[exec_idx], &hashes[exec_idx], &entries[exec_idx], lens[exec_idx]);
+                  exec_pipelined_set(
+                     &store,
+                     &keys[exec_idx],
+                     &hashes[exec_idx],
+                     &entries[exec_idx],
+                     lens[exec_idx],
+                  );
                }
                exec_idx = probe_idx;
             }
             if exec_idx != usize::MAX {
-               exec_pipelined_set(&store, &keys[exec_idx], &hashes[exec_idx], &entries[exec_idx], lens[exec_idx]);
+               exec_pipelined_set(
+                  &store,
+                  &keys[exec_idx],
+                  &hashes[exec_idx],
+                  &entries[exec_idx],
+                  lens[exec_idx],
+               );
             }
          });
       }
@@ -454,7 +592,11 @@ fn run_kv(store: &Arc<Store>, results: &mut Vec<BenchResult>) {
 
             let b0 = BATCH.min(worker_ops - sent);
             fill_batch_keys(&mut keys[fill_idx], op_start + sent, b0);
-            store.prefetch_slots(&keys[fill_idx][..b0], &mut hashes[fill_idx][..b0], &mut tables[fill_idx][..b0]);
+            store.prefetch_slots(
+               &keys[fill_idx][..b0],
+               &mut hashes[fill_idx][..b0],
+               &mut tables[fill_idx][..b0],
+            );
             lens[fill_idx] = b0;
             sent += b0;
             let mut probe_idx = fill_idx;
@@ -464,15 +606,27 @@ fn run_kv(store: &Arc<Store>, results: &mut Vec<BenchResult>) {
             if sent < worker_ops {
                let b1 = BATCH.min(worker_ops - sent);
                fill_batch_keys(&mut keys[fill_idx], op_start + sent, b1);
-               store.prefetch_slots(&keys[fill_idx][..b1], &mut hashes[fill_idx][..b1], &mut tables[fill_idx][..b1]);
+               store.prefetch_slots(
+                  &keys[fill_idx][..b1],
+                  &mut hashes[fill_idx][..b1],
+                  &mut tables[fill_idx][..b1],
+               );
                lens[fill_idx] = b1;
                sent += b1;
-               store.probe_and_prefetch_entries(&tables[probe_idx][..lens[probe_idx]], &hashes[probe_idx][..lens[probe_idx]], &mut entries[probe_idx][..lens[probe_idx]]);
+               store.probe_and_prefetch_entries(
+                  &tables[probe_idx][..lens[probe_idx]],
+                  &hashes[probe_idx][..lens[probe_idx]],
+                  &mut entries[probe_idx][..lens[probe_idx]],
+               );
                exec_idx = probe_idx;
                probe_idx = fill_idx;
                fill_idx = (fill_idx + 1) % 3;
             } else {
-               store.probe_and_prefetch_entries(&tables[probe_idx][..lens[probe_idx]], &hashes[probe_idx][..lens[probe_idx]], &mut entries[probe_idx][..lens[probe_idx]]);
+               store.probe_and_prefetch_entries(
+                  &tables[probe_idx][..lens[probe_idx]],
+                  &hashes[probe_idx][..lens[probe_idx]],
+                  &mut entries[probe_idx][..lens[probe_idx]],
+               );
                exec_idx = probe_idx;
                probe_idx = usize::MAX;
             }
@@ -480,13 +634,28 @@ fn run_kv(store: &Arc<Store>, results: &mut Vec<BenchResult>) {
             while sent < worker_ops {
                let b_nxt = BATCH.min(worker_ops - sent);
                fill_batch_keys(&mut keys[fill_idx], op_start + sent, b_nxt);
-               store.prefetch_slots(&keys[fill_idx][..b_nxt], &mut hashes[fill_idx][..b_nxt], &mut tables[fill_idx][..b_nxt]);
+               store.prefetch_slots(
+                  &keys[fill_idx][..b_nxt],
+                  &mut hashes[fill_idx][..b_nxt],
+                  &mut tables[fill_idx][..b_nxt],
+               );
                lens[fill_idx] = b_nxt;
                sent += b_nxt;
 
-               store.probe_and_prefetch_entries(&tables[probe_idx][..lens[probe_idx]], &hashes[probe_idx][..lens[probe_idx]], &mut entries[probe_idx][..lens[probe_idx]]);
+               store.probe_and_prefetch_entries(
+                  &tables[probe_idx][..lens[probe_idx]],
+                  &hashes[probe_idx][..lens[probe_idx]],
+                  &mut entries[probe_idx][..lens[probe_idx]],
+               );
 
-               exec_pipelined_get(&store, &keys[exec_idx], &hashes[exec_idx], &entries[exec_idx], lens[exec_idx], &mut out);
+               exec_pipelined_get(
+                  &store,
+                  &keys[exec_idx],
+                  &hashes[exec_idx],
+                  &entries[exec_idx],
+                  lens[exec_idx],
+                  &mut out,
+               );
 
                exec_idx = probe_idx;
                probe_idx = fill_idx;
@@ -494,14 +663,32 @@ fn run_kv(store: &Arc<Store>, results: &mut Vec<BenchResult>) {
             }
 
             if probe_idx != usize::MAX {
-               store.probe_and_prefetch_entries(&tables[probe_idx][..lens[probe_idx]], &hashes[probe_idx][..lens[probe_idx]], &mut entries[probe_idx][..lens[probe_idx]]);
+               store.probe_and_prefetch_entries(
+                  &tables[probe_idx][..lens[probe_idx]],
+                  &hashes[probe_idx][..lens[probe_idx]],
+                  &mut entries[probe_idx][..lens[probe_idx]],
+               );
                if exec_idx != usize::MAX {
-                  exec_pipelined_get(&store, &keys[exec_idx], &hashes[exec_idx], &entries[exec_idx], lens[exec_idx], &mut out);
+                  exec_pipelined_get(
+                     &store,
+                     &keys[exec_idx],
+                     &hashes[exec_idx],
+                     &entries[exec_idx],
+                     lens[exec_idx],
+                     &mut out,
+                  );
                }
                exec_idx = probe_idx;
             }
             if exec_idx != usize::MAX {
-               exec_pipelined_get(&store, &keys[exec_idx], &hashes[exec_idx], &entries[exec_idx], lens[exec_idx], &mut out);
+               exec_pipelined_get(
+                  &store,
+                  &keys[exec_idx],
+                  &hashes[exec_idx],
+                  &entries[exec_idx],
+                  lens[exec_idx],
+                  &mut out,
+               );
             }
          });
       }
@@ -652,7 +839,8 @@ fn run_mix(store: &Arc<Store>, results: &mut Vec<BenchResult>) {
                      store.prefetch_batch(&slices[..b], &mut hashes[..b]);
                      for j in 0..b {
                         out.clear();
-                        let _ = store.get_to_buf_hinted(keys[j].as_str(), Some(hashes[j]), &mut out);
+                        let _ =
+                           store.get_to_buf_hinted(keys[j].as_str(), Some(hashes[j]), &mut out);
                      }
                   }
                }
@@ -1179,14 +1367,70 @@ fn run_vector(store: &Arc<Store>, results: &mut Vec<BenchResult>) {
                   chunk.copy_from_slice(&val.to_le_bytes());
                }
                const WORDS: &[&str] = &[
-                  "alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel",
-                  "india", "juliet", "kilo", "lima", "mike", "november", "oscar", "papa",
-                  "quebec", "romeo", "sierra", "tango", "uniform", "victor", "whiskey", "xray",
-                  "yankee", "zulu", "amber", "basalt", "cobalt", "dune", "ember", "flint",
-                  "granite", "harbor", "iris", "jade", "kelp", "lunar", "moss", "nectar",
-                  "onyx", "prism", "quartz", "reef", "sage", "tundra", "umber", "vellum",
-                  "willow", "xenon", "yarrow", "zephyr", "anchor", "beacon", "cinder", "drift",
-                  "edelweiss", "fathom", "gable", "helix", "ingot", "jasper", "kelvin", "lumen",
+                  "alpha",
+                  "bravo",
+                  "charlie",
+                  "delta",
+                  "echo",
+                  "foxtrot",
+                  "golf",
+                  "hotel",
+                  "india",
+                  "juliet",
+                  "kilo",
+                  "lima",
+                  "mike",
+                  "november",
+                  "oscar",
+                  "papa",
+                  "quebec",
+                  "romeo",
+                  "sierra",
+                  "tango",
+                  "uniform",
+                  "victor",
+                  "whiskey",
+                  "xray",
+                  "yankee",
+                  "zulu",
+                  "amber",
+                  "basalt",
+                  "cobalt",
+                  "dune",
+                  "ember",
+                  "flint",
+                  "granite",
+                  "harbor",
+                  "iris",
+                  "jade",
+                  "kelp",
+                  "lunar",
+                  "moss",
+                  "nectar",
+                  "onyx",
+                  "prism",
+                  "quartz",
+                  "reef",
+                  "sage",
+                  "tundra",
+                  "umber",
+                  "vellum",
+                  "willow",
+                  "xenon",
+                  "yarrow",
+                  "zephyr",
+                  "anchor",
+                  "beacon",
+                  "cinder",
+                  "drift",
+                  "edelweiss",
+                  "fathom",
+                  "gable",
+                  "helix",
+                  "ingot",
+                  "jasper",
+                  "kelvin",
+                  "lumen",
                ];
                let key = FastKey::new(b"vec:", id);
                let tag = FastKey::new(b"tag_", id % 10);

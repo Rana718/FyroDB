@@ -166,9 +166,19 @@ impl Conn<'_> {
          let mut hashes = [0u64; BATCH];
          let mut tables = [std::ptr::null(); BATCH];
          let mut entries = [std::ptr::null(); BATCH];
-         self.store.data.prefetch_slots(&keys[..n], &mut hashes[..n], &mut tables[..n]);
-         self.store.data.probe_and_prefetch_entries(&tables[..n], &hashes[..n], &mut entries[..n]);
-         for (h, (k, (&hash, &entry))) in self.hints.iter_mut().zip(keys[..n].iter().zip(hashes[..n].iter().zip(entries[..n].iter()))) {
+         self
+            .store
+            .data
+            .prefetch_slots(&keys[..n], &mut hashes[..n], &mut tables[..n]);
+         self
+            .store
+            .data
+            .probe_and_prefetch_entries(&tables[..n], &hashes[..n], &mut entries[..n]);
+         for (h, (k, (&hash, &entry))) in self.hints.iter_mut().zip(
+            keys[..n]
+               .iter()
+               .zip(hashes[..n].iter().zip(entries[..n].iter())),
+         ) {
             *h = Hint {
                ptr: k.as_ptr() as usize,
                len: k.len(),

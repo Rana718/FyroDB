@@ -46,9 +46,16 @@ pub fn write_bulk_bytes(out: &mut Vec<u8>, s: &[u8]) {
       }
       unsafe {
          let p = out.as_mut_ptr().add(old_len);
-         p.cast::<u32>().write_unaligned(u32::from_ne_bytes([b'$', b'0' + len as u8, b'\r', b'\n']));
+         p.cast::<u32>().write_unaligned(u32::from_ne_bytes([
+            b'$',
+            b'0' + len as u8,
+            b'\r',
+            b'\n',
+         ]));
          std::ptr::copy_nonoverlapping(s.as_ptr(), p.add(4), len);
-         p.add(4 + len).cast::<u16>().write_unaligned(u16::from_ne_bytes(*b"\r\n"));
+         p.add(4 + len)
+            .cast::<u16>()
+            .write_unaligned(u16::from_ne_bytes(*b"\r\n"));
          out.set_len(old_len + total);
       }
       return;

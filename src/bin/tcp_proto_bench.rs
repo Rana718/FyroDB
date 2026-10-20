@@ -1,7 +1,7 @@
 use std::io::{Read, Write};
 use std::net::TcpStream;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 fn set_quickack(stream: &TcpStream) {
@@ -37,7 +37,11 @@ fn build_batch_set(base: usize, count: usize, buf: &mut Vec<u8>) {
    for j in 0..count {
       let n = base + j;
       let key = format!("key_{}", n);
-      let cmd = format!("*3\r\n$3\r\nSET\r\n${}\r\n{}\r\n$5\r\nvalue\r\n", key.len(), key);
+      let cmd = format!(
+         "*3\r\n$3\r\nSET\r\n${}\r\n{}\r\n$5\r\nvalue\r\n",
+         key.len(),
+         key
+      );
       buf.extend_from_slice(cmd.as_bytes());
    }
 }
@@ -163,8 +167,16 @@ fn main() {
 
    println!("==========================================================================");
    println!("           FYRODB PURE TCP PROTOCOL LAYER BENCHMARK");
-   println!("   Server: 127.0.0.1:{} | Workers: {} | Clients: {}", port, num_cpus::get(), clients);
-   println!("   Total Ops: {} | Ops/Client: {} | Pipeline Batch: {}", total_ops, ops_per_client, pipe_size);
+   println!(
+      "   Server: 127.0.0.1:{} | Workers: {} | Clients: {}",
+      port,
+      num_cpus::get(),
+      clients
+   );
+   println!(
+      "   Total Ops: {} | Ops/Client: {} | Pipeline Batch: {}",
+      total_ops, ops_per_client, pipe_size
+   );
    println!("==========================================================================\n");
 
    // Warmup
@@ -190,7 +202,10 @@ fn main() {
    });
    let seq_el = start_seq.elapsed();
    let seq_rate = total_ops as f64 / seq_el.as_secs_f64() / 1e6;
-   println!("  Pipeline-64 SET: {:.2?} ({:.2}M ops/sec)", seq_el, seq_rate);
+   println!(
+      "  Pipeline-64 SET: {:.2?} ({:.2}M ops/sec)",
+      seq_el, seq_rate
+   );
 
    // 2. Pipelined SET (batch_size = pipe_size)
    let mut conns = Vec::with_capacity(clients);
@@ -202,13 +217,23 @@ fn main() {
    std::thread::scope(|s| {
       for (id, stream) in conns.into_iter().enumerate() {
          s.spawn(move || {
-            run_pipeline(stream, ops_per_client, pipe_size, 5, true, id * ops_per_client);
+            run_pipeline(
+               stream,
+               ops_per_client,
+               pipe_size,
+               5,
+               true,
+               id * ops_per_client,
+            );
          });
       }
    });
    let set_el = start_set.elapsed();
    let set_rate = total_ops as f64 / set_el.as_secs_f64() / 1e6;
-   println!("  Pipelined SET:   {:.2?} ({:.2}M ops/sec)", set_el, set_rate);
+   println!(
+      "  Pipelined SET:   {:.2?} ({:.2}M ops/sec)",
+      set_el, set_rate
+   );
 
    // 3. Pipelined GET (batch_size = pipe_size)
    let mut conns = Vec::with_capacity(clients);
@@ -220,17 +245,36 @@ fn main() {
    std::thread::scope(|s| {
       for (id, stream) in conns.into_iter().enumerate() {
          s.spawn(move || {
-            run_pipeline(stream, ops_per_client, pipe_size, 11, false, id * ops_per_client);
+            run_pipeline(
+               stream,
+               ops_per_client,
+               pipe_size,
+               11,
+               false,
+               id * ops_per_client,
+            );
          });
       }
    });
    let get_el = start_get.elapsed();
    let get_rate = total_ops as f64 / get_el.as_secs_f64() / 1e6;
-   println!("  Pipelined GET:   {:.2?} ({:.2}M ops/sec)", get_el, get_rate);
+   println!(
+      "  Pipelined GET:   {:.2?} ({:.2}M ops/sec)",
+      get_el, get_rate
+   );
 
    println!("\n── Protocol Summary ──────────────────────────────────────────────");
-   println!("  Pipeline-64 SET: {:>8.2?}   {:>8.2}M ops/sec", seq_el, seq_rate);
-   println!("  Pipelined SET:   {:>8.2?}   {:>8.2}M ops/sec", set_el, set_rate);
-   println!("  Pipelined GET:   {:>8.2?}   {:>8.2}M ops/sec", get_el, get_rate);
+   println!(
+      "  Pipeline-64 SET: {:>8.2?}   {:>8.2}M ops/sec",
+      seq_el, seq_rate
+   );
+   println!(
+      "  Pipelined SET:   {:>8.2?}   {:>8.2}M ops/sec",
+      set_el, set_rate
+   );
+   println!(
+      "  Pipelined GET:   {:>8.2?}   {:>8.2}M ops/sec",
+      get_el, get_rate
+   );
    println!("==================================================================\n");
 }
