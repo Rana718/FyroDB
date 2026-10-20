@@ -207,7 +207,7 @@ pub fn run_worker(
                   if event.is_readable() && !conn.do_read() {
                      close = true;
                   }
-                  // Retry WouldBlock writes or a stopped reader never gets the rest.
+                  // Retry WouldBlock writes when writable
                   if !close && event.is_writable() && !conn.do_write() {
                      close = true;
                   }
