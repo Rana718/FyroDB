@@ -381,7 +381,9 @@ impl Store {
       if !entry_hint.is_null() {
          let hash = hash_hint.unwrap_or_else(|| self.data.locate_key(key).0);
          unsafe {
-            return self.get_to_buf_fast_entry(key, hash, entry_hint.cast(), out);
+            if self.get_to_buf_fast_entry(key, hash, entry_hint.cast(), out) {
+               return true;
+            }
          }
       }
       let (hash, idx) = match hash_hint {
@@ -390,7 +392,9 @@ impl Store {
       };
       if let Some(entry) = self.data.probe_entry_fast(key, hash, idx) {
          unsafe {
-            return self.get_to_buf_fast_entry(key, hash, entry, out);
+            if self.get_to_buf_fast_entry(key, hash, entry, out) {
+               return true;
+            }
          }
       }
       self.get_to_buf_fallback(key, hash, out)

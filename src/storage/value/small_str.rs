@@ -93,24 +93,7 @@ impl SmallStr {
 
    #[inline]
    pub fn new(s: &str) -> Self {
-      if s.len() <= SMALL_STR_CAP {
-         let mut data = [0u8; SMALL_STR_CAP];
-         data[..s.len()].copy_from_slice(s.as_bytes());
-         Self {
-            data,
-            len: Tag::inline(s.len()),
-         }
-      } else {
-         let ptr = Box::into_raw(s.to_owned().into_boxed_str());
-         let mut data = [0u8; SMALL_STR_CAP];
-         let bytes = (ptr as *const u8 as usize).to_ne_bytes();
-         data[..8].copy_from_slice(&bytes);
-         Self::store_heap_len(&mut data, s.len());
-         Self {
-            data,
-            len: Tag::Heap,
-         }
-      }
+      Self::from_slice(s.as_bytes())
    }
 
    #[inline]
@@ -182,7 +165,7 @@ impl SmallStr {
    }
 
    #[inline(always)]
-   pub fn overwrite_str(&mut self, s: &str) {
+   pub fn overwrite_bytes(&mut self, s: &[u8]) {
       let len = s.len();
       if (self.len as usize) <= SMALL_STR_CAP && len <= SMALL_STR_CAP {
          unsafe {
@@ -204,7 +187,12 @@ impl SmallStr {
          self.len = Tag::inline(len);
          return;
       }
-      *self = Self::new(s);
+      *self = Self::from_slice(s);
+   }
+
+   #[inline(always)]
+   pub fn overwrite_str(&mut self, s: &str) {
+      self.overwrite_bytes(s.as_bytes());
    }
 
    #[inline]

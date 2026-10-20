@@ -105,14 +105,14 @@ impl CompactKey {
    }
 
    #[inline(always)]
-   pub fn eq_str(&self, other: &str) -> bool {
+   pub fn eq_bytes(&self, other: &[u8]) -> bool {
       let other_len = other.len();
       if other_len <= INLINE_CAP {
          if (self.tag as usize) != other_len {
             return false;
          }
          let a = self.data.as_ptr();
-         let b = other.as_bytes().as_ptr();
+         let b = other.as_ptr();
          unsafe {
             if other_len >= 8 {
                let d1 = std::ptr::read_unaligned(a.cast::<u64>())
@@ -143,10 +143,15 @@ impl CompactKey {
             return false;
          }
          let ptr_val = usize::from_ne_bytes(self.data[..8].try_into().unwrap()) as *const u8;
-         unsafe { std::slice::from_raw_parts(ptr_val, len_val) == other.as_bytes() }
+         unsafe { std::slice::from_raw_parts(ptr_val, len_val) == other }
       } else {
          false
       }
+   }
+
+   #[inline(always)]
+   pub fn eq_str(&self, other: &str) -> bool {
+      self.eq_bytes(other.as_bytes())
    }
 }
 

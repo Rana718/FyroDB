@@ -2,7 +2,7 @@ use super::*;
 
 #[inline(always)]
 pub(super) fn dispatch_get_run(conn: &mut Conn<'_>, first_key: (*const u8, usize)) {
-   const BATCH: usize = 64;
+   const BATCH: usize = 256;
    let mut keys: [&[u8]; BATCH] = [&[]; BATCH];
    let mut hashes = [0u64; BATCH];
    let mut tables = [std::ptr::null(); BATCH];
@@ -68,6 +68,27 @@ pub(super) fn dispatch_get_run(conn: &mut Conn<'_>, first_key: (*const u8, usize
    let out = &mut conn.parser.wbuf;
    out.reserve(count * 32);
    for i in 0..count {
+      let p = entries[i];
+      if !p.is_null() {
+         let e = unsafe { &*p.cast::<customhash::Entry<crate::storage::value::StoreValue>>() };
+         let state = e.state.load(std::sync::atomic::Ordering::Relaxed);
+         let expected = ((hashes[i] as u32 as u64) << 32) | customhash::STATE_OCCUPIED;
+         if (state & customhash::STATE_MATCH_MASK) == expected && e.key.eq_bytes(keys[i]) {
+            let val = unsafe { (*e.value.get()).assume_init_ref() };
+            if val.expires_ms == 0 || !val.is_expired() {
+               if let crate::storage::value::FyroDB::String(s) = &val.value {
+                  s.write_resp(out);
+                  continue;
+               }
+            } else {
+               if let Ok(key_str) = std::str::from_utf8(keys[i]) {
+                  conn.store.data.remove(key_str);
+               }
+               out.extend_from_slice(b"$-1\r\n");
+               continue;
+            }
+         }
+      }
       let Ok(key_str) = std::str::from_utf8(keys[i]) else {
          crate::utils::resp::write_err(out, "invalid UTF-8 in request");
          continue;
@@ -87,7 +108,7 @@ pub(super) fn dispatch_set_run(
    first_key: (*const u8, usize),
    first_val: (*const u8, usize),
 ) {
-   const BATCH: usize = 64;
+   const BATCH: usize = 256;
    let mut keys: [&[u8]; BATCH] = [&[]; BATCH];
    let mut vals: [(*const u8, usize); BATCH] = [(std::ptr::null(), 0); BATCH];
    let mut hashes = [0u64; BATCH];
@@ -165,6 +186,55 @@ pub(super) fn dispatch_set_run(
    let old_len = out.len();
    let mut success = true;
    for i in 0..count {
+      let p = entries[i];
+      if !p.is_null() && !conn.store.has_replication() {
+         let e = unsafe { &*p.cast::<customhash::Entry<crate::storage::value::StoreValue>>() };
+         let expected = ((hashes[i] as u32 as u64) << 32) | customhash::STATE_OCCUPIED;
+         let mut current = e.state.load(std::sync::atomic::Ordering::Relaxed);
+         if (current & customhash::STATE_MATCH_MASK) == expected && e.key.eq_bytes(keys[i]) {
+            let val_bytes = unsafe { std::slice::from_raw_parts(vals[i].0, vals[i].1) };
+            let mut updated = false;
+            for _ in 0..4 {
+               let locked = customhash::bump_seq(current) | customhash::STATE_LOCK;
+               match e.state.compare_exchange_weak(
+                  current,
+                  locked,
+                  std::sync::atomic::Ordering::Acquire,
+                  std::sync::atomic::Ordering::Relaxed,
+               ) {
+                  Ok(_) => {
+                     conn.store.data.snap_before_write(e);
+                     let val = unsafe { (*e.value.get()).assume_init_mut() };
+                     val.expires_ms = 0;
+                     if let crate::storage::value::FyroDB::String(ref mut s) = val.value {
+                        s.overwrite_bytes(val_bytes);
+                     } else {
+                        val.value =
+                           crate::storage::value::FyroDB::String(crate::storage::value::SmallStr::from_slice(val_bytes));
+                     }
+                     let unlocked = (customhash::bump_seq(locked) & !customhash::STATE_LOCK)
+                        | customhash::STATE_OCCUPIED;
+                     e.state
+                        .store(unlocked, std::sync::atomic::Ordering::Release);
+                     conn.store.data.touched_bytes(keys[i]);
+                     updated = true;
+                     break;
+                  }
+                  Err(observed) => {
+                     current = observed;
+                     if (current & customhash::STATE_MATCH_MASK) != expected {
+                        break;
+                     }
+                     std::hint::spin_loop();
+                  }
+               }
+            }
+            if updated {
+               continue;
+            }
+         }
+      }
+
       let Ok(key_str) = std::str::from_utf8(keys[i]) else {
          crate::utils::resp::write_err(out, "invalid UTF-8 in request");
          success = false;
@@ -206,7 +276,7 @@ pub(super) fn dispatch_json_set_run(
    if first_path != b"." {
       return false;
    }
-   const BATCH: usize = 64;
+   const BATCH: usize = 128;
    let mut keys: [&[u8]; BATCH] = [&[]; BATCH];
    let mut vals: [(*const u8, usize); BATCH] = [(std::ptr::null(), 0); BATCH];
    let mut hashes = [0u64; BATCH];

@@ -93,20 +93,16 @@ impl RespParser {
 
    #[inline(always)]
    pub(crate) fn try_fast_get_at(&mut self, buf: *const u8, avail: usize) -> Option<ParseResult> {
-      const H2: u32 = u32::from_ne_bytes(*b"$3\r\n");
-      const GET_UPPER: u32 = u32::from_ne_bytes(*b"GET\r");
-      const GET_LOWER: u32 = u32::from_ne_bytes(*b"get\r");
+      const H_GET_UPPER: u64 = u64::from_ne_bytes(*b"$3\r\nGET\r");
+      const H_GET_LOWER: u64 = u64::from_ne_bytes(*b"$3\r\nget\r");
       const LF_DOLLAR: u16 = u16::from_ne_bytes(*b"\n$");
       const CRLF: u16 = u16::from_ne_bytes(*b"\r\n");
 
       if avail < 20 {
          return None;
       }
-      if unsafe { std::ptr::read_unaligned(buf.add(4) as *const u32) } != H2 {
-         return None;
-      }
-      let w4 = unsafe { std::ptr::read_unaligned(buf.add(8) as *const u32) };
-      if w4 != GET_UPPER && w4 != GET_LOWER {
+      let w8 = unsafe { std::ptr::read_unaligned(buf.add(4) as *const u64) };
+      if w8 != H_GET_UPPER && w8 != H_GET_LOWER {
          return None;
       }
       if unsafe { std::ptr::read_unaligned(buf.add(12) as *const u16) } != LF_DOLLAR {
@@ -167,20 +163,16 @@ impl RespParser {
 
    #[inline(always)]
    pub(crate) fn try_fast_get_key_at(&mut self, buf: *const u8, avail: usize) -> Option<RawSlice> {
-      const H2: u32 = u32::from_ne_bytes(*b"$3\r\n");
-      const GET_UPPER: u32 = u32::from_ne_bytes(*b"GET\r");
-      const GET_LOWER: u32 = u32::from_ne_bytes(*b"get\r");
+      const H_GET_UPPER: u64 = u64::from_ne_bytes(*b"$3\r\nGET\r");
+      const H_GET_LOWER: u64 = u64::from_ne_bytes(*b"$3\r\nget\r");
       const LF_DOLLAR: u16 = u16::from_ne_bytes(*b"\n$");
       const CRLF: u16 = u16::from_ne_bytes(*b"\r\n");
 
       if avail < 20 {
          return None;
       }
-      if unsafe { std::ptr::read_unaligned(buf.add(4) as *const u32) } != H2 {
-         return None;
-      }
-      let w4 = unsafe { std::ptr::read_unaligned(buf.add(8) as *const u32) };
-      if w4 != GET_UPPER && w4 != GET_LOWER {
+      let w8 = unsafe { std::ptr::read_unaligned(buf.add(4) as *const u64) };
+      if w8 != H_GET_UPPER && w8 != H_GET_LOWER {
          return None;
       }
       if unsafe { std::ptr::read_unaligned(buf.add(12) as *const u16) } != LF_DOLLAR {
@@ -232,20 +224,16 @@ impl RespParser {
 
    #[inline(always)]
    pub(crate) fn try_fast_set_at(&mut self, buf: *const u8, avail: usize) -> Option<ParseResult> {
-      const H2: u32 = u32::from_ne_bytes(*b"$3\r\n");
-      const SET_UPPER: u32 = u32::from_ne_bytes(*b"SET\r");
-      const SET_LOWER: u32 = u32::from_ne_bytes(*b"set\r");
+      const H_SET_UPPER: u64 = u64::from_ne_bytes(*b"$3\r\nSET\r");
+      const H_SET_LOWER: u64 = u64::from_ne_bytes(*b"$3\r\nset\r");
       const LF_DOLLAR: u16 = u16::from_ne_bytes(*b"\n$");
       const CRLF: u16 = u16::from_ne_bytes(*b"\r\n");
 
       if avail < 24 {
          return None;
       }
-      if unsafe { std::ptr::read_unaligned(buf.add(4) as *const u32) } != H2 {
-         return None;
-      }
-      let w4 = unsafe { std::ptr::read_unaligned(buf.add(8) as *const u32) };
-      if w4 != SET_UPPER && w4 != SET_LOWER {
+      let w8 = unsafe { std::ptr::read_unaligned(buf.add(4) as *const u64) };
+      if w8 != H_SET_UPPER && w8 != H_SET_LOWER {
          return None;
       }
       if unsafe { std::ptr::read_unaligned(buf.add(12) as *const u16) } != LF_DOLLAR {
@@ -363,20 +351,16 @@ impl RespParser {
       buf: *const u8,
       avail: usize,
    ) -> Option<(RawSlice, RawSlice)> {
-      const H2: u32 = u32::from_ne_bytes(*b"$3\r\n");
-      const SET_UPPER: u32 = u32::from_ne_bytes(*b"SET\r");
-      const SET_LOWER: u32 = u32::from_ne_bytes(*b"set\r");
+      const H_SET_UPPER: u64 = u64::from_ne_bytes(*b"$3\r\nSET\r");
+      const H_SET_LOWER: u64 = u64::from_ne_bytes(*b"$3\r\nset\r");
       const LF_DOLLAR: u16 = u16::from_ne_bytes(*b"\n$");
       const CRLF: u16 = u16::from_ne_bytes(*b"\r\n");
 
       if avail < 24 {
          return None;
       }
-      if unsafe { std::ptr::read_unaligned(buf.add(4) as *const u32) } != H2 {
-         return None;
-      }
-      let w4 = unsafe { std::ptr::read_unaligned(buf.add(8) as *const u32) };
-      if w4 != SET_UPPER && w4 != SET_LOWER {
+      let w8 = unsafe { std::ptr::read_unaligned(buf.add(4) as *const u64) };
+      if w8 != H_SET_UPPER && w8 != H_SET_LOWER {
          return None;
       }
       if unsafe { std::ptr::read_unaligned(buf.add(12) as *const u16) } != LF_DOLLAR {

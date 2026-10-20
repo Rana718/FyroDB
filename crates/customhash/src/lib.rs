@@ -108,6 +108,15 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
    }
 
    #[inline(always)]
+   pub fn touched_bytes(&self, bytes: &[u8]) {
+      if self.observing()
+         && let Ok(key) = std::str::from_utf8(bytes)
+      {
+         self.notify(key);
+      }
+   }
+
+   #[inline(always)]
    pub fn snap_before_write(&self, e: &Entry<V>) {
       if self.snap_active.load(Ordering::Relaxed) {
          self.snap.before_write(e);

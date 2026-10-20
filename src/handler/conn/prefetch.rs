@@ -154,6 +154,30 @@ impl Conn<'_> {
       if buf.len() < 16 {
          return p.filled;
       }
+      if buf.len() >= 20 {
+         const T2: u32 = u32::from_ne_bytes(*b"*2\r\n");
+         const H_GET_UPPER: u64 = u64::from_ne_bytes(*b"$3\r\nGET\r");
+         const H_GET_LOWER: u64 = u64::from_ne_bytes(*b"$3\r\nget\r");
+         let tag = unsafe { std::ptr::read_unaligned(buf.as_ptr() as *const u32) };
+         if tag == T2 {
+            let w8 = unsafe { std::ptr::read_unaligned(buf.as_ptr().add(4) as *const u64) };
+            if w8 == H_GET_UPPER || w8 == H_GET_LOWER {
+               return p.pos;
+            }
+         }
+      }
+      if buf.len() >= 24 {
+         const T3: u32 = u32::from_ne_bytes(*b"*3\r\n");
+         const H_SET_UPPER: u64 = u64::from_ne_bytes(*b"$3\r\nSET\r");
+         const H_SET_LOWER: u64 = u64::from_ne_bytes(*b"$3\r\nset\r");
+         let tag = unsafe { std::ptr::read_unaligned(buf.as_ptr() as *const u32) };
+         if tag == T3 {
+            let w8 = unsafe { std::ptr::read_unaligned(buf.as_ptr().add(4) as *const u64) };
+            if w8 == H_SET_UPPER || w8 == H_SET_LOWER {
+               return p.pos;
+            }
+         }
+      }
       let mut keys: [&[u8]; BATCH] = [&[]; BATCH];
       let (n, used) = scan_keys(buf, &mut keys);
       if n < 2 {
