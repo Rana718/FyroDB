@@ -24,6 +24,7 @@ impl<'a> Conn<'a> {
          let _ = sock.set_tcp_quickack(true);
       }
 
+      #[cfg(feature = "bench-tools")]
       if is_raw_arrival_only() {
          let unparsed = self.parser.filled - self.parser.pos;
          record_raw_arrival(unparsed);

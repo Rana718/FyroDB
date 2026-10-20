@@ -1,3 +1,5 @@
+#![allow(clippy::needless_range_loop)]
+
 use fyro_db::commands::ft::{execute_ft, search_dispatch};
 use fyro_db::pubsub::{PubSub, SubSlot, WorkerNotifier};
 use fyro_db::storage::geo::GeoUnit;

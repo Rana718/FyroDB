@@ -211,21 +211,22 @@ pub fn run_worker(
                   if !close && event.is_writable() && !conn.do_write() {
                      close = true;
                   }
+                  if !close {
+                     let wants_writable = conn.has_pending_write();
+                     if wants_writable {
+                        dirty.push(id);
+                     } else if conn.writable_registered
+                        && poll
+                           .registry()
+                           .reregister(&mut conn.stream, Token(id), Interest::READABLE)
+                           .is_ok()
+                     {
+                        conn.writable_registered = false;
+                     }
+                  }
                }
                if close {
                   close_conn(&mut conns, &mut poll, &mut free, id);
-               } else if conns
-                  .get(id)
-                  .and_then(|s| s.as_ref())
-                  .is_some_and(|c| c.has_pending_write())
-               {
-                  dirty.push(id);
-               } else if conns
-                  .get(id)
-                  .and_then(|s| s.as_ref())
-                  .is_some_and(|c| c.writable_registered)
-               {
-                  sync_write_interest(&mut conns, &mut poll, id);
                }
             }
          }
