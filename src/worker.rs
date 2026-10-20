@@ -127,8 +127,6 @@ pub fn run_worker(
 
                      let sock_ref = socket2::SockRef::from(&stream);
                      let _ = sock_ref.set_tcp_nodelay(true);
-                     let _ = sock_ref.set_recv_buffer_size(2 * 1024 * 1024);
-                     let _ = sock_ref.set_send_buffer_size(2 * 1024 * 1024);
                      #[cfg(target_os = "linux")]
                      let _ = sock_ref.set_tcp_quickack(true);
                      let id = alloc_slot(&mut free, &mut next_token, &mut conns);
@@ -420,8 +418,6 @@ fn make_listener(addr: SocketAddr) -> TcpListener {
    socket.set_reuse_address(true).unwrap();
    socket.set_reuse_port(true).unwrap();
    socket.set_nonblocking(true).unwrap();
-   let _ = socket.set_recv_buffer_size(2 * 1024 * 1024);
-   let _ = socket.set_send_buffer_size(2 * 1024 * 1024);
    socket.bind(&addr.into()).unwrap();
    socket.listen(8192).unwrap();
    TcpListener::from_std(std::net::TcpListener::from(socket))
