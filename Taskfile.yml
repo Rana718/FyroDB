@@ -2,7 +2,7 @@ version: "3"
 
 vars:
    BINARY: fyro_db
-   VERSION: v0.2.3
+   VERSION: v0.2.4
 
 tasks:
    run:
@@ -88,6 +88,12 @@ tasks:
       cmds:
          - task: build
          - ./scripts/bench_local.sh {{.CLI_ARGS}}
+
+   task-4:
+      desc: "Server on 4 cores / 8 workers (cores 0-3) + full benchmark on 2 cores / 4 goroutines (cores 4-5). Override with SERVER_CORES= BENCH_CORES= (e.g. task task-4 -- -m key)"
+      cmds:
+         - task: build
+         - ./scripts/bench_task4.sh {{.CLI_ARGS}}
 
    bench-lat:
       desc: "Closed-loop latency histogram (p50/p99/p99.9): 1M keys, 64B values, 90% GET"
