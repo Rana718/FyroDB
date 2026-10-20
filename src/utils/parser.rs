@@ -42,7 +42,7 @@ impl Default for RespParser {
 
 impl RespParser {
    /// Idle size of the read buffer, and the size it is reclaimed to.
-   const IDLE_READ_BUFFER: usize = 2 * 1024;
+   const IDLE_READ_BUFFER: usize = 128 * 1024;
 
    /// Buffers start unallocated and are created on first use.
    pub fn new() -> Self {
@@ -60,13 +60,13 @@ impl RespParser {
       if self.pos == self.filled && self.partial.is_none() {
          self.pos = 0;
          self.filled = 0;
-      } else if self.rbuf.len() - self.filled < 1024 {
+      } else if self.rbuf.len() - self.filled < 16 * 1024 {
          if self.pos > 0 {
             self.rbuf.copy_within(self.pos..self.filled, 0);
             self.filled -= self.pos;
             self.pos = 0;
          }
-         if self.rbuf.len() - self.filled < 1024 {
+         if self.rbuf.len() - self.filled < 16 * 1024 {
             let grown = (self.rbuf.len() * 2).max(Self::IDLE_READ_BUFFER);
             self.rbuf.resize(grown, 0);
          }
@@ -90,7 +90,7 @@ impl RespParser {
    }
 
    #[inline(always)]
-   fn try_fast_get_at(&mut self, buf: *const u8, avail: usize) -> Option<ParseResult> {
+   pub(crate) fn try_fast_get_at(&mut self, buf: *const u8, avail: usize) -> Option<ParseResult> {
       const H2: u32 = u32::from_ne_bytes(*b"$3\r\n");
       const GET_UPPER: u32 = u32::from_ne_bytes(*b"GET\r");
       const GET_LOWER: u32 = u32::from_ne_bytes(*b"get\r");
@@ -164,7 +164,7 @@ impl RespParser {
    }
 
    #[inline(always)]
-   fn try_fast_set_at(&mut self, buf: *const u8, avail: usize) -> Option<ParseResult> {
+   pub(crate) fn try_fast_set_at(&mut self, buf: *const u8, avail: usize) -> Option<ParseResult> {
       const H2: u32 = u32::from_ne_bytes(*b"$3\r\n");
       const SET_UPPER: u32 = u32::from_ne_bytes(*b"SET\r");
       const SET_LOWER: u32 = u32::from_ne_bytes(*b"set\r");
@@ -1385,12 +1385,12 @@ impl RespParser {
          self.parts_raw.clear();
          self.filled = 0;
          self.pos = 0;
-         if self.rbuf.len() > 16 * 1024 {
+         if self.rbuf.len() > 512 * 1024 {
             self.rbuf.truncate(Self::IDLE_READ_BUFFER);
             self.rbuf.shrink_to(Self::IDLE_READ_BUFFER);
          }
       }
-      if self.wbuf.is_empty() && self.wbuf.capacity() > 256 * 1024 {
+      if self.wbuf.is_empty() && self.wbuf.capacity() > 512 * 1024 {
          self.wbuf.shrink_to(256 * 1024);
       }
    }
@@ -1511,14 +1511,14 @@ mod tests {
    #[test]
    fn releasing_the_read_buffer_reclaims_it_after_a_large_command() {
       let mut parser = RespParser::new();
-      let value = "y".repeat(20_000);
+      let value = "y".repeat(600_000);
       let command = format!("*2\r\n$3\r\nGET\r\n${}\r\n{value}\r\n", value.len());
       feed(&mut parser, command.as_bytes());
       assert!(matches!(parser.parse_one(), ParseResult::Complete));
-      assert!(parser.rbuf.len() > 16 * 1024);
+      assert!(parser.rbuf.len() > 512 * 1024);
 
       parser.release_read_buffer();
-      assert_eq!(parser.rbuf.len(), 2 * 1024);
+      assert_eq!(parser.rbuf.len(), RespParser::IDLE_READ_BUFFER);
       assert!(parser.parts_raw.is_empty());
       assert_eq!(parser.pos, 0);
       assert_eq!(parser.filled, 0);

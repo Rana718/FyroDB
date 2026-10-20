@@ -58,22 +58,30 @@ impl<'a> Conn<'a> {
                      unsafe { part_bytes(raw[0]) }
                   };
 
-                  if cmd_len == 3 && cmd.eq_ignore_ascii_case(b"GET") {
-                     dispatch_raw(self, raw);
-                     continue;
+                  if cmd_len == 3 {
+                     if cmd.eq_ignore_ascii_case(b"GET") && raw.len() == 2 {
+                        dispatch_get_run(self, raw[1]);
+                        prefetched = self.parser.pos;
+                        continue;
+                     }
+                     if cmd.eq_ignore_ascii_case(b"SET") && raw.len() == 3 {
+                        if is_set_expire_pair(self, raw) {
+                           match dispatch_set_expire_pair(self, raw) {
+                              PairOutcome::Done => continue,
+                              PairOutcome::FallThrough => {}
+                              PairOutcome::ConnError => return false,
+                           }
+                        }
+                        dispatch_set_run(self, raw[1], raw[2]);
+                        prefetched = self.parser.pos;
+                        continue;
+                     }
                   }
 
                   if (cmd_len == 4 || cmd_len == 5) && is_coalescible_queue(raw) {
                      match dispatch_queue_run(self, raw) {
                         QueueRunOutcome::Done => continue,
                         QueueRunOutcome::ConnError => return false,
-                     }
-                  }
-                  if cmd_len == 3 && cmd.eq_ignore_ascii_case(b"SET") && is_set_expire_pair(raw) {
-                     match dispatch_set_expire_pair(self, raw) {
-                        PairOutcome::Done => continue,
-                        PairOutcome::FallThrough => {}
-                        PairOutcome::ConnError => return false,
                      }
                   }
                   if cmd_len == 7 && cmd.eq_ignore_ascii_case(b"PUBLISH") && is_publish_run(raw) {

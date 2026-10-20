@@ -141,13 +141,13 @@ const PARALLEL_SCAN_MIN_KEYS: usize = 20_000;
 
 // Budget threads per filtered scan: lone client gets the box, many clients share.
 // Unfiltered KNN bypasses this entirely via brute_search on the contiguous index.
-fn scan_threads(store: &Arc<Store>, shards: usize) -> usize {
+fn scan_threads(store: &Store, shards: usize) -> usize {
    let cpus = num_cpus::get();
    let busy = store.connected_clients().saturating_sub(1).min(cpus);
    (cpus / (busy + 1)).clamp(1, 8).min(shards).max(1)
 }
 
-fn parallel_scan<F>(store: &Arc<Store>, scan: F) -> (Vec<(f32, String)>, usize)
+fn parallel_scan<F>(store: &Store, scan: F) -> (Vec<(f32, String)>, usize)
 where
    F: Fn(usize, usize) -> (Vec<(f32, String)>, usize) + Sync + Send,
 {
@@ -163,28 +163,26 @@ where
       return scan(0, shards);
    }
    let per = shards.div_ceil(threads);
-   let mut heaps: Vec<(Vec<(f32, String)>, usize)> = Vec::with_capacity(threads);
-   std::thread::scope(|s| {
-      let mut handles = Vec::with_capacity(threads);
-      for t in 0..threads {
-         let from = t * per;
-         let to = ((t + 1) * per).min(shards);
-         if from >= to {
-            continue;
-         }
-         let sf = &scan;
-         handles.push(s.spawn(move || sf(from, to)));
-      }
-      for h in handles {
-         if let Ok(r) = h.join() {
-            heaps.push(r)
+   type ScanResult = (Vec<(f32, String)>, usize);
+   let mut heaps: Vec<Option<ScanResult>> = (0..threads).map(|_| None).collect();
+   let sf = &scan;
+   let heaps_ptr = heaps.as_mut_ptr() as usize;
+
+   fyro_vector::pool::global().parallel(threads, |t| {
+      let from = t * per;
+      let to = ((t + 1) * per).min(shards);
+      if from < to {
+         let r = sf(from, to);
+         unsafe {
+            let ptr = heaps_ptr as *mut Option<ScanResult>;
+            *ptr.add(t) = Some(r);
          }
       }
    });
 
    let mut total = 0;
    let mut merged: Vec<(f32, String)> = Vec::new();
-   for (heap, n) in heaps {
+   for (heap, n) in heaps.into_iter().flatten() {
       total += n;
       merged.extend(heap);
    }
@@ -568,28 +566,28 @@ fn knn_search(
          {
             return;
          }
-         if let Some(vec_bytes) = doc_vector(val, def, &knn.field)
-            && let Some(doc) = vattrs.decode(vec_bytes)
-         {
-            total += 1;
-            let d = scan_dist.distance(qv, &doc);
-            if heap.len() < k {
-               heap.push((d, key.to_string()));
-               if heap.len() == k {
-                  heap.sort_unstable_by(|a, b| {
-                     a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
-                  });
+         if let Some(vec_bytes) = doc_vector(val, def, &knn.field) {
+            vattrs.with_f32_slice(vec_bytes, |doc| {
+               total += 1;
+               let d = scan_dist.distance(qv, doc);
+               if heap.len() < k {
+                  heap.push((d, key.to_string()));
+                  if heap.len() == k {
+                     heap.sort_unstable_by(|a, b| {
+                        a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
+                     });
+                     cutoff = heap[k - 1].0;
+                  }
+               } else if d < cutoff {
+                  heap[k - 1] = (d, key.to_string());
+                  let mut i = k - 1;
+                  while i > 0 && heap[i].0 < heap[i - 1].0 {
+                     heap.swap(i, i - 1);
+                     i -= 1;
+                  }
                   cutoff = heap[k - 1].0;
                }
-            } else if d < cutoff {
-               heap[k - 1] = (d, key.to_string());
-               let mut i = k - 1;
-               while i > 0 && heap[i].0 < heap[i - 1].0 {
-                  heap.swap(i, i - 1);
-                  i -= 1;
-               }
-               cutoff = heap[k - 1].0;
-            }
+            });
          }
       });
       (heap, total)
@@ -746,25 +744,31 @@ fn scan_range(
    filter: Option<&Cond>,
 ) -> Vec<(f32, String)> {
    let scan_dist = QueryDist::new(vattrs.metric, qv);
-   let mut heap: Vec<(f32, String)> = Vec::new();
-   store.data.for_each(|key, val| {
-      if val.is_expired() || !def.matches_key(key) || !doc_storage_matches(val, def) {
-         return;
-      }
-      if let Some(cond) = filter
-         && !cond_matches(cond, val, def)
-      {
-         return;
-      }
-      if let Some(vec_bytes) = doc_vector(val, def, &range.field)
-         && let Some(doc) = vattrs.decode(vec_bytes)
-      {
-         let d = scan_dist.distance(qv, &doc);
-         if d <= radius {
-            heap.push((d, key.to_string()));
+   let scan = |from: usize, to: usize| -> (Vec<(f32, String)>, usize) {
+      let mut heap: Vec<(f32, String)> = Vec::new();
+      let mut total = 0usize;
+      store.data.for_each_shard_range(from, to, |key, val| {
+         if val.is_expired() || !def.matches_key(key) || !doc_storage_matches(val, def) {
+            return;
          }
-      }
-   });
+         if let Some(cond) = filter
+            && !cond_matches(cond, val, def)
+         {
+            return;
+         }
+         if let Some(vec_bytes) = doc_vector(val, def, &range.field) {
+            vattrs.with_f32_slice(vec_bytes, |doc| {
+               total += 1;
+               let d = scan_dist.distance(qv, doc);
+               if d <= radius {
+                  heap.push((d, key.to_string()));
+               }
+            });
+         }
+      });
+      (heap, total)
+   };
+   let (heap, _) = parallel_scan(store, scan);
    heap
 }
 

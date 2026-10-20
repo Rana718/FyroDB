@@ -10,6 +10,19 @@ use crate::utils::parser::{ParseResult, RespParser};
 use super::dispatch::dispatch;
 use super::subscription::do_full_unsubscribe;
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
+static NULL_STORE: AtomicBool = AtomicBool::new(false);
+
+#[inline(always)]
+pub fn is_null_store() -> bool {
+   NULL_STORE.load(Ordering::Relaxed)
+}
+
+pub fn set_null_store(val: bool) {
+   NULL_STORE.store(val, Ordering::Relaxed);
+}
+
 pub(crate) const SUB_WRITE_BATCH_BYTES: usize = 256 * 1024;
 const RETAINED_WRITE_BUFFER: usize = 256 * 1024;
 
@@ -145,9 +158,6 @@ pub(super) unsafe fn part_bytes<'a>(part: (*const u8, usize)) -> &'a [u8] {
 #[inline(always)]
 pub(super) fn part_str<'a>(out: &mut Vec<u8>, part: (*const u8, usize)) -> Option<&'a str> {
    let bytes: &'a [u8] = unsafe { part_bytes(part) };
-   if bytes.is_ascii() {
-      return Some(unsafe { std::str::from_utf8_unchecked(bytes) });
-   }
    match std::str::from_utf8(bytes) {
       Ok(s) => Some(s),
       Err(_) => {

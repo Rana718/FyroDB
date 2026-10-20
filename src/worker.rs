@@ -214,8 +214,18 @@ pub fn run_worker(
                }
                if close {
                   close_conn(&mut conns, &mut poll, &mut free, id);
-               } else {
+               } else if conns
+                  .get(id)
+                  .and_then(|s| s.as_ref())
+                  .is_some_and(|c| c.has_pending_write())
+               {
                   dirty.push(id);
+               } else if conns
+                  .get(id)
+                  .and_then(|s| s.as_ref())
+                  .is_some_and(|c| c.writable_registered)
+               {
+                  sync_write_interest(&mut conns, &mut poll, id);
                }
             }
          }
@@ -238,8 +248,10 @@ pub fn run_worker(
       }
 
       crate::storage::persistence::aof::flush_local();
-      dirty.sort_unstable();
-      dirty.dedup();
+      if dirty.len() > 1 {
+         dirty.sort_unstable();
+         dirty.dedup();
+      }
       #[cfg(feature = "io-uring")]
       if let Some(ring) = send_ring.as_mut() {
          sent.clear();

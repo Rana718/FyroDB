@@ -1,8 +1,13 @@
 mod ebr;
+pub mod flat;
 mod key;
 mod ops;
 mod shard;
 mod snap;
+pub use flat::{
+   Chunk, ChunkMap, ChunkSlot, ChunkTable, FastHasher, FastState, FlatShard, FlatSlot, FlatSwissMap,
+   TieredSwissMap,
+};
 pub use snap::SnapSink;
 
 #[repr(align(128))]
@@ -72,6 +77,7 @@ pub struct CustomMap<V> {
    /// One relaxed load on every write when nothing observes. Shared so
    /// the observer's owner can toggle it without a map reference.
    observing: std::sync::Arc<Flag>,
+   observing_ptr: *const AtomicBool,
    snap_active: AtomicBool,
    snap: std::sync::Arc<snap::SnapCtl<V>>,
 }
@@ -95,7 +101,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
 
    #[inline(always)]
    fn observing(&self) -> bool {
-      self.observing.load(Ordering::Relaxed)
+      unsafe { (*self.observing_ptr).load(Ordering::Relaxed) }
    }
 
    /// A write to `key` completed.
@@ -164,6 +170,8 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
          let sf_ptr = unsafe { shard_fast.as_ptr().add(i) } as *mut ShardFast<V>;
          s.fast.store(sf_ptr, Ordering::Relaxed);
       }
+      let observing = std::sync::Arc::new(Flag::default());
+      let observing_ptr: *const AtomicBool = (&*observing) as &AtomicBool as *const AtomicBool;
       CustomMap {
          shift: (u64::BITS - n.trailing_zeros()).min(63),
          shard_mask: n - 1,
@@ -172,7 +180,8 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
          hasher,
          max_keys,
          observer: std::sync::OnceLock::new(),
-         observing: std::sync::Arc::new(Flag::default()),
+         observing_ptr,
+         observing,
          snap_active: AtomicBool::new(false),
          snap,
       }
@@ -204,43 +213,71 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
       let n = keys.len().min(hashes.len()).min(tables.len());
       let sf_base = self.shard_fast.as_ptr();
       let mut i = 0;
-      while i + 4 <= n {
+      while i + 8 <= n {
          let k0 = unsafe { std::str::from_utf8_unchecked(keys[i].as_ref()) };
          let k1 = unsafe { std::str::from_utf8_unchecked(keys[i + 1].as_ref()) };
          let k2 = unsafe { std::str::from_utf8_unchecked(keys[i + 2].as_ref()) };
          let k3 = unsafe { std::str::from_utf8_unchecked(keys[i + 3].as_ref()) };
+         let k4 = unsafe { std::str::from_utf8_unchecked(keys[i + 4].as_ref()) };
+         let k5 = unsafe { std::str::from_utf8_unchecked(keys[i + 5].as_ref()) };
+         let k6 = unsafe { std::str::from_utf8_unchecked(keys[i + 6].as_ref()) };
+         let k7 = unsafe { std::str::from_utf8_unchecked(keys[i + 7].as_ref()) };
 
          let (h0, idx0) = self.locate(k0);
          let (h1, idx1) = self.locate(k1);
          let (h2, idx2) = self.locate(k2);
          let (h3, idx3) = self.locate(k3);
+         let (h4, idx4) = self.locate(k4);
+         let (h5, idx5) = self.locate(k5);
+         let (h6, idx6) = self.locate(k6);
+         let (h7, idx7) = self.locate(k7);
 
          hashes[i] = h0;
          hashes[i + 1] = h1;
          hashes[i + 2] = h2;
          hashes[i + 3] = h3;
+         hashes[i + 4] = h4;
+         hashes[i + 5] = h5;
+         hashes[i + 6] = h6;
+         hashes[i + 7] = h7;
 
          let sf0 = unsafe { &*sf_base.add(idx0) };
          let sf1 = unsafe { &*sf_base.add(idx1) };
          let sf2 = unsafe { &*sf_base.add(idx2) };
          let sf3 = unsafe { &*sf_base.add(idx3) };
+         let sf4 = unsafe { &*sf_base.add(idx4) };
+         let sf5 = unsafe { &*sf_base.add(idx5) };
+         let sf6 = unsafe { &*sf_base.add(idx6) };
+         let sf7 = unsafe { &*sf_base.add(idx7) };
 
          let s0 = unsafe { sf0.slots.load(Ordering::Relaxed).add((h0 as usize) & sf0.mask.load(Ordering::Relaxed)) };
          let s1 = unsafe { sf1.slots.load(Ordering::Relaxed).add((h1 as usize) & sf1.mask.load(Ordering::Relaxed)) };
          let s2 = unsafe { sf2.slots.load(Ordering::Relaxed).add((h2 as usize) & sf2.mask.load(Ordering::Relaxed)) };
          let s3 = unsafe { sf3.slots.load(Ordering::Relaxed).add((h3 as usize) & sf3.mask.load(Ordering::Relaxed)) };
+         let s4 = unsafe { sf4.slots.load(Ordering::Relaxed).add((h4 as usize) & sf4.mask.load(Ordering::Relaxed)) };
+         let s5 = unsafe { sf5.slots.load(Ordering::Relaxed).add((h5 as usize) & sf5.mask.load(Ordering::Relaxed)) };
+         let s6 = unsafe { sf6.slots.load(Ordering::Relaxed).add((h6 as usize) & sf6.mask.load(Ordering::Relaxed)) };
+         let s7 = unsafe { sf7.slots.load(Ordering::Relaxed).add((h7 as usize) & sf7.mask.load(Ordering::Relaxed)) };
 
          prefetch_line(s0);
          prefetch_line(s1);
          prefetch_line(s2);
          prefetch_line(s3);
+         prefetch_line(s4);
+         prefetch_line(s5);
+         prefetch_line(s6);
+         prefetch_line(s7);
 
          tables[i] = s0.cast();
          tables[i + 1] = s1.cast();
          tables[i + 2] = s2.cast();
          tables[i + 3] = s3.cast();
+         tables[i + 4] = s4.cast();
+         tables[i + 5] = s5.cast();
+         tables[i + 6] = s6.cast();
+         tables[i + 7] = s7.cast();
 
-         i += 4;
+         i += 8;
       }
       while i < n {
          let k = unsafe { std::str::from_utf8_unchecked(keys[i].as_ref()) };
@@ -266,43 +303,71 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
       let n = keys.len().min(hashes.len()).min(tables.len());
       let sf_base = self.shard_fast.as_ptr();
       let mut i = 0;
-      while i + 4 <= n {
+      while i + 8 <= n {
          let k0 = unsafe { std::str::from_utf8_unchecked(keys[i].as_ref()) };
          let k1 = unsafe { std::str::from_utf8_unchecked(keys[i + 1].as_ref()) };
          let k2 = unsafe { std::str::from_utf8_unchecked(keys[i + 2].as_ref()) };
          let k3 = unsafe { std::str::from_utf8_unchecked(keys[i + 3].as_ref()) };
+         let k4 = unsafe { std::str::from_utf8_unchecked(keys[i + 4].as_ref()) };
+         let k5 = unsafe { std::str::from_utf8_unchecked(keys[i + 5].as_ref()) };
+         let k6 = unsafe { std::str::from_utf8_unchecked(keys[i + 6].as_ref()) };
+         let k7 = unsafe { std::str::from_utf8_unchecked(keys[i + 7].as_ref()) };
 
          let (h0, idx0) = self.locate(k0);
          let (h1, idx1) = self.locate(k1);
          let (h2, idx2) = self.locate(k2);
          let (h3, idx3) = self.locate(k3);
+         let (h4, idx4) = self.locate(k4);
+         let (h5, idx5) = self.locate(k5);
+         let (h6, idx6) = self.locate(k6);
+         let (h7, idx7) = self.locate(k7);
 
          hashes[i] = h0;
          hashes[i + 1] = h1;
          hashes[i + 2] = h2;
          hashes[i + 3] = h3;
+         hashes[i + 4] = h4;
+         hashes[i + 5] = h5;
+         hashes[i + 6] = h6;
+         hashes[i + 7] = h7;
 
          let sf0 = unsafe { &*sf_base.add(idx0) };
          let sf1 = unsafe { &*sf_base.add(idx1) };
          let sf2 = unsafe { &*sf_base.add(idx2) };
          let sf3 = unsafe { &*sf_base.add(idx3) };
+         let sf4 = unsafe { &*sf_base.add(idx4) };
+         let sf5 = unsafe { &*sf_base.add(idx5) };
+         let sf6 = unsafe { &*sf_base.add(idx6) };
+         let sf7 = unsafe { &*sf_base.add(idx7) };
 
          let s0 = unsafe { sf0.slots.load(Ordering::Relaxed).add((h0 as usize) & sf0.mask.load(Ordering::Relaxed)) };
          let s1 = unsafe { sf1.slots.load(Ordering::Relaxed).add((h1 as usize) & sf1.mask.load(Ordering::Relaxed)) };
          let s2 = unsafe { sf2.slots.load(Ordering::Relaxed).add((h2 as usize) & sf2.mask.load(Ordering::Relaxed)) };
          let s3 = unsafe { sf3.slots.load(Ordering::Relaxed).add((h3 as usize) & sf3.mask.load(Ordering::Relaxed)) };
+         let s4 = unsafe { sf4.slots.load(Ordering::Relaxed).add((h4 as usize) & sf4.mask.load(Ordering::Relaxed)) };
+         let s5 = unsafe { sf5.slots.load(Ordering::Relaxed).add((h5 as usize) & sf5.mask.load(Ordering::Relaxed)) };
+         let s6 = unsafe { sf6.slots.load(Ordering::Relaxed).add((h6 as usize) & sf6.mask.load(Ordering::Relaxed)) };
+         let s7 = unsafe { sf7.slots.load(Ordering::Relaxed).add((h7 as usize) & sf7.mask.load(Ordering::Relaxed)) };
 
-         prefetch_line_write(s0);
-         prefetch_line_write(s1);
-         prefetch_line_write(s2);
-         prefetch_line_write(s3);
+         prefetch_line(s0);
+         prefetch_line(s1);
+         prefetch_line(s2);
+         prefetch_line(s3);
+         prefetch_line(s4);
+         prefetch_line(s5);
+         prefetch_line(s6);
+         prefetch_line(s7);
 
          tables[i] = s0.cast();
          tables[i + 1] = s1.cast();
          tables[i + 2] = s2.cast();
          tables[i + 3] = s3.cast();
+         tables[i + 4] = s4.cast();
+         tables[i + 5] = s5.cast();
+         tables[i + 6] = s6.cast();
+         tables[i + 7] = s7.cast();
 
-         i += 4;
+         i += 8;
       }
       while i < n {
          let k = unsafe { std::str::from_utf8_unchecked(keys[i].as_ref()) };
@@ -312,7 +377,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
          let slots = sf.slots.load(Ordering::Relaxed);
          let mask = sf.mask.load(Ordering::Relaxed);
          let s = unsafe { slots.add((h as usize) & mask) };
-         prefetch_line_write(s);
+         prefetch_line(s);
          tables[i] = s.cast();
          i += 1;
       }
@@ -327,28 +392,44 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
    ) {
       let n = tables.len().min(hashes.len()).min(entries.len());
       let mut i = 0;
-      while i + 4 <= n {
+      while i + 8 <= n {
          let b0 = tables[i].cast::<TaggedSlot<V>>();
          let b1 = tables[i + 1].cast::<TaggedSlot<V>>();
          let b2 = tables[i + 2].cast::<TaggedSlot<V>>();
          let b3 = tables[i + 3].cast::<TaggedSlot<V>>();
+         let b4 = tables[i + 4].cast::<TaggedSlot<V>>();
+         let b5 = tables[i + 5].cast::<TaggedSlot<V>>();
+         let b6 = tables[i + 6].cast::<TaggedSlot<V>>();
+         let b7 = tables[i + 7].cast::<TaggedSlot<V>>();
 
          let p0 = unsafe { TaggedSlot::probe_from_base(b0, hashes[i], 16) };
          let p1 = unsafe { TaggedSlot::probe_from_base(b1, hashes[i + 1], 16) };
          let p2 = unsafe { TaggedSlot::probe_from_base(b2, hashes[i + 2], 16) };
          let p3 = unsafe { TaggedSlot::probe_from_base(b3, hashes[i + 3], 16) };
+         let p4 = unsafe { TaggedSlot::probe_from_base(b4, hashes[i + 4], 16) };
+         let p5 = unsafe { TaggedSlot::probe_from_base(b5, hashes[i + 5], 16) };
+         let p6 = unsafe { TaggedSlot::probe_from_base(b6, hashes[i + 6], 16) };
+         let p7 = unsafe { TaggedSlot::probe_from_base(b7, hashes[i + 7], 16) };
 
          entries[i] = p0.cast();
          entries[i + 1] = p1.cast();
          entries[i + 2] = p2.cast();
          entries[i + 3] = p3.cast();
+         entries[i + 4] = p4.cast();
+         entries[i + 5] = p5.cast();
+         entries[i + 6] = p6.cast();
+         entries[i + 7] = p7.cast();
 
          prefetch_line(p0);
          prefetch_line(p1);
          prefetch_line(p2);
          prefetch_line(p3);
+         prefetch_line(p4);
+         prefetch_line(p5);
+         prefetch_line(p6);
+         prefetch_line(p7);
 
-         i += 4;
+         i += 8;
       }
       while i < n {
          let s_ptr = tables[i];
@@ -373,28 +454,44 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
    ) {
       let n = tables.len().min(hashes.len()).min(entries.len());
       let mut i = 0;
-      while i + 4 <= n {
+      while i + 8 <= n {
          let b0 = tables[i].cast::<TaggedSlot<V>>();
          let b1 = tables[i + 1].cast::<TaggedSlot<V>>();
          let b2 = tables[i + 2].cast::<TaggedSlot<V>>();
          let b3 = tables[i + 3].cast::<TaggedSlot<V>>();
+         let b4 = tables[i + 4].cast::<TaggedSlot<V>>();
+         let b5 = tables[i + 5].cast::<TaggedSlot<V>>();
+         let b6 = tables[i + 6].cast::<TaggedSlot<V>>();
+         let b7 = tables[i + 7].cast::<TaggedSlot<V>>();
 
          let p0 = unsafe { TaggedSlot::probe_from_base(b0, hashes[i], 16) };
          let p1 = unsafe { TaggedSlot::probe_from_base(b1, hashes[i + 1], 16) };
          let p2 = unsafe { TaggedSlot::probe_from_base(b2, hashes[i + 2], 16) };
          let p3 = unsafe { TaggedSlot::probe_from_base(b3, hashes[i + 3], 16) };
+         let p4 = unsafe { TaggedSlot::probe_from_base(b4, hashes[i + 4], 16) };
+         let p5 = unsafe { TaggedSlot::probe_from_base(b5, hashes[i + 5], 16) };
+         let p6 = unsafe { TaggedSlot::probe_from_base(b6, hashes[i + 6], 16) };
+         let p7 = unsafe { TaggedSlot::probe_from_base(b7, hashes[i + 7], 16) };
 
          entries[i] = p0.cast();
          entries[i + 1] = p1.cast();
          entries[i + 2] = p2.cast();
          entries[i + 3] = p3.cast();
+         entries[i + 4] = p4.cast();
+         entries[i + 5] = p5.cast();
+         entries[i + 6] = p6.cast();
+         entries[i + 7] = p7.cast();
 
          prefetch_line_write(p0);
          prefetch_line_write(p1);
          prefetch_line_write(p2);
          prefetch_line_write(p3);
+         prefetch_line_write(p4);
+         prefetch_line_write(p5);
+         prefetch_line_write(p6);
+         prefetch_line_write(p7);
 
-         i += 4;
+         i += 8;
       }
       while i < n {
          let s_ptr = tables[i];
@@ -433,6 +530,23 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
    pub fn prefetch_batch<K: AsRef<[u8]>>(&self, keys: &[K], hashes: &mut [u64]) {
       let mut entries = [std::ptr::null(); PREFETCH_BATCH];
       self.prefetch_batch_entries(keys, hashes, &mut entries);
+   }
+
+   #[inline(always)]
+   pub fn probe_entry_fast(&self, key: &str, hash: u64, idx: usize) -> Option<*const Entry<V>> {
+      let sf = unsafe { &*self.shard_fast.as_ptr().add(idx) };
+      let slots = sf.slots.load(Ordering::Relaxed);
+      let mask = sf.mask.load(Ordering::Relaxed);
+      let base = unsafe { slots.add((hash as usize) & mask) };
+      let p = unsafe { TaggedSlot::probe_from_base(base, hash, 16) };
+      if !p.is_null() {
+         let e = unsafe { &*p };
+         let expected = ((hash as u32 as u64) << 32) | STATE_OCCUPIED;
+         if (e.state.load(Ordering::Relaxed) & STATE_MATCH_MASK) == expected && e.key.eq_str(key) {
+            return Some(p as *const Entry<V>);
+         }
+      }
+      None
    }
 
    #[inline(always)]

@@ -141,11 +141,11 @@ func TestNetworkBottleneckAnalysis(t *testing.T) {
 		for i := 0; i < numClients; i++ {
 			go func(id int) {
 				defer wg.Done()
-				buf := make([]byte, batch*60)
+				buf := make([]byte, 0, batch*60)
 				base := id * opsPerClient
 				for sent := 0; sent < opsPerClient; {
 					n := min(batch, opsPerClient-sent)
-					_ = buildBatchFastSet(base+sent, n, buf)
+					_ = buildBatchFastSet(base+sent, n, buf[:0])
 					sent += n
 				}
 			}(i)
@@ -159,11 +159,11 @@ func TestNetworkBottleneckAnalysis(t *testing.T) {
 		for i := 0; i < numClients; i++ {
 			go func(id int) {
 				defer wg.Done()
-				buf := make([]byte, batch*60)
+				buf := make([]byte, 0, batch*60)
 				base := id * opsPerClient
 				for sent := 0; sent < opsPerClient; {
 					n := min(batch, opsPerClient-sent)
-					_ = buildBatchFastGet(base+sent, n, buf)
+					_ = buildBatchFastGet(base+sent, n, buf[:0])
 					sent += n
 				}
 			}(i)

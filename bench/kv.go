@@ -8,6 +8,7 @@ import (
 	"net"
 	"strconv"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -104,14 +105,24 @@ func preDialCluster(nClients int) clusterConns {
 				}
 				tc := c.(*net.TCPConn)
 				tc.SetNoDelay(true)
-				tc.SetWriteBuffer(1 << 20)
-				tc.SetReadBuffer(1 << 20)
+				tc.SetWriteBuffer(2 << 20)
+				tc.SetReadBuffer(2 << 20)
+				setQuickACK(tc)
 				cc[i][n] = tc
 			}
 		})
 	}
 	wg.Wait()
 	return cc
+}
+
+func setQuickACK(c *net.TCPConn) {
+	raw, err := c.SyscallConn()
+	if err == nil {
+		_ = raw.Control(func(fd uintptr) {
+			_ = syscall.SetsockoptInt(int(fd), syscall.IPPROTO_TCP, syscall.TCP_QUICKACK, 1)
+		})
+	}
 }
 
 func closeCluster(cc clusterConns) {
@@ -148,8 +159,9 @@ func preDialTo(n, node int) []*net.TCPConn {
 			}
 			tc := c.(*net.TCPConn)
 			tc.SetNoDelay(true)
-			tc.SetWriteBuffer(1 << 20)
-			tc.SetReadBuffer(1 << 20)
+			tc.SetWriteBuffer(2 << 20)
+			tc.SetReadBuffer(2 << 20)
+			setQuickACK(tc)
 			conns[i] = tc
 		})
 	}
@@ -172,8 +184,9 @@ func dialTCP(id int) *net.TCPConn {
 	}
 	tc := c.(*net.TCPConn)
 	tc.SetNoDelay(true)
-	tc.SetWriteBuffer(1 << 20)
-	tc.SetReadBuffer(1 << 20)
+	tc.SetWriteBuffer(2 << 20)
+	tc.SetReadBuffer(2 << 20)
+	setQuickACK(tc)
 	return tc
 }
 
@@ -632,7 +645,14 @@ func buildBatchFastSet(base, count int, buf []byte) []byte {
 		hw := &setHdrWords[d]
 		pos := len(out)
 		tot := hw.len + d + valLen
-		out = out[:pos+tot]
+		if pos+tot > cap(out) {
+			newCap := (pos + tot) * 2
+			newBuf := make([]byte, pos+tot, newCap)
+			copy(newBuf, out)
+			out = newBuf
+		} else {
+			out = out[:pos+tot]
+		}
 
 		binary.LittleEndian.PutUint64(out[pos:], hw.w0)
 		binary.LittleEndian.PutUint64(out[pos+8:], hw.w1)
@@ -674,7 +694,14 @@ func buildBatchFastGet(base, count int, buf []byte) []byte {
 		hw := &getHdrWords[d]
 		pos := len(out)
 		tot := hw.len + d + 2
-		out = out[:pos+tot]
+		if pos+tot > cap(out) {
+			newCap := (pos + tot) * 2
+			newBuf := make([]byte, pos+tot, newCap)
+			copy(newBuf, out)
+			out = newBuf
+		} else {
+			out = out[:pos+tot]
+		}
 
 		binary.LittleEndian.PutUint64(out[pos:], hw.w0)
 		binary.LittleEndian.PutUint64(out[pos+8:], hw.w1)
@@ -733,7 +760,7 @@ func runAsyncPipeline(
 
 	go func() {
 		defer wg.Done()
-		buf := make([]byte, 128*1024)
+		buf := make([]byte, 256*1024)
 		rem := totalOps * replyBytesPerOp
 		for rem > 0 {
 			toRead := min(len(buf), rem)

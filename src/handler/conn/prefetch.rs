@@ -25,7 +25,11 @@ fn read_int(buf: &[u8], mut i: usize) -> Option<(usize, usize)> {
    None
 }
 
+#[inline(always)]
 fn names_key(c: &[u8]) -> bool {
+   if c.len() <= 3 {
+      return true;
+   }
    const NON_KEY: &[&[u8]] = &[
       b"PUBLISH",
       b"SPUBLISH",
@@ -137,6 +141,7 @@ pub(crate) struct Hint {
    ptr: usize,
    len: usize,
    hash: u64,
+   entry: *const (),
 }
 
 impl Conn<'_> {
@@ -159,12 +164,16 @@ impl Conn<'_> {
       let next = p.pos + used.max(1);
       {
          let mut hashes = [0u64; BATCH];
-         self.store.data.prefetch_batch(&keys[..n], &mut hashes);
-         for (h, (k, hash)) in self.hints.iter_mut().zip(keys[..n].iter().zip(hashes)) {
+         let mut tables = [std::ptr::null(); BATCH];
+         let mut entries = [std::ptr::null(); BATCH];
+         self.store.data.prefetch_slots(&keys[..n], &mut hashes[..n], &mut tables[..n]);
+         self.store.data.probe_and_prefetch_entries(&tables[..n], &hashes[..n], &mut entries[..n]);
+         for (h, (k, (&hash, &entry))) in self.hints.iter_mut().zip(keys[..n].iter().zip(hashes[..n].iter().zip(entries[..n].iter()))) {
             *h = Hint {
                ptr: k.as_ptr() as usize,
                len: k.len(),
                hash,
+               entry,
             };
          }
          self.hint_n = n as u8;
@@ -244,24 +253,24 @@ impl Conn<'_> {
    }
 
    #[inline(always)]
-   pub(super) fn hint_for(&mut self, part: (*const u8, usize)) -> Option<u64> {
+   pub(super) fn hint_for(&mut self, part: (*const u8, usize)) -> (Option<u64>, *const ()) {
       let idx = self.hint_idx as usize;
       let n = self.hint_n as usize;
       if idx < n {
          let h = &self.hints[idx];
          if h.ptr == part.0 as usize && h.len == part.1 && h.hash != 0 {
             self.hint_idx += 1;
-            return Some(h.hash);
+            return (Some(h.hash), h.entry);
          }
       }
       for i in 0..n {
          let h = &self.hints[i];
          if h.ptr == part.0 as usize && h.len == part.1 && h.hash != 0 {
             self.hint_idx = (i + 1) as u8;
-            return Some(h.hash);
+            return (Some(h.hash), h.entry);
          }
       }
-      None
+      (None, std::ptr::null())
    }
 }
 

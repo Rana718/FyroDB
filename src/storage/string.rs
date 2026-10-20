@@ -280,37 +280,112 @@ impl Store {
    ) {
       if !p.is_null() {
          let e = unsafe { &*p };
-         let current = e.state.load(std::sync::atomic::Ordering::Relaxed);
          let expected = ((hash as u32 as u64) << 32) | customhash::STATE_OCCUPIED;
+         let mut current = e.state.load(std::sync::atomic::Ordering::Relaxed);
          if (current & customhash::STATE_MATCH_MASK) == expected && e.key.eq_str(key) {
-            let locked = customhash::bump_seq(current) | customhash::STATE_LOCK;
-            if e.state
-               .compare_exchange_weak(
+            for _ in 0..4 {
+               let locked = customhash::bump_seq(current) | customhash::STATE_LOCK;
+               match e.state.compare_exchange_weak(
                   current,
                   locked,
                   std::sync::atomic::Ordering::Acquire,
                   std::sync::atomic::Ordering::Relaxed,
-               )
-               .is_ok()
-            {
-               self.data.snap_before_write(e);
-               let val = unsafe { (*e.value.get()).assume_init_mut() };
-               val.expires_ms = expires_ms;
-               if let crate::storage::value::FyroDB::String(ref mut s) = val.value {
-                  s.overwrite_str(value);
-               } else {
-                  val.value = crate::storage::value::FyroDB::String(SmallStr::new(value));
+               ) {
+                  Ok(_) => {
+                     self.data.snap_before_write(e);
+                     let val = unsafe { (*e.value.get()).assume_init_mut() };
+                     val.expires_ms = expires_ms;
+                     if let crate::storage::value::FyroDB::String(ref mut s) = val.value {
+                        s.overwrite_str(value);
+                     } else {
+                        val.value = crate::storage::value::FyroDB::String(SmallStr::new(value));
+                     }
+                     let unlocked = (customhash::bump_seq(locked) & !customhash::STATE_LOCK) | customhash::STATE_OCCUPIED;
+                     e.state.store(unlocked, std::sync::atomic::Ordering::Release);
+                     self.data.touched(key);
+                     if expires_ms != 0 {
+                        self.add_ttl();
+                     }
+                     return;
+                  }
+                  Err(observed) => {
+                     current = observed;
+                     if (current & customhash::STATE_MATCH_MASK) != expected {
+                        break;
+                     }
+                     std::hint::spin_loop();
+                  }
                }
-               customhash::unlock_write(&e.state, locked, true);
-               self.data.touched(key);
-               if expires_ms != 0 {
-                  self.add_ttl();
-               }
-               return;
             }
          }
       }
       self.set_string_fallback(key, hash, value, expires_ms);
+   }
+
+   #[inline(always)]
+   pub fn set_string_auto(
+      &self,
+      key: &str,
+      hash_hint: Option<u64>,
+      entry_hint: *const (),
+      value: &str,
+      expires_ms: u64,
+   ) {
+      if !entry_hint.is_null() {
+         let hash = hash_hint.unwrap_or_else(|| self.data.locate_key(key).0);
+         unsafe {
+            self.set_string_fast_entry(key, hash, entry_hint.cast(), value, expires_ms);
+         }
+         return;
+      }
+      let (hash, idx) = match hash_hint {
+         Some(h) => (h, self.data.shard_of(h)),
+         None => self.data.locate_key(key),
+      };
+      if let Some(entry) = self.data.probe_entry_fast(key, hash, idx) {
+         unsafe {
+            self.set_string_fast_entry(key, hash, entry, value, expires_ms);
+         }
+         return;
+      }
+      let store_val = StoreValue {
+         value: crate::storage::value::FyroDB::String(SmallStr::new(value)),
+         expires_ms,
+      };
+      if self.data.insert_slot_fast(hash, key, store_val) {
+         self.data.touched(key);
+         if expires_ms != 0 {
+            self.add_ttl();
+         }
+         return;
+      }
+      self.set_string_fallback(key, hash, value, expires_ms);
+   }
+
+   #[inline(always)]
+   pub fn get_to_buf_auto(
+      &self,
+      key: &str,
+      hash_hint: Option<u64>,
+      entry_hint: *const (),
+      out: &mut Vec<u8>,
+   ) -> bool {
+      if !entry_hint.is_null() {
+         let hash = hash_hint.unwrap_or_else(|| self.data.locate_key(key).0);
+         unsafe {
+            return self.get_to_buf_fast_entry(key, hash, entry_hint.cast(), out);
+         }
+      }
+      let (hash, idx) = match hash_hint {
+         Some(h) => (h, self.data.shard_of(h)),
+         None => self.data.locate_key(key),
+      };
+      if let Some(entry) = self.data.probe_entry_fast(key, hash, idx) {
+         unsafe {
+            return self.get_to_buf_fast_entry(key, hash, entry, out);
+         }
+      }
+      self.get_to_buf_fallback(key, hash, out)
    }
 
    #[inline(always)]

@@ -26,7 +26,7 @@ pub(crate) enum Tag {
 impl Tag {
    #[inline(always)]
    pub(crate) fn inline(n: usize) -> Tag {
-      assert!(n <= 15);
+      debug_assert!(n <= 15);
       unsafe { std::mem::transmute::<u8, Tag>(n as u8) }
    }
 }
@@ -107,40 +107,42 @@ impl CompactKey {
    #[inline(always)]
    pub fn eq_str(&self, other: &str) -> bool {
       let other_len = other.len();
-      if self.tag != Tag::Heap {
-         let len = self.tag as usize;
-         if len != other_len {
+      if other_len <= INLINE_CAP {
+         if (self.tag as usize) != other_len {
             return false;
          }
          let a = self.data.as_ptr();
          let b = other.as_bytes().as_ptr();
          unsafe {
-            if len >= 8 {
-               let w1 = std::ptr::read_unaligned(a.cast::<u64>()) == std::ptr::read_unaligned(b.cast::<u64>());
-               let w2 = std::ptr::read_unaligned(a.add(len - 8).cast::<u64>())
-                  == std::ptr::read_unaligned(b.add(len - 8).cast::<u64>());
-               w1 && w2
-            } else if len >= 4 {
-               let w1 = std::ptr::read_unaligned(a.cast::<u32>()) == std::ptr::read_unaligned(b.cast::<u32>());
-               let w2 = std::ptr::read_unaligned(a.add(len - 4).cast::<u32>())
-                  == std::ptr::read_unaligned(b.add(len - 4).cast::<u32>());
-               w1 && w2
-            } else if len == 0 {
+            if other_len >= 8 {
+               let d1 = std::ptr::read_unaligned(a.cast::<u64>()) ^ std::ptr::read_unaligned(b.cast::<u64>());
+               let d2 = std::ptr::read_unaligned(a.add(other_len - 8).cast::<u64>())
+                  ^ std::ptr::read_unaligned(b.add(other_len - 8).cast::<u64>());
+               (d1 | d2) == 0
+            } else if other_len >= 4 {
+               let d1 = std::ptr::read_unaligned(a.cast::<u32>()) ^ std::ptr::read_unaligned(b.cast::<u32>());
+               let d2 = std::ptr::read_unaligned(a.add(other_len - 4).cast::<u32>())
+                  ^ std::ptr::read_unaligned(b.add(other_len - 4).cast::<u32>());
+               (d1 | d2) == 0
+            } else if other_len == 0 {
                true
-            } else if len == 1 {
+            } else if other_len == 1 {
                *a == *b
             } else {
-               let w1 = std::ptr::read_unaligned(a.cast::<u16>()) == std::ptr::read_unaligned(b.cast::<u16>());
-               w1 && (*a.add(len - 1) == *b.add(len - 1))
+               let d1 = (std::ptr::read_unaligned(a.cast::<u16>()) ^ std::ptr::read_unaligned(b.cast::<u16>())) as usize;
+               let d2 = (*a.add(other_len - 1) ^ *b.add(other_len - 1)) as usize;
+               (d1 | d2) == 0
             }
          }
-      } else {
+      } else if self.tag == Tag::Heap {
          let len_val = Self::read_heap_len(&self.data);
          if len_val != other_len {
             return false;
          }
          let ptr_val = usize::from_ne_bytes(self.data[..8].try_into().unwrap()) as *const u8;
          unsafe { std::slice::from_raw_parts(ptr_val, len_val) == other.as_bytes() }
+      } else {
+         false
       }
    }
 }

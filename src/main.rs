@@ -66,6 +66,10 @@ fn write_profile() {
 }
 
 fn main() {
+   if env::var("FYRODB_NULL_STORE").is_ok_and(|v| v == "1" || v == "true" || v == "yes") {
+      fyro_db::handler::conn::set_null_store(true);
+      println!("  NULL_STORE=enabled (TCP network & parser benchmark mode)");
+   }
    let config = Config::from_env();
    #[cfg(feature = "profiling")]
    start_profiler();

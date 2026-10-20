@@ -12,10 +12,12 @@ pub(super) enum PairOutcome {
 /// Is `raw` a plain `SET key value` that could open a coalesced
 /// `SET k v` + `EXPIRE k t` pair?
 #[inline(always)]
-pub(super) fn is_set_expire_pair(raw: &[(*const u8, usize)]) -> bool {
-   raw.len() == 3
-      && unsafe { part_bytes(raw[0]) }.len() == 3
-      && unsafe { part_bytes(raw[0]) }.eq_ignore_ascii_case(b"SET")
+pub(super) fn is_set_expire_pair(conn: &Conn<'_>, raw: &[(*const u8, usize)]) -> bool {
+   if raw.len() != 3 {
+      return false;
+   }
+   const EXPIRE_PREFIX: &[u8] = b"*3\r\n$6\r\n";
+   conn.parser.peek_remaining(EXPIRE_PREFIX.len()).starts_with(EXPIRE_PREFIX)
 }
 
 pub(super) fn dispatch_set_expire_pair(

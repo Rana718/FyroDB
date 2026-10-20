@@ -50,6 +50,11 @@ name = "without_tcp"
 path = "src/bin/without_tcp.rs"
 required-features = ["bench-tools"]
 
+[[bin]]
+name = "tcp_proto_bench"
+path = "src/bin/tcp_proto_bench.rs"
+required-features = ["bench-tools"]
+
 [features]
 io-uring = ["dep:io-uring"]
 profiling = ["dep:pprof"]
