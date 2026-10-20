@@ -1579,8 +1579,8 @@ impl RespParser {
             self.rbuf.shrink_to(Self::IDLE_READ_BUFFER);
          }
       }
-      if self.wbuf.is_empty() && self.wbuf.capacity() > 64 * 1024 {
-         self.wbuf.shrink_to(32 * 1024);
+      if self.wbuf.is_empty() && self.wbuf.capacity() > 256 * 1024 {
+         self.wbuf.shrink_to(128 * 1024);
       }
    }
 

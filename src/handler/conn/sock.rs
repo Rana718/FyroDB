@@ -18,12 +18,6 @@ impl<'a> Conn<'a> {
          }
       }
 
-      #[cfg(target_os = "linux")]
-      if self.parser.filled > self.parser.pos {
-         let sock = socket2::SockRef::from(&self.stream);
-         let _ = sock.set_tcp_quickack(true);
-      }
-
       #[cfg(feature = "bench-tools")]
       if is_raw_arrival_only() {
          let unparsed = self.parser.filled - self.parser.pos;

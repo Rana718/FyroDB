@@ -56,7 +56,7 @@ pub fn record_raw_arrival(bytes: usize) {
 }
 
 pub(crate) const SUB_WRITE_BATCH_BYTES: usize = 256 * 1024;
-const RETAINED_WRITE_BUFFER: usize = 32 * 1024;
+const RETAINED_WRITE_BUFFER: usize = 128 * 1024;
 
 mod coalesce;
 mod fast_path;
