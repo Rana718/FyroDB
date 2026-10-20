@@ -54,6 +54,7 @@ impl Store {
    /// `workers` sizes the per-worker write-fence counters, so it must be at
    /// least the number of workers that will call `begin_write`.
    pub fn with_config_workers(shards: usize, max_keys: usize, workers: usize) -> Self {
+      rust_zmalloc::configure_allocator();
       let cluster = crate::cluster::ClusterConfig::from_env()
          .unwrap_or_else(|error| panic!("invalid cluster configuration: {error}"));
       // An all-primary topology has no replication destination. Avoid

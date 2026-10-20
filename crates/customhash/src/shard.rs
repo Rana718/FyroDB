@@ -28,12 +28,11 @@ pub(crate) fn stored_hash(state: u64) -> u64 {
 
 pub(crate) const LOAD_NUM: usize = 3;
 pub(crate) const LOAD_DEN: usize = 4;
-pub(crate) const DEFAULT_SHARD_CAPACITY: usize = 262_144;
 // Keep idle shards tiny; tables grow lock-free as keys arrive.
-pub(crate) const INITIAL_SHARD_CAPACITY: usize = 8;
+pub(crate) const INITIAL_SHARD_CAPACITY: usize = 65_536;
 pub(crate) const GROWING: usize = 1usize << (usize::BITS - 1);
 
-#[repr(C, align(64))]
+#[repr(C)]
 pub struct Entry<V> {
    pub key: CompactKey,
    pub state: AtomicU64,
@@ -368,6 +367,19 @@ pub(crate) unsafe fn drop_raw_table<V>(ptr: *mut u8) {
    }
 }
 
+pub(crate) unsafe fn drop_raw_table_and_entries<V>(ptr: *mut u8) {
+   let table = ptr.cast::<SlotTable<V>>();
+   for slot in unsafe { (*table).slots() } {
+      let p = slot.load(Ordering::Relaxed);
+      if !p.is_null() {
+         unsafe { drop_raw_entry::<V>(p.cast()) };
+      }
+   }
+   unsafe {
+      drop_raw_table::<V>(ptr);
+   }
+}
+
 pub(crate) fn alloc_table<V>(table: SlotTable<V>) -> *mut SlotTable<V> {
    let layout = Layout::new::<SlotTable<V>>();
    let ptr = unsafe { rust_zmalloc::alloc_raw(layout) }.cast::<SlotTable<V>>();
@@ -473,13 +485,18 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
    #[inline(always)]
    fn enter_insert(&self) -> InsertGuard<'_> {
       loop {
+         let gate = self.insert_gate.load(Ordering::Relaxed);
+         if gate & GROWING != 0 {
+            std::hint::spin_loop();
+            continue;
+         }
          let val = self.insert_gate.fetch_add(1, Ordering::Acquire);
          if val & GROWING == 0 {
             return InsertGuard {
                gate: &self.insert_gate,
             };
          }
-         self.insert_gate.fetch_sub(1, Ordering::Relaxed);
+         self.insert_gate.fetch_sub(1, Ordering::Release);
          while self.insert_gate.load(Ordering::Relaxed) & GROWING != 0 {
             std::hint::spin_loop();
          }
@@ -904,6 +921,11 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
    fn grow(&self) {
       let _lock = self.grow_lock.lock().unwrap_or_else(|e| e.into_inner());
 
+      let cur_table = self.table();
+      if self.len.load(Ordering::Relaxed) < cur_table.threshold {
+         return;
+      }
+
       self.insert_gate.fetch_or(GROWING, Ordering::AcqRel);
       while (self.insert_gate.load(Ordering::Acquire) & !GROWING) != 0 {
          std::hint::spin_loop();
@@ -921,8 +943,12 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
          return;
       }
 
-      let new_cap = (old_table.capacity() * 2).next_power_of_two();
-      let new_table = Box::new(SlotTable::<V>::new(new_cap));
+      let new_cap = if old_table.capacity() < 32_768 {
+         (old_table.capacity() * 4).next_power_of_two()
+      } else {
+         (old_table.capacity() * 2).next_power_of_two()
+      };
+      let new_table = SlotTable::<V>::new(new_cap);
 
       let mut live_count: usize = 0;
       for slot in old_table.slots().iter() {
@@ -954,7 +980,7 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
       let new_slots = new_table.slots;
       let new_mask = new_table.mask;
       let new_threshold = new_table.threshold;
-      let new_ptr = alloc_table(*new_table);
+      let new_ptr = alloc_table(new_table);
       self.slots.store(new_slots, Ordering::Release);
       self.mask.store(new_mask, Ordering::Release);
       self.threshold.store(new_threshold, Ordering::Release);

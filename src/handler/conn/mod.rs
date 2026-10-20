@@ -56,7 +56,7 @@ pub fn record_raw_arrival(bytes: usize) {
 }
 
 pub(crate) const SUB_WRITE_BATCH_BYTES: usize = 256 * 1024;
-const RETAINED_WRITE_BUFFER: usize = 256 * 1024;
+const RETAINED_WRITE_BUFFER: usize = 32 * 1024;
 
 mod coalesce;
 mod fast_path;
@@ -122,7 +122,7 @@ impl<'a> Conn<'a> {
       store.client_connected();
       let authenticated = auth.is_none();
       let mut parser = RespParser::new();
-      parser.wbuf.reserve(128 * 1024);
+      parser.wbuf.reserve(16 * 1024);
       Self {
          stream,
          parser,

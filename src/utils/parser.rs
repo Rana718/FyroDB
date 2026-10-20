@@ -44,7 +44,7 @@ impl Default for RespParser {
 
 impl RespParser {
    /// Idle size of the read buffer, and the size it is reclaimed to.
-   const IDLE_READ_BUFFER: usize = 128 * 1024;
+   const IDLE_READ_BUFFER: usize = 64 * 1024;
 
    /// Buffers start unallocated and are created on first use.
    pub fn new() -> Self {
@@ -1579,8 +1579,8 @@ impl RespParser {
             self.rbuf.shrink_to(Self::IDLE_READ_BUFFER);
          }
       }
-      if self.wbuf.is_empty() && self.wbuf.capacity() > 512 * 1024 {
-         self.wbuf.shrink_to(256 * 1024);
+      if self.wbuf.is_empty() && self.wbuf.capacity() > 64 * 1024 {
+         self.wbuf.shrink_to(32 * 1024);
       }
    }
 

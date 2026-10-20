@@ -784,14 +784,7 @@ impl HnswGraph {
       let n = id + 1;
       let lines = n * g.stride / 16;
       if g.blocks.len() < lines {
-         // Within reserved capacity fill exactly; beyond it grow by half
-         // so one-at-a-time inserts stay amortized O(1).
-         let target = if lines <= g.blocks.capacity() {
-            g.blocks.capacity()
-         } else {
-            lines.max(g.blocks.len() + g.blocks.len() / 2)
-         };
-         g.blocks.resize_with(target, Line::zero);
+         g.blocks.resize_with(lines, Line::zero);
       }
       while g.flags.len() < n {
          g.flags.push(AtomicU8::new(F_DELETED));

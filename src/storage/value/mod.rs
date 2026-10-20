@@ -388,4 +388,4 @@ impl StoreValue {
 const _: () = assert!(std::mem::size_of::<SmallStr>() == 24);
 const _: () = assert!(std::mem::size_of::<FyroDB>() == 24);
 const _: () = assert!(std::mem::size_of::<StoreValue>() == 32);
-const _: () = assert!(customhash::entry_size::<StoreValue>() == 64);
+const _: () = assert!(customhash::entry_size::<StoreValue>() == 56);

@@ -142,6 +142,39 @@ pub fn stats() -> Stats {
    }
 }
 
+#[cfg(all(not(any(feature = "jemalloc", feature = "system")), target_os = "linux"))]
+#[used]
+#[unsafe(link_section = ".init_array")]
+static INIT_ALLOC: extern "C" fn() = {
+   extern "C" fn init() {
+      configure_allocator();
+   }
+   init
+};
+
+#[cfg(not(any(feature = "jemalloc", feature = "system")))]
+pub fn configure_allocator() {
+   static INIT: std::sync::Once = std::sync::Once::new();
+   INIT.call_once(|| {
+      unsafe extern "C" {
+         fn mi_option_set(option: i32, value: i64);
+      }
+      unsafe {
+         // mi_option_purge_delay = 15: 0 (immediate purge of unused pages to OS)
+         mi_option_set(15, 0);
+         // mi_option_arena_reserve = 23: 0 (don't pre-reserve 1GB arena upfront)
+         mi_option_set(23, 0);
+         // mi_option_arena_eager_commit = 4: 0 (don't eagerly commit arenas)
+         mi_option_set(4, 0);
+         // mi_option_eager_commit = 3: 0 (don't eagerly commit segments)
+         mi_option_set(3, 0);
+      }
+   });
+}
+
+#[cfg(any(feature = "jemalloc", feature = "system"))]
+pub fn configure_allocator() {}
+
 /// Only mimalloc exposes forced collection; others decay on their own.
 pub fn purge() {
    #[cfg(not(any(feature = "jemalloc", feature = "system")))]

@@ -258,7 +258,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
          return;
       }
 
-      let new_table = Box::new(SlotTable::<V>::new(new_cap));
+      let new_table = SlotTable::<V>::new(new_cap);
       for slot in old_table.slots().iter() {
          let p = slot.load(Ordering::Acquire);
          if p.is_null() {
@@ -285,7 +285,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
       let new_slots = new_table.slots;
       let new_mask = new_table.mask;
       let new_threshold = new_table.threshold;
-      let new_ptr = alloc_table(*new_table);
+      let new_ptr = alloc_table(new_table);
       shard.slots.store(new_slots, Ordering::Release);
       shard.mask.store(new_mask, Ordering::Release);
       shard.threshold.store(new_threshold, Ordering::Release);
@@ -325,14 +325,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
          }
          shard.len.store(0, Ordering::Relaxed);
          if !old_ptr.is_null() {
-            let old_table = unsafe { &*old_ptr };
-            for slot in old_table.slots().iter() {
-               let p = slot.load(Ordering::Relaxed);
-               if !p.is_null() {
-                  unsafe { ebr::retire_raw(p.cast(), drop_raw_entry::<V>) };
-               }
-            }
-            unsafe { ebr::retire_raw(old_ptr.cast(), drop_raw_table::<V>) };
+            unsafe { ebr::retire_raw(old_ptr.cast(), drop_raw_table_and_entries::<V>) };
          }
          shard.insert_gate.fetch_and(!GROWING, Ordering::Release);
       }

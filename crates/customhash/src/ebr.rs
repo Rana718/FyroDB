@@ -7,7 +7,7 @@ use crossbeam_utils::CachePadded;
 
 const INACTIVE: u64 = 0;
 const RETIRED: u64 = u64::MAX;
-const COLLECT_INTERVAL: usize = 512;
+const COLLECT_INTERVAL: usize = 64;
 
 static GLOBAL_EPOCH: AtomicU64 = AtomicU64::new(1);
 static PARTICIPANTS: AtomicPtr<Participant> = AtomicPtr::new(ptr::null_mut());

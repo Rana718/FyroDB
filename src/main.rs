@@ -76,6 +76,7 @@ fn main() {
       println!("  RAW_ARRIVAL=enabled (pure network-to-parser ingress benchmark mode)");
    }
    let config = Config::from_env();
+   rust_zmalloc::configure_allocator();
    #[cfg(feature = "profiling")]
    start_profiler();
 

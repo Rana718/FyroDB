@@ -131,7 +131,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
    pub fn with_shards(n: usize) -> Self {
       Self::build(
          n.next_power_of_two().max(1),
-         DEFAULT_SHARD_CAPACITY,
+         INITIAL_SHARD_CAPACITY,
          usize::MAX,
       )
    }
@@ -139,7 +139,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
    pub fn with_capacity(shard_count: usize, expected_keys: usize) -> Self {
       let n = shard_count.next_power_of_two().max(1);
       let per_shard = if expected_keys == usize::MAX || expected_keys == 0 {
-         DEFAULT_SHARD_CAPACITY
+         INITIAL_SHARD_CAPACITY
       } else {
          let target = (expected_keys.saturating_mul(LOAD_DEN) / LOAD_NUM) / n;
          target.next_power_of_two().max(INITIAL_SHARD_CAPACITY)

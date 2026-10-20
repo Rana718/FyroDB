@@ -19,7 +19,7 @@ cleanup() {
 trap cleanup EXIT
 
 port="${FYRODB_PORT:-$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')}"
-FYRODB_PORT="$port" FYRODB_RDB_PATH="$work/bench.rdb" "$bin" >"$work/server.log" 2>&1 &
+MIMALLOC_PURGE_DELAY=0 MIMALLOC_ARENA_RESERVE=0 MIMALLOC_ARENA_EAGER_COMMIT=0 FYRODB_PORT="$port" FYRODB_RDB_PATH="$work/bench.rdb" "$bin" >"$work/server.log" 2>&1 &
 pid=$!
 ready=0
 for _ in $(seq 1 100); do
