@@ -25,7 +25,11 @@ fn read_int(buf: &[u8], mut i: usize) -> Option<(usize, usize)> {
    None
 }
 
+#[inline(always)]
 fn names_key(c: &[u8]) -> bool {
+   if c.len() <= 3 {
+      return true;
+   }
    const NON_KEY: &[&[u8]] = &[
       b"PUBLISH",
       b"SPUBLISH",
@@ -137,6 +141,7 @@ pub(crate) struct Hint {
    ptr: usize,
    len: usize,
    hash: u64,
+   entry: *const (),
 }
 
 impl Conn<'_> {
@@ -149,6 +154,30 @@ impl Conn<'_> {
       if buf.len() < 16 {
          return p.filled;
       }
+      if buf.len() >= 20 {
+         const T2: u32 = u32::from_ne_bytes(*b"*2\r\n");
+         const H_GET_UPPER: u64 = u64::from_ne_bytes(*b"$3\r\nGET\r");
+         const H_GET_LOWER: u64 = u64::from_ne_bytes(*b"$3\r\nget\r");
+         let tag = unsafe { std::ptr::read_unaligned(buf.as_ptr() as *const u32) };
+         if tag == T2 {
+            let w8 = unsafe { std::ptr::read_unaligned(buf.as_ptr().add(4) as *const u64) };
+            if w8 == H_GET_UPPER || w8 == H_GET_LOWER {
+               return p.pos;
+            }
+         }
+      }
+      if buf.len() >= 24 {
+         const T3: u32 = u32::from_ne_bytes(*b"*3\r\n");
+         const H_SET_UPPER: u64 = u64::from_ne_bytes(*b"$3\r\nSET\r");
+         const H_SET_LOWER: u64 = u64::from_ne_bytes(*b"$3\r\nset\r");
+         let tag = unsafe { std::ptr::read_unaligned(buf.as_ptr() as *const u32) };
+         if tag == T3 {
+            let w8 = unsafe { std::ptr::read_unaligned(buf.as_ptr().add(4) as *const u64) };
+            if w8 == H_SET_UPPER || w8 == H_SET_LOWER {
+               return p.pos;
+            }
+         }
+      }
       let mut keys: [&[u8]; BATCH] = [&[]; BATCH];
       let (n, used) = scan_keys(buf, &mut keys);
       if n < 2 {
@@ -159,12 +188,26 @@ impl Conn<'_> {
       let next = p.pos + used.max(1);
       {
          let mut hashes = [0u64; BATCH];
-         self.store.data.prefetch_batch(&keys[..n], &mut hashes);
-         for (h, (k, hash)) in self.hints.iter_mut().zip(keys[..n].iter().zip(hashes)) {
+         let mut tables = [std::ptr::null(); BATCH];
+         let mut entries = [std::ptr::null(); BATCH];
+         self
+            .store
+            .data
+            .prefetch_slots(&keys[..n], &mut hashes[..n], &mut tables[..n]);
+         self
+            .store
+            .data
+            .probe_and_prefetch_entries(&tables[..n], &hashes[..n], &mut entries[..n]);
+         for (h, (k, (&hash, &entry))) in self.hints.iter_mut().zip(
+            keys[..n]
+               .iter()
+               .zip(hashes[..n].iter().zip(entries[..n].iter())),
+         ) {
             *h = Hint {
                ptr: k.as_ptr() as usize,
                len: k.len(),
                hash,
+               entry,
             };
          }
          self.hint_n = n as u8;
@@ -244,24 +287,24 @@ impl Conn<'_> {
    }
 
    #[inline(always)]
-   pub(super) fn hint_for(&mut self, part: (*const u8, usize)) -> Option<u64> {
+   pub(super) fn hint_for(&mut self, part: (*const u8, usize)) -> (Option<u64>, *const ()) {
       let idx = self.hint_idx as usize;
       let n = self.hint_n as usize;
       if idx < n {
          let h = &self.hints[idx];
          if h.ptr == part.0 as usize && h.len == part.1 && h.hash != 0 {
             self.hint_idx += 1;
-            return Some(h.hash);
+            return (Some(h.hash), h.entry);
          }
       }
       for i in 0..n {
          let h = &self.hints[i];
          if h.ptr == part.0 as usize && h.len == part.1 && h.hash != 0 {
             self.hint_idx = (i + 1) as u8;
-            return Some(h.hash);
+            return (Some(h.hash), h.entry);
          }
       }
-      None
+      (None, std::ptr::null())
    }
 }
 

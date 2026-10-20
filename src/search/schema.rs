@@ -54,6 +54,21 @@ impl VectorAttrs {
    pub fn decode(&self, bytes: &[u8]) -> Option<Vec<f32>> {
       self.elem().decode(bytes, self.dims)
    }
+
+   /// Zero-copy access to f32 slice when already aligned float32, otherwise fallback.
+   #[inline(always)]
+   pub fn with_f32_slice<R>(&self, bytes: &[u8], f: impl FnOnce(&[f32]) -> R) -> Option<R> {
+      if bytes.len() != self.blob_len() {
+         return None;
+      }
+      if self.elem() == fyro_vector::ElemType::Float32 && (bytes.as_ptr() as usize & 3) == 0 {
+         let slice = bytemuck::cast_slice::<u8, f32>(bytes);
+         Some(f(slice))
+      } else {
+         let decoded = self.decode(bytes)?;
+         Some(f(&decoded))
+      }
+   }
 }
 
 /// Safe bounds for user-supplied HNSW parameters preventing unreasonable

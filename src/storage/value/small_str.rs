@@ -34,7 +34,7 @@ pub(crate) enum Tag {
 impl Tag {
    #[inline(always)]
    pub(crate) fn inline(n: usize) -> Tag {
-      assert!(n <= 23);
+      debug_assert!(n <= 23);
       unsafe { std::mem::transmute::<u8, Tag>(n as u8) }
    }
 }
@@ -93,24 +93,7 @@ impl SmallStr {
 
    #[inline]
    pub fn new(s: &str) -> Self {
-      if s.len() <= SMALL_STR_CAP {
-         let mut data = [0u8; SMALL_STR_CAP];
-         data[..s.len()].copy_from_slice(s.as_bytes());
-         Self {
-            data,
-            len: Tag::inline(s.len()),
-         }
-      } else {
-         let ptr = Box::into_raw(s.to_owned().into_boxed_str());
-         let mut data = [0u8; SMALL_STR_CAP];
-         let bytes = (ptr as *const u8 as usize).to_ne_bytes();
-         data[..8].copy_from_slice(&bytes);
-         Self::store_heap_len(&mut data, s.len());
-         Self {
-            data,
-            len: Tag::Heap,
-         }
-      }
+      Self::from_slice(s.as_bytes())
    }
 
    #[inline]
@@ -181,6 +164,37 @@ impl SmallStr {
       }
    }
 
+   #[inline(always)]
+   pub fn overwrite_bytes(&mut self, s: &[u8]) {
+      let len = s.len();
+      if (self.len as usize) <= SMALL_STR_CAP && len <= SMALL_STR_CAP {
+         unsafe {
+            if len <= 8 {
+               if len >= 4 {
+                  let w1 = std::ptr::read_unaligned(s.as_ptr().cast::<u32>());
+                  let w2 = std::ptr::read_unaligned(s.as_ptr().add(len - 4).cast::<u32>());
+                  std::ptr::write_unaligned(self.data.as_mut_ptr().cast::<u32>(), w1);
+                  std::ptr::write_unaligned(self.data.as_mut_ptr().add(len - 4).cast::<u32>(), w2);
+               } else if len > 0 {
+                  for i in 0..len {
+                     *self.data.as_mut_ptr().add(i) = *s.as_ptr().add(i);
+                  }
+               }
+            } else {
+               std::ptr::copy_nonoverlapping(s.as_ptr(), self.data.as_mut_ptr(), len);
+            }
+         }
+         self.len = Tag::inline(len);
+         return;
+      }
+      *self = Self::from_slice(s);
+   }
+
+   #[inline(always)]
+   pub fn overwrite_str(&mut self, s: &str) {
+      self.overwrite_bytes(s.as_bytes());
+   }
+
    #[inline]
    pub fn push_str(&mut self, s: &str) {
       let cur = self.len();
@@ -205,7 +219,7 @@ impl SmallStr {
       }
    }
 
-   #[inline]
+   #[inline(always)]
    pub fn as_bytes(&self) -> &[u8] {
       if self.len != Tag::Heap {
          &self.data[..self.len as usize]
@@ -213,6 +227,57 @@ impl SmallStr {
          let ptr = usize::from_ne_bytes(self.data[..8].try_into().unwrap()) as *const u8;
          unsafe { std::slice::from_raw_parts(ptr, Self::read_heap_len(&self.data)) }
       }
+   }
+
+   #[inline(always)]
+   pub fn write_resp(&self, out: &mut Vec<u8>) {
+      let len = self.len as usize;
+      if len < 10 {
+         let old_len = out.len();
+         let total = 6 + len;
+         if out.capacity() < old_len + total {
+            crate::utils::resp::write_bulk(out, self.as_str());
+            return;
+         }
+         unsafe {
+            let p = out.as_mut_ptr().add(old_len);
+            p.cast::<u32>().write_unaligned(u32::from_ne_bytes([
+               b'$',
+               b'0' + len as u8,
+               b'\r',
+               b'\n',
+            ]));
+            p.add(4)
+               .cast::<u64>()
+               .write_unaligned(self.data.as_ptr().cast::<u64>().read_unaligned());
+            p.add(4 + len)
+               .cast::<u16>()
+               .write_unaligned(u16::from_ne_bytes(*b"\r\n"));
+            out.set_len(old_len + total);
+         }
+         return;
+      }
+      if len <= SMALL_STR_CAP {
+         let old_len = out.len();
+         let total = 7 + len;
+         if out.capacity() < old_len + total {
+            crate::utils::resp::write_bulk(out, self.as_str());
+            return;
+         }
+         unsafe {
+            let p = out.as_mut_ptr().add(old_len);
+            let d1 = b'0' + (len / 10) as u8;
+            let d2 = b'0' + (len % 10) as u8;
+            std::ptr::copy_nonoverlapping([b'$', d1, d2, b'\r', b'\n'].as_ptr(), p, 5);
+            std::ptr::copy_nonoverlapping(self.data.as_ptr(), p.add(5), len);
+            p.add(5 + len)
+               .cast::<u16>()
+               .write_unaligned(u16::from_ne_bytes(*b"\r\n"));
+            out.set_len(old_len + total);
+         }
+         return;
+      }
+      crate::utils::resp::write_bulk_bytes(out, self.as_bytes());
    }
 
    #[inline]

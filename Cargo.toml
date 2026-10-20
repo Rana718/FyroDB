@@ -1,6 +1,6 @@
 [package]
 name = "fyro_db"
-version = "0.2.3"
+version = "0.2.4"
 edition = "2024"
 license = "Apache-2.0"
 
@@ -48,6 +48,11 @@ path = "src/main.rs"
 [[bin]]
 name = "without_tcp"
 path = "src/bin/without_tcp.rs"
+required-features = ["bench-tools"]
+
+[[bin]]
+name = "tcp_proto_bench"
+path = "src/bin/tcp_proto_bench.rs"
 required-features = ["bench-tools"]
 
 [features]

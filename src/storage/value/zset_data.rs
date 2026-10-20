@@ -1,7 +1,7 @@
 use super::small_str::SmallStr;
 use std::collections::HashMap;
 
-const CHUNK_MAX: usize = 256;
+const CHUNK_MAX: usize = 64;
 const INDEX_ON: usize = 128;
 const INDEX_OFF: usize = 64;
 
@@ -91,6 +91,12 @@ impl ZSetData {
          chunks: Vec::with_capacity(cap / CHUNK_MAX + 1),
          index: None,
          len: 0,
+      }
+   }
+
+   pub fn reserve(&mut self, additional: usize) {
+      if let Some(ix) = &mut self.index {
+         ix.reserve(additional);
       }
    }
 
@@ -206,13 +212,17 @@ impl ZSetData {
       }
       self.len += 1;
       self.place(entry);
-      self.sync_index();
+      if self.index.is_none() && self.len > INDEX_ON {
+         self.sync_index();
+      }
    }
 
    fn place(&mut self, entry: ZEntry) {
       let (score, member) = (entry.score, entry.member.as_str());
       let Some(last) = self.chunks.last_mut() else {
-         self.chunks.push(vec![entry]);
+         let mut c = Vec::with_capacity(CHUNK_MAX);
+         c.push(entry);
+         self.chunks.push(c);
          return;
       };
       let ci = if last.last().is_some_and(|e| before(e, score, member)) {
@@ -228,11 +238,17 @@ impl ZSetData {
          ci
       };
       if self.chunks[ci].len() > CHUNK_MAX {
-         let tail = {
-            let c = &mut self.chunks[ci];
-            c.split_off(c.len() / 2)
-         };
-         self.chunks.insert(ci + 1, tail);
+         if ci + 1 == self.chunks.len() {
+            let mut new_chunk = Vec::with_capacity(CHUNK_MAX);
+            new_chunk.push(self.chunks[ci].pop().unwrap());
+            self.chunks.push(new_chunk);
+         } else {
+            let tail = {
+               let c = &mut self.chunks[ci];
+               c.split_off(c.len() / 2)
+            };
+            self.chunks.insert(ci + 1, tail);
+         }
       }
    }
 

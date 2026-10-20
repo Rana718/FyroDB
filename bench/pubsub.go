@@ -105,17 +105,24 @@ func runPubSub(addr string) {
 			defer conn.Close()
 
 			conn.SetDeadline(time.Now().Add(30 * time.Second))
-			r := bufio.NewReaderSize(conn, 128<<10)
 			pubBatch := bytes.Repeat(pubCmd, PUB_PIPE_SIZE)
 
-			sent := 0
-			for sent < PUB_MSGS_EACH {
-				batch := min(PUB_PIPE_SIZE, PUB_MSGS_EACH-sent)
-				writeFull(conn, pubBatch[:batch*len(pubCmd)])
-				skipLines(r, batch)
-				sent += batch
-			}
-			atomic.AddInt64(&published, int64(sent))
+			var writeWg sync.WaitGroup
+			writeWg.Add(1)
+			go func() {
+				defer writeWg.Done()
+				sent := 0
+				for sent < PUB_MSGS_EACH {
+					batch := min(PUB_PIPE_SIZE, PUB_MSGS_EACH-sent)
+					writeFull(conn, pubBatch[:batch*len(pubCmd)])
+					sent += batch
+				}
+			}()
+
+			r := bufio.NewReaderSize(conn, 1<<20)
+			skipLines(r, PUB_MSGS_EACH)
+			writeWg.Wait()
+			atomic.AddInt64(&published, int64(PUB_MSGS_EACH))
 		})
 	}
 	pubWg.Wait()

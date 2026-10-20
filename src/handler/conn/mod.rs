@@ -10,8 +10,53 @@ use crate::utils::parser::{ParseResult, RespParser};
 use super::dispatch::dispatch;
 use super::subscription::do_full_unsubscribe;
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
+static NULL_STORE: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "bench-tools")]
+static RAW_ARRIVAL_ONLY: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "bench-tools")]
+static RAW_ARRIVAL_BYTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+#[inline(always)]
+pub fn is_null_store() -> bool {
+   NULL_STORE.load(Ordering::Relaxed)
+}
+
+pub fn set_null_store(val: bool) {
+   NULL_STORE.store(val, Ordering::Relaxed);
+}
+
+#[cfg(feature = "bench-tools")]
+#[inline(always)]
+pub fn is_raw_arrival_only() -> bool {
+   RAW_ARRIVAL_ONLY.load(Ordering::Relaxed)
+}
+
+#[cfg(feature = "bench-tools")]
+pub fn set_raw_arrival_only(val: bool) {
+   RAW_ARRIVAL_ONLY.store(val, Ordering::Relaxed);
+}
+
+#[cfg(feature = "bench-tools")]
+#[inline(always)]
+pub fn get_raw_arrival_bytes() -> u64 {
+   RAW_ARRIVAL_BYTES.load(Ordering::Relaxed)
+}
+
+#[cfg(feature = "bench-tools")]
+pub fn reset_raw_arrival_bytes() {
+   RAW_ARRIVAL_BYTES.store(0, Ordering::Relaxed);
+}
+
+#[cfg(feature = "bench-tools")]
+#[inline(always)]
+pub fn record_raw_arrival(bytes: usize) {
+   RAW_ARRIVAL_BYTES.fetch_add(bytes as u64, Ordering::Relaxed);
+}
+
 pub(crate) const SUB_WRITE_BATCH_BYTES: usize = 256 * 1024;
-const RETAINED_WRITE_BUFFER: usize = 256 * 1024;
+const RETAINED_WRITE_BUFFER: usize = 128 * 1024;
 
 mod coalesce;
 mod fast_path;
@@ -77,7 +122,7 @@ impl<'a> Conn<'a> {
       store.client_connected();
       let authenticated = auth.is_none();
       let mut parser = RespParser::new();
-      parser.wbuf.reserve(128 * 1024);
+      parser.wbuf.reserve(16 * 1024);
       Self {
          stream,
          parser,
@@ -145,9 +190,6 @@ pub(super) unsafe fn part_bytes<'a>(part: (*const u8, usize)) -> &'a [u8] {
 #[inline(always)]
 pub(super) fn part_str<'a>(out: &mut Vec<u8>, part: (*const u8, usize)) -> Option<&'a str> {
    let bytes: &'a [u8] = unsafe { part_bytes(part) };
-   if bytes.is_ascii() {
-      return Some(unsafe { std::str::from_utf8_unchecked(bytes) });
-   }
    match std::str::from_utf8(bytes) {
       Ok(s) => Some(s),
       Err(_) => {

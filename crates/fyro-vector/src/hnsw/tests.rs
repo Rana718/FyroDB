@@ -632,9 +632,9 @@ fn reordered_graph_answers_identically_through_the_id_map() {
       .map(|(o, n)| (*n, o))
       .collect();
    for q in &queries {
-      let a: Vec<usize> = g.search(q, 10, 64).iter().map(|x| x.1).collect();
+      let a: Vec<usize> = g.search(q, 10, 200).iter().map(|x| x.1).collect();
       let b: Vec<usize> = r
-         .search(q, 10, 64)
+         .search(q, 10, 200)
          .iter()
          .map(|x| back[&(x.1 as u32)])
          .collect();

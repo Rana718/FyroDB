@@ -1,6 +1,371 @@
 use super::*;
 
 #[inline(always)]
+pub(super) fn dispatch_get_run(conn: &mut Conn<'_>, first_key: (*const u8, usize)) {
+   const BATCH: usize = 256;
+   let mut keys: [&[u8]; BATCH] = [&[]; BATCH];
+   let mut hashes = [0u64; BATCH];
+   let mut tables = [std::ptr::null(); BATCH];
+   let mut entries = [std::ptr::null(); BATCH];
+
+   let k0_bytes = unsafe { std::slice::from_raw_parts(first_key.0, first_key.1) };
+   keys[0] = k0_bytes;
+   let mut count = 1;
+
+   const T2: u32 = u32::from_ne_bytes(*b"*2\r\n");
+   while count < BATCH {
+      let avail = conn.parser.filled - conn.parser.pos;
+      if avail < 20 {
+         break;
+      }
+      let buf = unsafe { conn.parser.rbuf.as_ptr().add(conn.parser.pos) };
+      let tag = unsafe { std::ptr::read_unaligned(buf as *const u32) };
+      if tag != T2 {
+         break;
+      }
+      if let Some(k_ptr) = conn.parser.try_fast_get_key_at(buf, avail) {
+         keys[count] = unsafe { std::slice::from_raw_parts(k_ptr.0, k_ptr.1) };
+         count += 1;
+      } else {
+         break;
+      }
+   }
+
+   if is_null_store() {
+      let out = &mut conn.parser.wbuf;
+      out.reserve(count * 11);
+      const GET_REPLY_11: &[u8] = b"$5\r\nvalue\r\n";
+      let old_len = out.len();
+      unsafe {
+         out.set_len(old_len + count * 11);
+         let mut p = out.as_mut_ptr().add(old_len);
+         for _ in 0..count {
+            std::ptr::copy_nonoverlapping(GET_REPLY_11.as_ptr(), p, 11);
+            p = p.add(11);
+         }
+      }
+      return;
+   }
+
+   if count == 1 {
+      let (hint, entry) = conn.hint_for(first_key);
+      let out = &mut conn.parser.wbuf;
+      let Some(key) = part_str(out, first_key) else {
+         return;
+      };
+      if !conn.store.get_to_buf_auto(key, hint, entry, out) {
+         out.extend_from_slice(b"$-1\r\n");
+      }
+      return;
+   }
+
+   conn
+      .store
+      .prefetch_slots(&keys[..count], &mut hashes[..count], &mut tables[..count]);
+   conn
+      .store
+      .probe_and_prefetch_entries(&tables[..count], &hashes[..count], &mut entries[..count]);
+   let out = &mut conn.parser.wbuf;
+   out.reserve(count * 32);
+   for i in 0..count {
+      let p = entries[i];
+      if !p.is_null() {
+         let e = unsafe { &*p.cast::<customhash::Entry<crate::storage::value::StoreValue>>() };
+         let state = e.state.load(std::sync::atomic::Ordering::Relaxed);
+         let expected = ((hashes[i] as u32 as u64) << 32) | customhash::STATE_OCCUPIED;
+         if (state & customhash::STATE_MATCH_MASK) == expected && e.key.eq_bytes(keys[i]) {
+            let val = unsafe { (*e.value.get()).assume_init_ref() };
+            if val.expires_ms == 0 || !val.is_expired() {
+               if let crate::storage::value::FyroDB::String(s) = &val.value {
+                  s.write_resp(out);
+                  continue;
+               }
+            } else {
+               if let Ok(key_str) = std::str::from_utf8(keys[i]) {
+                  conn.store.data.remove(key_str);
+               }
+               out.extend_from_slice(b"$-1\r\n");
+               continue;
+            }
+         }
+      }
+      let Ok(key_str) = std::str::from_utf8(keys[i]) else {
+         crate::utils::resp::write_err(out, "invalid UTF-8 in request");
+         continue;
+      };
+      if !conn
+         .store
+         .get_to_buf_auto(key_str, Some(hashes[i]), entries[i], out)
+      {
+         out.extend_from_slice(b"$-1\r\n");
+      }
+   }
+}
+
+#[inline(always)]
+pub(super) fn dispatch_set_run(
+   conn: &mut Conn<'_>,
+   first_key: (*const u8, usize),
+   first_val: (*const u8, usize),
+) {
+   const BATCH: usize = 256;
+   let mut keys: [&[u8]; BATCH] = [&[]; BATCH];
+   let mut vals: [(*const u8, usize); BATCH] = [(std::ptr::null(), 0); BATCH];
+   let mut hashes = [0u64; BATCH];
+   let mut tables = [std::ptr::null(); BATCH];
+   let mut entries = [std::ptr::null(); BATCH];
+
+   let k0_bytes = unsafe { std::slice::from_raw_parts(first_key.0, first_key.1) };
+   keys[0] = k0_bytes;
+   vals[0] = first_val;
+   let mut count = 1;
+
+   const T3: u32 = u32::from_ne_bytes(*b"*3\r\n");
+   while count < BATCH {
+      let avail = conn.parser.filled - conn.parser.pos;
+      if avail < 24 {
+         break;
+      }
+      let buf = unsafe { conn.parser.rbuf.as_ptr().add(conn.parser.pos) };
+      let tag = unsafe { std::ptr::read_unaligned(buf as *const u32) };
+      if tag != T3 {
+         break;
+      }
+      if let Some((k_ptr, v_ptr)) = conn.parser.try_fast_set_key_val_at(buf, avail) {
+         keys[count] = unsafe { std::slice::from_raw_parts(k_ptr.0, k_ptr.1) };
+         vals[count] = v_ptr;
+         count += 1;
+      } else {
+         break;
+      }
+   }
+
+   if is_null_store() {
+      let out = &mut conn.parser.wbuf;
+      out.reserve(count * 5);
+      const OK_REPLY_5: &[u8] = b"+OK\r\n";
+      let old_len = out.len();
+      unsafe {
+         out.set_len(old_len + count * 5);
+         let mut p = out.as_mut_ptr().add(old_len);
+         for _ in 0..count {
+            std::ptr::copy_nonoverlapping(OK_REPLY_5.as_ptr(), p, 5);
+            p = p.add(5);
+         }
+      }
+      return;
+   }
+
+   if count == 1 {
+      let (hint, entry) = conn.hint_for(first_key);
+      let out = &mut conn.parser.wbuf;
+      let Some(key) = part_str(out, first_key) else {
+         return;
+      };
+      let Some(value) = part_str(out, first_val) else {
+         return;
+      };
+      conn.store.set_string_auto(key, hint, entry, value, 0);
+      if conn.store.has_replication() {
+         conn.store.record_current_value(key);
+      }
+      out.extend_from_slice(b"+OK\r\n");
+      return;
+   }
+
+   conn
+      .store
+      .prefetch_slots_write(&keys[..count], &mut hashes[..count], &mut tables[..count]);
+   conn.store.probe_and_prefetch_entries_write(
+      &tables[..count],
+      &hashes[..count],
+      &mut entries[..count],
+   );
+   let out = &mut conn.parser.wbuf;
+   out.reserve(count * 5);
+   let old_len = out.len();
+   let mut success = true;
+   for i in 0..count {
+      let p = entries[i];
+      if !p.is_null() && !conn.store.has_replication() {
+         let e = unsafe { &*p.cast::<customhash::Entry<crate::storage::value::StoreValue>>() };
+         let expected = ((hashes[i] as u32 as u64) << 32) | customhash::STATE_OCCUPIED;
+         let mut current = e.state.load(std::sync::atomic::Ordering::Relaxed);
+         if (current & customhash::STATE_MATCH_MASK) == expected && e.key.eq_bytes(keys[i]) {
+            let val_bytes = unsafe { std::slice::from_raw_parts(vals[i].0, vals[i].1) };
+            let mut updated = false;
+            for _ in 0..4 {
+               let locked = customhash::bump_seq(current) | customhash::STATE_LOCK;
+               match e.state.compare_exchange_weak(
+                  current,
+                  locked,
+                  std::sync::atomic::Ordering::Acquire,
+                  std::sync::atomic::Ordering::Relaxed,
+               ) {
+                  Ok(_) => {
+                     conn.store.data.snap_before_write(e);
+                     let val = unsafe { (*e.value.get()).assume_init_mut() };
+                     val.expires_ms = 0;
+                     if let crate::storage::value::FyroDB::String(ref mut s) = val.value {
+                        s.overwrite_bytes(val_bytes);
+                     } else {
+                        val.value = crate::storage::value::FyroDB::String(
+                           crate::storage::value::SmallStr::from_slice(val_bytes),
+                        );
+                     }
+                     let unlocked = (customhash::bump_seq(locked) & !customhash::STATE_LOCK)
+                        | customhash::STATE_OCCUPIED;
+                     e.state
+                        .store(unlocked, std::sync::atomic::Ordering::Release);
+                     conn.store.data.touched_bytes(keys[i]);
+                     updated = true;
+                     break;
+                  }
+                  Err(observed) => {
+                     current = observed;
+                     if (current & customhash::STATE_MATCH_MASK) != expected {
+                        break;
+                     }
+                     std::hint::spin_loop();
+                  }
+               }
+            }
+            if updated {
+               continue;
+            }
+         }
+      }
+
+      let Ok(key_str) = std::str::from_utf8(keys[i]) else {
+         crate::utils::resp::write_err(out, "invalid UTF-8 in request");
+         success = false;
+         continue;
+      };
+      let val_bytes = unsafe { std::slice::from_raw_parts(vals[i].0, vals[i].1) };
+      let Ok(val_str) = std::str::from_utf8(val_bytes) else {
+         crate::utils::resp::write_err(out, "invalid UTF-8 in request");
+         success = false;
+         continue;
+      };
+      conn
+         .store
+         .set_string_auto(key_str, Some(hashes[i]), entries[i], val_str, 0);
+      if conn.store.has_replication() {
+         conn.store.record_current_value(key_str);
+      }
+   }
+   if success {
+      unsafe {
+         out.set_len(old_len + count * 5);
+         let mut p = out.as_mut_ptr().add(old_len);
+         for _ in 0..count {
+            std::ptr::copy_nonoverlapping(b"+OK\r\n".as_ptr(), p, 5);
+            p = p.add(5);
+         }
+      }
+   }
+}
+
+pub(super) fn dispatch_json_set_run(conn: &mut Conn<'_>, first_raw: &[(*const u8, usize)]) -> bool {
+   if first_raw.len() != 4 {
+      return false;
+   }
+   let first_path = unsafe { part_bytes(first_raw[2]) };
+   if first_path != b"." {
+      return false;
+   }
+   const BATCH: usize = 128;
+   let mut keys: [&[u8]; BATCH] = [&[]; BATCH];
+   let mut vals: [(*const u8, usize); BATCH] = [(std::ptr::null(), 0); BATCH];
+   let mut hashes = [0u64; BATCH];
+   let mut tables = [std::ptr::null(); BATCH];
+   let mut entries = [std::ptr::null(); BATCH];
+
+   keys[0] = unsafe { part_bytes(first_raw[1]) };
+   vals[0] = first_raw[3];
+   let mut count = 1;
+
+   while count < BATCH {
+      let avail = conn.parser.filled - conn.parser.pos;
+      if avail < 32 {
+         break;
+      }
+      let buf = unsafe { conn.parser.rbuf.as_ptr().add(conn.parser.pos) };
+      if let Some((k_ptr, v_ptr)) = conn.parser.try_fast_json_set_key_val_at(buf, avail) {
+         keys[count] = unsafe { std::slice::from_raw_parts(k_ptr.0, k_ptr.1) };
+         vals[count] = v_ptr;
+         count += 1;
+      } else {
+         break;
+      }
+   }
+
+   if count == 1 {
+      let (hint, entry) = conn.hint_for(first_raw[1]);
+      let out = &mut conn.parser.wbuf;
+      let Some(key) = part_str(out, first_raw[1]) else {
+         return false;
+      };
+      let Some(val) = part_str(out, first_raw[3]) else {
+         return false;
+      };
+      conn.store.set_json_auto(key, hint, entry, val);
+      if conn.store.has_replication() {
+         conn.store.record_current_value(key);
+      }
+      crate::utils::resp::write_ok(out);
+      return true;
+   }
+
+   conn
+      .store
+      .prefetch_slots_write(&keys[..count], &mut hashes[..count], &mut tables[..count]);
+   conn.store.probe_and_prefetch_entries_write(
+      &tables[..count],
+      &hashes[..count],
+      &mut entries[..count],
+   );
+
+   let out = &mut conn.parser.wbuf;
+   out.reserve(count * 5);
+   let old_len = out.len();
+   let mut success = true;
+
+   for i in 0..count {
+      let Ok(key_str) = std::str::from_utf8(keys[i]) else {
+         crate::utils::resp::write_err(out, "invalid UTF-8 in request");
+         success = false;
+         continue;
+      };
+      let val_bytes = unsafe { std::slice::from_raw_parts(vals[i].0, vals[i].1) };
+      let Ok(val_str) = std::str::from_utf8(val_bytes) else {
+         crate::utils::resp::write_err(out, "invalid UTF-8 in request");
+         success = false;
+         continue;
+      };
+      conn
+         .store
+         .set_json_auto(key_str, Some(hashes[i]), entries[i], val_str);
+      if conn.store.has_replication() {
+         conn.store.record_current_value(key_str);
+      }
+   }
+
+   if success {
+      const OK_REPLY_5: &[u8] = b"+OK\r\n";
+      unsafe {
+         out.set_len(old_len + count * 5);
+         let mut p = out.as_mut_ptr().add(old_len);
+         for _ in 0..count {
+            std::ptr::copy_nonoverlapping(OK_REPLY_5.as_ptr(), p, 5);
+            p = p.add(5);
+         }
+      }
+   }
+   true
+}
+
+#[inline(always)]
 pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
    if raw.is_empty() {
       return;
@@ -8,6 +373,18 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
 
    let cmd_len = raw[0].1;
    let cmd: &[u8] = unsafe { part_bytes(raw[0]) };
+
+   if is_null_store() {
+      let out = &mut conn.parser.wbuf;
+      if cmd.eq_ignore_ascii_case(b"GET") {
+         out.extend_from_slice(b"$5\r\nvalue\r\n");
+      } else if cmd.eq_ignore_ascii_case(b"PING") {
+         out.extend_from_slice(b"+PONG\r\n");
+      } else {
+         out.extend_from_slice(b"+OK\r\n");
+      }
+      return;
+   }
 
    if !conn.authenticated {
       handle_unauth(conn, raw, cmd, cmd_len);
@@ -17,29 +394,10 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
    if !conn.store.cluster.enabled && !conn.store.at_key_capacity() {
       if cmd_len == 3 {
          if cmd.eq_ignore_ascii_case(b"GET") && raw.len() == 2 {
-            let hint = conn.hint_for(raw[1]);
-            let out = &mut conn.parser.wbuf;
-            let Some(key) = part_str(out, raw[1]) else {
-               return;
-            };
-            if !conn.store.get_to_buf_hinted(key, hint, out) {
-               out.extend_from_slice(b"$-1\r\n");
-            }
+            dispatch_get_run(conn, raw[1]);
             return;
          } else if cmd.eq_ignore_ascii_case(b"SET") && raw.len() == 3 {
-            let hint = conn.hint_for(raw[1]);
-            let out = &mut conn.parser.wbuf;
-            let Some(key) = part_str(out, raw[1]) else {
-               return;
-            };
-            let Some(value) = part_str(out, raw[2]) else {
-               return;
-            };
-            conn.store.set_string_hinted(key, hint, value, 0);
-            if conn.store.has_replication() {
-               conn.store.record_current_value(key);
-            }
-            out.extend_from_slice(b"+OK\r\n");
+            dispatch_set_run(conn, raw[1], raw[2]);
             return;
          } else if cmd.eq_ignore_ascii_case(b"DEL") && raw.len() == 2 {
             let out = &mut conn.parser.wbuf;
@@ -89,7 +447,7 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
                return;
             }
          } else if cmd.eq_ignore_ascii_case(b"INCR") && raw.len() == 2 {
-            let hint = conn.hint_for(raw[1]);
+            let (hint, _) = conn.hint_for(raw[1]);
             let out = &mut conn.parser.wbuf;
             let Some(key) = part_str(out, raw[1]) else {
                return;
@@ -191,8 +549,8 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
             let Some(v) = part_str(out, raw[4]) else {
                return;
             };
-            match conn.store.xadd(key, id_str, &[(f, v)], None, false) {
-               Ok(Some(id)) => crate::utils::resp::write_bulk(out, &id),
+            match conn.store.xadd_id(key, id_str, &[(f, v)], None, false) {
+               Ok(Some(id)) => id.write_to_resp(out),
                Ok(None) => crate::utils::resp::write_nil(out),
                Err(e) => crate::utils::resp::write_store_err(out, e),
             }
@@ -538,7 +896,7 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
 
    if cmd_len == 3 {
       if cmd.eq_ignore_ascii_case(b"SET") && raw.len() >= 3 {
-         let hint = conn.hint_for(raw[1]);
+         let (hint, entry) = conn.hint_for(raw[1]);
          let out = &mut conn.parser.wbuf;
          let Some(key) = part_str(out, raw[1]) else {
             return;
@@ -547,7 +905,7 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
             return;
          };
          if raw.len() == 3 {
-            conn.store.set_string_hinted(key, hint, value, 0);
+            conn.store.set_string_auto(key, hint, entry, value, 0);
             if conn.store.has_replication() {
                conn.store.record_current_value(key);
             }
@@ -555,16 +913,13 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
             return;
          }
       } else if cmd.eq_ignore_ascii_case(b"GET") && raw.len() == 2 {
-         let hint = conn.hint_for(raw[1]);
+         let (hint, entry) = conn.hint_for(raw[1]);
          let out = &mut conn.parser.wbuf;
          let Some(key) = part_str(out, raw[1]) else {
             return;
          };
-         if !conn
-            .store
-            .get_to_buf_hinted(key, hint, &mut conn.parser.wbuf)
-         {
-            conn.parser.wbuf.extend_from_slice(b"$-1\r\n");
+         if !conn.store.get_to_buf_auto(key, hint, entry, out) {
+            out.extend_from_slice(b"$-1\r\n");
          }
          return;
       } else if cmd.eq_ignore_ascii_case(b"DEL") && raw.len() == 2 {

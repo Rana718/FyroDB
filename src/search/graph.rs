@@ -259,6 +259,9 @@ fn build_graph_entry(
          }
       }
    }
+   drop(entry);
+   drop(graph);
+   rust_zmalloc::purge();
    out
 }
 

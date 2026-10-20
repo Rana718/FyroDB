@@ -1,6 +1,6 @@
 [package]
 name = "customhash"
-version = "0.2.3"
+version = "0.2.4"
 edition = "2024"
 
 [lib]
@@ -14,7 +14,5 @@ rust-zmalloc = { path = "../rust-zmalloc" }
 
 [dev-dependencies]
 dashmap = "6.2"
-flurry = "0.5.2"
-papaya = "0.2.5"
 scc = "3.8"
 ahash = "0.8"

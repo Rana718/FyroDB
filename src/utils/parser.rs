@@ -1,9 +1,11 @@
+pub type RawSlice = (*const u8, usize);
+
 pub struct RespParser {
    pub rbuf: Vec<u8>,
    pub filled: usize,
    pub pos: usize,
    pub wbuf: Vec<u8>,
-   pub parts_raw: Vec<(*const u8, usize)>,
+   pub parts_raw: Vec<RawSlice>,
    /// Progress through multi-read commands with offsets relative to command start,
    /// surviving buffer compaction.
    partial: Option<Partial>,
@@ -42,7 +44,7 @@ impl Default for RespParser {
 
 impl RespParser {
    /// Idle size of the read buffer, and the size it is reclaimed to.
-   const IDLE_READ_BUFFER: usize = 2 * 1024;
+   const IDLE_READ_BUFFER: usize = 64 * 1024;
 
    /// Buffers start unallocated and are created on first use.
    pub fn new() -> Self {
@@ -60,13 +62,13 @@ impl RespParser {
       if self.pos == self.filled && self.partial.is_none() {
          self.pos = 0;
          self.filled = 0;
-      } else if self.rbuf.len() - self.filled < 1024 {
+      } else if self.rbuf.len() - self.filled < 16 * 1024 {
          if self.pos > 0 {
             self.rbuf.copy_within(self.pos..self.filled, 0);
             self.filled -= self.pos;
             self.pos = 0;
          }
-         if self.rbuf.len() - self.filled < 1024 {
+         if self.rbuf.len() - self.filled < 16 * 1024 {
             let grown = (self.rbuf.len() * 2).max(Self::IDLE_READ_BUFFER);
             self.rbuf.resize(grown, 0);
          }
@@ -90,21 +92,17 @@ impl RespParser {
    }
 
    #[inline(always)]
-   fn try_fast_get_at(&mut self, buf: *const u8, avail: usize) -> Option<ParseResult> {
-      const H2: u32 = u32::from_ne_bytes(*b"$3\r\n");
-      const GET_UPPER: u32 = u32::from_ne_bytes(*b"GET\r");
-      const GET_LOWER: u32 = u32::from_ne_bytes(*b"get\r");
+   pub(crate) fn try_fast_get_at(&mut self, buf: *const u8, avail: usize) -> Option<ParseResult> {
+      const H_GET_UPPER: u64 = u64::from_ne_bytes(*b"$3\r\nGET\r");
+      const H_GET_LOWER: u64 = u64::from_ne_bytes(*b"$3\r\nget\r");
       const LF_DOLLAR: u16 = u16::from_ne_bytes(*b"\n$");
       const CRLF: u16 = u16::from_ne_bytes(*b"\r\n");
 
       if avail < 20 {
          return None;
       }
-      if unsafe { std::ptr::read_unaligned(buf.add(4) as *const u32) } != H2 {
-         return None;
-      }
-      let w4 = unsafe { std::ptr::read_unaligned(buf.add(8) as *const u32) };
-      if w4 != GET_UPPER && w4 != GET_LOWER {
+      let w8 = unsafe { std::ptr::read_unaligned(buf.add(4) as *const u64) };
+      if w8 != H_GET_UPPER && w8 != H_GET_LOWER {
          return None;
       }
       if unsafe { std::ptr::read_unaligned(buf.add(12) as *const u16) } != LF_DOLLAR {
@@ -164,21 +162,78 @@ impl RespParser {
    }
 
    #[inline(always)]
-   fn try_fast_set_at(&mut self, buf: *const u8, avail: usize) -> Option<ParseResult> {
-      const H2: u32 = u32::from_ne_bytes(*b"$3\r\n");
-      const SET_UPPER: u32 = u32::from_ne_bytes(*b"SET\r");
-      const SET_LOWER: u32 = u32::from_ne_bytes(*b"set\r");
+   pub(crate) fn try_fast_get_key_at(&mut self, buf: *const u8, avail: usize) -> Option<RawSlice> {
+      const H_GET_UPPER: u64 = u64::from_ne_bytes(*b"$3\r\nGET\r");
+      const H_GET_LOWER: u64 = u64::from_ne_bytes(*b"$3\r\nget\r");
+      const LF_DOLLAR: u16 = u16::from_ne_bytes(*b"\n$");
+      const CRLF: u16 = u16::from_ne_bytes(*b"\r\n");
+
+      if avail < 20 {
+         return None;
+      }
+      let w8 = unsafe { std::ptr::read_unaligned(buf.add(4) as *const u64) };
+      if w8 != H_GET_UPPER && w8 != H_GET_LOWER {
+         return None;
+      }
+      if unsafe { std::ptr::read_unaligned(buf.add(12) as *const u16) } != LF_DOLLAR {
+         return None;
+      }
+      let k1 = unsafe { *buf.add(14) };
+      if !k1.is_ascii_digit() {
+         return None;
+      }
+      let (key_len, key_offset) =
+         if unsafe { std::ptr::read_unaligned(buf.add(15) as *const u16) } == CRLF {
+            ((k1 - b'0') as usize, 17)
+         } else {
+            let k2 = unsafe { *buf.add(15) };
+            if k2.is_ascii_digit() {
+               if unsafe { std::ptr::read_unaligned(buf.add(16) as *const u16) } == CRLF {
+                  (((k1 - b'0') as usize) * 10 + (k2 - b'0') as usize, 18)
+               } else {
+                  let k3 = unsafe { *buf.add(16) };
+                  if k3.is_ascii_digit()
+                     && unsafe { std::ptr::read_unaligned(buf.add(17) as *const u16) } == CRLF
+                  {
+                     (
+                        ((k1 - b'0') as usize) * 100
+                           + ((k2 - b'0') as usize) * 10
+                           + (k3 - b'0') as usize,
+                        19,
+                     )
+                  } else {
+                     return None;
+                  }
+               }
+            } else {
+               return None;
+            }
+         };
+
+      let total_len = key_offset + key_len + 2;
+      if avail < total_len {
+         return None;
+      }
+      if unsafe { std::ptr::read_unaligned(buf.add(total_len - 2) as *const u16) } != CRLF {
+         return None;
+      }
+
+      self.pos += total_len;
+      Some(unsafe { (buf.add(key_offset), key_len) })
+   }
+
+   #[inline(always)]
+   pub(crate) fn try_fast_set_at(&mut self, buf: *const u8, avail: usize) -> Option<ParseResult> {
+      const H_SET_UPPER: u64 = u64::from_ne_bytes(*b"$3\r\nSET\r");
+      const H_SET_LOWER: u64 = u64::from_ne_bytes(*b"$3\r\nset\r");
       const LF_DOLLAR: u16 = u16::from_ne_bytes(*b"\n$");
       const CRLF: u16 = u16::from_ne_bytes(*b"\r\n");
 
       if avail < 24 {
          return None;
       }
-      if unsafe { std::ptr::read_unaligned(buf.add(4) as *const u32) } != H2 {
-         return None;
-      }
-      let w4 = unsafe { std::ptr::read_unaligned(buf.add(8) as *const u32) };
-      if w4 != SET_UPPER && w4 != SET_LOWER {
+      let w8 = unsafe { std::ptr::read_unaligned(buf.add(4) as *const u64) };
+      if w8 != H_SET_UPPER && w8 != H_SET_LOWER {
          return None;
       }
       if unsafe { std::ptr::read_unaligned(buf.add(12) as *const u16) } != LF_DOLLAR {
@@ -288,6 +343,251 @@ impl RespParser {
       }
       self.pos += total_len;
       Some(ParseResult::Complete)
+   }
+
+   #[inline(always)]
+   pub(crate) fn try_fast_set_key_val_at(
+      &mut self,
+      buf: *const u8,
+      avail: usize,
+   ) -> Option<(RawSlice, RawSlice)> {
+      const H_SET_UPPER: u64 = u64::from_ne_bytes(*b"$3\r\nSET\r");
+      const H_SET_LOWER: u64 = u64::from_ne_bytes(*b"$3\r\nset\r");
+      const LF_DOLLAR: u16 = u16::from_ne_bytes(*b"\n$");
+      const CRLF: u16 = u16::from_ne_bytes(*b"\r\n");
+
+      if avail < 24 {
+         return None;
+      }
+      let w8 = unsafe { std::ptr::read_unaligned(buf.add(4) as *const u64) };
+      if w8 != H_SET_UPPER && w8 != H_SET_LOWER {
+         return None;
+      }
+      if unsafe { std::ptr::read_unaligned(buf.add(12) as *const u16) } != LF_DOLLAR {
+         return None;
+      }
+      let k1 = unsafe { *buf.add(14) };
+      if !k1.is_ascii_digit() {
+         return None;
+      }
+      let (key_len, key_offset) =
+         if unsafe { std::ptr::read_unaligned(buf.add(15) as *const u16) } == CRLF {
+            ((k1 - b'0') as usize, 17)
+         } else {
+            let k2 = unsafe { *buf.add(15) };
+            if k2.is_ascii_digit() {
+               if unsafe { std::ptr::read_unaligned(buf.add(16) as *const u16) } == CRLF {
+                  (((k1 - b'0') as usize) * 10 + (k2 - b'0') as usize, 18)
+               } else {
+                  let k3 = unsafe { *buf.add(16) };
+                  if k3.is_ascii_digit()
+                     && unsafe { std::ptr::read_unaligned(buf.add(17) as *const u16) } == CRLF
+                  {
+                     (
+                        ((k1 - b'0') as usize) * 100
+                           + ((k2 - b'0') as usize) * 10
+                           + (k3 - b'0') as usize,
+                        19,
+                     )
+                  } else {
+                     return None;
+                  }
+               }
+            } else {
+               return None;
+            }
+         };
+
+      let p_val_header = key_offset + key_len + 2;
+      if avail < p_val_header + 5 {
+         return None;
+      }
+      if unsafe { std::ptr::read_unaligned(buf.add(p_val_header - 2) as *const u16) } != CRLF {
+         return None;
+      }
+      if unsafe { *buf.add(p_val_header) } != b'$' {
+         return None;
+      }
+      let v1 = unsafe { *buf.add(p_val_header + 1) };
+      if !v1.is_ascii_digit() {
+         return None;
+      }
+      let (val_len, val_offset) =
+         if unsafe { std::ptr::read_unaligned(buf.add(p_val_header + 2) as *const u16) } == CRLF {
+            ((v1 - b'0') as usize, p_val_header + 4)
+         } else {
+            let v2 = unsafe { *buf.add(p_val_header + 2) };
+            if v2.is_ascii_digit() {
+               if unsafe { std::ptr::read_unaligned(buf.add(p_val_header + 3) as *const u16) }
+                  == CRLF
+               {
+                  (
+                     ((v1 - b'0') as usize) * 10 + (v2 - b'0') as usize,
+                     p_val_header + 5,
+                  )
+               } else {
+                  let v3 = unsafe { *buf.add(p_val_header + 3) };
+                  if v3.is_ascii_digit()
+                     && unsafe { std::ptr::read_unaligned(buf.add(p_val_header + 4) as *const u16) }
+                        == CRLF
+                  {
+                     (
+                        ((v1 - b'0') as usize) * 100
+                           + ((v2 - b'0') as usize) * 10
+                           + (v3 - b'0') as usize,
+                        p_val_header + 6,
+                     )
+                  } else {
+                     return None;
+                  }
+               }
+            } else {
+               return None;
+            }
+         };
+
+      let total_len = val_offset + val_len + 2;
+      if avail < total_len {
+         return None;
+      }
+      if unsafe { std::ptr::read_unaligned(buf.add(total_len - 2) as *const u16) } != CRLF {
+         return None;
+      }
+
+      self.pos += total_len;
+      Some(unsafe {
+         (
+            (buf.add(key_offset), key_len),
+            (buf.add(val_offset), val_len),
+         )
+      })
+   }
+
+   #[inline(always)]
+   pub(crate) fn try_fast_json_set_key_val_at(
+      &mut self,
+      buf: *const u8,
+      avail: usize,
+   ) -> Option<(RawSlice, RawSlice)> {
+      const CRLF: u16 = u16::from_ne_bytes(*b"\r\n");
+      const MIN_HDR: usize = 19;
+      if avail < MIN_HDR + 10 {
+         return None;
+      }
+      if unsafe { std::ptr::read_unaligned(buf as *const u32) } != u32::from_ne_bytes(*b"*4\r\n") {
+         return None;
+      }
+      if unsafe { std::ptr::read_unaligned(buf.add(4) as *const u32) }
+         != u32::from_ne_bytes(*b"$8\r\n")
+      {
+         return None;
+      }
+      let w0 = unsafe { std::ptr::read_unaligned(buf.add(8) as *const u64) };
+      const JSON_SET_UPPER: u64 = u64::from_ne_bytes(*b"JSON.SET");
+      const JSON_SET_LOWER: u64 = u64::from_ne_bytes(*b"json.set");
+      if w0 != JSON_SET_UPPER && w0 != JSON_SET_LOWER {
+         return None;
+      }
+      if unsafe { std::ptr::read_unaligned(buf.add(16) as *const u16) } != CRLF
+         || unsafe { *buf.add(18) } != b'$'
+      {
+         return None;
+      }
+      let k1 = unsafe { *buf.add(19) };
+      if !k1.is_ascii_digit() {
+         return None;
+      }
+      let (key_len, key_offset) =
+         if unsafe { std::ptr::read_unaligned(buf.add(20) as *const u16) } == CRLF {
+            ((k1 - b'0') as usize, 22)
+         } else {
+            let k2 = unsafe { *buf.add(20) };
+            if k2.is_ascii_digit() {
+               if unsafe { std::ptr::read_unaligned(buf.add(21) as *const u16) } == CRLF {
+                  (((k1 - b'0') as usize) * 10 + (k2 - b'0') as usize, 23)
+               } else {
+                  let k3 = unsafe { *buf.add(21) };
+                  if k3.is_ascii_digit()
+                     && unsafe { std::ptr::read_unaligned(buf.add(22) as *const u16) } == CRLF
+                  {
+                     (
+                        ((k1 - b'0') as usize) * 100
+                           + ((k2 - b'0') as usize) * 10
+                           + (k3 - b'0') as usize,
+                        24,
+                     )
+                  } else {
+                     return None;
+                  }
+               }
+            } else {
+               return None;
+            }
+         };
+
+      let path_start = key_offset + key_len;
+      if avail < path_start + 12 {
+         return None;
+      }
+      if unsafe { std::ptr::read_unaligned(buf.add(path_start) as *const u16) } != CRLF {
+         return None;
+      }
+      let p_check = unsafe { std::slice::from_raw_parts(buf.add(path_start + 2), 8) };
+      if p_check != b"$1\r\n.\r\n$" {
+         return None;
+      }
+      let val_hdr = path_start + 10;
+      let v1 = unsafe { *buf.add(val_hdr) };
+      if !v1.is_ascii_digit() {
+         return None;
+      }
+      let (val_len, val_offset) =
+         if unsafe { std::ptr::read_unaligned(buf.add(val_hdr + 1) as *const u16) } == CRLF {
+            ((v1 - b'0') as usize, val_hdr + 3)
+         } else {
+            let v2 = unsafe { *buf.add(val_hdr + 1) };
+            if v2.is_ascii_digit() {
+               if unsafe { std::ptr::read_unaligned(buf.add(val_hdr + 2) as *const u16) } == CRLF {
+                  (
+                     ((v1 - b'0') as usize) * 10 + (v2 - b'0') as usize,
+                     val_hdr + 4,
+                  )
+               } else {
+                  let v3 = unsafe { *buf.add(val_hdr + 2) };
+                  if v3.is_ascii_digit()
+                     && unsafe { std::ptr::read_unaligned(buf.add(val_hdr + 3) as *const u16) }
+                        == CRLF
+                  {
+                     (
+                        ((v1 - b'0') as usize) * 100
+                           + ((v2 - b'0') as usize) * 10
+                           + (v3 - b'0') as usize,
+                        val_hdr + 5,
+                     )
+                  } else {
+                     return None;
+                  }
+               }
+            } else {
+               return None;
+            }
+         };
+
+      let total_len = val_offset + val_len + 2;
+      if avail < total_len {
+         return None;
+      }
+      if unsafe { std::ptr::read_unaligned(buf.add(total_len - 2) as *const u16) } != CRLF {
+         return None;
+      }
+
+      self.pos += total_len;
+      Some(unsafe {
+         (
+            (buf.add(key_offset), key_len),
+            (buf.add(val_offset), val_len),
+         )
+      })
    }
 
    #[inline(always)]
@@ -1385,13 +1685,13 @@ impl RespParser {
          self.parts_raw.clear();
          self.filled = 0;
          self.pos = 0;
-         if self.rbuf.len() > 16 * 1024 {
+         if self.rbuf.len() > 512 * 1024 {
             self.rbuf.truncate(Self::IDLE_READ_BUFFER);
             self.rbuf.shrink_to(Self::IDLE_READ_BUFFER);
          }
       }
-      if self.wbuf.is_empty() && self.wbuf.capacity() > Self::IDLE_READ_BUFFER {
-         self.wbuf = Vec::new();
+      if self.wbuf.is_empty() && self.wbuf.capacity() > 256 * 1024 {
+         self.wbuf.shrink_to(128 * 1024);
       }
    }
 
@@ -1511,14 +1811,14 @@ mod tests {
    #[test]
    fn releasing_the_read_buffer_reclaims_it_after_a_large_command() {
       let mut parser = RespParser::new();
-      let value = "y".repeat(20_000);
+      let value = "y".repeat(600_000);
       let command = format!("*2\r\n$3\r\nGET\r\n${}\r\n{value}\r\n", value.len());
       feed(&mut parser, command.as_bytes());
       assert!(matches!(parser.parse_one(), ParseResult::Complete));
-      assert!(parser.rbuf.len() > 16 * 1024);
+      assert!(parser.rbuf.len() > 512 * 1024);
 
       parser.release_read_buffer();
-      assert_eq!(parser.rbuf.len(), 2 * 1024);
+      assert_eq!(parser.rbuf.len(), RespParser::IDLE_READ_BUFFER);
       assert!(parser.parts_raw.is_empty());
       assert_eq!(parser.pos, 0);
       assert_eq!(parser.filled, 0);

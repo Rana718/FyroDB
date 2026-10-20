@@ -1,11 +1,11 @@
 [package]
 name = "rust-zmalloc"
-version = "0.2.3"
+version = "0.2.4"
 edition = "2024"
 license = "BSD-3-Clause"
 
 [dependencies]
-mimalloc = { version = "0.1", default-features = false }
+mimalloc = { version = "0.1", default-features = false, features = ["no_thp"] }
 jemallocator = { version = "0.5", optional = true, features = ["background_threads_runtime_support"] }
 libc = "0.2"
 

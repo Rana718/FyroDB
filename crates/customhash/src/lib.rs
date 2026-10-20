@@ -21,13 +21,14 @@ pub use ebr::{Guard, force_collect, force_collect_quiescent, pin, retire_raw};
 
 use std::marker::PhantomData;
 use std::ops::Deref;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
 
 use foldhash::fast::RandomState;
-use key::CompactKey;
+pub use key::CompactKey;
 use std::hash::BuildHasher;
 
 use shard::*;
+pub use shard::{Entry, STATE_LOCK, STATE_MATCH_MASK, STATE_OCCUPIED, bump_seq, unlock_write};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Full;
@@ -62,6 +63,7 @@ pub trait WriteObserver: Send + Sync + 'static {
 
 pub struct CustomMap<V> {
    shards: Box<[Shard<V>]>,
+   shard_fast: Box<[ShardFast<V>]>,
    shift: u32,
    shard_mask: usize,
    hasher: RandomState,
@@ -70,6 +72,8 @@ pub struct CustomMap<V> {
    /// One relaxed load on every write when nothing observes. Shared so
    /// the observer's owner can toggle it without a map reference.
    observing: std::sync::Arc<Flag>,
+   observing_ptr: *const AtomicBool,
+   snap_active: AtomicBool,
    snap: std::sync::Arc<snap::SnapCtl<V>>,
 }
 
@@ -92,14 +96,30 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
 
    #[inline(always)]
    fn observing(&self) -> bool {
-      self.observing.load(Ordering::Relaxed)
+      unsafe { (*self.observing_ptr).load(Ordering::Relaxed) }
    }
 
    /// A write to `key` completed.
    #[inline(always)]
-   pub(crate) fn touched(&self, key: &str) {
+   pub fn touched(&self, key: &str) {
       if self.observing() {
          self.notify(key);
+      }
+   }
+
+   #[inline(always)]
+   pub fn touched_bytes(&self, bytes: &[u8]) {
+      if self.observing()
+         && let Ok(key) = std::str::from_utf8(bytes)
+      {
+         self.notify(key);
+      }
+   }
+
+   #[inline(always)]
+   pub fn snap_before_write(&self, e: &Entry<V>) {
+      if self.snap_active.load(Ordering::Relaxed) {
+         self.snap.before_write(e);
       }
    }
 
@@ -120,7 +140,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
    pub fn with_shards(n: usize) -> Self {
       Self::build(
          n.next_power_of_two().max(1),
-         DEFAULT_SHARD_CAPACITY,
+         INITIAL_SHARD_CAPACITY,
          usize::MAX,
       )
    }
@@ -139,17 +159,34 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
    fn build(n: usize, per_shard: usize, max_keys: usize) -> Self {
       let hasher = RandomState::default();
       let snap = std::sync::Arc::new(snap::SnapCtl::new());
+      let shards: Vec<_> = (0..n)
+         .map(|_| Shard::new(per_shard, snap.clone()))
+         .collect();
+      let shard_fast: Box<[ShardFast<V>]> = shards
+         .iter()
+         .map(|s| ShardFast {
+            slots: AtomicPtr::new(s.slots.load(Ordering::Relaxed)),
+            mask: AtomicUsize::new(s.mask.load(Ordering::Relaxed)),
+         })
+         .collect::<Vec<_>>()
+         .into_boxed_slice();
+      for (i, s) in shards.iter().enumerate() {
+         let sf_ptr = unsafe { shard_fast.as_ptr().add(i) } as *mut ShardFast<V>;
+         s.fast.store(sf_ptr, Ordering::Relaxed);
+      }
+      let observing = std::sync::Arc::new(Flag::default());
+      let observing_ptr: *const AtomicBool = (&*observing) as &AtomicBool as *const AtomicBool;
       CustomMap {
          shift: (u64::BITS - n.trailing_zeros()).min(63),
          shard_mask: n - 1,
-         shards: (0..n)
-            .map(|_| Shard::new(per_shard, snap.clone()))
-            .collect::<Vec<_>>()
-            .into_boxed_slice(),
+         shards: shards.into_boxed_slice(),
+         shard_fast,
          hasher,
          max_keys,
          observer: std::sync::OnceLock::new(),
-         observing: std::sync::Arc::new(Flag::default()),
+         observing_ptr,
+         observing,
+         snap_active: AtomicBool::new(false),
          snap,
       }
    }
@@ -170,36 +207,450 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
       ((hash >> self.shift) as usize) & self.shard_mask
    }
 
-   pub fn prefetch_batch(&self, keys: &[&[u8]], hashes: &mut [u64]) {
-      let n = keys.len().min(PREFETCH_BATCH).min(hashes.len());
+   #[inline(always)]
+   pub fn prefetch_slots<K: AsRef<[u8]>>(
+      &self,
+      keys: &[K],
+      hashes: &mut [u64],
+      tables: &mut [*const ()],
+   ) {
+      let n = keys.len().min(hashes.len()).min(tables.len());
+      let sf_base = self.shard_fast.as_ptr();
+      let mut i = 0;
+      while i + 8 <= n {
+         let k0 = unsafe { std::str::from_utf8_unchecked(keys[i].as_ref()) };
+         let k1 = unsafe { std::str::from_utf8_unchecked(keys[i + 1].as_ref()) };
+         let k2 = unsafe { std::str::from_utf8_unchecked(keys[i + 2].as_ref()) };
+         let k3 = unsafe { std::str::from_utf8_unchecked(keys[i + 3].as_ref()) };
+         let k4 = unsafe { std::str::from_utf8_unchecked(keys[i + 4].as_ref()) };
+         let k5 = unsafe { std::str::from_utf8_unchecked(keys[i + 5].as_ref()) };
+         let k6 = unsafe { std::str::from_utf8_unchecked(keys[i + 6].as_ref()) };
+         let k7 = unsafe { std::str::from_utf8_unchecked(keys[i + 7].as_ref()) };
+
+         let (h0, idx0) = self.locate(k0);
+         let (h1, idx1) = self.locate(k1);
+         let (h2, idx2) = self.locate(k2);
+         let (h3, idx3) = self.locate(k3);
+         let (h4, idx4) = self.locate(k4);
+         let (h5, idx5) = self.locate(k5);
+         let (h6, idx6) = self.locate(k6);
+         let (h7, idx7) = self.locate(k7);
+
+         hashes[i] = h0;
+         hashes[i + 1] = h1;
+         hashes[i + 2] = h2;
+         hashes[i + 3] = h3;
+         hashes[i + 4] = h4;
+         hashes[i + 5] = h5;
+         hashes[i + 6] = h6;
+         hashes[i + 7] = h7;
+
+         let sf0 = unsafe { &*sf_base.add(idx0) };
+         let sf1 = unsafe { &*sf_base.add(idx1) };
+         let sf2 = unsafe { &*sf_base.add(idx2) };
+         let sf3 = unsafe { &*sf_base.add(idx3) };
+         let sf4 = unsafe { &*sf_base.add(idx4) };
+         let sf5 = unsafe { &*sf_base.add(idx5) };
+         let sf6 = unsafe { &*sf_base.add(idx6) };
+         let sf7 = unsafe { &*sf_base.add(idx7) };
+
+         let s0 = unsafe {
+            sf0.slots
+               .load(Ordering::Relaxed)
+               .add((h0 as usize) & sf0.mask.load(Ordering::Relaxed))
+         };
+         let s1 = unsafe {
+            sf1.slots
+               .load(Ordering::Relaxed)
+               .add((h1 as usize) & sf1.mask.load(Ordering::Relaxed))
+         };
+         let s2 = unsafe {
+            sf2.slots
+               .load(Ordering::Relaxed)
+               .add((h2 as usize) & sf2.mask.load(Ordering::Relaxed))
+         };
+         let s3 = unsafe {
+            sf3.slots
+               .load(Ordering::Relaxed)
+               .add((h3 as usize) & sf3.mask.load(Ordering::Relaxed))
+         };
+         let s4 = unsafe {
+            sf4.slots
+               .load(Ordering::Relaxed)
+               .add((h4 as usize) & sf4.mask.load(Ordering::Relaxed))
+         };
+         let s5 = unsafe {
+            sf5.slots
+               .load(Ordering::Relaxed)
+               .add((h5 as usize) & sf5.mask.load(Ordering::Relaxed))
+         };
+         let s6 = unsafe {
+            sf6.slots
+               .load(Ordering::Relaxed)
+               .add((h6 as usize) & sf6.mask.load(Ordering::Relaxed))
+         };
+         let s7 = unsafe {
+            sf7.slots
+               .load(Ordering::Relaxed)
+               .add((h7 as usize) & sf7.mask.load(Ordering::Relaxed))
+         };
+
+         prefetch_line(s0);
+         prefetch_line(s1);
+         prefetch_line(s2);
+         prefetch_line(s3);
+         prefetch_line(s4);
+         prefetch_line(s5);
+         prefetch_line(s6);
+         prefetch_line(s7);
+
+         tables[i] = s0.cast();
+         tables[i + 1] = s1.cast();
+         tables[i + 2] = s2.cast();
+         tables[i + 3] = s3.cast();
+         tables[i + 4] = s4.cast();
+         tables[i + 5] = s5.cast();
+         tables[i + 6] = s6.cast();
+         tables[i + 7] = s7.cast();
+
+         i += 8;
+      }
+      while i < n {
+         let k = unsafe { std::str::from_utf8_unchecked(keys[i].as_ref()) };
+         let (h, idx) = self.locate(k);
+         hashes[i] = h;
+         let sf = unsafe { &*sf_base.add(idx) };
+         let slots = sf.slots.load(Ordering::Relaxed);
+         let mask = sf.mask.load(Ordering::Relaxed);
+         let s = unsafe { slots.add((h as usize) & mask) };
+         prefetch_line(s);
+         tables[i] = s.cast();
+         i += 1;
+      }
+   }
+
+   #[inline(always)]
+   pub fn prefetch_slots_write<K: AsRef<[u8]>>(
+      &self,
+      keys: &[K],
+      hashes: &mut [u64],
+      tables: &mut [*const ()],
+   ) {
+      let n = keys.len().min(hashes.len()).min(tables.len());
+      let sf_base = self.shard_fast.as_ptr();
+      let mut i = 0;
+      while i + 8 <= n {
+         let k0 = unsafe { std::str::from_utf8_unchecked(keys[i].as_ref()) };
+         let k1 = unsafe { std::str::from_utf8_unchecked(keys[i + 1].as_ref()) };
+         let k2 = unsafe { std::str::from_utf8_unchecked(keys[i + 2].as_ref()) };
+         let k3 = unsafe { std::str::from_utf8_unchecked(keys[i + 3].as_ref()) };
+         let k4 = unsafe { std::str::from_utf8_unchecked(keys[i + 4].as_ref()) };
+         let k5 = unsafe { std::str::from_utf8_unchecked(keys[i + 5].as_ref()) };
+         let k6 = unsafe { std::str::from_utf8_unchecked(keys[i + 6].as_ref()) };
+         let k7 = unsafe { std::str::from_utf8_unchecked(keys[i + 7].as_ref()) };
+
+         let (h0, idx0) = self.locate(k0);
+         let (h1, idx1) = self.locate(k1);
+         let (h2, idx2) = self.locate(k2);
+         let (h3, idx3) = self.locate(k3);
+         let (h4, idx4) = self.locate(k4);
+         let (h5, idx5) = self.locate(k5);
+         let (h6, idx6) = self.locate(k6);
+         let (h7, idx7) = self.locate(k7);
+
+         hashes[i] = h0;
+         hashes[i + 1] = h1;
+         hashes[i + 2] = h2;
+         hashes[i + 3] = h3;
+         hashes[i + 4] = h4;
+         hashes[i + 5] = h5;
+         hashes[i + 6] = h6;
+         hashes[i + 7] = h7;
+
+         let sf0 = unsafe { &*sf_base.add(idx0) };
+         let sf1 = unsafe { &*sf_base.add(idx1) };
+         let sf2 = unsafe { &*sf_base.add(idx2) };
+         let sf3 = unsafe { &*sf_base.add(idx3) };
+         let sf4 = unsafe { &*sf_base.add(idx4) };
+         let sf5 = unsafe { &*sf_base.add(idx5) };
+         let sf6 = unsafe { &*sf_base.add(idx6) };
+         let sf7 = unsafe { &*sf_base.add(idx7) };
+
+         let s0 = unsafe {
+            sf0.slots
+               .load(Ordering::Relaxed)
+               .add((h0 as usize) & sf0.mask.load(Ordering::Relaxed))
+         };
+         let s1 = unsafe {
+            sf1.slots
+               .load(Ordering::Relaxed)
+               .add((h1 as usize) & sf1.mask.load(Ordering::Relaxed))
+         };
+         let s2 = unsafe {
+            sf2.slots
+               .load(Ordering::Relaxed)
+               .add((h2 as usize) & sf2.mask.load(Ordering::Relaxed))
+         };
+         let s3 = unsafe {
+            sf3.slots
+               .load(Ordering::Relaxed)
+               .add((h3 as usize) & sf3.mask.load(Ordering::Relaxed))
+         };
+         let s4 = unsafe {
+            sf4.slots
+               .load(Ordering::Relaxed)
+               .add((h4 as usize) & sf4.mask.load(Ordering::Relaxed))
+         };
+         let s5 = unsafe {
+            sf5.slots
+               .load(Ordering::Relaxed)
+               .add((h5 as usize) & sf5.mask.load(Ordering::Relaxed))
+         };
+         let s6 = unsafe {
+            sf6.slots
+               .load(Ordering::Relaxed)
+               .add((h6 as usize) & sf6.mask.load(Ordering::Relaxed))
+         };
+         let s7 = unsafe {
+            sf7.slots
+               .load(Ordering::Relaxed)
+               .add((h7 as usize) & sf7.mask.load(Ordering::Relaxed))
+         };
+
+         prefetch_line(s0);
+         prefetch_line(s1);
+         prefetch_line(s2);
+         prefetch_line(s3);
+         prefetch_line(s4);
+         prefetch_line(s5);
+         prefetch_line(s6);
+         prefetch_line(s7);
+
+         tables[i] = s0.cast();
+         tables[i + 1] = s1.cast();
+         tables[i + 2] = s2.cast();
+         tables[i + 3] = s3.cast();
+         tables[i + 4] = s4.cast();
+         tables[i + 5] = s5.cast();
+         tables[i + 6] = s6.cast();
+         tables[i + 7] = s7.cast();
+
+         i += 8;
+      }
+      while i < n {
+         let k = unsafe { std::str::from_utf8_unchecked(keys[i].as_ref()) };
+         let (h, idx) = self.locate(k);
+         hashes[i] = h;
+         let sf = unsafe { &*sf_base.add(idx) };
+         let slots = sf.slots.load(Ordering::Relaxed);
+         let mask = sf.mask.load(Ordering::Relaxed);
+         let s = unsafe { slots.add((h as usize) & mask) };
+         prefetch_line(s);
+         tables[i] = s.cast();
+         i += 1;
+      }
+   }
+
+   #[inline(always)]
+   pub fn probe_and_prefetch_entries(
+      &self,
+      tables: &[*const ()],
+      hashes: &[u64],
+      entries: &mut [*const ()],
+   ) {
+      let n = tables.len().min(hashes.len()).min(entries.len());
+      let mut i = 0;
+      while i + 8 <= n {
+         let b0 = tables[i].cast::<TaggedSlot<V>>();
+         let b1 = tables[i + 1].cast::<TaggedSlot<V>>();
+         let b2 = tables[i + 2].cast::<TaggedSlot<V>>();
+         let b3 = tables[i + 3].cast::<TaggedSlot<V>>();
+         let b4 = tables[i + 4].cast::<TaggedSlot<V>>();
+         let b5 = tables[i + 5].cast::<TaggedSlot<V>>();
+         let b6 = tables[i + 6].cast::<TaggedSlot<V>>();
+         let b7 = tables[i + 7].cast::<TaggedSlot<V>>();
+
+         let p0 = unsafe { TaggedSlot::probe_from_base(b0, hashes[i], 16) };
+         let p1 = unsafe { TaggedSlot::probe_from_base(b1, hashes[i + 1], 16) };
+         let p2 = unsafe { TaggedSlot::probe_from_base(b2, hashes[i + 2], 16) };
+         let p3 = unsafe { TaggedSlot::probe_from_base(b3, hashes[i + 3], 16) };
+         let p4 = unsafe { TaggedSlot::probe_from_base(b4, hashes[i + 4], 16) };
+         let p5 = unsafe { TaggedSlot::probe_from_base(b5, hashes[i + 5], 16) };
+         let p6 = unsafe { TaggedSlot::probe_from_base(b6, hashes[i + 6], 16) };
+         let p7 = unsafe { TaggedSlot::probe_from_base(b7, hashes[i + 7], 16) };
+
+         entries[i] = p0.cast();
+         entries[i + 1] = p1.cast();
+         entries[i + 2] = p2.cast();
+         entries[i + 3] = p3.cast();
+         entries[i + 4] = p4.cast();
+         entries[i + 5] = p5.cast();
+         entries[i + 6] = p6.cast();
+         entries[i + 7] = p7.cast();
+
+         prefetch_line(p0);
+         prefetch_line(p1);
+         prefetch_line(p2);
+         prefetch_line(p3);
+         prefetch_line(p4);
+         prefetch_line(p5);
+         prefetch_line(p6);
+         prefetch_line(p7);
+
+         i += 8;
+      }
+      while i < n {
+         let s_ptr = tables[i];
+         if s_ptr.is_null() {
+            entries[i] = std::ptr::null();
+         } else {
+            let base = s_ptr.cast::<TaggedSlot<V>>();
+            let p = unsafe { TaggedSlot::probe_from_base(base, hashes[i], 16) };
+            entries[i] = p.cast();
+            prefetch_line(p);
+         }
+         i += 1;
+      }
+   }
+
+   #[inline(always)]
+   pub fn probe_and_prefetch_entries_write(
+      &self,
+      tables: &[*const ()],
+      hashes: &[u64],
+      entries: &mut [*const ()],
+   ) {
+      let n = tables.len().min(hashes.len()).min(entries.len());
+      let mut i = 0;
+      while i + 8 <= n {
+         let b0 = tables[i].cast::<TaggedSlot<V>>();
+         let b1 = tables[i + 1].cast::<TaggedSlot<V>>();
+         let b2 = tables[i + 2].cast::<TaggedSlot<V>>();
+         let b3 = tables[i + 3].cast::<TaggedSlot<V>>();
+         let b4 = tables[i + 4].cast::<TaggedSlot<V>>();
+         let b5 = tables[i + 5].cast::<TaggedSlot<V>>();
+         let b6 = tables[i + 6].cast::<TaggedSlot<V>>();
+         let b7 = tables[i + 7].cast::<TaggedSlot<V>>();
+
+         let p0 = unsafe { TaggedSlot::probe_from_base(b0, hashes[i], 16) };
+         let p1 = unsafe { TaggedSlot::probe_from_base(b1, hashes[i + 1], 16) };
+         let p2 = unsafe { TaggedSlot::probe_from_base(b2, hashes[i + 2], 16) };
+         let p3 = unsafe { TaggedSlot::probe_from_base(b3, hashes[i + 3], 16) };
+         let p4 = unsafe { TaggedSlot::probe_from_base(b4, hashes[i + 4], 16) };
+         let p5 = unsafe { TaggedSlot::probe_from_base(b5, hashes[i + 5], 16) };
+         let p6 = unsafe { TaggedSlot::probe_from_base(b6, hashes[i + 6], 16) };
+         let p7 = unsafe { TaggedSlot::probe_from_base(b7, hashes[i + 7], 16) };
+
+         entries[i] = p0.cast();
+         entries[i + 1] = p1.cast();
+         entries[i + 2] = p2.cast();
+         entries[i + 3] = p3.cast();
+         entries[i + 4] = p4.cast();
+         entries[i + 5] = p5.cast();
+         entries[i + 6] = p6.cast();
+         entries[i + 7] = p7.cast();
+
+         prefetch_line_write(p0);
+         prefetch_line_write(p1);
+         prefetch_line_write(p2);
+         prefetch_line_write(p3);
+         prefetch_line_write(p4);
+         prefetch_line_write(p5);
+         prefetch_line_write(p6);
+         prefetch_line_write(p7);
+
+         i += 8;
+      }
+      while i < n {
+         let s_ptr = tables[i];
+         if s_ptr.is_null() {
+            entries[i] = std::ptr::null();
+         } else {
+            let base = s_ptr.cast::<TaggedSlot<V>>();
+            let p = unsafe { TaggedSlot::probe_from_base(base, hashes[i], 16) };
+            entries[i] = p.cast();
+            prefetch_line_write(p);
+         }
+         i += 1;
+      }
+   }
+
+   pub fn prefetch_batch_entries<K: AsRef<[u8]>>(
+      &self,
+      keys: &[K],
+      hashes: &mut [u64],
+      entries: &mut [*const ()],
+   ) {
+      let n = keys
+         .len()
+         .min(PREFETCH_BATCH)
+         .min(hashes.len())
+         .min(entries.len());
       if n == 0 {
          return;
       }
-      ebr::with_pin(|_| {
-         let mut slots: [(*const shard::TaggedSlot<V>, u64); PREFETCH_BATCH] =
-            [(std::ptr::null(), 0); PREFETCH_BATCH];
-         for ((slot, key), out) in slots.iter_mut().zip(&keys[..n]).zip(hashes.iter_mut()) {
-            let Ok(k) = std::str::from_utf8(key) else {
-               continue;
-            };
-            let (h, idx) = self.locate(k);
-            *out = h;
-            let t = unsafe { self.shards.get_unchecked(idx) }.table();
-            let s = unsafe { t.slots.add((h as usize) & t.mask) };
-            prefetch_line(s);
-            *slot = (s, h);
+      let mut tables: [*const (); PREFETCH_BATCH] = [std::ptr::null(); PREFETCH_BATCH];
+      self.prefetch_slots(&keys[..n], &mut hashes[..n], &mut tables[..n]);
+      self.probe_and_prefetch_entries(&tables[..n], &hashes[..n], &mut entries[..n]);
+   }
+
+   #[inline(always)]
+   pub fn prefetch_batch<K: AsRef<[u8]>>(&self, keys: &[K], hashes: &mut [u64]) {
+      let mut entries = [std::ptr::null(); PREFETCH_BATCH];
+      self.prefetch_batch_entries(keys, hashes, &mut entries);
+   }
+
+   #[inline(always)]
+   pub fn probe_entry_fast(&self, key: &str, hash: u64, idx: usize) -> Option<*const Entry<V>> {
+      let sf = unsafe { &*self.shard_fast.as_ptr().add(idx) };
+      let slots = sf.slots.load(Ordering::Relaxed);
+      let mask = sf.mask.load(Ordering::Relaxed);
+      let base = unsafe { slots.add((hash as usize) & mask) };
+      let p = unsafe { TaggedSlot::probe_from_base(base, hash, 16) };
+      if !p.is_null() {
+         let e = unsafe { &*p };
+         let expected = ((hash as u32 as u64) << 32) | STATE_OCCUPIED;
+         if (e.state.load(Ordering::Relaxed) & STATE_MATCH_MASK) == expected && e.key.eq_str(key) {
+            return Some(p as *const Entry<V>);
          }
-         for &(s, h) in &slots[..n] {
-            if s.is_null() {
-               continue;
-            }
-            if let Ok(p) = unsafe { &*s }.load_if_tag_matches(h, Ordering::Relaxed)
-               && !p.is_null()
-            {
-               prefetch_line(p);
-            }
+      }
+      None
+   }
+
+   #[inline(always)]
+   pub fn with_entry_pinned<R>(
+      &self,
+      key: &str,
+      hash: u64,
+      idx: usize,
+      f: impl FnOnce(&V) -> R,
+   ) -> Option<R> {
+      let entry = unsafe { self.shards.get_unchecked(idx) }.find(key, hash)?;
+      if !state_occupied(&entry.state, Ordering::Acquire) {
+         return None;
+      }
+      Some(f(unsafe { (*entry.value.get()).assume_init_ref() }))
+   }
+
+   #[inline(always)]
+   pub fn with_entry_hint<R>(
+      &self,
+      key: &str,
+      hash: u64,
+      entry_hint: *const (),
+      f: impl FnOnce(&V) -> R,
+   ) -> Option<R> {
+      if !entry_hint.is_null() {
+         let p = entry_hint.cast::<Entry<V>>();
+         let e = unsafe { &*p };
+         let state = e.state.load(Ordering::Acquire);
+         let expected = ((hash as u32 as u64) << 32) | STATE_OCCUPIED;
+         if (state & STATE_MATCH_MASK) == expected && e.key.eq_str(key) {
+            return Some(f(unsafe { (*e.value.get()).assume_init_ref() }));
          }
-      })
+      }
+      let idx = self.shard_of(hash);
+      self.with_entry_pinned(key, hash, idx, f)
    }
 
    #[inline]
@@ -210,13 +661,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
       idx: usize,
       f: impl FnOnce(&V) -> R,
    ) -> Option<R> {
-      ebr::with_pin(|_| {
-         let entry = unsafe { self.shards.get_unchecked(idx) }.find(key, hash)?;
-         if !state_occupied(&entry.state, Ordering::Acquire) {
-            return None;
-         }
-         Some(f(unsafe { (*entry.value.get()).assume_init_ref() }))
-      })
+      ebr::with_pin(|_| self.with_entry_pinned(key, hash, idx, f))
    }
 
    #[inline]
@@ -282,6 +727,20 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
    }
 
    #[inline]
+   pub fn insert_str_hashed(&self, key: &str, value: V, h: u64, idx: usize) -> bool {
+      let is_new = unsafe { self.shards.get_unchecked(idx) }.insert_hashed_key(
+         CompactKey::from_str(key),
+         value,
+         h,
+      );
+      if is_new {
+         self.bump(idx, true);
+      }
+      self.touched(key);
+      is_new
+   }
+
+   #[inline]
    pub fn try_insert(&self, key: String, value: V) -> Result<bool, Full> {
       if self.is_full() {
          let (h, idx) = self.locate(&key);
@@ -318,6 +777,102 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
       self.set_located(key, h, idx, value, || CompactKey::from_str(key))
    }
 
+   #[inline(always)]
+   pub fn insert_slot_fast(&self, hash: u64, key: &str, value: V) -> bool {
+      let idx = self.shard_of(hash);
+      let shard = unsafe { self.shards.get_unchecked(idx) };
+      if shard.insert_slot_fast(hash, key, value) {
+         self.bump(idx, true);
+         return true;
+      }
+      false
+   }
+
+   #[inline(always)]
+   pub fn set_str_hinted_pinned(&self, key: &str, hash: Option<u64>, value: V) -> bool {
+      let (h, idx) = match hash {
+         Some(h) => (h, self.shard_of(h)),
+         None => self.locate(key),
+      };
+      self.set_located_pinned(key, h, idx, value, || CompactKey::from_str(key))
+   }
+
+   #[inline(always)]
+   pub fn set_with_hint(&self, key: &str, hash: u64, entry_hint: *const (), value: V) -> bool {
+      if !entry_hint.is_null() {
+         let p = entry_hint.cast::<Entry<V>>();
+         let e = unsafe { &*p };
+         let current = e.state.load(Ordering::Relaxed);
+         let expected = ((hash as u32 as u64) << 32) | STATE_OCCUPIED;
+         if (current & STATE_MATCH_MASK) == expected && e.key.eq_str(key) {
+            let locked = bump_seq(current) | STATE_LOCK;
+            if e
+               .state
+               .compare_exchange_weak(current, locked, Ordering::Acquire, Ordering::Relaxed)
+               .is_ok()
+            {
+               self.snap_before_write(e);
+               unsafe { (*e.value.get()).assume_init_drop() };
+               unsafe { (*e.value.get()).write(value) };
+               unlock_write(&e.state, locked, true);
+               self.touched(key);
+               return false;
+            }
+         }
+      }
+      let idx = self.shard_of(hash);
+      self.set_located_pinned(key, hash, idx, value, || CompactKey::from_str(key))
+   }
+
+   #[inline(always)]
+   pub fn update_with_hint<R>(
+      &self,
+      key: &str,
+      hash: u64,
+      entry_hint: *const (),
+      f: impl FnOnce(&mut V) -> R,
+   ) -> Option<R> {
+      if !entry_hint.is_null() {
+         let p = entry_hint.cast::<Entry<V>>();
+         let e = unsafe { &*p };
+         let current = e.state.load(Ordering::Relaxed);
+         let expected = ((hash as u32 as u64) << 32) | STATE_OCCUPIED;
+         if (current & STATE_MATCH_MASK) == expected && e.key.eq_str(key) {
+            let locked = bump_seq(current) | STATE_LOCK;
+            if e
+               .state
+               .compare_exchange_weak(current, locked, Ordering::Acquire, Ordering::Relaxed)
+               .is_ok()
+            {
+               self.snap.before_write(e);
+               let res = f(unsafe { (*e.value.get()).assume_init_mut() });
+               unlock_write(&e.state, locked, true);
+               self.touched(key);
+               return Some(res);
+            }
+         }
+      }
+      let idx = self.shard_of(hash);
+      if let Some(e) = unsafe { self.shards.get_unchecked(idx) }.find(key, hash) {
+         let current = e.state.load(Ordering::Relaxed);
+         if (current & (STATE_OCCUPIED | STATE_LOCK)) == STATE_OCCUPIED {
+            let locked = bump_seq(current) | STATE_LOCK;
+            if e
+               .state
+               .compare_exchange_weak(current, locked, Ordering::Acquire, Ordering::Relaxed)
+               .is_ok()
+            {
+               self.snap.before_write(e);
+               let res = f(unsafe { (*e.value.get()).assume_init_mut() });
+               unlock_write(&e.state, locked, true);
+               self.touched(key);
+               return Some(res);
+            }
+         }
+      }
+      None
+   }
+
    fn set_compact(&self, key: &str, value: V, key_owned: impl FnOnce() -> CompactKey) -> bool {
       let (h, idx) = self.locate(key);
       self.set_located(key, h, idx, value, key_owned)
@@ -333,6 +888,18 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
       key_owned: impl FnOnce() -> CompactKey,
    ) -> bool {
       let _guard = ebr::pin();
+      self.set_located_pinned(key, h, idx, value, key_owned)
+   }
+
+   #[inline(always)]
+   pub(crate) fn set_located_pinned(
+      &self,
+      key: &str,
+      h: u64,
+      idx: usize,
+      value: V,
+      key_owned: impl FnOnce() -> CompactKey,
+   ) -> bool {
       let shard = unsafe { self.shards.get_unchecked(idx) };
       let is_new = shard.set_key(key, h, value, key_owned);
       if is_new {
@@ -660,7 +1227,7 @@ impl<V: Clone + Send + Sync + 'static> Default for CustomMap<V> {
    }
 }
 
-pub const PREFETCH_BATCH: usize = 16;
+pub const PREFETCH_BATCH: usize = 32;
 
 #[inline(always)]
 fn prefetch_line<T>(p: *const T) {
@@ -671,6 +1238,20 @@ fn prefetch_line<T>(p: *const T) {
    #[cfg(target_arch = "aarch64")]
    unsafe {
       std::arch::asm!("prfm pldl1keep, [{0}]", in(reg) p, options(nostack, readonly, preserves_flags));
+   }
+   #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+   let _ = p;
+}
+
+#[inline(always)]
+fn prefetch_line_write<T>(p: *const T) {
+   #[cfg(target_arch = "x86_64")]
+   unsafe {
+      std::arch::x86_64::_mm_prefetch::<{ std::arch::x86_64::_MM_HINT_ET0 }>(p.cast());
+   }
+   #[cfg(target_arch = "aarch64")]
+   unsafe {
+      std::arch::asm!("prfm pstl1keep, [{0}]", in(reg) p, options(nostack, readonly, preserves_flags));
    }
    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
    let _ = p;
@@ -918,7 +1499,8 @@ mod tests {
          }
       });
 
-      assert!(map.len() <= KEYS);
+      let l = map.len();
+      assert!(l <= KEYS, "map.len() was {l}, expected <= {KEYS}");
    }
 
    /// `len` has to stay in step with what is actually reachable, across

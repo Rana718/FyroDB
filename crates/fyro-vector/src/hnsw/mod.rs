@@ -784,14 +784,7 @@ impl HnswGraph {
       let n = id + 1;
       let lines = n * g.stride / 16;
       if g.blocks.len() < lines {
-         // Within reserved capacity fill exactly; beyond it grow by half
-         // so one-at-a-time inserts stay amortized O(1).
-         let target = if lines <= g.blocks.capacity() {
-            g.blocks.capacity()
-         } else {
-            lines.max(g.blocks.len() + g.blocks.len() / 2)
-         };
-         g.blocks.resize_with(target, Line::zero);
+         g.blocks.resize_with(lines, Line::zero);
       }
       while g.flags.len() < n {
          g.flags.push(AtomicU8::new(F_DELETED));
@@ -1051,7 +1044,7 @@ impl HnswGraph {
          self.compact();
       }
       let _m = self.maint.lock();
-      let g = self.inner.read();
+      let mut g = self.inner.write();
       let n = g.len;
       let mut links = Vec::new();
       let degree = |id: u32, buf: &mut Vec<u32>| -> usize {
@@ -1108,6 +1101,9 @@ impl HnswGraph {
       for (new, &old) in order.iter().enumerate() {
          map[old as usize] = new as u32;
       }
+      g.flat_int8 = Vec::new();
+      g.flat_scales = Vec::new();
+      g.raw = Vec::new();
       let out = HnswGraph::with_quant(
          self.metric,
          g.dims,

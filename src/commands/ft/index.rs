@@ -204,7 +204,10 @@ pub(super) fn ft_dropindex(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
       }
    }
    match store.search_state().drop_index(name) {
-      Ok(()) => resp::write_ok(out),
+      Ok(()) => {
+         rust_zmalloc::purge();
+         resp::write_ok(out)
+      }
       Err(e) => resp::write_err(out, e),
    }
 }

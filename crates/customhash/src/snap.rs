@@ -32,7 +32,7 @@ impl<V> SnapCtl<V> {
 
    #[inline(always)]
    pub(crate) fn before_write(&self, e: &Entry<V>) {
-      if self.active.load(Ordering::Acquire) {
+      if self.active.load(Ordering::Relaxed) {
          self.capture(e);
       }
    }
