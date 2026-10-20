@@ -86,6 +86,14 @@ impl<'a> Conn<'a> {
                      }
                   }
 
+                  if cmd_len == 8
+                     && cmd.eq_ignore_ascii_case(b"JSON.SET")
+                     && dispatch_json_set_run(self, raw)
+                  {
+                     prefetched = self.parser.pos;
+                     continue;
+                  }
+
                   if (cmd_len == 4 || cmd_len == 5) && is_coalescible_queue(raw) {
                      match dispatch_queue_run(self, raw) {
                         QueueRunOutcome::Done => continue,
@@ -98,7 +106,7 @@ impl<'a> Conn<'a> {
                         QueueRunOutcome::ConnError => return false,
                      }
                   }
-                  if (cmd_len == 3 || cmd_len == 4 || cmd_len == 5)
+                  if (cmd_len == 3 || cmd_len == 4 || cmd_len == 5 || cmd_len == 6 || cmd_len == 8)
                      && is_write_run(raw)
                      && self.next_is_same_write(raw)
                   {

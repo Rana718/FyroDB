@@ -195,6 +195,100 @@ pub(super) fn dispatch_set_run(
    }
 }
 
+pub(super) fn dispatch_json_set_run(
+   conn: &mut Conn<'_>,
+   first_raw: &[(*const u8, usize)],
+) -> bool {
+   if first_raw.len() != 4 {
+      return false;
+   }
+   let first_path = unsafe { part_bytes(first_raw[2]) };
+   if first_path != b"." {
+      return false;
+   }
+   const BATCH: usize = 64;
+   let mut keys: [&[u8]; BATCH] = [&[]; BATCH];
+   let mut vals: [(*const u8, usize); BATCH] = [(std::ptr::null(), 0); BATCH];
+   let mut hashes = [0u64; BATCH];
+   let mut tables = [std::ptr::null(); BATCH];
+   let mut entries = [std::ptr::null(); BATCH];
+
+   keys[0] = unsafe { part_bytes(first_raw[1]) };
+   vals[0] = first_raw[3];
+   let mut count = 1;
+
+   while count < BATCH {
+      let avail = conn.parser.filled - conn.parser.pos;
+      if avail < 32 {
+         break;
+      }
+      let buf = unsafe { conn.parser.rbuf.as_ptr().add(conn.parser.pos) };
+      if let Some((k_ptr, v_ptr)) = conn.parser.try_fast_json_set_key_val_at(buf, avail) {
+         keys[count] = unsafe { std::slice::from_raw_parts(k_ptr.0, k_ptr.1) };
+         vals[count] = v_ptr;
+         count += 1;
+      } else {
+         break;
+      }
+   }
+
+   if count == 1 {
+      let (hint, entry) = conn.hint_for(first_raw[1]);
+      let out = &mut conn.parser.wbuf;
+      let Some(key) = part_str(out, first_raw[1]) else { return false; };
+      let Some(val) = part_str(out, first_raw[3]) else { return false; };
+      conn.store.set_json_auto(key, hint, entry, val);
+      if conn.store.has_replication() {
+         conn.store.record_current_value(key);
+      }
+      crate::utils::resp::write_ok(out);
+      return true;
+   }
+
+   conn.store.prefetch_slots_write(&keys[..count], &mut hashes[..count], &mut tables[..count]);
+   conn.store.probe_and_prefetch_entries_write(
+      &tables[..count],
+      &hashes[..count],
+      &mut entries[..count],
+   );
+
+   let out = &mut conn.parser.wbuf;
+   out.reserve(count * 5);
+   let old_len = out.len();
+   let mut success = true;
+
+   for i in 0..count {
+      let Ok(key_str) = std::str::from_utf8(keys[i]) else {
+         crate::utils::resp::write_err(out, "invalid UTF-8 in request");
+         success = false;
+         continue;
+      };
+      let val_bytes = unsafe { std::slice::from_raw_parts(vals[i].0, vals[i].1) };
+      let Ok(val_str) = std::str::from_utf8(val_bytes) else {
+         crate::utils::resp::write_err(out, "invalid UTF-8 in request");
+         success = false;
+         continue;
+      };
+      conn.store.set_json_auto(key_str, Some(hashes[i]), entries[i], val_str);
+      if conn.store.has_replication() {
+         conn.store.record_current_value(key_str);
+      }
+   }
+
+   if success {
+      const OK_REPLY_5: &[u8] = b"+OK\r\n";
+      unsafe {
+         out.set_len(old_len + count * 5);
+         let mut p = out.as_mut_ptr().add(old_len);
+         for _ in 0..count {
+            std::ptr::copy_nonoverlapping(OK_REPLY_5.as_ptr(), p, 5);
+            p = p.add(5);
+         }
+      }
+   }
+   true
+}
+
 #[inline(always)]
 pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
    if raw.is_empty() {
@@ -379,8 +473,8 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
             let Some(v) = part_str(out, raw[4]) else {
                return;
             };
-            match conn.store.xadd(key, id_str, &[(f, v)], None, false) {
-               Ok(Some(id)) => crate::utils::resp::write_bulk(out, &id),
+            match conn.store.xadd_id(key, id_str, &[(f, v)], None, false) {
+               Ok(Some(id)) => id.write_to_resp(out),
                Ok(None) => crate::utils::resp::write_nil(out),
                Err(e) => crate::utils::resp::write_store_err(out, e),
             }

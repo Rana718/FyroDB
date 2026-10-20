@@ -36,6 +36,16 @@ impl StreamId {
       seq: u64::MAX,
    };
 
+   #[inline(always)]
+   pub fn write_to_resp(&self, out: &mut Vec<u8>) {
+      let mut id_buf = [0u8; 48];
+      let mut cur = &mut id_buf[..];
+      use std::io::Write;
+      let _ = write!(cur, "{}-{}", self.ms, self.seq);
+      let id_len = 48 - cur.len();
+      crate::utils::resp::write_bulk_bytes(out, &id_buf[..id_len]);
+   }
+
    pub fn new(ms: u64, seq: u64) -> Self {
       Self { ms, seq }
    }
@@ -1183,6 +1193,20 @@ impl Store {
       trim: Option<Trim>,
       nomkstream: bool,
    ) -> Result<Option<String>, &'static str> {
+      self
+         .xadd_id(key, id_str, fields, trim, nomkstream)
+         .map(|opt| opt.map(|id| id.to_string()))
+   }
+
+   #[inline]
+   pub fn xadd_id<K: AsRef<str>, V: AsRef<str>>(
+      &self,
+      key: &str,
+      id_str: &str,
+      fields: &[(K, V)],
+      trim: Option<Trim>,
+      nomkstream: bool,
+   ) -> Result<Option<StreamId>, &'static str> {
       let spec = IdSpec::parse(id_str).ok_or(ERR_INVALID_ID)?;
       let apply = |s: &mut StreamData| {
          let id = s.add(spec, fields)?;
@@ -1200,7 +1224,27 @@ impl Store {
          self.stream_upsert(key, apply)?
       };
       self.blocking.signal(key);
-      Ok(Some(id.to_string()))
+      Ok(Some(id))
+   }
+
+   #[inline]
+   pub fn xadd_batch<F>(
+      &self,
+      key: &str,
+      count: usize,
+      mut each: F,
+   ) -> Result<(), &'static str>
+   where
+      F: FnMut(&mut StreamData, usize) -> Result<(), &'static str>,
+   {
+      self.stream_upsert(key, |s| {
+         for i in 0..count {
+            each(s, i)?;
+         }
+         Ok(())
+      })?;
+      self.blocking.signal(key);
+      Ok(())
    }
 
    pub fn xlen(&self, key: &str) -> Result<usize, &'static str> {

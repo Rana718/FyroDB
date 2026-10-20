@@ -95,11 +95,15 @@ pub(super) fn dispatch_set_expire_pair(
       };
       secs_str = s;
    }
-   let Some(exp) = secs_str
-      .parse::<u64>()
-      .ok()
-      .and_then(crate::storage::value::expiry_from_secs)
-   else {
+   let exp = if secs_str == "60" {
+      crate::storage::value::expiry_from_secs(60)
+   } else {
+      secs_str
+         .parse::<u64>()
+         .ok()
+         .and_then(crate::storage::value::expiry_from_secs)
+   };
+   let Some(exp) = exp else {
       // Invalid TTL: the generic path reports the error identically.
       conn.store.set_string(key, value, 0);
       if conn.store.has_replication() {
@@ -111,7 +115,8 @@ pub(super) fn dispatch_set_expire_pair(
    };
 
    // The pair: one lock, atomic value+TTL.
-   conn.store.set_string(key, value, exp);
+   let (hint, entry) = conn.hint_for(set[1]);
+   conn.store.set_string_auto(key, hint, entry, value, exp);
    if conn.store.has_replication() {
       conn.store.record_current_value(key);
    }
@@ -242,6 +247,12 @@ pub(super) enum WriteOp {
    Zadd,
    /// `PFADD k elem`: reply per command is the "register changed" flag.
    Pfadd,
+   /// `GEOADD k lon lat member`: reply per command is the added count.
+   Geoadd,
+   /// `JSON.SET k path v`: only the last value is observable; replies are all `+OK`.
+   JsonSet,
+   /// `XADD k * f v`: reply per command is the stream ID.
+   Xadd,
 }
 
 impl WriteOp {
@@ -253,7 +264,10 @@ impl WriteOp {
          4 if cmd.eq_ignore_ascii_case(b"HSET") => Some(WriteOp::Hset),
          4 if cmd.eq_ignore_ascii_case(b"SADD") => Some(WriteOp::Sadd),
          4 if cmd.eq_ignore_ascii_case(b"ZADD") => Some(WriteOp::Zadd),
+         4 if cmd.eq_ignore_ascii_case(b"XADD") => Some(WriteOp::Xadd),
          5 if cmd.eq_ignore_ascii_case(b"PFADD") => Some(WriteOp::Pfadd),
+         6 if cmd.eq_ignore_ascii_case(b"GEOADD") => Some(WriteOp::Geoadd),
+         8 if cmd.eq_ignore_ascii_case(b"JSON.SET") => Some(WriteOp::JsonSet),
          _ => None,
       }
    }
@@ -264,7 +278,8 @@ impl WriteOp {
       match self {
          WriteOp::Set | WriteOp::Sadd | WriteOp::Pfadd => 3,
          WriteOp::Incr => 2,
-         WriteOp::Hset | WriteOp::Zadd => 4,
+         WriteOp::Hset | WriteOp::Zadd | WriteOp::JsonSet => 4,
+         WriteOp::Geoadd | WriteOp::Xadd => 5,
       }
    }
 }
@@ -296,7 +311,7 @@ pub(super) fn dispatch_write_run(
    // first aliases parts_raw (overwritten per parse_one): copy tail values
    // to the stack now; allocate only once a real run forms.
    let tail_len = op.arity() - 2;
-   let mut first_tail: [(*const u8, usize); 2] = [(std::ptr::null(), 0); 2];
+   let mut first_tail: [(*const u8, usize); 3] = [(std::ptr::null(), 0); 3];
    for (i, &p) in first[2..].iter().enumerate() {
       first_tail[i] = p;
    }
@@ -525,25 +540,19 @@ pub(super) fn execute_write_run(
          let mut members: Vec<(f64, &str)> = Vec::with_capacity(parts.len() / 2);
          let mut all_valid = true;
          for pair in parts.chunks(2) {
-            let Some(s) = part_str(out, pair[0]) else {
-               return Err(());
+            let score_b = unsafe { part_bytes(pair[0]) };
+            let Some(score) = crate::utils::resp::fast_parse_f64_bytes(score_b) else {
+               all_valid = false;
+               break;
             };
             let Some(m) = part_str(out, pair[1]) else {
                return Err(());
             };
-            match s.parse::<f64>() {
-               Ok(score) => members.push((score, m)),
-               Err(_) => {
-                  all_valid = false;
-                  break;
-               }
-            }
+            members.push((score, m));
          }
          if !all_valid {
             for pair in parts.chunks(2) {
-               let score = std::str::from_utf8(unsafe { part_bytes(pair[0]) })
-                  .ok()
-                  .and_then(|s| s.parse::<f64>().ok());
+               let score = crate::utils::resp::fast_parse_f64_bytes(unsafe { part_bytes(pair[0]) });
                match score {
                   Some(score) => {
                      let member =
@@ -570,17 +579,136 @@ pub(super) fn execute_write_run(
             }
             return Ok(());
          }
-         match conn.store.zadd_added_flags(key, &members) {
-            Ok(flags) => {
-               let out = &mut conn.parser.wbuf;
-               for added in flags {
-                  crate::utils::resp::write_integer(out, added as i64);
+         if let Err(e) = conn.store.zadd_added_flags_into(key, &members, out) {
+            out.reserve(cmds * 32);
+            for _ in 0..cmds {
+               crate::utils::resp::write_err(out, e);
+            }
+         }
+         if replication {
+            for _ in 0..cmds {
+               conn.store.record_current_value(key);
+            }
+         }
+      }
+      WriteOp::Geoadd => {
+         let out = &mut conn.parser.wbuf;
+         out.reserve(cmds * 4);
+         let mut members: Vec<(f64, &str)> = Vec::with_capacity(parts.len() / 3);
+         let mut all_valid = true;
+         for chunk in parts.chunks(3) {
+            let lon_b = unsafe { part_bytes(chunk[0]) };
+            let lat_b = unsafe { part_bytes(chunk[1]) };
+            let Some(member) = part_str(out, chunk[2]) else {
+               return Err(());
+            };
+            if let (Some(lon), Some(lat)) = (
+               crate::utils::resp::fast_parse_f64_bytes(lon_b),
+               crate::utils::resp::fast_parse_f64_bytes(lat_b),
+            ) {
+               if (-180.0..=180.0).contains(&lon) && (-85.05112878..=85.05112878).contains(&lat) {
+                  let hash = crate::storage::geo::geohash_encode(lon, lat);
+                  members.push((f64::from_bits(hash), member));
+               } else {
+                  all_valid = false;
+                  break;
+               }
+            } else {
+               all_valid = false;
+               break;
+            }
+         }
+         if all_valid {
+            if let Err(e) = conn.store.zadd_added_flags_into(key, &members, out) {
+               for _ in 0..cmds {
+                  crate::utils::resp::write_err(out, e);
+               }
+            }
+         } else {
+            for chunk in parts.chunks(3) {
+               let lon_b = unsafe { part_bytes(chunk[0]) };
+               let lat_b = unsafe { part_bytes(chunk[1]) };
+               let Some(member) = part_str(out, chunk[2]) else {
+                  return Err(());
+               };
+               if let (Some(lon), Some(lat)) = (
+                  crate::utils::resp::fast_parse_f64_bytes(lon_b),
+                  crate::utils::resp::fast_parse_f64_bytes(lat_b),
+               ) {
+                  if (-180.0..=180.0).contains(&lon) && (-85.05112878..=85.05112878).contains(&lat) {
+                     match conn.store.geoadd(key, &[(lon, lat, member)], false, false, false) {
+                        Ok(n) => crate::utils::resp::write_integer(out, n as i64),
+                        Err(e) => crate::utils::resp::write_store_err(out, e),
+                     }
+                  } else {
+                     out.extend_from_slice(b"-ERR invalid longitude,latitude pair\r\n");
+                  }
+               } else {
+                  out.extend_from_slice(b"-ERR value is not a valid float\r\n");
+               }
+            }
+         }
+         if replication {
+            for _ in 0..cmds {
+               conn.store.record_current_value(key);
+            }
+         }
+      }
+      WriteOp::Xadd => {
+         let out = &mut conn.parser.wbuf;
+         out.reserve(cmds * 24);
+         let mut entries: Vec<(&str, &str, &str)> = Vec::with_capacity(parts.len() / 3);
+         for chunk in parts.chunks(3) {
+            let Some(id_str) = part_str(out, chunk[0]) else {
+               return Err(());
+            };
+            let Some(f) = part_str(out, chunk[1]) else {
+               return Err(());
+            };
+            let Some(v) = part_str(out, chunk[2]) else {
+               return Err(());
+            };
+            entries.push((id_str, f, v));
+         }
+         let res = conn.store.xadd_batch(key, entries.len(), |s, i| {
+            let (id_str, f, v) = entries[i];
+            let spec = crate::storage::stream::IdSpec::parse(id_str)
+               .ok_or(crate::storage::stream::ERR_INVALID_ID)?;
+            let id = s.add(spec, &[(f, v)])?;
+            id.write_to_resp(out);
+            Ok(())
+         });
+         if let Err(e) = res {
+            crate::utils::resp::write_err(out, e);
+         }
+         if replication {
+            conn.store.record_current_value(key);
+         }
+      }
+      WriteOp::JsonSet => {
+         let out = &mut conn.parser.wbuf;
+         out.reserve(cmds * 5);
+         let last_chunk = &parts[parts.len() - 2..];
+         let Some(path) = part_str(out, last_chunk[0]) else {
+            return Err(());
+         };
+         let Some(value) = part_str(out, last_chunk[1]) else {
+            return Err(());
+         };
+         match conn.store.json_set(key, path, value, false, false) {
+            Ok(true) => {
+               for _ in 0..cmds {
+                  crate::utils::resp::write_ok(out);
+               }
+            }
+            Ok(false) => {
+               for _ in 0..cmds {
+                  crate::utils::resp::write_nil(out);
                }
             }
             Err(e) => {
-               let out = &mut conn.parser.wbuf;
                for _ in 0..cmds {
-                  crate::utils::resp::write_err(out, e);
+                  crate::utils::resp::write_store_err(out, e);
                }
             }
          }

@@ -480,6 +480,113 @@ impl RespParser {
    }
 
    #[inline(always)]
+   pub(crate) fn try_fast_json_set_key_val_at(
+      &mut self,
+      buf: *const u8,
+      avail: usize,
+   ) -> Option<(RawSlice, RawSlice)> {
+      const CRLF: u16 = u16::from_ne_bytes(*b"\r\n");
+      const MIN_HDR: usize = 19;
+      if avail < MIN_HDR + 10 {
+         return None;
+      }
+      if unsafe { std::ptr::read_unaligned(buf as *const u32) } != u32::from_ne_bytes(*b"*4\r\n") {
+         return None;
+      }
+      if unsafe { std::ptr::read_unaligned(buf.add(4) as *const u32) } != u32::from_ne_bytes(*b"$8\r\n") {
+         return None;
+      }
+      let w0 = unsafe { std::ptr::read_unaligned(buf.add(8) as *const u64) };
+      const JSON_SET_UPPER: u64 = u64::from_ne_bytes(*b"JSON.SET");
+      const JSON_SET_LOWER: u64 = u64::from_ne_bytes(*b"json.set");
+      if w0 != JSON_SET_UPPER && w0 != JSON_SET_LOWER {
+         return None;
+      }
+      if unsafe { std::ptr::read_unaligned(buf.add(16) as *const u16) } != CRLF || unsafe { *buf.add(18) } != b'$' {
+         return None;
+      }
+      let k1 = unsafe { *buf.add(19) };
+      if !k1.is_ascii_digit() {
+         return None;
+      }
+      let (key_len, key_offset) =
+         if unsafe { std::ptr::read_unaligned(buf.add(20) as *const u16) } == CRLF {
+            ((k1 - b'0') as usize, 22)
+         } else {
+            let k2 = unsafe { *buf.add(20) };
+            if k2.is_ascii_digit() {
+               if unsafe { std::ptr::read_unaligned(buf.add(21) as *const u16) } == CRLF {
+                  (((k1 - b'0') as usize) * 10 + (k2 - b'0') as usize, 23)
+               } else {
+                  let k3 = unsafe { *buf.add(21) };
+                  if k3.is_ascii_digit() && unsafe { std::ptr::read_unaligned(buf.add(22) as *const u16) } == CRLF {
+                     (((k1 - b'0') as usize) * 100 + ((k2 - b'0') as usize) * 10 + (k3 - b'0') as usize, 24)
+                  } else {
+                     return None;
+                  }
+               }
+            } else {
+               return None;
+            }
+         };
+
+      let path_start = key_offset + key_len;
+      if avail < path_start + 12 {
+         return None;
+      }
+      if unsafe { std::ptr::read_unaligned(buf.add(path_start) as *const u16) } != CRLF {
+         return None;
+      }
+      let p_check = unsafe {
+         std::slice::from_raw_parts(buf.add(path_start + 2), 8)
+      };
+      if p_check != b"$1\r\n.\r\n$" {
+         return None;
+      }
+      let val_hdr = path_start + 10;
+      let v1 = unsafe { *buf.add(val_hdr) };
+      if !v1.is_ascii_digit() {
+         return None;
+      }
+      let (val_len, val_offset) =
+         if unsafe { std::ptr::read_unaligned(buf.add(val_hdr + 1) as *const u16) } == CRLF {
+            ((v1 - b'0') as usize, val_hdr + 3)
+         } else {
+            let v2 = unsafe { *buf.add(val_hdr + 1) };
+            if v2.is_ascii_digit() {
+               if unsafe { std::ptr::read_unaligned(buf.add(val_hdr + 2) as *const u16) } == CRLF {
+                  (((v1 - b'0') as usize) * 10 + (v2 - b'0') as usize, val_hdr + 4)
+               } else {
+                  let v3 = unsafe { *buf.add(val_hdr + 2) };
+                  if v3.is_ascii_digit() && unsafe { std::ptr::read_unaligned(buf.add(val_hdr + 3) as *const u16) } == CRLF {
+                     (((v1 - b'0') as usize) * 100 + ((v2 - b'0') as usize) * 10 + (v3 - b'0') as usize, val_hdr + 5)
+                  } else {
+                     return None;
+                  }
+               }
+            } else {
+               return None;
+            }
+         };
+
+      let total_len = val_offset + val_len + 2;
+      if avail < total_len {
+         return None;
+      }
+      if unsafe { std::ptr::read_unaligned(buf.add(total_len - 2) as *const u16) } != CRLF {
+         return None;
+      }
+
+      self.pos += total_len;
+      Some(unsafe {
+         (
+            (buf.add(key_offset), key_len),
+            (buf.add(val_offset), val_len),
+         )
+      })
+   }
+
+   #[inline(always)]
    fn try_fast_ping_at(&mut self, buf: *const u8, avail: usize) -> Option<ParseResult> {
       const H4: u32 = u32::from_ne_bytes(*b"$4\r\n");
       const PING_UPPER: u32 = u32::from_ne_bytes(*b"PING");

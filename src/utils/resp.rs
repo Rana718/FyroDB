@@ -1,3 +1,56 @@
+#[inline(always)]
+pub fn fast_parse_f64_bytes(b: &[u8]) -> Option<f64> {
+   if b.is_empty() {
+      return None;
+   }
+   let mut i = 0;
+   let neg = if b[0] == b'-' {
+      i += 1;
+      true
+   } else if b[0] == b'+' {
+      i += 1;
+      false
+   } else {
+      false
+   };
+   if i == b.len() {
+      return None;
+   }
+   let mut int_part: u64 = 0;
+   let mut has_int = false;
+   while i < b.len() && b[i].is_ascii_digit() {
+      has_int = true;
+      int_part = int_part.wrapping_mul(10).wrapping_add((b[i] - b'0') as u64);
+      i += 1;
+   }
+   if i == b.len() && has_int {
+      let f = int_part as f64;
+      return Some(if neg { -f } else { f });
+   }
+   if i < b.len() && b[i] == b'.' {
+      i += 1;
+      let mut frac_part: u64 = 0;
+      let mut frac_div: f64 = 1.0;
+      let mut has_frac = false;
+      while i < b.len() && b[i].is_ascii_digit() && frac_div < 1e15 {
+         has_frac = true;
+         frac_part = frac_part * 10 + (b[i] - b'0') as u64;
+         frac_div *= 10.0;
+         i += 1;
+      }
+      if i == b.len() && (has_int || has_frac) {
+         let f = int_part as f64 + (frac_part as f64 / frac_div);
+         return Some(if neg { -f } else { f });
+      }
+   }
+   std::str::from_utf8(b).ok().and_then(|s| s.parse::<f64>().ok())
+}
+
+#[inline(always)]
+pub fn fast_parse_f64(s: &str) -> Option<f64> {
+   fast_parse_f64_bytes(s.as_bytes())
+}
+
 pub const OK: &[u8] = b"+OK\r\n";
 pub const NIL: &[u8] = b"$-1\r\n";
 pub const ZERO: &[u8] = b":0\r\n";

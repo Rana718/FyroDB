@@ -283,31 +283,30 @@ pub struct GeoResult {
    pub hash: u64,
 }
 
-fn geohash_encode(lon: f64, lat: f64) -> u64 {
-   let mut lon_range = (-180.0f64, 180.0f64);
-   let mut lat_range = (-85.05112878f64, 85.05112878f64);
-   let mut bits: u64 = 0;
+#[inline(always)]
+fn spread26(mut x: u64) -> u64 {
+   x = (x | (x << 16)) & 0x0000_FFFF_0000_FFFF;
+   x = (x | (x << 8)) & 0x00FF_00FF_00FF_00FF;
+   x = (x | (x << 4)) & 0x0F0F_0F0F_0F0F_0F0F;
+   x = (x | (x << 2)) & 0x3333_3333_3333_3333;
+   x = (x | (x << 1)) & 0x5555_5555_5555_5555;
+   x
+}
 
-   for i in 0..52 {
-      if i % 2 == 0 {
-         let mid = (lon_range.0 + lon_range.1) / 2.0;
-         if lon >= mid {
-            bits |= 1 << (51 - i);
-            lon_range.0 = mid;
-         } else {
-            lon_range.1 = mid;
-         }
-      } else {
-         let mid = (lat_range.0 + lat_range.1) / 2.0;
-         if lat >= mid {
-            bits |= 1 << (51 - i);
-            lat_range.0 = mid;
-         } else {
-            lat_range.1 = mid;
-         }
-      }
-   }
-   bits
+pub(crate) fn geohash_encode(lon: f64, lat: f64) -> u64 {
+   const LAT_MIN: f64 = -85.05112878;
+   const LAT_RANGE: f64 = 85.05112878 * 2.0;
+   const LON_MIN: f64 = -180.0;
+   const LON_RANGE: f64 = 360.0;
+   const SCALE: f64 = (1u64 << 26) as f64;
+
+   let lon_norm = ((lon - LON_MIN) / LON_RANGE) * SCALE;
+   let lat_norm = ((lat - LAT_MIN) / LAT_RANGE) * SCALE;
+
+   let ilon = (lon_norm as i64).clamp(0, (1i64 << 26) - 1) as u64;
+   let ilat = (lat_norm as i64).clamp(0, (1i64 << 26) - 1) as u64;
+
+   (spread26(ilon) << 1) | spread26(ilat)
 }
 
 fn geohash_decode(bits: u64) -> (f64, f64) {

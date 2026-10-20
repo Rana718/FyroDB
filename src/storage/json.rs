@@ -2,6 +2,22 @@ use crate::storage::store::Store;
 use crate::storage::value::{JsonValue, StoreValue};
 
 impl Store {
+   #[inline]
+   pub fn set_json_auto(
+      &self,
+      key: &str,
+      hash_hint: Option<u64>,
+      _entry_hint: *const (),
+      value: &str,
+   ) {
+      let store_val = StoreValue::json_str(value);
+      let (hash, idx) = match hash_hint {
+         Some(h) => (h, self.data.shard_of(h)),
+         None => self.data.locate_key(key),
+      };
+      self.data.insert_str_hashed(key, store_val, hash, idx);
+   }
+
    pub fn json_set(
       &self,
       key: &str,

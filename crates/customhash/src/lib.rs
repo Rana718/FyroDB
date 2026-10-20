@@ -718,6 +718,20 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
    }
 
    #[inline]
+   pub fn insert_str_hashed(&self, key: &str, value: V, h: u64, idx: usize) -> bool {
+      let is_new = unsafe { self.shards.get_unchecked(idx) }.insert_hashed_key(
+         CompactKey::from_str(key),
+         value,
+         h,
+      );
+      if is_new {
+         self.bump(idx, true);
+      }
+      self.touched(key);
+      is_new
+   }
+
+   #[inline]
    pub fn try_insert(&self, key: String, value: V) -> Result<bool, Full> {
       if self.is_full() {
          let (h, idx) = self.locate(&key);
