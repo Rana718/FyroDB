@@ -1,0 +1,86 @@
+---
+title: Changelog v0.2.4
+description: Pipelined GET breaks 53.38M ops/sec, Mixed SET/GET sub-45ms, zero-copy byte checks, hot key contention cut by 2.4x, streams & documents under 100ms.
+order: 23
+---
+
+# v0.2.4
+
+Released: October 2026
+
+v0.2.4 introduces major low-level architectural optimizations across the core key-value engine, network pipelining, and parsing layers. Pipelined GET achieves an all-time peak throughput record of **53.38M ops/sec** (187ms for 10M keys), Mixed SET/GET drops to **44ms** (45.87M ops/sec), and Hot Key contention latency drops by over **2.4×** to **265ms** (37.68M ops/sec).
+
+---
+
+## Highlights
+
+- **Pipelined GET Breakthrough (53.38M ops/sec)**:
+  - **187ms** for 10 million GET operations under loopback TCP with 100 concurrent clients.
+  - Zero-copy cache hit path in `dispatch_get_run`: `CompactKey::eq_bytes` validates raw bytes directly on prefetched `Entry` pointers, completely bypassing `std::str::from_utf8` validation and function dispatch layers on cache hits.
+  - RESP bulk format strings are synthesized directly into connection output write buffers.
+
+- **In-Place Atomic CAS SET Updates (39.62M ops/sec)**:
+  - Pipelined SET achieves **39.62M ops/sec** (252ms for 10 million operations).
+  - In-place mutation via `SmallStr::overwrite_bytes` under per-key spinlock with sequence bumping and release ordering, eliminating heap allocations and string clones on update paths.
+
+- **Hot Key Contention Slashed by 2.4× (37.68M ops/sec)**:
+  - Single-key contention latency plummeted from 647ms down to **265ms** (over **2.4× faster**) for 10 million operations on a single contended key across 100 concurrent clients.
+  - Direct atomic CAS in-place updates eliminate contention bottlenecks on hot entries.
+
+- **Mixed SET/GET Sub-45ms (45.87M ops/sec)**:
+  - Mixed SET/GET (50/50) execution time dropped from 69ms to **44ms** (45.87M ops/sec).
+  - Redundant prefetch bypass in `prefetch_ahead`: detects incoming pipelined GET (`*2\r\n$3\r\nGET`) and SET (`*3\r\n$3\r\nSET`) runs and yields directly to specialized run engines, eliminating 32 duplicate hash calculations and slot probes per pipeline batch.
+
+- **Sub-100ms Latency Across Complex Workloads**:
+  - **Pub/Sub delivery**: **88ms** elapsed, **113.98M msg/sec** fan-out throughput.
+  - **Pub/Sub publish**: **87ms** elapsed, **2.29M ops/sec**.
+  - **INCR (atomic counters)**: **18ms** elapsed, **108.56M ops/sec**.
+  - **LPUSH/RPOP (queue)**: **30ms** elapsed, **66.93M ops/sec**.
+  - **HSET/HGET (sessions)**: **45ms** elapsed, **44.44M ops/sec**.
+  - **SADD (sets)**: **50ms** elapsed, **40.38M ops/sec**.
+  - **JSON.GET (documents)**: **76ms** elapsed, **26.21M ops/sec**.
+  - **XADD (streams)**: **84ms** elapsed, **23.76M ops/sec** via `WriteOp::Xadd` and `Store::xadd_batch` varint streaming.
+
+- **Wire Parser Branch Reduction**:
+  - Replaced split 32-bit and 16-bit comparisons in `try_fast_get_at`, `try_fast_get_key_at`, `try_fast_set_at`, and `try_fast_set_key_val_at` with single unaligned 64-bit word reads (`u64::from_ne_bytes`), reducing branch count across all fast-path parsers.
+
+- **Geospatial & Sorted Set Enhancements**:
+  - Replaced 52-step division loop in `src/storage/geo.rs` with 5-instruction Morton bit-interleaving (`spread26`), dropping `GEOADD/GEODIST` elapsed time under 199ms.
+  - Direct output buffer writing in `zadd_added_flags_into` and right-append optimization in `ZSetData::place` with `CHUNK_MAX = 64`.
+
+- **Strict Memory Safety**:
+  - Maintained 24-byte `SmallStr` footprint and 64-byte `Entry` size in `mimalloc`.
+  - Peak RSS is **876.28 MB**, strictly under the 900MB memory ceiling.
+  - Zero clippy warnings under `cargo clippy --workspace -- -D warnings`.
+
+---
+
+## Full Benchmark Summary (v0.2.4)
+
+Single FyroDB node on a 6-core Intel i5-11400H (12 hardware threads), loopback TCP, 100 concurrent clients:
+
+| Benchmark | v0.2.4 Throughput | v0.2.4 Elapsed | Redis Cluster (12 nodes) | Speedup vs Redis |
+| :--- | :--- | :--- | :--- | :--- |
+| **Pipeline-64 SET** | **15.41M ops/sec** | 649ms | 5.00M ops/sec | **3.08×** |
+| **Pipelined SET** | **39.62M ops/sec** | 252ms | 6.53M ops/sec | **6.07×** |
+| **Pipelined GET** | **53.38M ops/sec** | 187ms | 11.62M ops/sec | **4.59×** |
+| **Mixed SET/GET (50/50)** | **45.87M ops/sec** | 44ms | 5.82M ops/sec | **7.88×** |
+| **INCR (atomic counters)** | **108.56M ops/sec** | 18ms | 6.54M ops/sec | **16.6×** |
+| **HSET/HGET (sessions)** | **44.44M ops/sec** | 45ms | 6.63M ops/sec | **6.70×** |
+| **LPUSH/RPOP (queue)** | **66.93M ops/sec** | 30ms | 7.17M ops/sec | **9.33×** |
+| **SADD (per-client sets)** | **40.38M ops/sec** | 50ms | 6.27M ops/sec | **6.44×** |
+| **ZADD (per-client zsets)** | **17.83M ops/sec** | 112ms | 4.78M ops/sec | **3.73×** |
+| **JSON.GET (documents)** | **26.21M ops/sec** | 76ms | 3.23M ops/sec | **8.11×** |
+| **JSON.SET (documents)** | **16.28M ops/sec** | 123ms | 3.23M ops/sec | **5.04×** |
+| **SET+EXPIRE (cache TTL)** | **15.14M ops/sec** | 132ms | 2.41M ops/sec | **6.28×** |
+| **Hot Key (contention)** | **37.68M ops/sec** | 265ms | 1.61M ops/sec | **23.4×** |
+| **Producer/Consumer (50+50)** | **40.61M ops/sec** | 49ms | 1.70M ops/sec | **23.9×** |
+| **Pub/Sub publish** | **2.29M ops/sec** | 87ms | 161.9K ops/sec | **14.1×** |
+| **Pub/Sub delivery** | **113.98M ops/sec** | 88ms | 8.09M ops/sec | **14.1×** |
+| **XADD (streams)** | **23.76M ops/sec** | 84ms | 4.27M ops/sec | **5.56×** |
+| **SETBIT/BITCOUNT (bitmap)** | **38.11M ops/sec** | 52ms | 5.94M ops/sec | **6.42×** |
+| **PFADD/PFCOUNT (HyperLogLog)** | **63.43M ops/sec** | 32ms | 6.03M ops/sec | **10.5×** |
+| **GEOADD/GEODIST (geospatial)** | **10.06M ops/sec** | 199ms | 3.07M ops/sec | **3.28×** |
+| **Vector HSET load** | **100.2k ops/sec** | 499ms | 66.4K ops/sec | **1.51×** |
+| **Vector HNSW KNN-10** | **4.9k ops/sec** | 410ms | 1.1K ops/sec | **4.45×** |
+| **Text term search** | **34.3k ops/sec** | 29ms | 1.6K ops/sec | **21.4×** |

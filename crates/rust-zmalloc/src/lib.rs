@@ -55,7 +55,9 @@ fn record_slow(t: &mut ThreadTracking, d: i64) {
       static NEXT_STRIPE: AtomicUsize = AtomicUsize::new(0);
       t.stripe = (NEXT_STRIPE.fetch_add(1, Ordering::Relaxed) % STRIPES) as u32;
    }
-   ALLOCATED[t.stripe as usize].0.fetch_add(d, Ordering::Relaxed);
+   ALLOCATED[t.stripe as usize]
+      .0
+      .fetch_add(d, Ordering::Relaxed);
    t.delta = 0;
 }
 
@@ -144,7 +146,10 @@ pub fn stats() -> Stats {
    }
 }
 
-#[cfg(all(not(any(feature = "jemalloc", feature = "system")), target_os = "linux"))]
+#[cfg(all(
+   not(any(feature = "jemalloc", feature = "system")),
+   target_os = "linux"
+))]
 #[used]
 #[unsafe(link_section = ".init_array")]
 static INIT_ALLOC: extern "C" fn() = {

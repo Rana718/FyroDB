@@ -23,7 +23,7 @@ const navLinks = [
    { href: "/docs/getting-started",    label: "Get started", icon: FiZap       },
    { href: "/docs/commands-strings",   label: "Commands",    icon: FiBook      },
    { href: "/docs/benchmarks",         label: "Benchmarks",  icon: FiBarChart2 },
-   { href: "/docs/changelog-0-2-3",    label: "What's New",  icon: FiZap       },
+   { href: "/docs/changelog-0-2-4",    label: "What's New",  icon: FiZap       },
 ];
 
 function isLinkActive(href: string, pathname: string) {

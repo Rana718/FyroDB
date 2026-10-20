@@ -43,7 +43,9 @@ pub fn fast_parse_f64_bytes(b: &[u8]) -> Option<f64> {
          return Some(if neg { -f } else { f });
       }
    }
-   std::str::from_utf8(b).ok().and_then(|s| s.parse::<f64>().ok())
+   std::str::from_utf8(b)
+      .ok()
+      .and_then(|s| s.parse::<f64>().ok())
 }
 
 #[inline(always)]

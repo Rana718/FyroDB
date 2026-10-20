@@ -21,9 +21,9 @@ All tests run with the same Go benchmark tool. Best of three runs.
 
 | Metric           | FyroDB      | Redis Cluster (6 nodes)    | DragonflyDB | DiceDB (1 node) |
 | ---------------- | ----------- | -------------------------- | ----------- | --------------- |
-| Pipeline-64 SET  | **12.14M**  | 5.75M                      | 4.09M       | 766K            |
-| Pipelined SET    | **28.32M**  | 7.56M                      | 4.16M       | 1.62M           |
-| Pipelined GET    | **40.21M**  | 11.29M                     | 4.09M       | 1.88M           |
+| Pipeline-64 SET  | **15.41M**  | 5.75M                      | 4.09M       | 766K            |
+| Pipelined SET    | **39.62M**  | 7.56M                      | 4.16M       | 1.62M           |
+| Pipelined GET    | **53.38M**  | 11.29M                     | 4.09M       | 1.88M           |
 
 <BenchmarkChart id="pipeline64" />
 
@@ -35,21 +35,21 @@ All tests run with the same Go benchmark tool. Best of three runs.
 
 | Metric                | FyroDB      | Redis Cluster (6 nodes)    | DragonflyDB | Speedup |
 | --------------------- | ----------- | -------------------------- | ----------- | ------- |
-| Mixed SET/GET (50/50) | **32.86M**  | 7.24M                      | 5.15M       | 4.5×    |
-| INCR (counters)       | **120.49M** | 6.32M                      | 6.84M       | 19.1×   |
-| HSET/HGET (sessions)  | **62.51M**  | 7.95M                      | 5.81M       | 7.9×    |
-| LPUSH/RPOP (queue)    | **67.72M**  | 7.19M                      | 6.23M       | 9.4×    |
-| SADD (per-client sets)| **37.18M**  | 6.34M                      | 5.00M       | 5.9×    |
-| ZADD (per-client zsets)| **17.42M** | 4.55M                      | 4.36M       | 3.8×    |
-| JSON.GET (docs)       | **22.96M**  | 3.38M                      | 151.5K      | 6.8×    |
-| JSON.SET (docs)       | **11.07M**  | 3.38M                      | 151.5K      | 3.3×    |
-| SET+EXPIRE (cache TTL)| **11.36M**  | 2.64M                      | 2.41M       | 4.3×    |
-| Hot Key (contention)  | **122.68M** | 2.03M                      | 2.15M       | 60.4×   |
-| Producer/Consumer     | **36.16M**  | 981.3K                     | 1.75M       | 36.8×   |
-| XADD (streams)        | **15.41M**  | 4.27M                      | —           | 3.6×    |
-| SETBIT/BITCOUNT (bitmap)| **33.62M**| 5.94M                      | —           | 5.7×    |
-| PFADD/PFCOUNT (HLL)   | **61.82M**  | 6.03M                      | —           | 10.3×   |
-| GEOADD/GEODIST (geo)  | **8.43M**   | 3.07M                      | —           | 2.7×    |
+| Mixed SET/GET (50/50) | **45.87M**  | 7.24M                      | 5.15M       | 6.3×    |
+| INCR (counters)       | **108.56M** | 6.32M                      | 6.84M       | 17.2×   |
+| HSET/HGET (sessions)  | **44.44M**  | 7.95M                      | 5.81M       | 5.6×    |
+| LPUSH/RPOP (queue)    | **66.93M**  | 7.19M                      | 6.23M       | 9.3×    |
+| SADD (per-client sets)| **40.38M**  | 6.34M                      | 5.00M       | 6.4×    |
+| ZADD (per-client zsets)| **17.83M** | 4.55M                      | 4.36M       | 3.9×    |
+| JSON.GET (docs)       | **26.21M**  | 3.38M                      | 151.5K      | 7.8×    |
+| JSON.SET (docs)       | **16.28M**  | 3.38M                      | 151.5K      | 4.8×    |
+| SET+EXPIRE (cache TTL)| **15.14M**  | 2.64M                      | 2.41M       | 5.7×    |
+| Hot Key (contention)  | **37.68M**  | 2.03M                      | 2.15M       | 18.6×   |
+| Producer/Consumer     | **40.61M**  | 981.3K                     | 1.75M       | 23.2×   |
+| XADD (streams)        | **23.76M**  | 4.27M                      | —           | 5.6×    |
+| SETBIT/BITCOUNT (bitmap)| **38.11M**| 5.94M                      | —           | 6.4×    |
+| PFADD/PFCOUNT (HLL)   | **63.43M**  | 6.03M                      | —           | 10.5×   |
+| GEOADD/GEODIST (geo)  | **10.06M**  | 3.07M                      | —           | 3.3×    |
 
 <BenchmarkChart id="mixed" />
 
@@ -75,8 +75,8 @@ All tests run with the same Go benchmark tool. Best of three runs.
 
 | Metric           | FyroDB      | Redis Cluster (6 nodes)    | DragonflyDB | DiceDB (1 node) |
 | ---------------- | ----------- | -------------------------- | ----------- | --------------- |
-| Publish ops/sec  | **3.04M**   | 147.1K                     | 315.5K      | 167.8K          |
-| Delivery msg/sec | **152.20M** | 7.35M                      | 15.43M      | 8.39M           |
+| Publish ops/sec  | **2.29M**   | 147.1K                     | 315.5K      | 167.8K          |
+| Delivery msg/sec | **113.98M** | 7.35M                      | 15.43M      | 8.39M           |
 
 <BenchmarkChart id="pubsub-publish" />
 
@@ -86,16 +86,16 @@ All tests run with the same Go benchmark tool. Best of three runs.
 
 | Benchmark                     | Elapsed | Throughput       | Notes / Filtering |
 | ----------------------------- | ------- | ---------------- | ----------------- |
-| Vector HSET load              | 328ms   | 152.4k ops/sec   | Embedding ingestion rate |
-| Vector KNN-10 (FLAT)          | 1.942s  | 1.0k ops/sec     | Exact L2/Cosine scan |
-| Vector KNN-10 +tag filter     | 586ms   | 1.7k ops/sec     | Pre-filtered KNN search |
-| Filter Tag+Num                | 192ms   | 5.2k ops/sec     | Tag & numeric range query |
-| Text term                     | 24ms    | 41.5k ops/sec    | Single term BM25 search |
-| Text + Tag                    | 38ms    | 26.3k ops/sec    | Hybrid lexical + tag filter |
-| Text negation                 | 47ms    | 21.5k ops/sec    | NOT filter query |
-| Vector KNN-10 (8 clients)     | 1.049s  | 1.9k ops/sec     | Concurrent KNN queries |
-| Vector HNSW KNN-10            | 385ms   | 5.2k ops/sec     | Graph-based ANN search |
-| Vector HNSW M=32 KNN-10       | 774ms   | 2.6k ops/sec     | High-recall graph search |
+| Vector HSET load              | 499ms   | 100.2k ops/sec   | Embedding ingestion rate |
+| Vector KNN-10 (FLAT)          | 2.169s  | 922 ops/sec      | Exact L2/Cosine scan |
+| Vector KNN-10 +tag filter     | 691ms   | 1.4k ops/sec     | Pre-filtered KNN search |
+| Filter Tag+Num                | 211ms   | 4.7k ops/sec     | Tag & numeric range query |
+| Text term                     | 29ms    | 34.3k ops/sec    | Single term BM25 search |
+| Text + Tag                    | 42ms    | 23.9k ops/sec    | Hybrid lexical + tag filter |
+| Text negation                 | 49ms    | 20.3k ops/sec    | NOT filter query |
+| Vector KNN-10 (8 clients)     | 1.079s  | 1.9k ops/sec     | Concurrent KNN queries |
+| Vector HNSW KNN-10            | 410ms   | 4.9k ops/sec     | Graph-based ANN search |
+| Vector HNSW M=32 KNN-10       | 1.016s  | 2.0k ops/sec     | High-recall graph search |
 
 ## In-Process Engine Summary & Latencies
 
@@ -103,36 +103,36 @@ Direct engine performance without network hop measured via `without_tcp` benchma
 
 | Benchmark | Elapsed | Throughput | Avg Latency / Item |
 | :--- | :--- | :--- | :--- |
-| **Pipeline-64 SET** | 824ms | 12.14M ops/sec | ~82.4 ns/op |
-| **Pipelined SET** | 353ms | 28.32M ops/sec | ~35.3 ns/op |
-| **Pipelined GET** | 249ms | 40.21M ops/sec | ~24.9 ns/op |
-| **Pub/Sub publish** | 66ms | 3.04M ops/sec | ~328.9 ns/op |
-| **Pub/Sub delivery** | 66ms | 152.20M ops/sec | ~6.57 ns/msg |
-| **Mixed SET/GET (50/50)** | 61ms | 32.86M ops/sec | ~30.4 ns/op |
-| **INCR (atomic counters)** | 17ms | 120.49M ops/sec | ~8.3 ns/op |
-| **HSET/HGET (sessions)** | 32ms | 62.51M ops/sec | ~16.0 ns/op |
-| **LPUSH/RPOP (queue)** | 30ms | 67.72M ops/sec | ~14.8 ns/op |
-| **SADD (per-client sets)** | 54ms | 37.18M ops/sec | ~26.9 ns/op |
-| **ZADD (per-client zsets)** | 115ms | 17.42M ops/sec | ~57.4 ns/op |
-| **JSON.SET (documents)** | 181ms | 11.07M ops/sec | ~90.3 ns/op |
-| **JSON.GET (documents)** | 87ms | 22.96M ops/sec | ~43.6 ns/op |
-| **SET+EXPIRE (cache TTL)** | 176ms | 11.36M ops/sec | ~88.0 ns/op |
-| **Hot Key (1 key, contention)** | 82ms | 122.68M ops/sec | ~8.15 ns/op |
-| **Producer/Consumer (50+50)** | 55ms | 36.16M ops/sec | ~27.7 ns/op |
-| **XADD (streams)** | 130ms | 15.41M ops/sec | ~64.9 ns/op |
-| **SETBIT/BITCOUNT (bitmap)** | 59ms | 33.62M ops/sec | ~29.7 ns/op |
-| **PFADD/PFCOUNT (HyperLogLog)** | 32ms | 61.82M ops/sec | ~16.2 ns/op |
-| **GEOADD/GEODIST (geospatial)** | 237ms | 8.43M ops/sec | ~118.6 ns/op |
-| **Vector HSET load** | 328ms | 152.4k ops/sec | ~6.56 µs/op |
-| **Vector KNN-10** | 1.942s | 1.0k ops/sec | ~971 µs/query |
-| **Vector KNN-10 +tag filter** | 586ms | 1.7k ops/sec | ~586 µs/query |
-| **Filter Tag+Num** | 192ms | 5.2k ops/sec | ~192 µs/query |
-| **Text term** | 24ms | 41.5k ops/sec | ~24.1 µs/query |
-| **Text + Tag** | 38ms | 26.3k ops/sec | ~38.0 µs/query |
-| **Text negation** | 47ms | 21.5k ops/sec | ~46.5 µs/query |
-| **Vector KNN-10 (8 clients)** | 1.049s | 1.9k ops/sec | ~524 µs/query |
-| **Vector HNSW KNN-10** | 385ms | 5.2k ops/sec | ~192.5 µs/query |
-| **Vector HNSW M=32 KNN-10** | 774ms | 2.6k ops/sec | ~387 µs/query |
+| **Pipeline-64 SET** | 649ms | 15.41M ops/sec | ~64.9 ns/op |
+| **Pipelined SET** | 252ms | 39.62M ops/sec | ~25.2 ns/op |
+| **Pipelined GET** | 187ms | 53.38M ops/sec | ~18.7 ns/op |
+| **Pub/Sub publish** | 87ms | 2.29M ops/sec | ~436.7 ns/op |
+| **Pub/Sub delivery** | 88ms | 113.98M ops/sec | ~8.77 ns/msg |
+| **Mixed SET/GET (50/50)** | 44ms | 45.87M ops/sec | ~21.8 ns/op |
+| **INCR (atomic counters)** | 18ms | 108.56M ops/sec | ~9.2 ns/op |
+| **HSET/HGET (sessions)** | 45ms | 44.44M ops/sec | ~22.5 ns/op |
+| **LPUSH/RPOP (queue)** | 30ms | 66.93M ops/sec | ~14.9 ns/op |
+| **SADD (per-client sets)** | 50ms | 40.38M ops/sec | ~24.8 ns/op |
+| **ZADD (per-client zsets)** | 112ms | 17.83M ops/sec | ~56.1 ns/op |
+| **JSON.GET (documents)** | 76ms | 26.21M ops/sec | ~38.1 ns/op |
+| **JSON.SET (documents)** | 123ms | 16.28M ops/sec | ~61.4 ns/op |
+| **SET+EXPIRE (cache TTL)** | 132ms | 15.14M ops/sec | ~66.0 ns/op |
+| **Hot Key (1 key, contention)** | 265ms | 37.68M ops/sec | ~26.5 ns/op |
+| **Producer/Consumer (50+50)** | 49ms | 40.61M ops/sec | ~24.6 ns/op |
+| **XADD (streams)** | 84ms | 23.76M ops/sec | ~42.1 ns/op |
+| **SETBIT/BITCOUNT (bitmap)** | 52ms | 38.11M ops/sec | ~26.2 ns/op |
+| **PFADD/PFCOUNT (HyperLogLog)** | 32ms | 63.43M ops/sec | ~15.8 ns/op |
+| **GEOADD/GEODIST (geospatial)** | 199ms | 10.06M ops/sec | ~99.4 ns/op |
+| **Vector HSET load** | 499ms | 100.2k ops/sec | ~9.98 µs/op |
+| **Vector KNN-10** | 2.169s | 922 ops/sec | ~1.08 ms/query |
+| **Vector KNN-10 +tag filter** | 691ms | 1.4k ops/sec | ~691 µs/query |
+| **Filter Tag+Num** | 211ms | 4.7k ops/sec | ~211 µs/query |
+| **Text term** | 29ms | 34.3k ops/sec | ~29.1 µs/query |
+| **Text + Tag** | 42ms | 23.9k ops/sec | ~42.0 µs/query |
+| **Text negation** | 49ms | 20.3k ops/sec | ~49.2 µs/query |
+| **Vector KNN-10 (8 clients)** | 1.079s | 1.9k ops/sec | ~539 µs/query |
+| **Vector HNSW KNN-10** | 410ms | 4.9k ops/sec | ~205 µs/query |
+| **Vector HNSW M=32 KNN-10** | 1.016s | 2.0k ops/sec | ~508 µs/query |
 
 ## Resource Usage
 

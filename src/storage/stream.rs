@@ -1228,12 +1228,7 @@ impl Store {
    }
 
    #[inline]
-   pub fn xadd_batch<F>(
-      &self,
-      key: &str,
-      count: usize,
-      mut each: F,
-   ) -> Result<(), &'static str>
+   pub fn xadd_batch<F>(&self, key: &str, count: usize, mut each: F) -> Result<(), &'static str>
    where
       F: FnMut(&mut StreamData, usize) -> Result<(), &'static str>,
    {

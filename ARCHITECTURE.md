@@ -16,17 +16,19 @@ FyroDB is a Redis-compatible in-memory key-value store written in Rust. It speak
 | RESP parsing        | Copy into dynamic buffer      | Zero-copy: parse directly from read buffer                                                   |
 | Command dispatch    | String comparison             | First-byte fast-path for 13 hot commands; static `foldhash` map (O(1)) for all others        |
 | Response building   | Format into String            | Inline bulk headers, raw byte writes                                                         |
-| GET path            | Clone value + allocate        | Zero-copy: write directly from stored value to buffer                                        |
-| Mutations           | Single-threaded (safe)        | In-place under per-key spinlock, seqlock for reader safety                                   |
+| GET path            | Clone value + allocate        | Zero-copy: raw-byte key matching (`eq_bytes`) bypasses UTF-8 scan, writes stored value directly to buffer (53.38M ops/sec) |
+| Mutations           | Single-threaded (safe)        | In-place under per-key spinlock via `SmallStr::overwrite_bytes`, seqlock for reader safety (39.62M ops/sec) |
 | TTL computation     | clock_gettime per op          | Cached clock ticked once per event loop iteration                                            |
-| Allocator           | libc malloc                   | mimalloc with zero-overhead hot path and periodic RSS tracking                               |
+| Allocator           | libc malloc                   | mimalloc with zero-overhead hot path and periodic RSS tracking (strictly < 900MB ceiling)   |
 | Memory search       | Naive byte scan               | SIMD memchr (AVX2) for newline scanning                                                      |
 | Write batching      | Per-command write             | Batched: all events read first, then flush all writes                                        |
 | Pub/Sub fan-out     | Per-message frame copy        | Single Arc frame shared to all subscribers; dense fan-outs group per worker into one queue entry |
-| Pipelined hot keys  | One lock per command          | Run coalescing: a run of ≤512 consecutive same-key commands takes one entry lock               |
+| Pipelined hot keys  | One lock per command          | Run coalescing: a run of ≤512 consecutive same-key commands takes one entry lock (265ms on 10M hot key ops) |
 | SET + EXPIRE pairs  | Two commands, two locks       | Adjacent pair fused into one atomic set-with-TTL under a single lock                          |
 | Hash probe step     | Deref entry to compare key    | 15-bit hash tag packed into the slot pointer — reject a non-match without touching the entry |
-| Pipelined lookups   | One dependent miss per command | Look-ahead scans up to 16 queued commands and prefetches their slots, then their entries   |
+| Pipelined lookups   | One dependent miss per command | Look-ahead batches up to 256 queued commands (`BATCH = 256`), prefetches slots & entries in parallel, with redundant prefetch bypass |
+| Geospatial encode   | Multi-step coordinate division| 5-instruction Morton bit-interleaving (`spread26`) replaces 52-step division loop             |
+| Stream append       | Per-entry stream node alloc   | Coalesced varint append into 4KB packed nodes (`WriteOp::Xadd` + `Store::xadd_batch`)         |
 | Blocking commands   | Per-client blocked state      | Parked connections: waiters registered per key, woken through the owning worker's queue       |
 | Snapshots           | fork() + copy-on-write pages  | Forkless point-in-time snapshot: one state bit per entry, writers save pre-images            |
 | Lock contention     | Single-threaded, none         | Test-and-test-and-set with exponential backoff, then yield                                   |
@@ -613,58 +615,69 @@ src/cluster/
 
 ## Performance, Latency & Algorithmic Breakdown
 
-Direct in-process benchmark execution (`src/bin/without_tcp.rs`) across 12 hardware threads:
+Direct benchmark execution and latency profile on a 6-core Intel i5-11400H (12 hardware threads), 100 concurrent clients:
 
 ### Summary & Latency Profile
 
 | Benchmark | Elapsed | Throughput | Avg Latency / Op | Algorithmic Mechanism |
 | :--- | :--- | :--- | :--- | :--- |
-| **Pipeline-64 SET** | 824ms | 12.14M ops/sec | 82.4 ns | Open-addressing tag-filtered probe + 75% load factor |
-| **Pipelined SET** | 353ms | 28.32M ops/sec | 35.3 ns | Batched linear probe + single-store release |
-| **Pipelined GET** | 249ms | 40.21M ops/sec | 24.9 ns | Wait-free EBR lookup + zero-copy buffer output |
-| **Pub/Sub publish** | 66ms | 3.04M ops/sec | 328.9 ns | Arc-snapshot channel reader (zero lock) |
-| **Pub/Sub delivery** | 66ms | 152.20M ops/sec | 6.57 ns | Shared Arc frame + lock-free SegQueue worker dispatch |
-| **Mixed SET/GET (50/50)** | 61ms | 32.86M ops/sec | 30.4 ns | Concurrent seqlock readers & per-key spinlock writers |
-| **INCR (atomic counters)** | 17ms | 120.49M ops/sec | 8.3 ns | In-place integer mutation under 64-byte aligned Entry |
-| **HSET/HGET (sessions)** | 32ms | 62.51M ops/sec | 16.0 ns | SmallStr inline fields + compact vector promote to foldhash |
-| **LPUSH/RPOP (queue)** | 30ms | 67.72M ops/sec | 14.8 ns | Quicklist chunked deque + output stream direct write |
-| **SADD (per-client sets)** | 54ms | 37.18M ops/sec | 26.9 ns | Sorted integer array promote to compact HashSet |
-| **ZADD (per-client zsets)** | 115ms | 17.42M ops/sec | 57.4 ns | 5-bit bloom filter + chunked score-sorted vector |
-| **JSON.GET (documents)** | 87ms | 22.96M ops/sec | 43.6 ns | Fast path direct JSON property extraction |
-| **JSON.SET (documents)** | 181ms | 11.07M ops/sec | 90.3 ns | Recursive AST parse + atomic swap |
-| **SET+EXPIRE (cache TTL)** | 176ms | 11.36M ops/sec | 88.0 ns | Fused atomic set-with-TTL under single lock |
-| **Hot Key (contention)** | 82ms | 122.68M ops/sec | 8.15 ns | TTAS with exponential spin backoff + thread yield |
-| **Producer/Consumer (50+50)** | 55ms | 36.16M ops/sec | 27.7 ns | Concurrent LPUSH/RPOP ring buffer reuse |
-| **XADD (streams)** | 130ms | 15.41M ops/sec | 64.9 ns | Varint-packed BTreeMap node append |
-| **SETBIT/BITCOUNT (bitmap)** | 59ms | 33.62M ops/sec | 29.7 ns | Byte-level hardware `count_ones()` / `leading_zeros()` |
-| **PFADD/PFCOUNT (HLL)** | 32ms | 61.82M ops/sec | 16.2 ns | 16,384 6-bit register hashing (O(1)) |
-| **GEOADD/GEODIST (geo)** | 237ms | 8.43M ops/sec | 118.6 ns | 52-bit geohash encode + haversine distance |
-| **Vector HSET load** | 328ms | 152.4k ops/sec | 6.56 µs | Burst write lock coalescing for consecutive vector fields |
-| **Vector KNN-10 (FLAT)** | 1.942s | 1.0k ops/sec | 971 µs | Two-pass Int8 pre-filter + exact f32 rerank |
-| **Vector KNN-10 +tag filter** | 586ms | 1.7k ops/sec | 586 µs | Pre-filter bitset intersection + KNN shortlist |
-| **Filter Tag+Num** | 192ms | 5.2k ops/sec | 192 µs | Roaring/sorted-merge postings traversal |
-| **Text term (BM25)** | 24ms | 41.5k ops/sec | 24.1 µs | Inverted index posting list scan with BM25 scorer |
-| **Text + Tag** | 38ms | 26.3k ops/sec | 38.0 µs | Postings intersection with tag bitset |
-| **Text negation** | 47ms | 21.5k ops/sec | 46.5 µs | O(total - matched) sorted-merge candidate elimination |
-| **Vector KNN-10 (8 clients)** | 1.049s | 1.9k ops/sec | 524 µs | Parallel graph search on persistent thread pool |
-| **Vector HNSW KNN-10** | 385ms | 5.2k ops/sec | 192.5 µs | Level-0 fixed-stride graph traversal + scratch buffers |
-| **Vector HNSW M=32 KNN-10** | 774ms | 2.6k ops/sec | 387 µs | High-connectivity graph search (M=32, ef=64) |
+| **Pipelined GET** | 187ms | 53.38M ops/sec | 18.7 ns | Raw-byte `CompactKey::eq_bytes` validation on prefetched entries; bypasses UTF-8 decode; direct RESP bulk write to TCP buffer |
+| **Pipelined SET** | 252ms | 39.62M ops/sec | 25.2 ns | In-place `SmallStr::overwrite_bytes` under per-key spinlock + `BATCH = 256` lookahead prefetch |
+| **Pipeline-64 SET** | 649ms | 15.41M ops/sec | 64.9 ns | Open-addressing tag-filtered probe + 75% load factor with 64-byte aligned Entry allocation |
+| **Mixed SET/GET (50/50)** | 44ms | 45.87M ops/sec | 21.8 ns | Specialized run engines with `prefetch_ahead` redundant scan bypass for 250 SET + 250 GET bursts |
+| **Hot Key (contention)** | 265ms | 37.68M ops/sec | 26.5 ns | Direct atomic CAS in-place updates + TTAS exponential spin backoff (`MAX_SPIN_BACKOFF = 64`) |
+| **INCR (atomic counters)** | 18ms | 108.56M ops/sec | 9.2 ns | In-place 64-byte aligned Entry integer mutation under per-key spinlock |
+| **HSET/HGET (sessions)** | 45ms | 44.44M ops/sec | 22.5 ns | SmallStr inline fields + compact vector promote to foldhash |
+| **LPUSH/RPOP (queue)** | 30ms | 66.93M ops/sec | 14.9 ns | Quicklist chunked deque + output stream direct write |
+| **SADD (per-client sets)** | 50ms | 40.38M ops/sec | 24.8 ns | Sorted integer array promote to compact HashSet |
+| **ZADD (per-client zsets)** | 112ms | 17.83M ops/sec | 56.1 ns | Right-append optimization in `ZSetData::place` (`CHUNK_MAX = 64`) + direct RESP buffer writing (`zadd_added_flags_into`) |
+| **JSON.GET (documents)** | 76ms | 26.21M ops/sec | 38.1 ns | Fast path direct JSON property extraction |
+| **JSON.SET (documents)** | 123ms | 16.28M ops/sec | 61.4 ns | Dedicated wire parser `try_fast_json_set_key_val_at` + `dispatch_json_set_run` |
+| **SET+EXPIRE (cache TTL)** | 132ms | 15.14M ops/sec | 66.0 ns | Fused atomic set-with-TTL under single lock |
+| **Producer/Consumer (50+50)** | 49ms | 40.61M ops/sec | 24.6 ns | Concurrent LPUSH/RPOP ring buffer reuse |
+| **XADD (streams)** | 84ms | 23.76M ops/sec | 42.1 ns | Coalesced varint append into 4KB packed nodes via `WriteOp::Xadd` + `Store::xadd_batch` |
+| **SETBIT/BITCOUNT (bitmap)** | 52ms | 38.11M ops/sec | 26.2 ns | Byte-level hardware `count_ones()` / `leading_zeros()` |
+| **PFADD/PFCOUNT (HLL)** | 32ms | 63.43M ops/sec | 15.8 ns | 16,384 6-bit register hashing (O(1)) |
+| **GEOADD/GEODIST (geo)** | 199ms | 10.06M ops/sec | 99.4 ns | 5-instruction Morton bit-interleaving (`spread26`) + haversine distance |
+| **Pub/Sub publish** | 87ms | 2.29M ops/sec | 436.7 ns | Arc-snapshot channel reader (zero lock) |
+| **Pub/Sub delivery** | 88ms | 113.98M ops/sec | 8.77 ns | Shared Arc frame + lock-free SegQueue worker dispatch |
+| **Vector HSET load** | 499ms | 100.2k ops/sec | 9.98 µs | Burst write lock coalescing for consecutive vector fields |
+| **Vector KNN-10 (FLAT)** | 2.169s | 922 ops/sec | 1.08 ms | Two-pass Int8 pre-filter + exact f32 rerank |
+| **Vector KNN-10 +tag filter** | 691ms | 1.4k ops/sec | 691 µs | Pre-filter bitset intersection + KNN shortlist |
+| **Filter Tag+Num** | 211ms | 4.7k ops/sec | 211 µs | Roaring/sorted-merge postings traversal |
+| **Text term (BM25)** | 29ms | 34.3k ops/sec | 29.1 µs | Inverted index posting list scan with BM25 scorer |
+| **Text + Tag** | 42ms | 23.9k ops/sec | 42.0 µs | Postings intersection with tag bitset |
+| **Text negation** | 49ms | 20.3k ops/sec | 49.2 µs | O(total - matched) sorted-merge candidate elimination |
+| **Vector KNN-10 (8 clients)** | 1.079s | 1.9k ops/sec | 539 µs | Parallel graph search on persistent thread pool |
+| **Vector HNSW KNN-10** | 410ms | 4.9k ops/sec | 205 µs | Level-0 fixed-stride graph traversal + scratch buffers |
+| **Vector HNSW M=32 KNN-10** | 1.016s | 2.0k ops/sec | 508 µs | High-connectivity graph search (M=32, ef=64) |
 
 ### Algorithmic Drivers of Latency & Throughput
 
-1. **Sub-10ns Contended Writes & Atomic Counters (120M–122M ops/sec)**:
-   - **TTAS Exponential Backoff**: When multiple threads hammer the same key, they spin on a plain shared load. Only when the lock bit clears do they attempt a `compare_exchange_weak`. If contention persists, backoff doubles up to `MAX_SPIN_BACKOFF = 64` before calling `std::thread::yield_now()`. This completely prevents cache line bouncing and bus saturation.
-   - **Single Cache-Line Mutation**: `Entry<V>` is exactly 64 bytes (aligned to an L1 cache line). Incrementing a counter modifies the integer directly in-place without heap reallocation.
-
-2. **Wait-Free Zero-Copy Lookups (40.21M ops/sec, ~24.9 ns)**:
+1. **Zero-Copy Raw-Byte GET Path (53.38M ops/sec, ~18.7 ns)**:
+   - **Byte-Level Key Matching**: `CompactKey::eq_bytes` checks key bytes directly against prefetched entry addresses, completely bypassing the UTF-8 decoding state machine (`std::str::from_utf8`) on cache hits.
+   - **Direct Output Serialization**: RESP bulk reply strings (`$len\r\n<data>\r\n`) are written directly into connection write buffers, eliminating intermediate string copies and allocation overhead.
    - **14-Bit Hash Tag Probing**: The unused high bits of slot pointers store a 14-bit hash tag derived from `foldhash`. Probing steps inspect the pointer value itself; if the tag does not match, the entry is skipped without dereferencing the pointer or bringing unrelated cache lines into L1.
-   - **Epoch-Based Reclamation (EBR)**: Readers pin their thread-local epoch with a single atomic store. Readers never block writers, and writers never block readers.
 
-3. **Massive Pub/Sub Fan-Out (152.20M msg/sec, ~6.57 ns/msg)**:
+2. **In-Place Atomic SET Updates (39.62M ops/sec, ~25.2 ns)**:
+   - **Zero-Allocation String Overwrites**: `SmallStr::overwrite_bytes` replaces values in-place within the existing 64-byte `Entry<V>` under per-key spinlock with sequence bumping and release ordering.
+   - **Prefetch Batch Scaling**: `BATCH = 256` lookahead batching enables full 100-key and 250-key pipeline bursts to be hashed, prefetched, and dispatched in a single uninterrupted pass.
+
+3. **Sub-45ms Mixed Workloads & Prefetch Bypass (45.87M ops/sec, ~21.8 ns)**:
+   - **Early Tag Inspection**: `prefetch_ahead` inspects the initial byte stream for pipelined GET (`*2\r\n$3\r\nGET`) and SET (`*3\r\n$3\r\nSET`) signatures. If detected, it immediately bypasses the general 32-key prefetch pass, avoiding duplicate hashing and slot probing for commands that run under dedicated batch handlers.
+
+4. **Hot Key Contention Optimization (37.68M ops/sec, 26.5 ns)**:
+   - **Atomic In-Place CAS**: Contended single-key updates apply directly via compare-and-swap on the entry's seqlock sequence, dropping contention latency from 647ms down to 265ms (a 2.4× speedup).
+   - **TTAS Exponential Backoff**: When multiple threads hammer the same key, they spin on a plain shared load. Only when the lock bit clears do they attempt a `compare_exchange_weak`. If contention persists, backoff doubles up to `MAX_SPIN_BACKOFF = 64` before calling `std::thread::yield_now()`, eliminating cache-line bouncing and bus saturation.
+
+5. **Fast Morton Interleaving for Geospatial (10.06M ops/sec, < 199ms)**:
+   - **5-Instruction Coordinate Interleaving**: `spread26` uses 5 bitwise shifts and masks per coordinate to calculate 52-bit geohash integers in ~5 CPU cycles, replacing the legacy 52-step iterative division loops.
+
+6. **Massive Pub/Sub Fan-Out (113.98M msg/sec, ~8.77 ns/msg)**:
    - **Lock-Free Arc Snapshots**: Subscribers are stored in copy-on-write `Arc` vectors. A publisher clones the `Arc` pointer with a single atomic increment (zero locks).
    - **Batched Crossbeam SegQueues**: Delivered messages are wrapped in a single shared `Arc<Frame>` and enqueued into lock-free worker queues, avoiding per-subscriber message payload copying.
 
-4. **Vector Search & AI Engine (5.2k KNN queries/sec, ~192.5 µs)**:
+7. **Vector Search & AI Engine (4.9k KNN queries/sec, ~205 µs)**:
    - **Persistent Pinned Pool**: CPU-heavy vector searches are offloaded to dedicated pool threads via lock-free `crossbeam::SegQueue<Job>` priority tiers.
    - **Thread-Local Scratch**: Traversal visited bitsets, candidate priority queues, and Int8 quantized query codes use pre-allocated thread-local `Scratch` memory, completely eliminating allocations on the query path.
    - **Arena Milestone Shrinking**: The graph arena releases excess memory at power-of-two milestones, keeping the graph nodes dense in L2/L3 cache.
@@ -675,11 +688,11 @@ Direct in-process benchmark execution (`src/bin/without_tcp.rs`) across 12 hardw
 
 | Operation                     | Time                                                                                                       | Mechanism                                                                                                                         |
 | ----------------------------- | ---------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| GET / HGET / SISMEMBER        | O(1)                                                                                                       | Lock-free tag-filtered probe + atomic load; never takes the entry lock                                                            |
-| SET / DEL / EXPIRE            | O(1) average                                                                                               | Tag-filtered probe + per-entry mutation/removal                                                                                   |
+| GET / HGET / SISMEMBER        | O(1)                                                                                                       | Lock-free tag-filtered probe + atomic load; raw-byte comparison (`eq_bytes`) skips UTF-8 decode; never takes the entry lock      |
+| SET / DEL / EXPIRE            | O(1) average                                                                                               | Tag-filtered probe + in-place atomic mutation via `SmallStr::overwrite_bytes` under per-key spinlock                              |
 | INCR / LPUSH / SADD           | O(1)                                                                                                       | Per-key spinlock + in-place mutate                                                                                                |
 | HGETALL / SMEMBERS            | O(N)                                                                                                       | Seqlock-validated iteration                                                                                                       |
-| ZADD                          | O(log N) + O(C) | Hash-index probe for an existing member; chunk located by binary search, C ≤ 256-entry memmove inside one chunk |
+| ZADD                          | O(log N) + O(C) | Hash-index probe for an existing member; chunk located by binary search, C ≤ 256-entry memmove; direct RESP output buffers         |
 | ZRANGE                        | O(N/C + K)    | Walk chunk lengths to the start rank, then iterate K entries                                                     |
 | ZRANGEBYSCORE                 | O(log N + K)  | Binary search over chunk tails, then inside the chunk                                                            |
 | ZSCORE / ZRANK                | O(1) / O(log N + N/C) | Member → score index; rank adds a binary search and a sum of preceding chunk lengths                   |
@@ -692,20 +705,21 @@ Direct in-process benchmark execution (`src/bin/without_tcp.rs`) across 12 hardw
 | SINTER                        | O(N × M)                                                                                                   | HashSet intersection (smallest-first)                                                                                             |
 | SUNION / SDIFF                | O(N)                                                                                                       | HashSet union/difference                                                                                                          |
 | GEOSEARCH                     | O(N)                                                                                                       | Full ZSet scan with haversine filter                                                                                              |
-| JSON.SET (root)               | O(V)                                                                                                       | JSON parse + atomic store                                                                                                         |
+| JSON.SET (root)               | O(V)                                                                                                       | Dedicated fast-path RESP3 parser (`try_fast_json_set_key_val_at`) + atomic store                                                  |
 | JSON.SET (path)               | O(D)                                                                                                       | D = path depth traversal                                                                                                          |
 | JSON.GET                      | O(1)                                                                                                       | Direct path lookup                                                                                                                |
-| XADD                          | O(1) amortized | Varint append to the last packed node; `~` trims whole nodes                                                    |
+| XADD                          | O(1) amortized | Varint append coalesced into 4KB packed nodes via `WriteOp::Xadd`; `~` trims whole nodes                          |
 | XRANGE / XREAD                | O(log N + K)  | BTreeMap seek to the node containing the start ID, decode forward                                                 |
 | BITCOUNT                      | O(B)          | B = bytes; hardware `count_ones()` per byte; BITCOUNT byte-range is O(range)                                     |
 | BITPOS                        | O(B)          | `leading_zeros()` per byte in byte mode; O(B) bit scan in bit mode                                               |
 | BITFIELD                      | O(1)                                                                                                       | Single byte-range read/write with overflow check                                                                                  |
 | PFADD / PFCOUNT               | O(1)                                                                                                       | HyperLogLog register update/estimate                                                                                              |
-| GEOADD                        | O(log N + C) | Geohash encode + ZSet chunked insert; C ≤ 256-entry chunk memmove                                                |
+| GEOADD                        | O(log N + C) | 5-instruction Morton bit-interleaving (`spread26`) + ZSet chunked insert; C ≤ 256-entry chunk memmove             |
 | GEODIST / GEOPOS              | O(1)          | ZSet score decode + haversine                                                                                    |
 | GEOSEARCH                     | O(N)          | Full ZSet scan with haversine radius/box filter                                                                  |
 | PUBLISH                       | O(S) sparse fan-out, O(W) dense                                                                           | W = workers; above ~8 subscribers/worker one queue entry per worker, delivery is a memcpy at the worker                         |
 | PUBLISH pipelined run of K    | O(K·S) encode + O(W) enqueue                                                                              | One snapshot scan and one grouped fan-out for the whole run                                                                     |
+| Pipelined GET / SET run of K  | O(K) prefetch + O(K) raw write, O(1) per op                                                               | Bulk prefetch batch (K ≤ 256) with redundant `prefetch_ahead` bypass; direct zero-copy write to TCP buffer                       |
 | Same-key pipelined run of K   | O(K) work under 1 lock, O(1) amortized per command                                                        | Queue/write-run coalescing; per-command replies synthesized exactly                                                             |
 | SET+EXPIRE adjacent pair      | O(1)                                                                                                       | Fused into one atomic set-with-TTL under a single entry lock                                                                    |
 | SCAN / RANDOMKEY              | O(COUNT)      | Slot cursor; only key and expiry are read (values are never cloned)                                               |

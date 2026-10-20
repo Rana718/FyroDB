@@ -209,8 +209,9 @@ pub(super) fn dispatch_set_run(
                      if let crate::storage::value::FyroDB::String(ref mut s) = val.value {
                         s.overwrite_bytes(val_bytes);
                      } else {
-                        val.value =
-                           crate::storage::value::FyroDB::String(crate::storage::value::SmallStr::from_slice(val_bytes));
+                        val.value = crate::storage::value::FyroDB::String(
+                           crate::storage::value::SmallStr::from_slice(val_bytes),
+                        );
                      }
                      let unlocked = (customhash::bump_seq(locked) & !customhash::STATE_LOCK)
                         | customhash::STATE_OCCUPIED;
@@ -265,10 +266,7 @@ pub(super) fn dispatch_set_run(
    }
 }
 
-pub(super) fn dispatch_json_set_run(
-   conn: &mut Conn<'_>,
-   first_raw: &[(*const u8, usize)],
-) -> bool {
+pub(super) fn dispatch_json_set_run(conn: &mut Conn<'_>, first_raw: &[(*const u8, usize)]) -> bool {
    if first_raw.len() != 4 {
       return false;
    }
@@ -305,8 +303,12 @@ pub(super) fn dispatch_json_set_run(
    if count == 1 {
       let (hint, entry) = conn.hint_for(first_raw[1]);
       let out = &mut conn.parser.wbuf;
-      let Some(key) = part_str(out, first_raw[1]) else { return false; };
-      let Some(val) = part_str(out, first_raw[3]) else { return false; };
+      let Some(key) = part_str(out, first_raw[1]) else {
+         return false;
+      };
+      let Some(val) = part_str(out, first_raw[3]) else {
+         return false;
+      };
       conn.store.set_json_auto(key, hint, entry, val);
       if conn.store.has_replication() {
          conn.store.record_current_value(key);
@@ -315,7 +317,9 @@ pub(super) fn dispatch_json_set_run(
       return true;
    }
 
-   conn.store.prefetch_slots_write(&keys[..count], &mut hashes[..count], &mut tables[..count]);
+   conn
+      .store
+      .prefetch_slots_write(&keys[..count], &mut hashes[..count], &mut tables[..count]);
    conn.store.probe_and_prefetch_entries_write(
       &tables[..count],
       &hashes[..count],
@@ -339,7 +343,9 @@ pub(super) fn dispatch_json_set_run(
          success = false;
          continue;
       };
-      conn.store.set_json_auto(key_str, Some(hashes[i]), entries[i], val_str);
+      conn
+         .store
+         .set_json_auto(key_str, Some(hashes[i]), entries[i], val_str);
       if conn.store.has_replication() {
          conn.store.record_current_value(key_str);
       }

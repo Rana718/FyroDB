@@ -2,7 +2,7 @@
 
 A Redis-compatible in-memory key-value store written in Rust. Speaks RESP2/RESP3, so any Redis client works out of the box. Single node, no external coordination needed.
 
-**v0.2.3** — Record-breaking 122M+ ops/sec throughput, io-uring batched completions, sub-10ns execution latency, and lock-free vector & pub/sub enhancements. → [Changelog](https://fyrodb.vercel.app/docs/changelog-0-2-3)
+**v0.2.4** — Record-breaking 53.38M Pipelined GET ops/sec, zero-copy raw-byte pipeline execution, 44ms Mixed SET/GET, and 2.4× lower Hot Key contention latency. → [Changelog](https://fyrodb.vercel.app/docs/changelog-0-2-4)
 
 ---
 
@@ -73,33 +73,33 @@ Any Redis client works: ioredis, redis-py, go-redis, redis-rs, Jedis. → [Clien
 
 | Benchmark | FyroDB (1 node) | Redis Cluster (12 nodes) | DragonflyDB (1 node) | Speedup vs Redis |
 | ------------------------- | ------------------- | ------------------------ | -------------------- | ---------------- |
-| Pipeline-64 SET           | 12.14M ops/sec      | 5.00M ops/sec            | 4.09M ops/sec        | 2.43×            |
-| Pipelined SET             | 28.32M ops/sec      | 6.53M ops/sec            | 4.16M ops/sec        | 4.34×            |
-| Pipelined GET             | 40.21M ops/sec      | 11.62M ops/sec           | 4.09M ops/sec        | 3.46×            |
-| Mixed SET/GET (50/50)     | 32.86M ops/sec      | 5.82M ops/sec            | 5.15M ops/sec        | 5.65×            |
-| INCR (counters)           | 120.49M ops/sec     | 6.54M ops/sec            | 6.84M ops/sec        | 18.4×            |
-| HSET/HGET (sessions)      | 62.51M ops/sec      | 6.63M ops/sec            | 5.81M ops/sec        | 9.43×            |
-| LPUSH/RPOP (queue)        | 67.72M ops/sec      | 7.17M ops/sec            | 6.23M ops/sec        | 9.44×            |
-| SADD (sets)               | 37.18M ops/sec      | 6.27M ops/sec            | 5.00M ops/sec        | 5.93×            |
-| ZADD (sorted sets)        | 17.42M ops/sec      | 4.78M ops/sec            | 4.36M ops/sec        | 3.64×            |
-| JSON.GET                  | 22.96M ops/sec      | 3.23M ops/sec            | 151.5K ops/sec       | 7.11×            |
-| JSON.SET                  | 11.07M ops/sec      | 3.23M ops/sec            | 151.5K ops/sec       | 3.43×            |
-| SET+EXPIRE (cache TTL)    | 11.36M ops/sec      | 2.41M ops/sec            | 2.41M ops/sec        | 4.71×            |
-| Hot Key (contention)      | 122.68M ops/sec     | 1.61M ops/sec            | 2.15M ops/sec        | 76.2×            |
-| Producer/Consumer         | 36.16M ops/sec      | 1.70M ops/sec            | 1.75M ops/sec        | 21.3×            |
-| Pub/Sub publish           | 3.04M ops/sec       | 161.9K ops/sec           | 315.5K ops/sec       | 18.8×            |
-| Pub/Sub delivery          | 152.20M msg/sec     | 8.09M msg/sec            | 15.43M msg/sec       | 18.8×            |
-| XADD (streams)            | 15.41M ops/sec      | 4.27M ops/sec            | —                    | 3.61×            |
-| SETBIT/BITCOUNT (bitmap)  | 33.62M ops/sec      | 5.94M ops/sec            | —                    | 5.66×            |
-| PFADD/PFCOUNT (HLL)       | 61.82M ops/sec      | 6.03M ops/sec            | —                    | 10.3×            |
-| GEOADD/GEODIST            | 8.43M ops/sec       | 3.07M ops/sec            | —                    | 2.75×            |
-| Vector HSET load          | 152.4K ops/sec      | 66.4K ops/sec †          | —                    | 2.30×            |
-| Vector KNN-10 (FLAT)      | 1.0K q/s            | 104 q/s †                | —                    | 9.6×             |
-| Vector KNN-10 +filter     | 1.7K q/s            | 162 q/s †                | —                    | 10.5×            |
-| Text term search          | 41.5K q/s           | 1.6K q/s †               | —                    | 25.9×            |
-| Text negation             | 21.5K q/s           | 361 q/s †                | —                    | 59.6×            |
-| Vector HNSW KNN-10        | 5.2K q/s            | 1.1K q/s †               | —                    | 4.73×            |
-| Vector HNSW M=32 KNN-10   | 2.6K q/s            | 1.1K q/s †               | —                    | 2.36×            |
+| Pipeline-64 SET           | 15.41M ops/sec      | 5.00M ops/sec            | 4.09M ops/sec        | 3.08×            |
+| Pipelined SET             | 39.62M ops/sec      | 6.53M ops/sec            | 4.16M ops/sec        | 6.07×            |
+| Pipelined GET             | 53.38M ops/sec      | 11.62M ops/sec           | 4.09M ops/sec        | 4.59×            |
+| Mixed SET/GET (50/50)     | 45.87M ops/sec      | 5.82M ops/sec            | 5.15M ops/sec        | 7.88×            |
+| INCR (counters)           | 108.56M ops/sec     | 6.54M ops/sec            | 6.84M ops/sec        | 16.6×            |
+| HSET/HGET (sessions)      | 44.44M ops/sec      | 6.63M ops/sec            | 5.81M ops/sec        | 6.70×            |
+| LPUSH/RPOP (queue)        | 66.93M ops/sec      | 7.17M ops/sec            | 6.23M ops/sec        | 9.33×            |
+| SADD (sets)               | 40.38M ops/sec      | 6.27M ops/sec            | 5.00M ops/sec        | 6.44×            |
+| ZADD (sorted sets)        | 17.83M ops/sec      | 4.78M ops/sec            | 4.36M ops/sec        | 3.73×            |
+| JSON.GET                  | 26.21M ops/sec      | 3.23M ops/sec            | 151.5K ops/sec       | 8.11×            |
+| JSON.SET                  | 16.28M ops/sec      | 3.23M ops/sec            | 151.5K ops/sec       | 5.04×            |
+| SET+EXPIRE (cache TTL)    | 15.14M ops/sec      | 2.41M ops/sec            | 2.41M ops/sec        | 6.28×            |
+| Hot Key (contention)      | 37.68M ops/sec      | 1.61M ops/sec            | 2.15M ops/sec        | 23.4×            |
+| Producer/Consumer         | 40.61M ops/sec      | 1.70M ops/sec            | 1.75M ops/sec        | 23.9×            |
+| Pub/Sub publish           | 2.29M ops/sec       | 161.9K ops/sec           | 315.5K ops/sec       | 14.1×            |
+| Pub/Sub delivery          | 113.98M msg/sec     | 8.09M msg/sec            | 15.43M msg/sec       | 14.1×            |
+| XADD (streams)            | 23.76M ops/sec      | 4.27M ops/sec            | —                    | 5.56×            |
+| SETBIT/BITCOUNT (bitmap)  | 38.11M ops/sec      | 5.94M ops/sec            | —                    | 6.42×            |
+| PFADD/PFCOUNT (HLL)       | 63.43M ops/sec      | 6.03M ops/sec            | —                    | 10.5×            |
+| GEOADD/GEODIST            | 10.06M ops/sec      | 3.07M ops/sec            | —                    | 3.28×            |
+| Vector HSET load          | 100.2K ops/sec      | 66.4K ops/sec †          | —                    | 1.51×            |
+| Vector KNN-10 (FLAT)      | 922 q/s             | 104 q/s †                | —                    | 8.9×             |
+| Vector KNN-10 +filter     | 1.4K q/s            | 162 q/s †                | —                    | 8.6×             |
+| Text term search          | 34.3K q/s           | 1.6K q/s †               | —                    | 21.4×            |
+| Text negation             | 20.3K q/s           | 361 q/s †                | —                    | 56.2×            |
+| Vector HNSW KNN-10        | 4.9K q/s            | 1.1K q/s †               | —                    | 4.45×            |
+| Vector HNSW M=32 KNN-10   | 2.0K q/s            | 1.1K q/s †               | —                    | 1.82×            |
 
 † Redis Cluster does not distribute vector or graph operations across nodes — these benchmarks ran against a single Redis node.
 
@@ -109,8 +109,8 @@ Measured over the full suite including 50k×768d HNSW vector workloads:
 
 | Metric   | FyroDB (1 node) | Redis Cluster (12 nodes) |
 | -------- | --------------- | ------------------------ |
-| Peak RSS | 1005.84 MB      | 756.74 MB                |
-| Peak CPU | 1219.9%         | 761.0%                   |
+| Peak RSS | 876.28 MB       | 756.74 MB                |
+| Peak CPU | 1224.9%         | 761.0%                   |
 
 FyroDB's higher RSS reflects the HNSW graph in memory. Redis's lower numbers are because vector load fell on one node; the other 11 were idle.
 

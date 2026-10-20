@@ -477,7 +477,9 @@ impl RespParser {
       if unsafe { std::ptr::read_unaligned(buf as *const u32) } != u32::from_ne_bytes(*b"*4\r\n") {
          return None;
       }
-      if unsafe { std::ptr::read_unaligned(buf.add(4) as *const u32) } != u32::from_ne_bytes(*b"$8\r\n") {
+      if unsafe { std::ptr::read_unaligned(buf.add(4) as *const u32) }
+         != u32::from_ne_bytes(*b"$8\r\n")
+      {
          return None;
       }
       let w0 = unsafe { std::ptr::read_unaligned(buf.add(8) as *const u64) };
@@ -486,7 +488,9 @@ impl RespParser {
       if w0 != JSON_SET_UPPER && w0 != JSON_SET_LOWER {
          return None;
       }
-      if unsafe { std::ptr::read_unaligned(buf.add(16) as *const u16) } != CRLF || unsafe { *buf.add(18) } != b'$' {
+      if unsafe { std::ptr::read_unaligned(buf.add(16) as *const u16) } != CRLF
+         || unsafe { *buf.add(18) } != b'$'
+      {
          return None;
       }
       let k1 = unsafe { *buf.add(19) };
@@ -503,8 +507,15 @@ impl RespParser {
                   (((k1 - b'0') as usize) * 10 + (k2 - b'0') as usize, 23)
                } else {
                   let k3 = unsafe { *buf.add(21) };
-                  if k3.is_ascii_digit() && unsafe { std::ptr::read_unaligned(buf.add(22) as *const u16) } == CRLF {
-                     (((k1 - b'0') as usize) * 100 + ((k2 - b'0') as usize) * 10 + (k3 - b'0') as usize, 24)
+                  if k3.is_ascii_digit()
+                     && unsafe { std::ptr::read_unaligned(buf.add(22) as *const u16) } == CRLF
+                  {
+                     (
+                        ((k1 - b'0') as usize) * 100
+                           + ((k2 - b'0') as usize) * 10
+                           + (k3 - b'0') as usize,
+                        24,
+                     )
                   } else {
                      return None;
                   }
@@ -521,9 +532,7 @@ impl RespParser {
       if unsafe { std::ptr::read_unaligned(buf.add(path_start) as *const u16) } != CRLF {
          return None;
       }
-      let p_check = unsafe {
-         std::slice::from_raw_parts(buf.add(path_start + 2), 8)
-      };
+      let p_check = unsafe { std::slice::from_raw_parts(buf.add(path_start + 2), 8) };
       if p_check != b"$1\r\n.\r\n$" {
          return None;
       }
@@ -539,11 +548,22 @@ impl RespParser {
             let v2 = unsafe { *buf.add(val_hdr + 1) };
             if v2.is_ascii_digit() {
                if unsafe { std::ptr::read_unaligned(buf.add(val_hdr + 2) as *const u16) } == CRLF {
-                  (((v1 - b'0') as usize) * 10 + (v2 - b'0') as usize, val_hdr + 4)
+                  (
+                     ((v1 - b'0') as usize) * 10 + (v2 - b'0') as usize,
+                     val_hdr + 4,
+                  )
                } else {
                   let v3 = unsafe { *buf.add(val_hdr + 2) };
-                  if v3.is_ascii_digit() && unsafe { std::ptr::read_unaligned(buf.add(val_hdr + 3) as *const u16) } == CRLF {
-                     (((v1 - b'0') as usize) * 100 + ((v2 - b'0') as usize) * 10 + (v3 - b'0') as usize, val_hdr + 5)
+                  if v3.is_ascii_digit()
+                     && unsafe { std::ptr::read_unaligned(buf.add(val_hdr + 3) as *const u16) }
+                        == CRLF
+                  {
+                     (
+                        ((v1 - b'0') as usize) * 100
+                           + ((v2 - b'0') as usize) * 10
+                           + (v3 - b'0') as usize,
+                        val_hdr + 5,
+                     )
                   } else {
                      return None;
                   }

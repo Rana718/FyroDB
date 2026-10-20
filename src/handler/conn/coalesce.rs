@@ -635,8 +635,12 @@ pub(super) fn execute_write_run(
                   crate::utils::resp::fast_parse_f64_bytes(lon_b),
                   crate::utils::resp::fast_parse_f64_bytes(lat_b),
                ) {
-                  if (-180.0..=180.0).contains(&lon) && (-85.05112878..=85.05112878).contains(&lat) {
-                     match conn.store.geoadd(key, &[(lon, lat, member)], false, false, false) {
+                  if (-180.0..=180.0).contains(&lon) && (-85.05112878..=85.05112878).contains(&lat)
+                  {
+                     match conn
+                        .store
+                        .geoadd(key, &[(lon, lat, member)], false, false, false)
+                     {
                         Ok(n) => crate::utils::resp::write_integer(out, n as i64),
                         Err(e) => crate::utils::resp::write_store_err(out, e),
                      }
