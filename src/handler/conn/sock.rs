@@ -24,6 +24,13 @@ impl<'a> Conn<'a> {
          let _ = sock.set_tcp_quickack(true);
       }
 
+      if is_raw_arrival_only() {
+         let unparsed = self.parser.filled - self.parser.pos;
+         record_raw_arrival(unparsed);
+         self.parser.pos = self.parser.filled;
+         return true;
+      }
+
       if !self.process_buffered() {
          return false;
       }

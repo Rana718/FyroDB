@@ -13,6 +13,8 @@ use super::subscription::do_full_unsubscribe;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 static NULL_STORE: AtomicBool = AtomicBool::new(false);
+static RAW_ARRIVAL_ONLY: AtomicBool = AtomicBool::new(false);
+static RAW_ARRIVAL_BYTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 #[inline(always)]
 pub fn is_null_store() -> bool {
@@ -21,6 +23,29 @@ pub fn is_null_store() -> bool {
 
 pub fn set_null_store(val: bool) {
    NULL_STORE.store(val, Ordering::Relaxed);
+}
+
+#[inline(always)]
+pub fn is_raw_arrival_only() -> bool {
+   RAW_ARRIVAL_ONLY.load(Ordering::Relaxed)
+}
+
+pub fn set_raw_arrival_only(val: bool) {
+   RAW_ARRIVAL_ONLY.store(val, Ordering::Relaxed);
+}
+
+#[inline(always)]
+pub fn get_raw_arrival_bytes() -> u64 {
+   RAW_ARRIVAL_BYTES.load(Ordering::Relaxed)
+}
+
+pub fn reset_raw_arrival_bytes() {
+   RAW_ARRIVAL_BYTES.store(0, Ordering::Relaxed);
+}
+
+#[inline(always)]
+pub fn record_raw_arrival(bytes: usize) {
+   RAW_ARRIVAL_BYTES.fetch_add(bytes as u64, Ordering::Relaxed);
 }
 
 pub(crate) const SUB_WRITE_BATCH_BYTES: usize = 256 * 1024;

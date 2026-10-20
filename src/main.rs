@@ -70,6 +70,10 @@ fn main() {
       fyro_db::handler::conn::set_null_store(true);
       println!("  NULL_STORE=enabled (TCP network & parser benchmark mode)");
    }
+   if env::var("FYRODB_RAW_ARRIVAL").is_ok_and(|v| v == "1" || v == "true" || v == "yes") {
+      fyro_db::handler::conn::set_raw_arrival_only(true);
+      println!("  RAW_ARRIVAL=enabled (pure network-to-parser ingress benchmark mode)");
+   }
    let config = Config::from_env();
    #[cfg(feature = "profiling")]
    start_profiler();
