@@ -89,7 +89,7 @@ fn replication_log_and_stream_are_strict_and_idempotent() {
 
    let mut entry = record();
    entry.offset = 1;
-   let message = fyro_db::cluster::ReplicationMessage::Entry(entry);
+   let message = fyro_db::cluster::ReplicationMessage::Entry(std::sync::Arc::new(entry));
    let bytes = encode_replication_message(&message).unwrap();
    assert_eq!(decode_replication_message(&bytes).unwrap(), message);
    let mut stream = ReplicationStream::default();

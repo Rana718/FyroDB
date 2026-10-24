@@ -206,14 +206,60 @@ impl FrameCodec {
    }
 }
 
+/// Eight slicing tables: `TABLES[n][i]` is the state after feeding byte `i`
+/// followed by `n` zero bytes. Processing eight bytes then costs eight
+/// independent lookups whose latency overlaps, instead of an eight-step
+/// dependent chain.
+const CRC32_TABLES: [[u32; 256]; 8] = build_crc32_tables();
+
+const fn build_crc32_tables() -> [[u32; 256]; 8] {
+   let mut tables = [[0u32; 256]; 8];
+   let mut index = 0;
+   while index < 256 {
+      let mut crc = index as u32;
+      let mut bit = 0;
+      while bit < 8 {
+         crc = if crc & 1 != 0 {
+            (crc >> 1) ^ 0xedb8_8320
+         } else {
+            crc >> 1
+         };
+         bit += 1;
+      }
+      tables[0][index] = crc;
+      index += 1;
+   }
+   let mut slice = 1;
+   while slice < 8 {
+      let mut i = 0;
+      while i < 256 {
+         let previous = tables[slice - 1][i];
+         tables[slice][i] = (previous >> 8) ^ tables[0][(previous & 0xff) as usize];
+         i += 1;
+      }
+      slice += 1;
+   }
+   tables
+}
+
+#[inline]
 fn checksum(bytes: &[u8]) -> u32 {
    let mut crc = !0u32;
-   for &byte in bytes {
-      crc ^= byte as u32;
-      for _ in 0..8 {
-         let mask = (crc & 1).wrapping_neg();
-         crc = (crc >> 1) ^ (0xedb8_8320 & mask);
-      }
+   let (chunks, remainder) = bytes.as_chunks::<8>();
+   for chunk in chunks {
+      let low = u32::from_le_bytes(chunk[0..4].try_into().unwrap()) ^ crc;
+      let high = u32::from_le_bytes(chunk[4..8].try_into().unwrap());
+      crc = CRC32_TABLES[7][(low & 0xff) as usize]
+         ^ CRC32_TABLES[6][((low >> 8) & 0xff) as usize]
+         ^ CRC32_TABLES[5][((low >> 16) & 0xff) as usize]
+         ^ CRC32_TABLES[4][(low >> 24) as usize]
+         ^ CRC32_TABLES[3][(high & 0xff) as usize]
+         ^ CRC32_TABLES[2][((high >> 8) & 0xff) as usize]
+         ^ CRC32_TABLES[1][((high >> 16) & 0xff) as usize]
+         ^ CRC32_TABLES[0][(high >> 24) as usize];
+   }
+   for &byte in remainder {
+      crc = (crc >> 8) ^ CRC32_TABLES[0][((crc ^ u32::from(byte)) & 0xff) as usize];
    }
    !crc
 }
@@ -299,5 +345,27 @@ mod tests {
          codec.read_frame(&mut bytes.as_slice()),
          Err(ProtocolError::BadChecksum)
       ));
+   }
+
+   /// The slicing-by-8 tables must reproduce the byte-at-a-time CRC32 that
+   /// existing peers and on-disk frames were checksummed with.
+   #[test]
+   fn slicing_checksum_matches_bytewise_reference() {
+      fn reference(bytes: &[u8]) -> u32 {
+         let mut crc = !0u32;
+         for &byte in bytes {
+            crc = (crc >> 8) ^ CRC32_TABLES[0][((crc ^ u32::from(byte)) & 0xff) as usize];
+         }
+         !crc
+      }
+      assert_eq!(checksum(b"123456789"), 0xcbf4_3926);
+      let data: Vec<u8> = (0..=255u8).cycle().take(1000).collect();
+      for length in 0..data.len() {
+         assert_eq!(
+            checksum(&data[..length]),
+            reference(&data[..length]),
+            "length {length}"
+         );
+      }
    }
 }
