@@ -1,5 +1,164 @@
 use super::*;
 
+/// Command identity resolved from one lowercased 8-byte window, so a command
+/// is classified once instead of being re-compared at every dispatch gate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum CmdId {
+   Other,
+   Get,
+   Set,
+   Del,
+   Ping,
+   Auth,
+   Quit,
+   Hget,
+   Hset,
+   Incr,
+   Rpop,
+   Lpop,
+   Sadd,
+   Zadd,
+   Xadd,
+   Lpush,
+   Rpush,
+   Pfadd,
+   Expire,
+   Setbit,
+   Geoadd,
+   Pfcount,
+   Geodist,
+   Bitcount,
+   Publish,
+   JsonSet,
+   JsonGet,
+}
+
+impl CmdId {
+   #[inline(always)]
+   pub(super) fn is_queue(self) -> bool {
+      matches!(
+         self,
+         CmdId::Lpush | CmdId::Rpush | CmdId::Lpop | CmdId::Rpop
+      )
+   }
+
+   #[inline(always)]
+   pub(super) fn is_write_run_candidate(self) -> bool {
+      matches!(
+         self,
+         CmdId::Set
+            | CmdId::Incr
+            | CmdId::Hset
+            | CmdId::Sadd
+            | CmdId::Zadd
+            | CmdId::Xadd
+            | CmdId::Pfadd
+            | CmdId::Geoadd
+            | CmdId::JsonSet
+      )
+   }
+}
+
+/// Space-padded little-endian word for a command name of at most 8 bytes.
+#[inline(always)]
+const fn cmd_word(name: &[u8]) -> u64 {
+   let mut w = [b' '; 8];
+   let mut i = 0;
+   while i < name.len() {
+      w[i] = name[i];
+      i += 1;
+   }
+   u64::from_le_bytes(w)
+}
+
+const W_GET: u64 = cmd_word(b"get");
+const W_SET: u64 = cmd_word(b"set");
+const W_DEL: u64 = cmd_word(b"del");
+const W_PING: u64 = cmd_word(b"ping");
+const W_AUTH: u64 = cmd_word(b"auth");
+const W_QUIT: u64 = cmd_word(b"quit");
+const W_HGET: u64 = cmd_word(b"hget");
+const W_HSET: u64 = cmd_word(b"hset");
+const W_INCR: u64 = cmd_word(b"incr");
+const W_RPOP: u64 = cmd_word(b"rpop");
+const W_LPOP: u64 = cmd_word(b"lpop");
+const W_SADD: u64 = cmd_word(b"sadd");
+const W_ZADD: u64 = cmd_word(b"zadd");
+const W_XADD: u64 = cmd_word(b"xadd");
+const W_LPUSH: u64 = cmd_word(b"lpush");
+const W_RPUSH: u64 = cmd_word(b"rpush");
+const W_PFADD: u64 = cmd_word(b"pfadd");
+const W_EXPIRE: u64 = cmd_word(b"expire");
+const W_SETBIT: u64 = cmd_word(b"setbit");
+const W_GEOADD: u64 = cmd_word(b"geoadd");
+const W_PFCOUNT: u64 = cmd_word(b"pfcount");
+const W_GEODIST: u64 = cmd_word(b"geodist");
+const W_BITCOUNT: u64 = cmd_word(b"bitcount");
+const W_PUBLISH: u64 = cmd_word(b"publish");
+const W_JSONSET: u64 = cmd_word(b"json.set");
+const W_JSONGET: u64 = cmd_word(b"json.get");
+
+#[inline(always)]
+pub(super) fn cmd_id(cmd: &[u8]) -> CmdId {
+   let n = cmd.len();
+   if n == 0 || n > 8 {
+      return CmdId::Other;
+   }
+   let mut w = [b' '; 8];
+   w[..n].copy_from_slice(&cmd[..n]);
+   // Bit 5 is the ASCII case bit: setting it folds uppercase letters and
+   // leaves the digits and '.' in command names untouched.
+   let w = u64::from_le_bytes(w) | 0x2020_2020_2020_2020;
+   match (n, w) {
+      (3, W_GET) => CmdId::Get,
+      (3, W_SET) => CmdId::Set,
+      (3, W_DEL) => CmdId::Del,
+      (4, W_PING) => CmdId::Ping,
+      (4, W_AUTH) => CmdId::Auth,
+      (4, W_QUIT) => CmdId::Quit,
+      (4, W_HGET) => CmdId::Hget,
+      (4, W_HSET) => CmdId::Hset,
+      (4, W_INCR) => CmdId::Incr,
+      (4, W_RPOP) => CmdId::Rpop,
+      (4, W_LPOP) => CmdId::Lpop,
+      (4, W_SADD) => CmdId::Sadd,
+      (4, W_ZADD) => CmdId::Zadd,
+      (4, W_XADD) => CmdId::Xadd,
+      (5, W_LPUSH) => CmdId::Lpush,
+      (5, W_RPUSH) => CmdId::Rpush,
+      (5, W_PFADD) => CmdId::Pfadd,
+      (6, W_EXPIRE) => CmdId::Expire,
+      (6, W_SETBIT) => CmdId::Setbit,
+      (6, W_GEOADD) => CmdId::Geoadd,
+      (7, W_PFCOUNT) => CmdId::Pfcount,
+      (7, W_GEODIST) => CmdId::Geodist,
+      (7, W_PUBLISH) => CmdId::Publish,
+      (8, W_BITCOUNT) => CmdId::Bitcount,
+      (8, W_JSONSET) => CmdId::JsonSet,
+      (8, W_JSONGET) => CmdId::JsonGet,
+      _ => CmdId::Other,
+   }
+}
+
+#[cfg(test)]
+mod cmd_id_tests {
+   use super::{CmdId, cmd_id};
+
+   #[test]
+   fn classifies_case_insensitively_and_rejects_others() {
+      assert_eq!(cmd_id(b"GET"), CmdId::Get);
+      assert_eq!(cmd_id(b"get"), CmdId::Get);
+      assert_eq!(cmd_id(b"GeT"), CmdId::Get);
+      assert_eq!(cmd_id(b"JSON.SET"), CmdId::JsonSet);
+      assert_eq!(cmd_id(b"json.set"), CmdId::JsonSet);
+      assert_eq!(cmd_id(b"LPUSH"), CmdId::Lpush);
+      assert_eq!(cmd_id(b"BITCOUNT"), CmdId::Bitcount);
+      assert_eq!(cmd_id(b""), CmdId::Other);
+      assert_eq!(cmd_id(b"GETX"), CmdId::Other);
+      assert_eq!(cmd_id(b"FT.SEARCH"), CmdId::Other);
+   }
+}
+
 #[inline(always)]
 pub(super) fn dispatch_get_run(conn: &mut Conn<'_>, first_key: (*const u8, usize)) {
    const BATCH: usize = 256;
@@ -373,12 +532,13 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
 
    let cmd_len = raw[0].1;
    let cmd: &[u8] = unsafe { part_bytes(raw[0]) };
+   let id = cmd_id(cmd);
 
    if is_null_store() {
       let out = &mut conn.parser.wbuf;
-      if cmd.eq_ignore_ascii_case(b"GET") {
+      if id == CmdId::Get {
          out.extend_from_slice(b"$5\r\nvalue\r\n");
-      } else if cmd.eq_ignore_ascii_case(b"PING") {
+      } else if id == CmdId::Ping {
          out.extend_from_slice(b"+PONG\r\n");
       } else {
          out.extend_from_slice(b"+OK\r\n");
@@ -387,19 +547,19 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
    }
 
    if !conn.authenticated {
-      handle_unauth(conn, raw, cmd, cmd_len);
+      handle_unauth(conn, raw, cmd);
       return;
    }
 
    if !conn.store.cluster.enabled && !conn.store.at_key_capacity() {
       if cmd_len == 3 {
-         if cmd.eq_ignore_ascii_case(b"GET") && raw.len() == 2 {
+         if id == CmdId::Get && raw.len() == 2 {
             dispatch_get_run(conn, raw[1]);
             return;
-         } else if cmd.eq_ignore_ascii_case(b"SET") && raw.len() == 3 {
+         } else if id == CmdId::Set && raw.len() == 3 {
             dispatch_set_run(conn, raw[1], raw[2]);
             return;
-         } else if cmd.eq_ignore_ascii_case(b"DEL") && raw.len() == 2 {
+         } else if id == CmdId::Del && raw.len() == 2 {
             let out = &mut conn.parser.wbuf;
             let Some(key) = part_str(out, raw[1]) else {
                return;
@@ -412,7 +572,7 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
             return;
          }
       } else if cmd_len == 4 {
-         if cmd.eq_ignore_ascii_case(b"HGET") && raw.len() == 3 {
+         if id == CmdId::Hget && raw.len() == 3 {
             let out = &mut conn.parser.wbuf;
             let Some(key) = part_str(out, raw[1]) else {
                return;
@@ -426,7 +586,7 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
                Err(_) => crate::utils::resp::write_wrong_type(out),
             }
             return;
-         } else if cmd.eq_ignore_ascii_case(b"HSET") && raw.len() == 4 {
+         } else if id == CmdId::Hset && raw.len() == 4 {
             let out = &mut conn.parser.wbuf;
             let Some(key) = part_str(out, raw[1]) else {
                return;
@@ -437,7 +597,7 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
                conn.store.record_current_value(key);
             }
             return;
-         } else if cmd.eq_ignore_ascii_case(b"PING") {
+         } else if id == CmdId::Ping {
             if raw.len() == 1 {
                conn.parser.wbuf.extend_from_slice(crate::utils::resp::PONG);
                return;
@@ -446,7 +606,7 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
                crate::utils::resp::write_bulk_bytes(&mut conn.parser.wbuf, msg);
                return;
             }
-         } else if cmd.eq_ignore_ascii_case(b"INCR") && raw.len() == 2 {
+         } else if id == CmdId::Incr && raw.len() == 2 {
             let (hint, _) = conn.hint_for(raw[1]);
             let out = &mut conn.parser.wbuf;
             let Some(key) = part_str(out, raw[1]) else {
@@ -462,7 +622,7 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
                Err(e) => crate::utils::resp::write_err(out, e),
             }
             return;
-         } else if cmd.eq_ignore_ascii_case(b"RPOP") && raw.len() == 2 {
+         } else if id == CmdId::Rpop && raw.len() == 2 {
             let out = &mut conn.parser.wbuf;
             let Some(key) = part_str(out, raw[1]) else {
                return;
@@ -477,7 +637,7 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
                Err(_) => crate::utils::resp::write_wrong_type(out),
             }
             return;
-         } else if cmd.eq_ignore_ascii_case(b"LPOP") && raw.len() == 2 {
+         } else if id == CmdId::Lpop && raw.len() == 2 {
             let out = &mut conn.parser.wbuf;
             let Some(key) = part_str(out, raw[1]) else {
                return;
@@ -492,7 +652,7 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
                Err(_) => crate::utils::resp::write_wrong_type(out),
             }
             return;
-         } else if cmd.eq_ignore_ascii_case(b"SADD") && raw.len() == 3 {
+         } else if id == CmdId::Sadd && raw.len() == 3 {
             let out = &mut conn.parser.wbuf;
             let Some(key) = part_str(out, raw[1]) else {
                return;
@@ -510,7 +670,7 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
                Err(_) => crate::utils::resp::write_wrong_type(out),
             }
             return;
-         } else if cmd.eq_ignore_ascii_case(b"ZADD") && raw.len() == 4 {
+         } else if id == CmdId::Zadd && raw.len() == 4 {
             let out = &mut conn.parser.wbuf;
             let Some(key) = part_str(out, raw[1]) else {
                return;
@@ -535,7 +695,7 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
                out.extend_from_slice(b"-ERR value is not a valid float\r\n");
             }
             return;
-         } else if cmd.eq_ignore_ascii_case(b"XADD") && raw.len() == 5 {
+         } else if id == CmdId::Xadd && raw.len() == 5 {
             let out = &mut conn.parser.wbuf;
             let Some(key) = part_str(out, raw[1]) else {
                return;
@@ -560,7 +720,7 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
             return;
          }
       } else if cmd_len == 5 {
-         if cmd.eq_ignore_ascii_case(b"LPUSH") && raw.len() == 3 {
+         if id == CmdId::Lpush && raw.len() == 3 {
             let out = &mut conn.parser.wbuf;
             let Some(key) = part_str(out, raw[1]) else {
                return;
@@ -578,7 +738,7 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
                Err(_) => crate::utils::resp::write_wrong_type(out),
             }
             return;
-         } else if cmd.eq_ignore_ascii_case(b"RPUSH") && raw.len() == 3 {
+         } else if id == CmdId::Rpush && raw.len() == 3 {
             let out = &mut conn.parser.wbuf;
             let Some(key) = part_str(out, raw[1]) else {
                return;
@@ -596,7 +756,7 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
                Err(_) => crate::utils::resp::write_wrong_type(out),
             }
             return;
-         } else if cmd.eq_ignore_ascii_case(b"PFADD") && raw.len() == 3 {
+         } else if id == CmdId::Pfadd && raw.len() == 3 {
             let out = &mut conn.parser.wbuf;
             let Some(key) = part_str(out, raw[1]) else {
                return;
@@ -616,7 +776,7 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
             return;
          }
       } else if cmd_len == 6 {
-         if cmd.eq_ignore_ascii_case(b"EXPIRE") && raw.len() == 3 {
+         if id == CmdId::Expire && raw.len() == 3 {
             let out = &mut conn.parser.wbuf;
             let Some(key) = part_str(out, raw[1]) else {
                return;
@@ -644,7 +804,7 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
             };
             out.extend_from_slice(reply);
             return;
-         } else if cmd.eq_ignore_ascii_case(b"SETBIT") && raw.len() == 4 {
+         } else if id == CmdId::Setbit && raw.len() == 4 {
             let out = &mut conn.parser.wbuf;
             let Some(key) = part_str(out, raw[1]) else {
                return;
@@ -673,7 +833,7 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
                out.extend_from_slice(b"-ERR value is not an integer or out of range\r\n");
             }
             return;
-         } else if cmd.eq_ignore_ascii_case(b"GEOADD") && raw.len() == 5 {
+         } else if id == CmdId::Geoadd && raw.len() == 5 {
             let out = &mut conn.parser.wbuf;
             let Some(key) = part_str(out, raw[1]) else {
                return;
@@ -710,7 +870,7 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
             return;
          }
       } else if cmd_len == 7 {
-         if cmd.eq_ignore_ascii_case(b"PFCOUNT") && raw.len() == 2 {
+         if id == CmdId::Pfcount && raw.len() == 2 {
             let out = &mut conn.parser.wbuf;
             let Some(key) = part_str(out, raw[1]) else {
                return;
@@ -720,7 +880,7 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
                Err(e) => crate::utils::resp::write_store_err(out, e),
             }
             return;
-         } else if cmd.eq_ignore_ascii_case(b"GEODIST") && raw.len() == 4 {
+         } else if id == CmdId::Geodist && raw.len() == 4 {
             let out = &mut conn.parser.wbuf;
             let Some(key) = part_str(out, raw[1]) else {
                return;
@@ -744,7 +904,7 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
             return;
          }
       } else if cmd_len == 8 {
-         if cmd.eq_ignore_ascii_case(b"BITCOUNT") && raw.len() == 2 {
+         if id == CmdId::Bitcount && raw.len() == 2 {
             let out = &mut conn.parser.wbuf;
             let Some(key) = part_str(out, raw[1]) else {
                return;
@@ -754,7 +914,7 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
                Err(_) => crate::utils::resp::write_wrong_type(out),
             }
             return;
-         } else if cmd.eq_ignore_ascii_case(b"JSON.SET") && raw.len() == 4 {
+         } else if id == CmdId::JsonSet && raw.len() == 4 {
             let out = &mut conn.parser.wbuf;
             let Some(key) = part_str(out, raw[1]) else {
                return;
@@ -776,7 +936,7 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
                Err(e) => crate::utils::resp::write_store_err(out, e),
             }
             return;
-         } else if cmd.eq_ignore_ascii_case(b"JSON.GET") {
+         } else if id == CmdId::JsonGet {
             let out = &mut conn.parser.wbuf;
             let Some(key) = part_str(out, raw[1]) else {
                return;
@@ -895,7 +1055,7 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
    }
 
    if cmd_len == 3 {
-      if cmd.eq_ignore_ascii_case(b"SET") && raw.len() >= 3 {
+      if id == CmdId::Set && raw.len() >= 3 {
          let (hint, entry) = conn.hint_for(raw[1]);
          let out = &mut conn.parser.wbuf;
          let Some(key) = part_str(out, raw[1]) else {
@@ -912,7 +1072,7 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
             conn.parser.wbuf.extend_from_slice(b"+OK\r\n");
             return;
          }
-      } else if cmd.eq_ignore_ascii_case(b"GET") && raw.len() == 2 {
+      } else if id == CmdId::Get && raw.len() == 2 {
          let (hint, entry) = conn.hint_for(raw[1]);
          let out = &mut conn.parser.wbuf;
          let Some(key) = part_str(out, raw[1]) else {
@@ -922,7 +1082,7 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
             out.extend_from_slice(b"$-1\r\n");
          }
          return;
-      } else if cmd.eq_ignore_ascii_case(b"DEL") && raw.len() == 2 {
+      } else if id == CmdId::Del && raw.len() == 2 {
          let out = &mut conn.parser.wbuf;
          let Some(key) = part_str(out, raw[1]) else {
             return;
@@ -935,7 +1095,7 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
          return;
       }
    } else if cmd_len == 4 {
-      if cmd.eq_ignore_ascii_case(b"HGET") && raw.len() == 3 {
+      if id == CmdId::Hget && raw.len() == 3 {
          let out = &mut conn.parser.wbuf;
          let Some(key) = part_str(out, raw[1]) else {
             return;
@@ -949,10 +1109,7 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
             Err(_) => crate::utils::resp::write_wrong_type(out),
          }
          return;
-      } else if cmd.eq_ignore_ascii_case(b"HSET")
-         && raw.len() >= 4
-         && (raw.len() - 2).is_multiple_of(2)
-      {
+      } else if id == CmdId::Hset && raw.len() >= 4 && (raw.len() - 2).is_multiple_of(2) {
          let out = &mut conn.parser.wbuf;
          let Some(key) = part_str(out, raw[1]) else {
             return;
@@ -990,7 +1147,7 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
             conn.store.record_current_value(key);
          }
          return;
-      } else if cmd.eq_ignore_ascii_case(b"PING") {
+      } else if id == CmdId::Ping {
          if raw.len() == 1 {
             conn.parser.wbuf.extend_from_slice(crate::utils::resp::PONG);
             return;
@@ -999,7 +1156,7 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
             crate::utils::resp::write_bulk_bytes(&mut conn.parser.wbuf, msg);
             return;
          }
-      } else if cmd.eq_ignore_ascii_case(b"INCR") && raw.len() == 2 {
+      } else if id == CmdId::Incr && raw.len() == 2 {
          let out = &mut conn.parser.wbuf;
          let Some(key) = part_str(out, raw[1]) else {
             return;
@@ -1014,7 +1171,7 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
             Err(e) => crate::utils::resp::write_err(&mut conn.parser.wbuf, e),
          }
          return;
-      } else if cmd.eq_ignore_ascii_case(b"RPOP") && raw.len() == 2 {
+      } else if id == CmdId::Rpop && raw.len() == 2 {
          let out = &mut conn.parser.wbuf;
          let Some(key) = part_str(out, raw[1]) else {
             return;
@@ -1029,7 +1186,7 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
             Err(_) => crate::utils::resp::write_wrong_type(&mut conn.parser.wbuf),
          }
          return;
-      } else if cmd.eq_ignore_ascii_case(b"LPOP") && raw.len() == 2 {
+      } else if id == CmdId::Lpop && raw.len() == 2 {
          let out = &mut conn.parser.wbuf;
          let Some(key) = part_str(out, raw[1]) else {
             return;
@@ -1044,7 +1201,7 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
             Err(_) => crate::utils::resp::write_wrong_type(&mut conn.parser.wbuf),
          }
          return;
-      } else if cmd.eq_ignore_ascii_case(b"SADD") && raw.len() >= 3 {
+      } else if id == CmdId::Sadd && raw.len() >= 3 {
          let out = &mut conn.parser.wbuf;
          let Some(key) = part_str(out, raw[1]) else {
             return;
@@ -1065,7 +1222,7 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
             return;
          }
       }
-   } else if cmd_len == 6 && cmd.eq_ignore_ascii_case(b"EXPIRE") && raw.len() == 3 {
+   } else if cmd_len == 6 && id == CmdId::Expire && raw.len() == 3 {
       let out = &mut conn.parser.wbuf;
       let Some(key) = part_str(out, raw[1]) else {
          return;
@@ -1095,7 +1252,7 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
       };
       conn.parser.wbuf.extend_from_slice(reply);
       return;
-   } else if cmd_len == 5 && cmd.eq_ignore_ascii_case(b"LPUSH") && raw.len() == 3 {
+   } else if cmd_len == 5 && id == CmdId::Lpush && raw.len() == 3 {
       let out = &mut conn.parser.wbuf;
       let Some(key) = part_str(out, raw[1]) else {
          return;
@@ -1204,13 +1361,9 @@ pub(super) fn write_route_decision(out: &mut Vec<u8>, decision: crate::cluster::
 
 #[cold]
 #[inline(never)]
-pub(super) fn handle_unauth(
-   conn: &mut Conn<'_>,
-   raw: &[(*const u8, usize)],
-   cmd: &[u8],
-   cmd_len: usize,
-) {
-   if cmd_len == 4 && cmd.eq_ignore_ascii_case(b"AUTH") {
+pub(super) fn handle_unauth(conn: &mut Conn<'_>, raw: &[(*const u8, usize)], cmd: &[u8]) {
+   let id = cmd_id(cmd);
+   if id == CmdId::Auth {
       if raw.len() >= 2 {
          let Some(pass) = part_str(&mut conn.parser.wbuf, raw[1]) else {
             return;
@@ -1232,9 +1385,9 @@ pub(super) fn handle_unauth(
       } else {
          crate::utils::resp::write_wrong_args(&mut conn.parser.wbuf, "auth");
       }
-   } else if cmd_len == 4 && cmd.eq_ignore_ascii_case(b"PING") {
+   } else if id == CmdId::Ping {
       conn.parser.wbuf.extend_from_slice(b"+PONG\r\n");
-   } else if cmd_len == 4 && cmd.eq_ignore_ascii_case(b"QUIT") {
+   } else if id == CmdId::Quit {
       conn.parser.wbuf.extend_from_slice(b"+OK\r\n");
    } else {
       conn

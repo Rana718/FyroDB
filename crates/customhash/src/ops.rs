@@ -233,6 +233,21 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
       let Some(shard) = self.shards.get(shard_idx) else {
          return;
       };
+
+      // Cheap gate: this runs on every dbsize drop and every maintenance
+      // tick, and most shards have nothing to reclaim. `len` counts inserts
+      // since the last rebuild and `live` the occupied slots, so their
+      // difference approximates the tombstone population.
+      let live_hint = shard.live.load(Ordering::Relaxed);
+      let capacity_hint = shard.mask.load(Ordering::Relaxed) + 1;
+      let dead_hint = dead_estimate(shard.len.load(Ordering::Relaxed), live_hint);
+      if live_hint == 0 && dead_hint == 0 {
+         return;
+      }
+      if capacity_for(live_hint) >= capacity_hint && dead_hint < (capacity_hint / 4).max(16) {
+         return;
+      }
+
       let _lock = shard.grow_lock.lock().unwrap_or_else(|e| e.into_inner());
       shard.insert_gate.fetch_or(GROWING, Ordering::AcqRel);
       while (shard.insert_gate.load(Ordering::Acquire) & !GROWING) != 0 {
@@ -243,61 +258,29 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
       let old_table = unsafe { &*old_ptr };
 
       let mut live_count: usize = 0;
-      for slot in old_table.slots().iter() {
-         let p = slot.load(Ordering::Acquire);
-         if !p.is_null() && state_occupied(&unsafe { &*p }.state, Ordering::Acquire) {
-            live_count += 1;
-         }
-      }
-
-      let new_cap = ((live_count * LOAD_DEN / LOAD_NUM) + 1)
-         .next_power_of_two()
-         .max(8);
-      if new_cap >= old_table.capacity() {
-         shard.insert_gate.fetch_and(!GROWING, Ordering::Release);
-         return;
-      }
-
-      let new_table = SlotTable::<V>::new(new_cap);
+      let mut dead_count: usize = 0;
       for slot in old_table.slots().iter() {
          let p = slot.load(Ordering::Acquire);
          if p.is_null() {
             continue;
          }
-         let e = unsafe { &*p };
-         if !state_occupied(&e.state, Ordering::Acquire) {
-            unsafe { ebr::retire_raw(p.cast(), drop_raw_entry::<V>) };
-            continue;
-         }
-         let h = stored_hash(e.state.load(Ordering::Relaxed));
-         let mut i = (h as usize) & new_table.mask;
-         loop {
-            let new_slot = unsafe { new_table.slots().get_unchecked(i) };
-            if new_slot.load(Ordering::Relaxed).is_null() {
-               new_slot.store(p, h, Ordering::Relaxed);
-               break;
-            }
-            i = (i + 1) & new_table.mask;
+         if state_occupied(&unsafe { &*p }.state, Ordering::Acquire) {
+            live_count += 1;
+         } else {
+            dead_count += 1;
          }
       }
 
-      shard.len.store(live_count, Ordering::Relaxed);
-      let new_slots = new_table.slots;
-      let new_mask = new_table.mask;
-      let new_threshold = new_table.threshold;
-      let new_ptr = alloc_table(new_table);
-      shard.slots.store(new_slots, Ordering::Release);
-      shard.mask.store(new_mask, Ordering::Release);
-      shard.threshold.store(new_threshold, Ordering::Release);
-      let sf_ptr = shard.fast.load(Ordering::Relaxed);
-      if !sf_ptr.is_null() {
-         unsafe {
-            (*sf_ptr).slots.store(new_slots, Ordering::Release);
-            (*sf_ptr).mask.store(new_mask, Ordering::Release);
-         }
+      let target = capacity_for(live_count);
+      if target >= old_table.capacity() && dead_count < (old_table.capacity() / 4).max(16) {
+         shard.insert_gate.fetch_and(!GROWING, Ordering::Release);
+         return;
       }
-      shard.table.store(new_ptr, Ordering::Release);
-      unsafe { ebr::retire_raw(old_ptr.cast(), drop_raw_table::<V>) };
+
+      // Shrink when sparse, otherwise rebuild at the same capacity to drop
+      // tombstones without increasing memory.
+      let new_cap = target.min(old_table.capacity());
+      shard.rebuild_to(old_ptr, new_cap);
       shard.insert_gate.fetch_and(!GROWING, Ordering::Release);
    }
 

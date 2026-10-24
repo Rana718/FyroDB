@@ -68,7 +68,7 @@ pub(super) fn dispatch_set_expire_pair(
    let raw_ptr = conn.parser.parts_raw.as_ptr();
    let raw_len = conn.parser.parts_raw.len();
    let expire = unsafe { std::slice::from_raw_parts(raw_ptr, raw_len) };
-   if expire.len() != 3 || !unsafe { part_bytes(expire[0]) }.eq_ignore_ascii_case(b"EXPIRE") {
+   if expire.len() != 3 || cmd_id(unsafe { part_bytes(expire[0]) }) != CmdId::Expire {
       conn.store.set_string(key, value, 0);
       if conn.store.has_replication() {
          conn.store.record_current_value(key);
@@ -125,11 +125,10 @@ pub(super) fn dispatch_set_expire_pair(
 }
 
 /// Is `raw` a `PUBLISH channel message` that could open a batched run?
+/// The caller has already classified the command as `PUBLISH`.
 #[inline(always)]
 pub(super) fn is_publish_run(raw: &[(*const u8, usize)]) -> bool {
    raw.len() == 3
-      && unsafe { part_bytes(raw[0]) }.len() == 7
-      && unsafe { part_bytes(raw[0]) }.eq_ignore_ascii_case(b"PUBLISH")
 }
 
 pub(super) fn dispatch_publish_run(
@@ -158,8 +157,7 @@ pub(super) fn dispatch_publish_run(
             let raw = unsafe { std::slice::from_raw_parts(raw_ptr, raw_len) };
             let cmd = unsafe { part_bytes(raw[0]) };
             let same = raw.len() == 3
-               && cmd.len() == 7
-               && cmd.eq_ignore_ascii_case(b"PUBLISH")
+               && cmd_id(cmd) == CmdId::Publish
                && unsafe { part_bytes(raw[1]) } == channel_bytes;
             if !same {
                let tail: &[(*const u8, usize)] = if collected_first {
@@ -258,16 +256,21 @@ pub(super) enum WriteOp {
 impl WriteOp {
    #[inline(always)]
    fn parse(cmd: &[u8]) -> Option<WriteOp> {
-      match cmd.len() {
-         3 if cmd.eq_ignore_ascii_case(b"SET") => Some(WriteOp::Set),
-         4 if cmd.eq_ignore_ascii_case(b"INCR") => Some(WriteOp::Incr),
-         4 if cmd.eq_ignore_ascii_case(b"HSET") => Some(WriteOp::Hset),
-         4 if cmd.eq_ignore_ascii_case(b"SADD") => Some(WriteOp::Sadd),
-         4 if cmd.eq_ignore_ascii_case(b"ZADD") => Some(WriteOp::Zadd),
-         4 if cmd.eq_ignore_ascii_case(b"XADD") => Some(WriteOp::Xadd),
-         5 if cmd.eq_ignore_ascii_case(b"PFADD") => Some(WriteOp::Pfadd),
-         6 if cmd.eq_ignore_ascii_case(b"GEOADD") => Some(WriteOp::Geoadd),
-         8 if cmd.eq_ignore_ascii_case(b"JSON.SET") => Some(WriteOp::JsonSet),
+      Self::from_id(cmd_id(cmd))
+   }
+
+   #[inline(always)]
+   fn from_id(id: CmdId) -> Option<WriteOp> {
+      match id {
+         CmdId::Set => Some(WriteOp::Set),
+         CmdId::Incr => Some(WriteOp::Incr),
+         CmdId::Hset => Some(WriteOp::Hset),
+         CmdId::Sadd => Some(WriteOp::Sadd),
+         CmdId::Zadd => Some(WriteOp::Zadd),
+         CmdId::Xadd => Some(WriteOp::Xadd),
+         CmdId::Pfadd => Some(WriteOp::Pfadd),
+         CmdId::Geoadd => Some(WriteOp::Geoadd),
+         CmdId::JsonSet => Some(WriteOp::JsonSet),
          _ => None,
       }
    }
@@ -738,24 +741,29 @@ pub(super) enum QueueOp {
 impl QueueOp {
    #[inline(always)]
    fn parse(cmd: &[u8]) -> Option<QueueOp> {
-      if cmd.len() != 5 {
-         return None;
-      }
-      match cmd {
-         b"LPUSH" => Some(QueueOp::PushFront),
-         b"RPUSH" => Some(QueueOp::PushBack),
+      match cmd_id(cmd) {
+         CmdId::Lpush => Some(QueueOp::PushFront),
+         CmdId::Rpush => Some(QueueOp::PushBack),
          _ => None,
       }
    }
 
    #[inline(always)]
    fn parse_pop(cmd: &[u8]) -> Option<QueueOp> {
-      if cmd.len() != 4 {
-         return None;
+      match cmd_id(cmd) {
+         CmdId::Lpop => Some(QueueOp::PopFront),
+         CmdId::Rpop => Some(QueueOp::PopBack),
+         _ => None,
       }
-      match cmd {
-         b"LPOP" => Some(QueueOp::PopFront),
-         b"RPOP" => Some(QueueOp::PopBack),
+   }
+
+   #[inline(always)]
+   fn from_id(id: CmdId) -> Option<QueueOp> {
+      match id {
+         CmdId::Lpush => Some(QueueOp::PushFront),
+         CmdId::Rpush => Some(QueueOp::PushBack),
+         CmdId::Lpop => Some(QueueOp::PopFront),
+         CmdId::Rpop => Some(QueueOp::PopBack),
          _ => None,
       }
    }
@@ -769,15 +777,12 @@ impl QueueOp {
 /// Does the first parsed command open a coalescible run? (Fast pre-filter:
 /// exact uppercase 3-arg LPUSH/RPUSH or 2-arg LPOP/RPOP.)
 #[inline(always)]
-pub(super) fn is_coalescible_queue(raw: &[(*const u8, usize)]) -> bool {
-   if raw.len() != 3 && raw.len() != 2 {
-      return false;
+pub(super) fn is_coalescible_queue(raw: &[(*const u8, usize)], id: CmdId) -> bool {
+   match id {
+      CmdId::Lpush | CmdId::Rpush => raw.len() == 3,
+      CmdId::Lpop | CmdId::Rpop => raw.len() == 2,
+      _ => false,
    }
-   let cmd = unsafe { part_bytes(raw[0]) };
-   if let Some(op) = QueueOp::parse(cmd) {
-      return !op.is_pop() && raw.len() == 3;
-   }
-   QueueOp::parse_pop(cmd).is_some() && raw.len() == 2
 }
 
 pub(super) enum QueueRunOutcome {
@@ -790,9 +795,8 @@ pub(super) fn dispatch_queue_run(
    first: &[(*const u8, usize)],
 ) -> QueueRunOutcome {
    let first_cmd = unsafe { part_bytes(first[0]) };
-   let op = QueueOp::parse(first_cmd)
-      .or_else(|| QueueOp::parse_pop(first_cmd))
-      .expect("is_coalescible_queue checked the first command");
+   let op =
+      QueueOp::from_id(cmd_id(first_cmd)).expect("is_coalescible_queue checked the first command");
 
    let key_bytes: &[u8] = unsafe { part_bytes(first[1]) };
    let Some(key) = std::str::from_utf8(key_bytes).ok() else {

@@ -36,6 +36,56 @@ const MAX_PREALLOC_PARTS: usize = 1024;
 /// instead of re-parsing from the start on every read.
 const RESUME_THRESHOLD: usize = 64;
 
+/// Parse a 1–4 digit length (the digits of a `$<len>\r\n` prefix) at `p`,
+/// returning the value and the width of the digits plus CRLF. The caller
+/// guarantees `avail` readable bytes; anything else falls back to the generic
+/// parser.
+#[inline(always)]
+unsafe fn parse_len_le4(p: *const u8, avail: usize) -> Option<(usize, usize)> {
+   if avail < 3 {
+      return None;
+   }
+   let d1 = unsafe { *p };
+   if !d1.is_ascii_digit() {
+      return None;
+   }
+   let d2 = unsafe { *p.add(1) };
+   if d2 == b'\r' {
+      return (unsafe { *p.add(2) } == b'\n').then_some(((d1 - b'0') as usize, 3));
+   }
+   if !d2.is_ascii_digit() || avail < 4 {
+      return None;
+   }
+   let d3 = unsafe { *p.add(2) };
+   if d3 == b'\r' {
+      return (unsafe { *p.add(3) } == b'\n')
+         .then_some((((d1 - b'0') as usize) * 10 + (d2 - b'0') as usize, 4));
+   }
+   if !d3.is_ascii_digit() || avail < 5 {
+      return None;
+   }
+   let d4 = unsafe { *p.add(3) };
+   if d4 == b'\r' {
+      return (unsafe { *p.add(4) } == b'\n').then_some((
+         ((d1 - b'0') as usize) * 100 + ((d2 - b'0') as usize) * 10 + (d3 - b'0') as usize,
+         5,
+      ));
+   }
+   if !d4.is_ascii_digit() || avail < 6 {
+      return None;
+   }
+   if unsafe { *p.add(4) } == b'\r' && unsafe { *p.add(5) } == b'\n' {
+      return Some((
+         ((d1 - b'0') as usize) * 1000
+            + ((d2 - b'0') as usize) * 100
+            + ((d3 - b'0') as usize) * 10
+            + (d4 - b'0') as usize,
+         6,
+      ));
+   }
+   None
+}
+
 impl Default for RespParser {
    fn default() -> Self {
       Self::new()
@@ -59,29 +109,55 @@ impl RespParser {
    }
 
    pub fn read_buf(&mut self) -> &mut [u8] {
+      self.make_room();
+      if self.rbuf.len() - self.filled < 16 * 1024 {
+         let grown = (self.rbuf.len() * 2).max(Self::IDLE_READ_BUFFER);
+         self.rbuf.resize(grown, 0);
+      }
+      &mut self.rbuf[self.filled..]
+   }
+
+   /// Make room for another read, compacting consumed bytes first. Growth is
+   /// left to `reserve` so the hot path never memsets the new region.
+   #[inline]
+   fn make_room(&mut self) {
       if self.pos == self.filled && self.partial.is_none() {
          self.pos = 0;
          self.filled = 0;
-      } else if self.rbuf.len() - self.filled < 16 * 1024 {
-         if self.pos > 0 {
-            self.rbuf.copy_within(self.pos..self.filled, 0);
-            self.filled -= self.pos;
-            self.pos = 0;
-         }
-         if self.rbuf.len() - self.filled < 16 * 1024 {
-            let grown = (self.rbuf.len() * 2).max(Self::IDLE_READ_BUFFER);
-            self.rbuf.resize(grown, 0);
-         }
+      } else if self.rbuf.capacity() - self.filled < 16 * 1024 && self.pos > 0 {
+         self.rbuf.copy_within(self.pos..self.filled, 0);
+         self.filled -= self.pos;
+         self.pos = 0;
       }
-      if self.rbuf.is_empty() {
-         self.rbuf.resize(Self::IDLE_READ_BUFFER, 0);
+      if self.rbuf.capacity() - self.filled < 16 * 1024 {
+         let additional = self.rbuf.capacity().max(Self::IDLE_READ_BUFFER);
+         self.rbuf.reserve(additional);
       }
-      &mut self.rbuf[self.filled..]
+   }
+
+   /// Spare capacity for a socket read. The region is uninitialised; the
+   /// caller must publish exactly the bytes the kernel filled with
+   /// [`did_fill`](Self::did_fill).
+   #[inline]
+   pub fn read_spare(&mut self) -> (*mut u8, usize) {
+      self.make_room();
+      let spare = self.rbuf.capacity() - self.filled;
+      (unsafe { self.rbuf.as_mut_ptr().add(self.filled) }, spare)
    }
 
    #[inline]
    pub fn did_fill(&mut self, n: usize) {
       self.filled += n;
+      if self.filled > self.rbuf.len() {
+         // SAFETY: the read path writes into spare capacity before calling
+         // this, so every byte below `filled` is initialised.
+         unsafe { self.rbuf.set_len(self.filled) };
+      }
+   }
+
+   #[inline]
+   pub fn pending(&self) -> usize {
+      self.filled - self.pos
    }
 
    #[inline]
@@ -108,37 +184,8 @@ impl RespParser {
       if unsafe { std::ptr::read_unaligned(buf.add(12) as *const u16) } != LF_DOLLAR {
          return None;
       }
-      let k1 = unsafe { *buf.add(14) };
-      if !k1.is_ascii_digit() {
-         return None;
-      }
-      let (key_len, key_offset) =
-         if unsafe { std::ptr::read_unaligned(buf.add(15) as *const u16) } == CRLF {
-            ((k1 - b'0') as usize, 17)
-         } else {
-            let k2 = unsafe { *buf.add(15) };
-            if k2.is_ascii_digit() {
-               if unsafe { std::ptr::read_unaligned(buf.add(16) as *const u16) } == CRLF {
-                  (((k1 - b'0') as usize) * 10 + (k2 - b'0') as usize, 18)
-               } else {
-                  let k3 = unsafe { *buf.add(16) };
-                  if k3.is_ascii_digit()
-                     && unsafe { std::ptr::read_unaligned(buf.add(17) as *const u16) } == CRLF
-                  {
-                     (
-                        ((k1 - b'0') as usize) * 100
-                           + ((k2 - b'0') as usize) * 10
-                           + (k3 - b'0') as usize,
-                        19,
-                     )
-                  } else {
-                     return None;
-                  }
-               }
-            } else {
-               return None;
-            }
-         };
+      let (key_len, key_hdr) = unsafe { parse_len_le4(buf.add(14), avail - 14) }?;
+      let key_offset = 14 + key_hdr;
 
       let total_len = key_offset + key_len + 2;
       if avail < total_len {
@@ -178,37 +225,8 @@ impl RespParser {
       if unsafe { std::ptr::read_unaligned(buf.add(12) as *const u16) } != LF_DOLLAR {
          return None;
       }
-      let k1 = unsafe { *buf.add(14) };
-      if !k1.is_ascii_digit() {
-         return None;
-      }
-      let (key_len, key_offset) =
-         if unsafe { std::ptr::read_unaligned(buf.add(15) as *const u16) } == CRLF {
-            ((k1 - b'0') as usize, 17)
-         } else {
-            let k2 = unsafe { *buf.add(15) };
-            if k2.is_ascii_digit() {
-               if unsafe { std::ptr::read_unaligned(buf.add(16) as *const u16) } == CRLF {
-                  (((k1 - b'0') as usize) * 10 + (k2 - b'0') as usize, 18)
-               } else {
-                  let k3 = unsafe { *buf.add(16) };
-                  if k3.is_ascii_digit()
-                     && unsafe { std::ptr::read_unaligned(buf.add(17) as *const u16) } == CRLF
-                  {
-                     (
-                        ((k1 - b'0') as usize) * 100
-                           + ((k2 - b'0') as usize) * 10
-                           + (k3 - b'0') as usize,
-                        19,
-                     )
-                  } else {
-                     return None;
-                  }
-               }
-            } else {
-               return None;
-            }
-         };
+      let (key_len, key_hdr) = unsafe { parse_len_le4(buf.add(14), avail - 14) }?;
+      let key_offset = 14 + key_hdr;
 
       let total_len = key_offset + key_len + 2;
       if avail < total_len {
@@ -239,40 +257,11 @@ impl RespParser {
       if unsafe { std::ptr::read_unaligned(buf.add(12) as *const u16) } != LF_DOLLAR {
          return None;
       }
-      let k1 = unsafe { *buf.add(14) };
-      if !k1.is_ascii_digit() {
-         return None;
-      }
-      let (key_len, key_offset) =
-         if unsafe { std::ptr::read_unaligned(buf.add(15) as *const u16) } == CRLF {
-            ((k1 - b'0') as usize, 17)
-         } else {
-            let k2 = unsafe { *buf.add(15) };
-            if k2.is_ascii_digit() {
-               if unsafe { std::ptr::read_unaligned(buf.add(16) as *const u16) } == CRLF {
-                  (((k1 - b'0') as usize) * 10 + (k2 - b'0') as usize, 18)
-               } else {
-                  let k3 = unsafe { *buf.add(16) };
-                  if k3.is_ascii_digit()
-                     && unsafe { std::ptr::read_unaligned(buf.add(17) as *const u16) } == CRLF
-                  {
-                     (
-                        ((k1 - b'0') as usize) * 100
-                           + ((k2 - b'0') as usize) * 10
-                           + (k3 - b'0') as usize,
-                        19,
-                     )
-                  } else {
-                     return None;
-                  }
-               }
-            } else {
-               return None;
-            }
-         };
+      let (key_len, key_hdr) = unsafe { parse_len_le4(buf.add(14), avail - 14) }?;
+      let key_offset = 14 + key_hdr;
 
       let p_val_header = key_offset + key_len + 2;
-      if avail < p_val_header + 5 {
+      if avail < p_val_header + 7 {
          return if avail < p_val_header {
             Some(ParseResult::Incomplete)
          } else {
@@ -285,43 +274,9 @@ impl RespParser {
       if unsafe { *buf.add(p_val_header) } != b'$' {
          return None;
       }
-      let v1 = unsafe { *buf.add(p_val_header + 1) };
-      if !v1.is_ascii_digit() {
-         return None;
-      }
-      let (val_len, val_offset) =
-         if unsafe { std::ptr::read_unaligned(buf.add(p_val_header + 2) as *const u16) } == CRLF {
-            ((v1 - b'0') as usize, p_val_header + 4)
-         } else {
-            let v2 = unsafe { *buf.add(p_val_header + 2) };
-            if v2.is_ascii_digit() {
-               if unsafe { std::ptr::read_unaligned(buf.add(p_val_header + 3) as *const u16) }
-                  == CRLF
-               {
-                  (
-                     ((v1 - b'0') as usize) * 10 + (v2 - b'0') as usize,
-                     p_val_header + 5,
-                  )
-               } else {
-                  let v3 = unsafe { *buf.add(p_val_header + 3) };
-                  if v3.is_ascii_digit()
-                     && unsafe { std::ptr::read_unaligned(buf.add(p_val_header + 4) as *const u16) }
-                        == CRLF
-                  {
-                     (
-                        ((v1 - b'0') as usize) * 100
-                           + ((v2 - b'0') as usize) * 10
-                           + (v3 - b'0') as usize,
-                        p_val_header + 6,
-                     )
-                  } else {
-                     return None;
-                  }
-               }
-            } else {
-               return None;
-            }
-         };
+      let (val_len, val_hdr) =
+         unsafe { parse_len_le4(buf.add(p_val_header + 1), avail - (p_val_header + 1)) }?;
+      let val_offset = p_val_header + 1 + val_hdr;
 
       let total_len = val_offset + val_len + 2;
       if avail < total_len {
@@ -366,40 +321,11 @@ impl RespParser {
       if unsafe { std::ptr::read_unaligned(buf.add(12) as *const u16) } != LF_DOLLAR {
          return None;
       }
-      let k1 = unsafe { *buf.add(14) };
-      if !k1.is_ascii_digit() {
-         return None;
-      }
-      let (key_len, key_offset) =
-         if unsafe { std::ptr::read_unaligned(buf.add(15) as *const u16) } == CRLF {
-            ((k1 - b'0') as usize, 17)
-         } else {
-            let k2 = unsafe { *buf.add(15) };
-            if k2.is_ascii_digit() {
-               if unsafe { std::ptr::read_unaligned(buf.add(16) as *const u16) } == CRLF {
-                  (((k1 - b'0') as usize) * 10 + (k2 - b'0') as usize, 18)
-               } else {
-                  let k3 = unsafe { *buf.add(16) };
-                  if k3.is_ascii_digit()
-                     && unsafe { std::ptr::read_unaligned(buf.add(17) as *const u16) } == CRLF
-                  {
-                     (
-                        ((k1 - b'0') as usize) * 100
-                           + ((k2 - b'0') as usize) * 10
-                           + (k3 - b'0') as usize,
-                        19,
-                     )
-                  } else {
-                     return None;
-                  }
-               }
-            } else {
-               return None;
-            }
-         };
+      let (key_len, key_hdr) = unsafe { parse_len_le4(buf.add(14), avail - 14) }?;
+      let key_offset = 14 + key_hdr;
 
       let p_val_header = key_offset + key_len + 2;
-      if avail < p_val_header + 5 {
+      if avail < p_val_header + 7 {
          return None;
       }
       if unsafe { std::ptr::read_unaligned(buf.add(p_val_header - 2) as *const u16) } != CRLF {
@@ -408,43 +334,9 @@ impl RespParser {
       if unsafe { *buf.add(p_val_header) } != b'$' {
          return None;
       }
-      let v1 = unsafe { *buf.add(p_val_header + 1) };
-      if !v1.is_ascii_digit() {
-         return None;
-      }
-      let (val_len, val_offset) =
-         if unsafe { std::ptr::read_unaligned(buf.add(p_val_header + 2) as *const u16) } == CRLF {
-            ((v1 - b'0') as usize, p_val_header + 4)
-         } else {
-            let v2 = unsafe { *buf.add(p_val_header + 2) };
-            if v2.is_ascii_digit() {
-               if unsafe { std::ptr::read_unaligned(buf.add(p_val_header + 3) as *const u16) }
-                  == CRLF
-               {
-                  (
-                     ((v1 - b'0') as usize) * 10 + (v2 - b'0') as usize,
-                     p_val_header + 5,
-                  )
-               } else {
-                  let v3 = unsafe { *buf.add(p_val_header + 3) };
-                  if v3.is_ascii_digit()
-                     && unsafe { std::ptr::read_unaligned(buf.add(p_val_header + 4) as *const u16) }
-                        == CRLF
-                  {
-                     (
-                        ((v1 - b'0') as usize) * 100
-                           + ((v2 - b'0') as usize) * 10
-                           + (v3 - b'0') as usize,
-                        p_val_header + 6,
-                     )
-                  } else {
-                     return None;
-                  }
-               }
-            } else {
-               return None;
-            }
-         };
+      let (val_len, val_hdr) =
+         unsafe { parse_len_le4(buf.add(p_val_header + 1), avail - (p_val_header + 1)) }?;
+      let val_offset = p_val_header + 1 + val_hdr;
 
       let total_len = val_offset + val_len + 2;
       if avail < total_len {
@@ -493,40 +385,11 @@ impl RespParser {
       {
          return None;
       }
-      let k1 = unsafe { *buf.add(19) };
-      if !k1.is_ascii_digit() {
-         return None;
-      }
-      let (key_len, key_offset) =
-         if unsafe { std::ptr::read_unaligned(buf.add(20) as *const u16) } == CRLF {
-            ((k1 - b'0') as usize, 22)
-         } else {
-            let k2 = unsafe { *buf.add(20) };
-            if k2.is_ascii_digit() {
-               if unsafe { std::ptr::read_unaligned(buf.add(21) as *const u16) } == CRLF {
-                  (((k1 - b'0') as usize) * 10 + (k2 - b'0') as usize, 23)
-               } else {
-                  let k3 = unsafe { *buf.add(21) };
-                  if k3.is_ascii_digit()
-                     && unsafe { std::ptr::read_unaligned(buf.add(22) as *const u16) } == CRLF
-                  {
-                     (
-                        ((k1 - b'0') as usize) * 100
-                           + ((k2 - b'0') as usize) * 10
-                           + (k3 - b'0') as usize,
-                        24,
-                     )
-                  } else {
-                     return None;
-                  }
-               }
-            } else {
-               return None;
-            }
-         };
+      let (key_len, key_hdr) = unsafe { parse_len_le4(buf.add(19), avail - 19) }?;
+      let key_offset = 19 + key_hdr;
 
       let path_start = key_offset + key_len;
-      if avail < path_start + 12 {
+      if avail < path_start + 16 {
          return None;
       }
       if unsafe { std::ptr::read_unaligned(buf.add(path_start) as *const u16) } != CRLF {
@@ -537,41 +400,8 @@ impl RespParser {
          return None;
       }
       let val_hdr = path_start + 10;
-      let v1 = unsafe { *buf.add(val_hdr) };
-      if !v1.is_ascii_digit() {
-         return None;
-      }
-      let (val_len, val_offset) =
-         if unsafe { std::ptr::read_unaligned(buf.add(val_hdr + 1) as *const u16) } == CRLF {
-            ((v1 - b'0') as usize, val_hdr + 3)
-         } else {
-            let v2 = unsafe { *buf.add(val_hdr + 1) };
-            if v2.is_ascii_digit() {
-               if unsafe { std::ptr::read_unaligned(buf.add(val_hdr + 2) as *const u16) } == CRLF {
-                  (
-                     ((v1 - b'0') as usize) * 10 + (v2 - b'0') as usize,
-                     val_hdr + 4,
-                  )
-               } else {
-                  let v3 = unsafe { *buf.add(val_hdr + 2) };
-                  if v3.is_ascii_digit()
-                     && unsafe { std::ptr::read_unaligned(buf.add(val_hdr + 3) as *const u16) }
-                        == CRLF
-                  {
-                     (
-                        ((v1 - b'0') as usize) * 100
-                           + ((v2 - b'0') as usize) * 10
-                           + (v3 - b'0') as usize,
-                        val_hdr + 5,
-                     )
-                  } else {
-                     return None;
-                  }
-               }
-            } else {
-               return None;
-            }
-         };
+      let (val_len, val_hdr_len) = unsafe { parse_len_le4(buf.add(val_hdr), avail - val_hdr) }?;
+      let val_offset = val_hdr + val_hdr_len;
 
       let total_len = val_offset + val_len + 2;
       if avail < total_len {
@@ -644,37 +474,8 @@ impl RespParser {
       if unsafe { std::ptr::read_unaligned(buf.add(12) as *const u16) } != LF_DOLLAR {
          return None;
       }
-      let k1 = unsafe { *buf.add(14) };
-      if !k1.is_ascii_digit() {
-         return None;
-      }
-      let (key_len, key_offset) =
-         if unsafe { std::ptr::read_unaligned(buf.add(15) as *const u16) } == CRLF {
-            ((k1 - b'0') as usize, 17)
-         } else {
-            let k2 = unsafe { *buf.add(15) };
-            if k2.is_ascii_digit() {
-               if unsafe { std::ptr::read_unaligned(buf.add(16) as *const u16) } == CRLF {
-                  (((k1 - b'0') as usize) * 10 + (k2 - b'0') as usize, 18)
-               } else {
-                  let k3 = unsafe { *buf.add(16) };
-                  if k3.is_ascii_digit()
-                     && unsafe { std::ptr::read_unaligned(buf.add(17) as *const u16) } == CRLF
-                  {
-                     (
-                        ((k1 - b'0') as usize) * 100
-                           + ((k2 - b'0') as usize) * 10
-                           + (k3 - b'0') as usize,
-                        19,
-                     )
-                  } else {
-                     return None;
-                  }
-               }
-            } else {
-               return None;
-            }
-         };
+      let (key_len, key_hdr) = unsafe { parse_len_le4(buf.add(14), avail - 14) }?;
+      let key_offset = 14 + key_hdr;
 
       let total_len = key_offset + key_len + 2;
       if avail < total_len {
@@ -720,40 +521,11 @@ impl RespParser {
       if unsafe { *buf.add(14) } != b'$' {
          return None;
       }
-      let k1 = unsafe { *buf.add(15) };
-      if !k1.is_ascii_digit() {
-         return None;
-      }
-      let (key_len, key_offset) =
-         if unsafe { std::ptr::read_unaligned(buf.add(16) as *const u16) } == CRLF {
-            ((k1 - b'0') as usize, 18)
-         } else {
-            let k2 = unsafe { *buf.add(16) };
-            if k2.is_ascii_digit() {
-               if unsafe { std::ptr::read_unaligned(buf.add(17) as *const u16) } == CRLF {
-                  (((k1 - b'0') as usize) * 10 + (k2 - b'0') as usize, 19)
-               } else {
-                  let k3 = unsafe { *buf.add(17) };
-                  if k3.is_ascii_digit()
-                     && unsafe { std::ptr::read_unaligned(buf.add(18) as *const u16) } == CRLF
-                  {
-                     (
-                        ((k1 - b'0') as usize) * 100
-                           + ((k2 - b'0') as usize) * 10
-                           + (k3 - b'0') as usize,
-                        20,
-                     )
-                  } else {
-                     return None;
-                  }
-               }
-            } else {
-               return None;
-            }
-         };
+      let (key_len, key_hdr) = unsafe { parse_len_le4(buf.add(15), avail - 15) }?;
+      let key_offset = 15 + key_hdr;
 
       let p_field_header = key_offset + key_len + 2;
-      if avail < p_field_header + 5 {
+      if avail < p_field_header + 7 {
          return if avail < p_field_header {
             Some(ParseResult::Incomplete)
          } else {
@@ -766,45 +538,9 @@ impl RespParser {
       if unsafe { *buf.add(p_field_header) } != b'$' {
          return None;
       }
-      let f1 = unsafe { *buf.add(p_field_header + 1) };
-      if !f1.is_ascii_digit() {
-         return None;
-      }
-      let (field_len, field_offset) = if unsafe {
-         std::ptr::read_unaligned(buf.add(p_field_header + 2) as *const u16)
-      } == CRLF
-      {
-         ((f1 - b'0') as usize, p_field_header + 4)
-      } else {
-         let f2 = unsafe { *buf.add(p_field_header + 2) };
-         if f2.is_ascii_digit() {
-            if unsafe { std::ptr::read_unaligned(buf.add(p_field_header + 3) as *const u16) }
-               == CRLF
-            {
-               (
-                  ((f1 - b'0') as usize) * 10 + (f2 - b'0') as usize,
-                  p_field_header + 5,
-               )
-            } else {
-               let f3 = unsafe { *buf.add(p_field_header + 3) };
-               if f3.is_ascii_digit()
-                  && unsafe { std::ptr::read_unaligned(buf.add(p_field_header + 4) as *const u16) }
-                     == CRLF
-               {
-                  (
-                     ((f1 - b'0') as usize) * 100
-                        + ((f2 - b'0') as usize) * 10
-                        + (f3 - b'0') as usize,
-                     p_field_header + 6,
-                  )
-               } else {
-                  return None;
-               }
-            }
-         } else {
-            return None;
-         }
-      };
+      let (field_len, field_hdr) =
+         unsafe { parse_len_le4(buf.add(p_field_header + 1), avail - (p_field_header + 1)) }?;
+      let field_offset = p_field_header + 1 + field_hdr;
 
       let total_len = field_offset + field_len + 2;
       if avail < total_len {
@@ -851,40 +587,11 @@ impl RespParser {
       if unsafe { *buf.add(14) } != b'$' {
          return None;
       }
-      let k1 = unsafe { *buf.add(15) };
-      if !k1.is_ascii_digit() {
-         return None;
-      }
-      let (key_len, key_offset) =
-         if unsafe { std::ptr::read_unaligned(buf.add(16) as *const u16) } == CRLF {
-            ((k1 - b'0') as usize, 18)
-         } else {
-            let k2 = unsafe { *buf.add(16) };
-            if k2.is_ascii_digit() {
-               if unsafe { std::ptr::read_unaligned(buf.add(17) as *const u16) } == CRLF {
-                  (((k1 - b'0') as usize) * 10 + (k2 - b'0') as usize, 19)
-               } else {
-                  let k3 = unsafe { *buf.add(17) };
-                  if k3.is_ascii_digit()
-                     && unsafe { std::ptr::read_unaligned(buf.add(18) as *const u16) } == CRLF
-                  {
-                     (
-                        ((k1 - b'0') as usize) * 100
-                           + ((k2 - b'0') as usize) * 10
-                           + (k3 - b'0') as usize,
-                        20,
-                     )
-                  } else {
-                     return None;
-                  }
-               }
-            } else {
-               return None;
-            }
-         };
+      let (key_len, key_hdr) = unsafe { parse_len_le4(buf.add(15), avail - 15) }?;
+      let key_offset = 15 + key_hdr;
 
       let p_field_header = key_offset + key_len + 2;
-      if avail < p_field_header + 5 {
+      if avail < p_field_header + 7 {
          return if avail < p_field_header {
             Some(ParseResult::Incomplete)
          } else {
@@ -897,48 +604,12 @@ impl RespParser {
       if unsafe { *buf.add(p_field_header) } != b'$' {
          return None;
       }
-      let f1 = unsafe { *buf.add(p_field_header + 1) };
-      if !f1.is_ascii_digit() {
-         return None;
-      }
-      let (field_len, field_offset) = if unsafe {
-         std::ptr::read_unaligned(buf.add(p_field_header + 2) as *const u16)
-      } == CRLF
-      {
-         ((f1 - b'0') as usize, p_field_header + 4)
-      } else {
-         let f2 = unsafe { *buf.add(p_field_header + 2) };
-         if f2.is_ascii_digit() {
-            if unsafe { std::ptr::read_unaligned(buf.add(p_field_header + 3) as *const u16) }
-               == CRLF
-            {
-               (
-                  ((f1 - b'0') as usize) * 10 + (f2 - b'0') as usize,
-                  p_field_header + 5,
-               )
-            } else {
-               let f3 = unsafe { *buf.add(p_field_header + 3) };
-               if f3.is_ascii_digit()
-                  && unsafe { std::ptr::read_unaligned(buf.add(p_field_header + 4) as *const u16) }
-                     == CRLF
-               {
-                  (
-                     ((f1 - b'0') as usize) * 100
-                        + ((f2 - b'0') as usize) * 10
-                        + (f3 - b'0') as usize,
-                     p_field_header + 6,
-                  )
-               } else {
-                  return None;
-               }
-            }
-         } else {
-            return None;
-         }
-      };
+      let (field_len, field_hdr) =
+         unsafe { parse_len_le4(buf.add(p_field_header + 1), avail - (p_field_header + 1)) }?;
+      let field_offset = p_field_header + 1 + field_hdr;
 
       let p_val_header = field_offset + field_len + 2;
-      if avail < p_val_header + 5 {
+      if avail < p_val_header + 7 {
          return if avail < p_val_header {
             Some(ParseResult::Incomplete)
          } else {
@@ -951,43 +622,9 @@ impl RespParser {
       if unsafe { *buf.add(p_val_header) } != b'$' {
          return None;
       }
-      let v1 = unsafe { *buf.add(p_val_header + 1) };
-      if !v1.is_ascii_digit() {
-         return None;
-      }
-      let (val_len, val_offset) =
-         if unsafe { std::ptr::read_unaligned(buf.add(p_val_header + 2) as *const u16) } == CRLF {
-            ((v1 - b'0') as usize, p_val_header + 4)
-         } else {
-            let v2 = unsafe { *buf.add(p_val_header + 2) };
-            if v2.is_ascii_digit() {
-               if unsafe { std::ptr::read_unaligned(buf.add(p_val_header + 3) as *const u16) }
-                  == CRLF
-               {
-                  (
-                     ((v1 - b'0') as usize) * 10 + (v2 - b'0') as usize,
-                     p_val_header + 5,
-                  )
-               } else {
-                  let v3 = unsafe { *buf.add(p_val_header + 3) };
-                  if v3.is_ascii_digit()
-                     && unsafe { std::ptr::read_unaligned(buf.add(p_val_header + 4) as *const u16) }
-                        == CRLF
-                  {
-                     (
-                        ((v1 - b'0') as usize) * 100
-                           + ((v2 - b'0') as usize) * 10
-                           + (v3 - b'0') as usize,
-                        p_val_header + 6,
-                     )
-                  } else {
-                     return None;
-                  }
-               }
-            } else {
-               return None;
-            }
-         };
+      let (val_len, val_hdr) =
+         unsafe { parse_len_le4(buf.add(p_val_header + 1), avail - (p_val_header + 1)) }?;
+      let val_offset = p_val_header + 1 + val_hdr;
 
       let total_len = val_offset + val_len + 2;
       if avail < total_len {
@@ -1625,6 +1262,11 @@ impl RespParser {
       if self.filled - self.pos < len + 2 {
          return Ok(None);
       }
+      if self.rbuf.get(self.pos + len) != Some(&b'\r')
+         || self.rbuf.get(self.pos + len + 1) != Some(&b'\n')
+      {
+         return Err(());
+      }
       let ptr = unsafe { self.rbuf.as_ptr().add(self.pos) };
       self.pos += len + 2;
       Ok(Some((ptr, len)))
@@ -1703,24 +1345,19 @@ impl RespParser {
       if len == 0 {
          return None;
       }
-      // Direct fast scan for short lines (< 8 bytes)
-      let check_len = len.min(8);
-      let mut rel = None;
-      for i in 0..check_len {
-         if unsafe { *slice.get_unchecked(i) } == b'\n' {
-            rel = Some(i);
-            break;
+      // Short lines dominate: locate the first newline with one word load
+      // before falling back to the vectorised scan.
+      let rel = if len >= 8 {
+         let word = u64::from_le(unsafe { std::ptr::read_unaligned(slice.as_ptr().cast::<u64>()) });
+         let x = word ^ 0x0A0A_0A0A_0A0A_0A0A;
+         let hits = x.wrapping_sub(0x0101_0101_0101_0101) & !x & 0x8080_8080_8080_8080;
+         if hits != 0 {
+            (hits.trailing_zeros() / 8) as usize
+         } else {
+            memchr::memchr(b'\n', &slice[8..])? + 8
          }
-      }
-      let rel = match rel {
-         Some(r) => r,
-         None => {
-            if len > 8 {
-               memchr::memchr(b'\n', &slice[8..])? + 8
-            } else {
-               return None;
-            }
-         }
+      } else {
+         memchr::memchr(b'\n', slice)?
       };
       let nl = start + rel;
       self.pos = nl + 1;
@@ -1949,5 +1586,47 @@ mod tests {
       );
       assert!(matches!(parser.parse_one(), ParseResult::Complete));
       assert_eq!(parts_of(&parser), vec!["XADD", "stream", "*", "f", "100"]);
+   }
+
+   #[test]
+   fn fast_set_accepts_four_digit_key_and_value_lengths() {
+      let mut parser = RespParser::new();
+      let key = "k".repeat(1_234);
+      let value = "v".repeat(9_876);
+      let command = format!(
+         "*3\r\n$3\r\nSET\r\n${}\r\n{key}\r\n${}\r\n{value}\r\n",
+         key.len(),
+         value.len()
+      );
+      feed(&mut parser, command.as_bytes());
+      assert!(matches!(parser.parse_one(), ParseResult::Complete));
+      assert_eq!(parts_of(&parser), vec!["SET", key.as_str(), value.as_str()]);
+   }
+
+   #[test]
+   fn fast_hash_paths_accept_four_digit_lengths() {
+      let mut parser = RespParser::new();
+      let key = "h".repeat(1_005);
+      let field = "f".repeat(1_234);
+      let value = "v".repeat(1_500);
+      let command = format!(
+         "*4\r\n$4\r\nHSET\r\n${}\r\n{key}\r\n${}\r\n{field}\r\n${}\r\n{value}\r\n",
+         key.len(),
+         field.len(),
+         value.len()
+      );
+      feed(&mut parser, command.as_bytes());
+      assert!(matches!(parser.parse_one(), ParseResult::Complete));
+      assert_eq!(
+         parts_of(&parser),
+         vec!["HSET", key.as_str(), field.as_str(), value.as_str()]
+      );
+   }
+
+   #[test]
+   fn bulk_element_without_trailing_crlf_is_rejected() {
+      let mut parser = RespParser::new();
+      feed(&mut parser, b"*2\r\n$3\r\nGET\r\n$1\r\nxZZ\r\n");
+      assert!(matches!(parser.parse_one(), ParseResult::Error));
    }
 }

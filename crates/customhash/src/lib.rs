@@ -28,7 +28,9 @@ pub use key::CompactKey;
 use std::hash::BuildHasher;
 
 use shard::*;
-pub use shard::{Entry, STATE_LOCK, STATE_MATCH_MASK, STATE_OCCUPIED, bump_seq, unlock_write};
+pub use shard::{
+   Entry, FastSet, STATE_LOCK, STATE_MATCH_MASK, STATE_OCCUPIED, bump_seq, unlock_write,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Full;
@@ -788,6 +790,23 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
       false
    }
 
+   /// Probe once for `key`; on a miss `make_value` builds the value that the
+   /// same walk inserts. `FastSet::Existing` hands back the entry so the
+   /// caller can overwrite it without allocating a new value.
+   #[inline(always)]
+   pub fn probe_or_insert_fast<F>(&self, hash: u64, key: &str, make_value: F) -> FastSet<V>
+   where
+      F: FnOnce() -> V,
+   {
+      let idx = self.shard_of(hash);
+      let shard = unsafe { self.shards.get_unchecked(idx) };
+      let outcome = shard.probe_or_insert(hash, key, make_value);
+      if matches!(outcome, FastSet::Inserted) {
+         self.bump(idx, true);
+      }
+      outcome
+   }
+
    #[inline(always)]
    pub fn set_str_hinted_pinned(&self, key: &str, hash: Option<u64>, value: V) -> bool {
       let (h, idx) = match hash {
@@ -1527,5 +1546,85 @@ mod tests {
          }
       }
       assert_eq!(map.len(), 0);
+   }
+
+   /// Churn must rebuild the table in place. Growing is keyed on insertions
+   /// since the last rebuild, so a table that repeatedly fills and empties
+   /// used to double or quadruple even though only a handful of keys were
+   /// ever live.
+   #[test]
+   fn churn_rebuilds_in_place_instead_of_growing() {
+      let map = CustomMap::<u64>::build(1, 32, usize::MAX);
+      assert_eq!(map.shard_slot_count(0), 32);
+      for round in 0..6u64 {
+         for i in 0..10u64 {
+            let key = format!("key-{i}");
+            map.set(&key, round * 10 + i, || key.clone());
+         }
+         assert_eq!(map.len(), 10, "round {round}");
+         for i in 0..10u64 {
+            assert!(map.remove_no_clone(&format!("key-{i}")));
+         }
+         assert_eq!(map.len(), 0, "round {round}");
+         assert_eq!(
+            map.shard_slot_count(0),
+            32,
+            "round {round}: tombstone churn must not grow the table"
+         );
+      }
+      map.set("fresh", 7, || "fresh".to_owned());
+      assert_eq!(map.get("fresh"), Some(7));
+      assert_eq!(map.shard_slot_count(0), 32);
+   }
+
+   /// Compaction still shrinks genuinely sparse shards, and a no-op pass
+   /// must not rebuild anything.
+   #[test]
+   fn compact_shard_reclaims_sparse_shards_only() {
+      let map = CustomMap::<u64>::build(1, 32, usize::MAX);
+      map.set("a", 1, || "a".to_owned());
+      map.compact_shard(0);
+      assert_eq!(map.shard_slot_count(0), 8);
+      assert_eq!(map.get("a"), Some(1));
+
+      map.compact_shard(0);
+      assert_eq!(map.shard_slot_count(0), 8);
+
+      assert!(map.remove_no_clone("a"));
+      map.compact_shard(0);
+      assert_eq!(map.shard_slot_count(0), 8);
+   }
+
+   #[test]
+   fn fused_probe_or_insert_reports_both_outcomes() {
+      use crate::FastSet;
+      let map = CustomMap::<u64>::build(1, 1024, usize::MAX);
+      let (hash, _) = map.locate_key("alpha");
+
+      match map.probe_or_insert_fast(hash, "alpha", || 1) {
+         FastSet::Inserted => {}
+         _ => panic!("first probe must insert"),
+      }
+      assert_eq!(map.get("alpha"), Some(1));
+      assert_eq!(map.len(), 1);
+
+      match map.probe_or_insert_fast(hash, "alpha", || 2) {
+         FastSet::Existing(_) => {}
+         _ => panic!("second probe must find the existing entry"),
+      }
+      assert_eq!(map.get("alpha"), Some(1));
+      assert_eq!(map.len(), 1);
+
+      assert!(map.remove_no_clone("alpha"));
+      match map.probe_or_insert_fast(hash, "alpha", || 3) {
+         FastSet::Inserted => {}
+         // The tombstone is revived by the general path.
+         FastSet::Retry => {
+            map.set("alpha", 3, || "alpha".to_owned());
+         }
+         FastSet::Existing(_) => panic!("removed entry must not be reported as live"),
+      }
+      assert_eq!(map.get("alpha"), Some(3));
+      assert_eq!(map.len(), 1);
    }
 }

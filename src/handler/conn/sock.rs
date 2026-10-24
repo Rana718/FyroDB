@@ -1,20 +1,45 @@
 use super::*;
 
 impl<'a> Conn<'a> {
-   pub fn do_read(&mut self) -> bool {
+   /// Parse between reads once this much unparsed input has accumulated, so a
+   /// deep pipeline cannot drag the read buffer up to the whole pipeline size.
+   const MAX_READ_AHEAD: usize = 256 * 1024;
+
+   #[inline]
+   fn recv_raw(&self, ptr: *mut u8, len: usize) -> io::Result<usize> {
+      use std::os::fd::AsRawFd;
       loop {
-         let buf = self.parser.read_buf();
-         let cap = buf.len();
-         match self.stream.read(buf) {
+         let n = unsafe { libc::recv(self.stream.as_raw_fd(), ptr.cast(), len, 0) };
+         if n >= 0 {
+            return Ok(n as usize);
+         }
+         let err = io::Error::last_os_error();
+         if err.kind() != io::ErrorKind::Interrupted {
+            return Err(err);
+         }
+      }
+   }
+
+   pub fn do_read(&mut self) -> bool {
+      #[cfg(feature = "bench-tools")]
+      let raw_only = is_raw_arrival_only();
+      #[cfg(not(feature = "bench-tools"))]
+      let raw_only = false;
+
+      loop {
+         let (ptr, cap) = self.parser.read_spare();
+         let n = match self.recv_raw(ptr, cap) {
             Ok(0) => return false,
-            Ok(n) => {
-               self.parser.did_fill(n);
-               if n < cap {
-                  break;
-               }
-            }
+            Ok(n) => n,
             Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => break,
             Err(_) => return false,
+         };
+         self.parser.did_fill(n);
+         if !raw_only && self.parser.pending() >= Self::MAX_READ_AHEAD && !self.process_buffered() {
+            return false;
+         }
+         if n < cap {
+            break;
          }
       }
 
@@ -59,54 +84,48 @@ impl<'a> Conn<'a> {
                let raw = unsafe { std::slice::from_raw_parts(raw_ptr, raw_len) };
                if self.authenticated && !self.store.cluster.enabled && !self.store.at_key_capacity()
                {
-                  let cmd_len = if raw.is_empty() { 0 } else { raw[0].1 };
                   let cmd = if raw.is_empty() {
                      &[][..]
                   } else {
                      unsafe { part_bytes(raw[0]) }
                   };
+                  let id = cmd_id(cmd);
 
-                  if cmd_len == 3 {
-                     if cmd.eq_ignore_ascii_case(b"GET") && raw.len() == 2 {
-                        dispatch_get_run(self, raw[1]);
-                        prefetched = self.parser.pos;
-                        continue;
-                     }
-                     if cmd.eq_ignore_ascii_case(b"SET") && raw.len() == 3 {
-                        if is_set_expire_pair(self, raw) {
-                           match dispatch_set_expire_pair(self, raw) {
-                              PairOutcome::Done => continue,
-                              PairOutcome::FallThrough => {}
-                              PairOutcome::ConnError => return false,
-                           }
-                        }
-                        dispatch_set_run(self, raw[1], raw[2]);
-                        prefetched = self.parser.pos;
-                        continue;
-                     }
+                  if id == CmdId::Get && raw.len() == 2 {
+                     dispatch_get_run(self, raw[1]);
+                     prefetched = self.parser.pos;
+                     continue;
                   }
-
-                  if cmd_len == 8
-                     && cmd.eq_ignore_ascii_case(b"JSON.SET")
-                     && dispatch_json_set_run(self, raw)
-                  {
+                  if id == CmdId::Set && raw.len() == 3 {
+                     if is_set_expire_pair(self, raw) {
+                        match dispatch_set_expire_pair(self, raw) {
+                           PairOutcome::Done => continue,
+                           PairOutcome::FallThrough => {}
+                           PairOutcome::ConnError => return false,
+                        }
+                     }
+                     dispatch_set_run(self, raw[1], raw[2]);
+                     prefetched = self.parser.pos;
+                     continue;
+                  }
+                  if id == CmdId::JsonSet && dispatch_json_set_run(self, raw) {
                      prefetched = self.parser.pos;
                      continue;
                   }
 
-                  if (cmd_len == 4 || cmd_len == 5) && is_coalescible_queue(raw) {
+                  if id.is_queue() && is_coalescible_queue(raw, id) {
                      match dispatch_queue_run(self, raw) {
                         QueueRunOutcome::Done => continue,
                         QueueRunOutcome::ConnError => return false,
                      }
                   }
-                  if cmd_len == 7 && cmd.eq_ignore_ascii_case(b"PUBLISH") && is_publish_run(raw) {
+                  if id == CmdId::Publish && is_publish_run(raw) {
                      match dispatch_publish_run(self, raw) {
                         QueueRunOutcome::Done => continue,
                         QueueRunOutcome::ConnError => return false,
                      }
                   }
-                  if (cmd_len == 3 || cmd_len == 4 || cmd_len == 5 || cmd_len == 6 || cmd_len == 8)
+                  if id.is_write_run_candidate()
                      && is_write_run(raw)
                      && self.next_is_same_write(raw)
                   {

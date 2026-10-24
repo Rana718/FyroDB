@@ -32,11 +32,38 @@ pub(crate) const LOAD_DEN: usize = 4;
 pub(crate) const INITIAL_SHARD_CAPACITY: usize = 65_536;
 pub(crate) const GROWING: usize = 1usize << (usize::BITS - 1);
 
+/// Smallest power-of-two capacity that holds `live + 1` entries below the
+/// load factor, leaving room for the insert that triggered the rebuild.
+#[inline]
+pub(crate) fn capacity_for(live: usize) -> usize {
+   ((live + 1) * LOAD_DEN / LOAD_NUM + 1)
+      .next_power_of_two()
+      .max(8)
+}
+
+/// Slots holding a retired entry that still lengthen the probe chain.
+/// `len` counts every insertion since the last rebuild, `live` the occupied
+/// ones, so their difference approximates the tombstone count under churn.
+#[inline]
+pub(crate) fn dead_estimate(len: usize, live: usize) -> usize {
+   len.saturating_sub(live)
+}
+
 #[repr(C)]
 pub struct Entry<V> {
    pub key: CompactKey,
    pub state: AtomicU64,
    pub value: UnsafeCell<std::mem::MaybeUninit<V>>,
+}
+
+/// Result of a fused lookup-or-insert probe.
+pub enum FastSet<V> {
+   /// The key is present; the caller must overwrite this entry.
+   Existing(*mut Entry<V>),
+   /// The key was absent and the new value now owns the claimed slot.
+   Inserted,
+   /// The probe could not complete; the caller must take the general path.
+   Retry,
 }
 
 pub(crate) unsafe fn drop_raw_entry<V>(ptr: *mut u8) {
@@ -618,6 +645,86 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
       false
    }
 
+   /// Single-pass lookup-or-insert: walks the probe chain once and, on a
+   /// miss, claims the empty slot the walk stopped at instead of probing
+   /// again from the base. Returns the existing entry for the caller to
+   /// overwrite, or `Retry` when a rebuild or a competing insert intervened.
+   #[inline(always)]
+   pub(crate) fn probe_or_insert<F>(&self, hash: u64, key: &str, make_value: F) -> FastSet<V>
+   where
+      F: FnOnce() -> V,
+   {
+      // The overwrite path stays guard-free: entering the insert gate is an
+      // atomic RMW on a per-shard cache line, and a contended key would make
+      // every reader of that shard serialize on it.
+      let table_ptr = self.table.load(Ordering::Acquire);
+      let t = unsafe { &*table_ptr };
+      let base_idx = (hash as usize) & t.mask;
+      let expected_hi = (hash_tag(hash) | (1 << TAG_BITS)) as u16;
+      let expected_hash = hash as u32 as u64;
+      let mut vacant = usize::MAX;
+
+      for j in 0..16usize {
+         let slot = unsafe { t.slot(base_idx + j) };
+         let word = slot.0.load(Ordering::Relaxed) as usize;
+         if word == 0 {
+            // Slots past `capacity` are allocator padding that shadows the
+            // wrapped positions; do not hand them back as insertion points.
+            if base_idx + j < t.capacity {
+               vacant = j;
+            }
+            break;
+         }
+         if (word >> TAG_SHIFT) as u16 == expected_hi {
+            let p = (word & PTR_MASK) as *mut Entry<V>;
+            let e = unsafe { &*p };
+            let state = e.state.load(Ordering::Relaxed);
+            if stored_hash(state) == expected_hash && e.key.eq_str(key) {
+               if (state & STATE_MATCH_MASK) == (hash_bits(hash) | STATE_OCCUPIED) {
+                  return FastSet::Existing(p);
+               }
+               // Locked or tombstoned: the general path resolves it.
+               return FastSet::Retry;
+            }
+         }
+      }
+
+      if vacant == usize::MAX {
+         return FastSet::Retry;
+      }
+
+      // Insertions do need the gate: it keeps a rebuild from swapping the
+      // table between the probe and the claim.
+      let insert_guard = self.enter_insert();
+      if self.table.load(Ordering::Acquire) != table_ptr {
+         drop(insert_guard);
+         return FastSet::Retry;
+      }
+      if self.len.load(Ordering::Relaxed) >= t.threshold {
+         drop(insert_guard);
+         self.grow();
+         return FastSet::Retry;
+      }
+
+      let entry = alloc_entry(
+         CompactKey::from_str(key),
+         self.snap.fresh_state() | hash_bits(hash),
+         make_value(),
+      );
+      let slot = unsafe { t.slot((base_idx + vacant) & t.mask) };
+      if slot.claim(entry, hash) {
+         let new_len = self.len.fetch_add(1, Ordering::Relaxed) + 1;
+         drop(insert_guard);
+         if new_len >= t.threshold {
+            self.grow();
+         }
+         return FastSet::Inserted;
+      }
+      unsafe { rust_zmalloc::dealloc_raw(entry.cast(), std::alloc::Layout::new::<Entry<V>>()) };
+      drop(insert_guard);
+      FastSet::Retry
+   }
+
    pub(crate) fn set_key<F>(&self, key: &str, hash: u64, value: V, key_owned: F) -> bool
    where
       F: FnOnce() -> CompactKey,
@@ -667,7 +774,10 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
                   value = Some(extracted_val);
                }
                drop(insert_guard);
-               self.grow();
+               // A full scan without an empty slot means the table is all
+               // tombstones (live count below the growth threshold). Growing
+               // is gated on `len`, so force a same-capacity rebuild.
+               self.rehash(t);
                break;
             }
             probes += 1;
@@ -794,7 +904,10 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
                   value = Some(extracted_val);
                }
                drop(insert_guard);
-               self.grow();
+               // A full scan without an empty slot means the table is all
+               // tombstones (live count below the growth threshold). Growing
+               // is gated on `len`, so force a same-capacity rebuild.
+               self.rehash(t);
                break;
             }
             probes += 1;
@@ -930,27 +1043,56 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
       while (self.insert_gate.load(Ordering::Acquire) & !GROWING) != 0 {
          std::hint::spin_loop();
       }
-      self.grow_locked();
+      if self.len.load(Ordering::Relaxed) >= self.table().threshold {
+         self.rebuild_locked();
+      }
       self.insert_gate.fetch_and(!GROWING, Ordering::Release);
    }
 
-   fn grow_locked(&self) {
-      let old_ptr = self.table.load(Ordering::Acquire);
-      let old_table = unsafe { &*old_ptr };
-      let cur_len = self.len.load(Ordering::Relaxed);
-
-      if cur_len < old_table.threshold {
+   /// Rebuild after probing walked the whole table without finding an empty
+   /// slot. `len` can still sit below the growth threshold when every slot is
+   /// a tombstone, so `grow` would refuse; rebuild at the current capacity to
+   /// reclaim the chain instead.
+   fn rehash(&self, observed: &SlotTable<V>) {
+      let observed = observed as *const SlotTable<V>;
+      let _lock = self.grow_lock.lock().unwrap_or_else(|e| e.into_inner());
+      if self.table.load(Ordering::Acquire) as *const SlotTable<V> != observed {
          return;
       }
+      self.insert_gate.fetch_or(GROWING, Ordering::AcqRel);
+      while (self.insert_gate.load(Ordering::Acquire) & !GROWING) != 0 {
+         std::hint::spin_loop();
+      }
+      if self.table.load(Ordering::Acquire) as *const SlotTable<V> == observed {
+         self.rebuild_locked();
+      }
+      self.insert_gate.fetch_and(!GROWING, Ordering::Release);
+   }
 
-      let new_cap = if old_table.capacity() < 32_768 {
-         (old_table.capacity() * 4).next_power_of_two()
-      } else {
-         (old_table.capacity() * 2).next_power_of_two()
-      };
+   fn rebuild_locked(&self) {
+      let old_ptr = self.table.load(Ordering::Acquire);
+      let old_table = unsafe { &*old_ptr };
+      let mut live = 0usize;
+      for slot in old_table.slots().iter() {
+         let p = slot.load(Ordering::Acquire);
+         if !p.is_null() && state_occupied(&unsafe { &*p }.state, Ordering::Acquire) {
+            live += 1;
+         }
+      }
+
+      let mut new_cap = capacity_for(live).max(old_table.capacity());
+      if new_cap > old_table.capacity() && old_table.capacity() < 32_768 {
+         new_cap = (old_table.capacity() * 4).next_power_of_two();
+      }
+      self.rebuild_to(old_ptr, new_cap);
+   }
+
+   /// Move every occupied entry into a fresh table of `new_cap` slots,
+   /// dropping (and retiring) the rest. Caller holds `grow_lock` and GROWING.
+   pub(crate) fn rebuild_to(&self, old_ptr: *mut SlotTable<V>, new_cap: usize) {
+      let old_table = unsafe { &*old_ptr };
       let new_table = SlotTable::<V>::new(new_cap);
-
-      let mut live_count: usize = 0;
+      let mut live_count = 0usize;
       for slot in old_table.slots().iter() {
          let p = slot.load(Ordering::Acquire);
          if p.is_null() {
@@ -1020,6 +1162,26 @@ unsafe impl<V: Send> Send for Shard<V> {}
 #[cfg(test)]
 mod tests {
    use super::*;
+
+   /// Contended overwrites must not enter the insert gate: it is a shared
+   /// cache line, and one hot key would serialize every writer on that shard.
+   #[test]
+   fn overwrites_leave_the_insert_gate_untouched() {
+      let shard = Shard::<u32>::new(64, std::sync::Arc::new(crate::snap::SnapCtl::new()));
+      let hash = 0x1234_5678_9abc_def0;
+      assert!(matches!(
+         shard.probe_or_insert(hash, "hot", || 1),
+         FastSet::Inserted
+      ));
+      assert_eq!(shard.insert_gate.load(Ordering::Relaxed), 0);
+      for value in 2..64 {
+         assert!(matches!(
+            shard.probe_or_insert(hash, "hot", || value),
+            FastSet::Existing(_)
+         ));
+         assert_eq!(shard.insert_gate.load(Ordering::Relaxed), 0);
+      }
+   }
 
    #[test]
    fn tags_round_trip_and_never_collide_with_the_pointer() {

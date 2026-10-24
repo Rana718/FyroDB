@@ -1,6 +1,6 @@
 use foldhash::HashSet;
 use mio::net::TcpStream;
-use std::io::{self, Read, Write};
+use std::io::{self, Write};
 use std::sync::Arc;
 
 use crate::pubsub::{PubSub, SubSlot, WorkerNotifier};
