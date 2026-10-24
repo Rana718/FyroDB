@@ -37,10 +37,12 @@ impl SlotRange {
    }
 }
 
+#[inline]
 pub fn hash_slot(key: &[u8]) -> Slot {
    Slot(crc16(hashtag(key)) % HASH_SLOTS)
 }
 
+#[inline]
 fn hashtag(key: &[u8]) -> &[u8] {
    let Some(open) = key.iter().position(|&byte| byte == b'{') else {
       return key;
@@ -53,21 +55,37 @@ fn hashtag(key: &[u8]) -> &[u8] {
    if start == end { key } else { &key[start..end] }
 }
 
+#[inline]
 fn crc16(bytes: &[u8]) -> u16 {
+   // Slicing-by-8: `TABLES[n][i]` is the state after byte `i` followed by
+   // `n` zero bytes, so eight input bytes resolve as eight independent
+   // lookups instead of an eight-link dependency chain.
    let mut crc = 0u16;
-   for &byte in bytes {
+   let (chunks, remainder) = bytes.as_chunks::<8>();
+   for chunk in chunks {
+      let head = crc ^ u16::from_be_bytes([chunk[0], chunk[1]]);
+      crc = CRC16_TABLES[7][(head >> 8) as usize]
+         ^ CRC16_TABLES[6][(head & 0xff) as usize]
+         ^ CRC16_TABLES[5][chunk[2] as usize]
+         ^ CRC16_TABLES[4][chunk[3] as usize]
+         ^ CRC16_TABLES[3][chunk[4] as usize]
+         ^ CRC16_TABLES[2][chunk[5] as usize]
+         ^ CRC16_TABLES[1][chunk[6] as usize]
+         ^ CRC16_TABLES[0][chunk[7] as usize];
+   }
+   for &byte in remainder {
       let index = ((crc >> 8) as u8 ^ byte) as usize;
-      crc = (crc << 8) ^ CRC16_TABLE[index];
+      crc = (crc << 8) ^ CRC16_TABLES[0][index];
    }
    crc
 }
 
-const CRC16_TABLE: [u16; 256] = build_crc16_table();
+const CRC16_TABLES: [[u16; 256]; 8] = build_crc16_tables();
 
-const fn build_crc16_table() -> [u16; 256] {
-   let mut table = [0u16; 256];
+const fn build_crc16_tables() -> [[u16; 256]; 8] {
+   let mut tables = [[0u16; 256]; 8];
    let mut index = 0;
-   while index < table.len() {
+   while index < 256 {
       let mut crc = (index as u16) << 8;
       let mut bit = 0;
       while bit < 8 {
@@ -78,10 +96,20 @@ const fn build_crc16_table() -> [u16; 256] {
          };
          bit += 1;
       }
-      table[index] = crc;
+      tables[0][index] = crc;
       index += 1;
    }
-   table
+   let mut slice = 1;
+   while slice < 8 {
+      let mut i = 0;
+      while i < 256 {
+         let previous = tables[slice - 1][i];
+         tables[slice][i] = (previous << 8) ^ tables[0][(previous >> 8) as usize];
+         i += 1;
+      }
+      slice += 1;
+   }
+   tables
 }
 
 #[cfg(test)]
@@ -110,5 +138,28 @@ mod tests {
       assert!(range.contains(Slot(20)));
       assert!(!range.contains(Slot(21)));
       assert!(SlotRange::new(Slot(20), Slot(10)).is_none());
+   }
+
+   #[test]
+   fn slicing_crc16_matches_the_bytewise_definition() {
+      fn reference(bytes: &[u8]) -> u16 {
+         let mut crc = 0u16;
+         for &byte in bytes {
+            let index = ((crc >> 8) as u8 ^ byte) as usize;
+            crc = (crc << 8) ^ CRC16_TABLES[0][index];
+         }
+         crc
+      }
+      // Redis uses CRC-16/XMODEM here: poly 0x1021 with a zero initial state
+      // (not CCITT-FALSE's 0xffff init), whose check value differs.
+      assert_eq!(crc16(b"123456789"), 0x31c3);
+      let data: Vec<u8> = (0..=255u8).cycle().take(600).collect();
+      for length in 0..data.len() {
+         assert_eq!(
+            crc16(&data[..length]),
+            reference(&data[..length]),
+            "length {length}"
+         );
+      }
    }
 }

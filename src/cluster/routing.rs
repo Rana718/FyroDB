@@ -221,18 +221,17 @@ impl KeyPattern {
 
 /// Dispatches on (length, first byte) so the common single-key commands reach
 /// `is_single_key`'s jump table instead of walking a chain of comparisons.
+#[inline]
 fn key_pattern(command: &[u8]) -> Option<KeyPattern> {
    let &first = command.first()?;
    let multi_key = match (command.len(), first.to_ascii_uppercase()) {
-      (4, b'M') => {
-         if command.eq_ignore_ascii_case(b"MGET") {
-            Some(KeyPattern::All)
-         } else if command.eq_ignore_ascii_case(b"MSET") {
-            Some(KeyPattern::EveryOther)
-         } else {
-            None
-         }
-      }
+      // Second byte picks the command, so mixed-case five-letter names do not
+      // pay a full comparison each.
+      (4, b'M') => match command[1].to_ascii_uppercase() {
+         b'G' if command.eq_ignore_ascii_case(b"MGET") => Some(KeyPattern::All),
+         b'S' if command.eq_ignore_ascii_case(b"MSET") => Some(KeyPattern::EveryOther),
+         _ => None,
+      },
       (6, b'M') => command
          .eq_ignore_ascii_case(b"MSETNX")
          .then_some(KeyPattern::EveryOther),
@@ -429,6 +428,7 @@ pub fn is_write_command(command: &[u8]) -> bool {
    }
 }
 
+#[inline]
 fn is_single_key(command: &[u8]) -> bool {
    let Some(&first) = command.first() else {
       return false;

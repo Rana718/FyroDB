@@ -310,16 +310,19 @@ impl Store {
    }
 
    pub fn count_keys_in_slot(&self, slot: crate::cluster::Slot) -> usize {
+      let now = crate::storage::value::approx_now_ms();
       self
          .scan_slot_parallel(usize::MAX, |key, value| {
-            (!value.is_expired() && crate::cluster::hash_slot(key.as_bytes()) == slot).then_some(())
+            (!value.is_expired_at(now) && crate::cluster::hash_slot(key.as_bytes()) == slot)
+               .then_some(())
          })
          .len()
    }
 
    pub fn keys_in_slot(&self, slot: crate::cluster::Slot, limit: usize) -> Vec<String> {
+      let now = crate::storage::value::approx_now_ms();
       let mut keys = self.scan_slot_parallel(limit, |key, value| {
-         if value.is_expired() || crate::cluster::hash_slot(key.as_bytes()) != slot {
+         if value.is_expired_at(now) || crate::cluster::hash_slot(key.as_bytes()) != slot {
             return None;
          }
          Some(key.to_owned())
@@ -337,7 +340,9 @@ impl Store {
       T: Send,
       F: Fn(&str, &StoreValue) -> Option<T> + Sync,
    {
-      const MAX_SCAN_THREADS: usize = 8;
+      // A shard is the unit of work; more threads than shards only adds
+      // spawn cost, since a single shard's table is scanned sequentially.
+      const MAX_SCAN_THREADS: usize = 16;
       let shards = self.data.shard_count();
       if shards < 2 || cap == 0 {
          let mut found = Vec::new();
@@ -352,8 +357,9 @@ impl Store {
       }
       let threads = std::thread::available_parallelism()
          .map_or(1, |count| count.get())
+         .min(MAX_SCAN_THREADS)
          .min(shards)
-         .min(MAX_SCAN_THREADS);
+         .max(1);
       let per = shards.div_ceil(threads);
       std::thread::scope(|scope| {
          let mut handles = Vec::with_capacity(threads);

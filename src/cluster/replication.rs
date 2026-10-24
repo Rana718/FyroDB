@@ -67,7 +67,9 @@ pub enum ReplicationMessage {
       from_offset: u64,
       identity: [u8; 16],
    },
-   Entry(MutationRecord),
+   /// Shared with the mutation log so fan-out to a replica does not clone the
+   /// key/value buffers of a retained entry.
+   Entry(Arc<MutationRecord>),
    Ack {
       applied_offset: u64,
    },
@@ -229,7 +231,9 @@ pub fn decode_replication_message(
          from_offset: u64::from_be_bytes(input[9..17].try_into().unwrap()),
          identity: input[17..33].try_into().unwrap(),
       }),
-      2 => Ok(ReplicationMessage::Entry(decode_mutation(&input[1..])?)),
+      2 => Ok(ReplicationMessage::Entry(Arc::new(decode_mutation(
+         &input[1..],
+      )?))),
       3 if input.len() == 9 => Ok(ReplicationMessage::Ack {
          applied_offset: u64::from_be_bytes(input[1..9].try_into().unwrap()),
       }),
@@ -291,7 +295,9 @@ pub struct MutationLog {
    next_offset: u64,
    capacity: usize,
    bytes: usize,
-   records: VecDeque<MutationRecord>,
+   /// Entries are shared rather than cloned on read: replication reads the
+   /// tail on every mutation, and each entry can fan out to several replicas.
+   records: VecDeque<Arc<MutationRecord>>,
 }
 
 #[derive(Clone)]
@@ -371,7 +377,7 @@ impl ReplicationCoordinator {
          .expect("replication log poisoned")
          .replay_from(offset)
    }
-   pub fn record_at(&self, offset: u64) -> Result<Option<MutationRecord>, LogError> {
+   pub fn record_at(&self, offset: u64) -> Result<Option<Arc<MutationRecord>>, LogError> {
       self
          .log
          .lock()
@@ -518,7 +524,7 @@ impl MutationLog {
       record.offset = self.next_offset;
       self.next_offset = self.next_offset.saturating_add(1);
       self.bytes = self.bytes.saturating_add(record_memory_bytes(&record));
-      self.records.push_back(record);
+      self.records.push_back(Arc::new(record));
       while self.records.len() > self.capacity || self.bytes > MAX_LOG_BYTES {
          if let Some(old) = self.records.pop_front() {
             self.bytes = self.bytes.saturating_sub(record_memory_bytes(&old));
@@ -540,10 +546,10 @@ impl MutationLog {
          .records
          .iter()
          .filter(|record| record.offset >= offset.max(1))
-         .cloned()
+         .map(|record| MutationRecord::clone(record))
          .collect())
    }
-   pub fn record_at(&self, offset: u64) -> Result<Option<MutationRecord>, LogError> {
+   pub fn record_at(&self, offset: u64) -> Result<Option<Arc<MutationRecord>>, LogError> {
       let Some(front) = self.records.front() else {
          return Ok(None);
       };
@@ -556,8 +562,10 @@ impl MutationLog {
          return Ok(None);
       }
       // Offsets are contiguous, so the slot index is arithmetic rather than
-      // a scan: replication reads the tail entry on every mutation.
-      Ok(self.records.get((offset - first) as usize).cloned())
+      // a scan: replication reads the tail entry on every mutation. The
+      // returned handle shares the retained record, so this stays a
+      // refcount bump instead of copying key/value.
+      Ok(self.records.get((offset - first) as usize).map(Arc::clone))
    }
    pub fn next_offset(&self) -> u64 {
       self.next_offset
@@ -869,14 +877,14 @@ mod tests {
    fn stream_enforces_order_and_offsets() {
       let mut stream = ReplicationStream::new();
       assert_eq!(
-         stream.apply(&ReplicationMessage::Entry(MutationRecord {
+         stream.apply(&ReplicationMessage::Entry(Arc::new(MutationRecord {
             offset: 1,
             slot: Slot(1),
             kind: MutationKind::Delete,
             key: b"k".to_vec(),
             value: Vec::new(),
             expire_at_ms: None
-         })),
+         }))),
          Err(StreamError::NotStarted)
       );
       stream.begin(3, 1).unwrap();

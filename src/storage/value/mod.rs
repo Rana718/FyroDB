@@ -366,6 +366,13 @@ impl StoreValue {
       self.expires_ms != 0 && approx_now_ms() >= self.expires_ms
    }
 
+   /// Same test with a caller-supplied clock, so bulk scans pay one clock
+   /// read instead of one per key.
+   #[inline(always)]
+   pub fn is_expired_at(&self, now_ms: u64) -> bool {
+      self.expires_ms != 0 && now_ms >= self.expires_ms
+   }
+
    #[inline]
    pub fn is_expired_precise(&self) -> bool {
       self.expires_ms != 0 && now_ms() >= self.expires_ms
