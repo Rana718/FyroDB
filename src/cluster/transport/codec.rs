@@ -206,14 +206,33 @@ impl FrameCodec {
    }
 }
 
+const CRC32_TABLE: [u32; 256] = build_crc32_table();
+
+const fn build_crc32_table() -> [u32; 256] {
+   let mut table = [0u32; 256];
+   let mut index = 0;
+   while index < table.len() {
+      let mut crc = index as u32;
+      let mut bit = 0;
+      while bit < 8 {
+         crc = if crc & 1 != 0 {
+            (crc >> 1) ^ 0xedb8_8320
+         } else {
+            crc >> 1
+         };
+         bit += 1;
+      }
+      table[index] = crc;
+      index += 1;
+   }
+   table
+}
+
+#[inline]
 fn checksum(bytes: &[u8]) -> u32 {
    let mut crc = !0u32;
    for &byte in bytes {
-      crc ^= byte as u32;
-      for _ in 0..8 {
-         let mask = (crc & 1).wrapping_neg();
-         crc = (crc >> 1) ^ (0xedb8_8320 & mask);
-      }
+      crc = (crc >> 8) ^ CRC32_TABLE[((crc ^ u32::from(byte)) & 0xff) as usize];
    }
    !crc
 }

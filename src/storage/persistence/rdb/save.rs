@@ -134,7 +134,13 @@ pub fn save(store: &Store, path: &str) -> io::Result<()> {
 /// Encode/decode one StoreValue using the same bounded representation as RDB.
 /// This is used by replication so all supported data types share one codec.
 pub fn encode_single_value(value: &StoreValue) -> io::Result<Vec<u8>> {
-   let mut out = Vec::new();
+   // Exact capacity for the common single-buffer payloads; other types grow
+   // as before. This runs once per replicated write.
+   let mut out = match &value.value {
+      FyroDB::String(s) => Vec::with_capacity(13 + s.as_bytes().len()),
+      FyroDB::Json(json) => Vec::with_capacity(13 + json.len()),
+      _ => Vec::new(),
+   };
    write_u64(&mut out, value.expires_ms)?;
    match &value.value {
       FyroDB::String(s) => {

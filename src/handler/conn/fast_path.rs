@@ -879,7 +879,11 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
       match decision {
          crate::cluster::RouteDecision::Local => {}
          other => {
-            write_route_decision(&mut conn.parser.wbuf, other);
+            let topology = conn
+               .topology_cache
+               .as_ref()
+               .map(|(_, topology, _)| topology.as_ref());
+            write_route_decision(&mut conn.parser.wbuf, other, topology);
             return;
          }
       }
@@ -1169,28 +1173,32 @@ pub(super) fn route_cached(
 /// Write a non-Local routing decision into the output buffer.
 #[cold]
 #[inline(never)]
-pub(super) fn write_route_decision(out: &mut Vec<u8>, decision: crate::cluster::RouteDecision<'_>) {
+pub(super) fn write_route_decision(
+   out: &mut Vec<u8>,
+   decision: crate::cluster::RouteDecision<'_>,
+   topology: Option<&crate::cluster::Topology>,
+) {
+   #[inline]
+   fn write_redirect(out: &mut Vec<u8>, kind: &[u8], slot: crate::cluster::Slot, address: &str) {
+      out.extend_from_slice(kind);
+      crate::utils::resp::write_usize(out, slot.value() as usize);
+      out.push(b' ');
+      out.extend_from_slice(address.as_bytes());
+      out.extend_from_slice(b"\r\n");
+   }
    match decision {
       crate::cluster::RouteDecision::Moved { slot, address } => {
-         out.extend_from_slice(b"-MOVED ");
-         crate::utils::resp::write_usize(out, slot.value() as usize);
-         out.push(b' ');
-         out.extend_from_slice(address.as_bytes());
-         out.extend_from_slice(b"\r\n");
+         write_redirect(out, b"-MOVED ", slot, address);
       }
-      crate::cluster::RouteDecision::MovedOwned { slot, address } => {
-         out.extend_from_slice(b"-MOVED ");
-         crate::utils::resp::write_usize(out, slot.value() as usize);
-         out.push(b' ');
-         out.extend_from_slice(address.as_bytes());
-         out.extend_from_slice(b"\r\n");
+      crate::cluster::RouteDecision::MovedNode { slot, node } => {
+         if let Some(address) = topology.and_then(|topology| topology.nodes.get(node)) {
+            write_redirect(out, b"-MOVED ", slot, &address.address);
+         }
       }
-      crate::cluster::RouteDecision::Ask { slot, address } => {
-         out.extend_from_slice(b"-ASK ");
-         crate::utils::resp::write_usize(out, slot.value() as usize);
-         out.push(b' ');
-         out.extend_from_slice(address.as_bytes());
-         out.extend_from_slice(b"\r\n");
+      crate::cluster::RouteDecision::Ask { slot, node } => {
+         if let Some(address) = topology.and_then(|topology| topology.nodes.get(node)) {
+            write_redirect(out, b"-ASK ", slot, &address.address);
+         }
       }
       crate::cluster::RouteDecision::CrossSlot => {
          out.extend_from_slice(b"-CROSSSLOT Keys in request don't hash to the same slot\r\n");

@@ -67,6 +67,10 @@ criterion = { version = "0.7", default-features = false, features = ["cargo_benc
 name = "core"
 harness = false
 
+[[bench]]
+name = "cluster_perf"
+harness = false
+
 [profile.bench]
 debug = "line-tables-only"
 strip = "none"

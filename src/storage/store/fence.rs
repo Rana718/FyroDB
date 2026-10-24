@@ -51,8 +51,10 @@ impl Drop for WriteFenceGuard<'_> {
 }
 
 impl Store {
-   /// Both sides of the fence use SeqCst, so the total order guarantees
-   /// writer and fence holder observe each other.
+   /// Both sides of the fence use SeqCst: the writer's counter step and the
+   /// holder's flag step form a dekker handshake, and a weaker store/load pair
+   /// on the arming side would let both proceed when the store is still in
+   /// flight. The uncontended cost is a locked RMW plus one load per write.
    #[inline]
    pub fn begin_write(&self, worker: usize) -> WriteTicket<'_> {
       let fence = &self.cluster_write_fence;
@@ -80,6 +82,13 @@ impl Store {
          slot: None,
          _gate: Some(fence.gate.lock().unwrap_or_else(|e| e.into_inner())),
       }
+   }
+
+   /// Arm the fence and wait for in-flight writes to drain, then disarm it.
+   /// Migration only needs this one-time drain: once the slot is marked
+   /// migrating, new writes to it are ASK-redirected and never land locally.
+   pub fn drain_writes(&self) {
+      let _guard = self.cluster_write_guard();
    }
 
    /// Slot migration and snapshot bootstrap need a stable keyspace,

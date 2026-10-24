@@ -3,9 +3,20 @@ use super::{ClusterConfig, Slot, hash_slot};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RouteDecision<'a> {
    Local,
-   Moved { slot: Slot, address: &'a str },
-   MovedOwned { slot: Slot, address: String },
-   Ask { slot: Slot, address: String },
+   Moved {
+      slot: Slot,
+      address: &'a str,
+   },
+   /// Redirect to a node by index in the caller's topology snapshot, so a
+   /// hot misrouted connection does not allocate an address String per command.
+   MovedNode {
+      slot: Slot,
+      node: usize,
+   },
+   Ask {
+      slot: Slot,
+      node: usize,
+   },
    CrossSlot,
    Unassigned(Slot),
 }
@@ -137,14 +148,13 @@ fn resolve_slot(
       return RouteDecision::Local;
    }
 
-   let owner = match routing.owner_index(slot) {
-      Some(index) => &topology.nodes[index],
-      None => return RouteDecision::Unassigned(slot),
+   let Some(owner_index) = routing.owner_index(slot) else {
+      return RouteDecision::Unassigned(slot);
    };
-   if owner.id != cluster.local_id {
-      return RouteDecision::MovedOwned {
+   if topology.nodes[owner_index].id != cluster.local_id {
+      return RouteDecision::MovedNode {
          slot,
-         address: owner.address.clone(),
+         node: owner_index,
       };
    }
 
@@ -153,18 +163,16 @@ fn resolve_slot(
       Some(target) => topology
          .nodes
          .iter()
-         .find(|node| node.id == target)
-         .map(|node| RouteDecision::Ask {
-            slot,
-            address: node.address.clone(),
-         })
+         .position(|node| node.id == target)
+         .map(|node| RouteDecision::Ask { slot, node })
          .unwrap_or(RouteDecision::Local),
       None => RouteDecision::Local,
    }
 }
 
 /// Avoids the RwLock + Arc clone per command: revalidate a cached snapshot
-/// with one relaxed load. Redirects own their addresses.
+/// with one relaxed load. Redirects carry a node index and resolve the
+/// address from that same snapshot only when a reply is written.
 pub fn route_command_with_snapshot(
    cluster: &ClusterConfig,
    state: &super::ClusterState,
@@ -211,31 +219,56 @@ impl KeyPattern {
    }
 }
 
+/// Dispatches on (length, first byte) so the common single-key commands reach
+/// `is_single_key`'s jump table instead of walking a chain of comparisons.
 fn key_pattern(command: &[u8]) -> Option<KeyPattern> {
-   if command.eq_ignore_ascii_case(b"MGET")
-      || command.eq_ignore_ascii_case(b"DEL")
-      || command.eq_ignore_ascii_case(b"UNLINK")
-      || command.eq_ignore_ascii_case(b"EXISTS")
-      || command.eq_ignore_ascii_case(b"TOUCH")
-   {
-      return Some(KeyPattern::All);
-   }
-   if command.eq_ignore_ascii_case(b"MSET") || command.eq_ignore_ascii_case(b"MSETNX") {
-      return Some(KeyPattern::EveryOther);
-   }
-   if command.eq_ignore_ascii_case(b"RENAME")
-      || command.eq_ignore_ascii_case(b"RENAMENX")
-      || command.eq_ignore_ascii_case(b"COPY")
-      || command.eq_ignore_ascii_case(b"SMOVE")
-      || command.eq_ignore_ascii_case(b"LMOVE")
-      || command.eq_ignore_ascii_case(b"RPOPLPUSH")
-   {
-      return Some(KeyPattern::FirstTwo);
-   }
-   if is_single_key(command) {
-      return Some(KeyPattern::First);
-   }
-   None
+   let &first = command.first()?;
+   let multi_key = match (command.len(), first.to_ascii_uppercase()) {
+      (4, b'M') => {
+         if command.eq_ignore_ascii_case(b"MGET") {
+            Some(KeyPattern::All)
+         } else if command.eq_ignore_ascii_case(b"MSET") {
+            Some(KeyPattern::EveryOther)
+         } else {
+            None
+         }
+      }
+      (6, b'M') => command
+         .eq_ignore_ascii_case(b"MSETNX")
+         .then_some(KeyPattern::EveryOther),
+      (3, b'D') => command
+         .eq_ignore_ascii_case(b"DEL")
+         .then_some(KeyPattern::All),
+      (6, b'U') => command
+         .eq_ignore_ascii_case(b"UNLINK")
+         .then_some(KeyPattern::All),
+      (6, b'E') => command
+         .eq_ignore_ascii_case(b"EXISTS")
+         .then_some(KeyPattern::All),
+      (5, b'T') => command
+         .eq_ignore_ascii_case(b"TOUCH")
+         .then_some(KeyPattern::All),
+      (6, b'R') => command
+         .eq_ignore_ascii_case(b"RENAME")
+         .then_some(KeyPattern::FirstTwo),
+      (8, b'R') => command
+         .eq_ignore_ascii_case(b"RENAMENX")
+         .then_some(KeyPattern::FirstTwo),
+      (4, b'C') => command
+         .eq_ignore_ascii_case(b"COPY")
+         .then_some(KeyPattern::FirstTwo),
+      (5, b'S') => command
+         .eq_ignore_ascii_case(b"SMOVE")
+         .then_some(KeyPattern::FirstTwo),
+      (5, b'L') => command
+         .eq_ignore_ascii_case(b"LMOVE")
+         .then_some(KeyPattern::FirstTwo),
+      (9, b'R') => command
+         .eq_ignore_ascii_case(b"RPOPLPUSH")
+         .then_some(KeyPattern::FirstTwo),
+      _ => None,
+   };
+   multi_key.or_else(|| is_single_key(command).then_some(KeyPattern::First))
 }
 
 /// Uses a (len, first_byte) match so the compiler emits a jump table
