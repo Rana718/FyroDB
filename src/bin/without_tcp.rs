@@ -336,10 +336,14 @@ fn print_summary_table(results: &[BenchResult]) {
 fn main() {
    let args: Vec<String> = std::env::args().collect();
    let mut mode = "all".to_string();
+   let mut cli_workers: Option<usize> = None;
    let mut i = 1;
    while i < args.len() {
       if args[i] == "-m" && i + 1 < args.len() {
          mode = args[i + 1].clone();
+         i += 2;
+      } else if (args[i] == "-w" || args[i] == "--workers") && i + 1 < args.len() {
+         cli_workers = args[i + 1].parse::<usize>().ok();
          i += 2;
       } else if !args[i].starts_with('-') {
          mode = args[i].clone();
@@ -349,11 +353,20 @@ fn main() {
       }
    }
 
-   let workers = num_cpus::get();
+   let workers = cli_workers
+      .or_else(|| {
+         std::env::var("FYRODB_WORKERS")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+      })
+      .filter(|&w| w > 0)
+      .unwrap_or_else(|| fyro_vector::pool::allowed_cores().len().max(1));
    let shards = (workers * 4).max(128).next_power_of_two();
    let store = Arc::new(Store::with_config_workers(shards, usize::MAX, workers));
    let pubsub = Arc::new(PubSub::new());
-   fyro_db::search::configure_pool(None);
+   let affinity = fyro_db::utils::affinity::from_env(workers);
+   let search_cores = affinity.search.clone().or_else(|| affinity.workers.clone());
+   fyro_db::search::configure_pool(Some(workers), search_cores);
 
    let mut results: Vec<BenchResult> = Vec::new();
 
@@ -361,12 +374,12 @@ fn main() {
       "key" => run_kv(&store, &mut results),
       "pub" => run_pubsub(&pubsub, &mut results),
       "mix" => run_mix(&store, &mut results),
-      "vec" => run_vector(&store, &mut results),
+      "vec" => run_vector(&store, workers, &mut results),
       "all" => {
          run_kv(&store, &mut results);
          run_pubsub(&pubsub, &mut results);
          run_mix(&store, &mut results);
-         run_vector(&store, &mut results);
+         run_vector(&store, workers, &mut results);
       }
       other => {
          eprintln!(
@@ -385,7 +398,11 @@ fn run_kv(store: &Arc<Store>, results: &mut Vec<BenchResult>) {
    let clients = 100usize;
    let ops_client = 100_000usize;
    let total_ops = (clients * ops_client) as i64;
-   let workers = num_cpus::get();
+   let workers = std::env::var("FYRODB_WORKERS")
+      .ok()
+      .and_then(|v| v.parse::<usize>().ok())
+      .filter(|&w| w > 0)
+      .unwrap_or_else(num_cpus::get);
    const BATCH: usize = 64;
 
    // Warmup
@@ -713,7 +730,11 @@ fn run_pubsub(pubsub: &Arc<PubSub>, results: &mut Vec<BenchResult>) {
    let channel = "pubsub:bench";
    let message_payload = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
-   let workers = num_cpus::get();
+   let workers = std::env::var("FYRODB_WORKERS")
+      .ok()
+      .and_then(|v| v.parse::<usize>().ok())
+      .filter(|&w| w > 0)
+      .unwrap_or_else(num_cpus::get);
    let notifiers: Vec<Arc<WorkerNotifier>> = (0..workers)
       .map(|w_id| {
          let poll = mio::Poll::new().unwrap();
@@ -791,7 +812,11 @@ fn run_mix(store: &Arc<Store>, results: &mut Vec<BenchResult>) {
    let mix_ops_client = 20_000usize;
    let pipe_size = 500usize;
    let total_mix_ops = (clients * mix_ops_client) as i64;
-   let workers = num_cpus::get();
+   let workers = std::env::var("FYRODB_WORKERS")
+      .ok()
+      .and_then(|v| v.parse::<usize>().ok())
+      .filter(|&w| w > 0)
+      .unwrap_or_else(num_cpus::get);
    let clients_per_worker = clients.div_ceil(workers);
 
    const BATCH: usize = customhash::PREFETCH_BATCH;
@@ -1295,7 +1320,7 @@ fn run_mix(store: &Arc<Store>, results: &mut Vec<BenchResult>) {
 }
 
 // --- VECTOR SEARCH BENCHMARK ---
-fn run_vector(store: &Arc<Store>, results: &mut Vec<BenchResult>) {
+fn run_vector(store: &Arc<Store>, workers: usize, results: &mut Vec<BenchResult>) {
    store.flush();
    let vec_docs = 50_000usize;
    let vec_dim = 768usize;
@@ -1349,7 +1374,12 @@ fn run_vector(store: &Arc<Store>, results: &mut Vec<BenchResult>) {
       chunk.copy_from_slice(&f.to_le_bytes());
    }
 
-   let load_threads = num_cpus::get().min(8);
+   let load_threads = std::env::var("FYRODB_SEARCH_THREADS")
+      .or_else(|_| std::env::var("FYRODB_WORKERS"))
+      .ok()
+      .and_then(|v| v.parse::<usize>().ok())
+      .unwrap_or(workers)
+      .clamp(1, workers);
    let docs_per_thread = vec_docs / load_threads;
    let start = Instant::now();
    std::thread::scope(|scope| {
@@ -1600,8 +1630,8 @@ fn run_vector(store: &Arc<Store>, results: &mut Vec<BenchResult>) {
       elapsed: start.elapsed(),
    });
 
-   // Vector KNN-10 (8 clients)
-   let knn_clients = 8usize;
+   // Vector KNN-10 concurrent clients (capped by workers)
+   let knn_clients = workers.max(1);
    let queries_per_client = knn_queries / knn_clients;
    let start = Instant::now();
    std::thread::scope(|scope| {
@@ -1632,7 +1662,7 @@ fn run_vector(store: &Arc<Store>, results: &mut Vec<BenchResult>) {
       }
    });
    results.push(BenchResult {
-      label: "Vector KNN-10 (8 clients)",
+      label: Box::leak(format!("Vector KNN-10 ({knn_clients} clients)").into_boxed_str()),
       ops: knn_queries as i64,
       elapsed: start.elapsed(),
    });

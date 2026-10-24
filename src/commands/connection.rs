@@ -26,6 +26,26 @@ pub fn info(store: &Store, out: &mut Vec<u8>) {
    resp::write_bulk(out, &store.info());
 }
 
+// DBCACHE STATS exposes the PostgreSQL proxy's cache counters over RESP.
+pub fn dbcache_cmd(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
+   let Some(manager) = store.dbcache_manager() else {
+      resp::write_err(out, "dbcache is not enabled");
+      return;
+   };
+   match parts.get(1).map(|sub| sub.to_ascii_uppercase()).as_deref() {
+      Some("STATS") if parts.len() == 2 => {
+         let stats = manager.stats();
+         resp::write_array_header(out, stats.len() * 2);
+         for (name, value) in stats {
+            resp::write_bulk(out, name);
+            resp::write_integer(out, i64::try_from(value).unwrap_or(i64::MAX));
+         }
+      }
+      Some("STATS") => resp::write_wrong_args(out, "dbcache stats"),
+      _ => resp::write_err(out, "unknown DBCACHE subcommand"),
+   }
+}
+
 pub fn flush(store: &Store, out: &mut Vec<u8>) {
    store.flush();
    resp::write_ok(out);
@@ -664,8 +684,12 @@ pub fn select(parts: &[&str], out: &mut Vec<u8>) {
    }
 }
 
-pub fn auth(_parts: &[&str], out: &mut Vec<u8>) {
-   resp::write_ok(out);
+pub fn auth(parts: &[&str], out: &mut Vec<u8>) {
+   if parts.len() == 2 || parts.len() == 3 {
+      resp::write_ok(out);
+   } else {
+      resp::write_wrong_args(out, "auth");
+   }
 }
 
 pub fn reset(out: &mut Vec<u8>) {

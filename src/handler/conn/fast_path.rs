@@ -11,6 +11,7 @@ pub(super) enum CmdId {
    Ping,
    Auth,
    Quit,
+   Hello,
    Hget,
    Hset,
    Incr,
@@ -77,6 +78,7 @@ const W_DEL: u64 = cmd_word(b"del");
 const W_PING: u64 = cmd_word(b"ping");
 const W_AUTH: u64 = cmd_word(b"auth");
 const W_QUIT: u64 = cmd_word(b"quit");
+const W_HELLO: u64 = cmd_word(b"hello");
 const W_HGET: u64 = cmd_word(b"hget");
 const W_HSET: u64 = cmd_word(b"hset");
 const W_INCR: u64 = cmd_word(b"incr");
@@ -124,6 +126,7 @@ pub(super) fn cmd_id(cmd: &[u8]) -> CmdId {
       (4, W_SADD) => CmdId::Sadd,
       (4, W_ZADD) => CmdId::Zadd,
       (4, W_XADD) => CmdId::Xadd,
+      (5, W_HELLO) => CmdId::Hello,
       (5, W_LPUSH) => CmdId::Lpush,
       (5, W_RPUSH) => CmdId::Rpush,
       (5, W_PFADD) => CmdId::Pfadd,
@@ -548,6 +551,14 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
 
    if !conn.authenticated {
       handle_unauth(conn, raw, cmd);
+      return;
+   }
+
+   if id == CmdId::Auth {
+      handle_auth(conn, raw);
+      return;
+   } else if id == CmdId::Hello {
+      handle_hello(conn, raw);
       return;
    }
 
@@ -1359,32 +1370,98 @@ pub(super) fn write_route_decision(out: &mut Vec<u8>, decision: crate::cluster::
    }
 }
 
+#[inline(never)]
+pub(super) fn handle_auth(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
+   if raw.len() == 2 || raw.len() == 3 {
+      let pass_idx = if raw.len() == 3 { 2 } else { 1 };
+      let Some(pass) = part_str(&mut conn.parser.wbuf, raw[pass_idx]) else {
+         return;
+      };
+      if let Some(expected) = conn.auth_required {
+         if constant_time_eq(pass.as_bytes(), expected.as_bytes()) {
+            conn.authenticated = true;
+            conn.parser.wbuf.extend_from_slice(b"+OK\r\n");
+         } else {
+            conn.authenticated = false;
+            conn
+               .parser
+               .wbuf
+               .extend_from_slice(b"-WRONGPASS invalid username-password pair\r\n");
+         }
+      } else {
+         conn.authenticated = true;
+         conn.parser.wbuf.extend_from_slice(b"+OK\r\n");
+      }
+   } else {
+      crate::utils::resp::write_wrong_args(&mut conn.parser.wbuf, "auth");
+   }
+}
+
+#[inline(never)]
+pub(super) fn handle_hello(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
+   let mut proto = 2u32;
+   let mut auth_pass = None;
+   if raw.len() >= 2 {
+      if let Some(p) = part_str(&mut conn.parser.wbuf, raw[1]) {
+         proto = p.parse().unwrap_or(2);
+      }
+   }
+   let mut i = 2;
+   while i < raw.len() {
+      if let Some(kw) = part_str(&mut conn.parser.wbuf, raw[i]) {
+         if kw.eq_ignore_ascii_case("AUTH") && i + 2 < raw.len() {
+            auth_pass = part_str(&mut conn.parser.wbuf, raw[i + 2]);
+            i += 3;
+            continue;
+         }
+      }
+      i += 1;
+   }
+
+   if let Some(expected) = conn.auth_required {
+      if let Some(pass) = auth_pass {
+         if !constant_time_eq(pass.as_bytes(), expected.as_bytes()) {
+            conn.authenticated = false;
+            conn
+               .parser
+               .wbuf
+               .extend_from_slice(b"-WRONGPASS invalid username-password pair\r\n");
+            return;
+         }
+         conn.authenticated = true;
+      }
+   }
+
+   if proto == 3 {
+      crate::utils::resp3::write_hello_resp3(&mut conn.parser.wbuf);
+   } else {
+      let out = &mut conn.parser.wbuf;
+      crate::utils::resp::write_array_header(out, 14);
+      crate::utils::resp::write_bulk(out, "server");
+      crate::utils::resp::write_bulk(out, "fyrodb");
+      crate::utils::resp::write_bulk(out, "version");
+      crate::utils::resp::write_bulk(out, "8.2.0");
+      crate::utils::resp::write_bulk(out, "proto");
+      crate::utils::resp::write_integer(out, 2);
+      crate::utils::resp::write_bulk(out, "id");
+      crate::utils::resp::write_integer(out, 1);
+      crate::utils::resp::write_bulk(out, "mode");
+      crate::utils::resp::write_bulk(out, "standalone");
+      crate::utils::resp::write_bulk(out, "role");
+      crate::utils::resp::write_bulk(out, "master");
+      crate::utils::resp::write_bulk(out, "modules");
+      crate::utils::resp::write_array_header(out, 0);
+   }
+}
+
 #[cold]
 #[inline(never)]
 pub(super) fn handle_unauth(conn: &mut Conn<'_>, raw: &[(*const u8, usize)], cmd: &[u8]) {
    let id = cmd_id(cmd);
    if id == CmdId::Auth {
-      if raw.len() >= 2 {
-         let Some(pass) = part_str(&mut conn.parser.wbuf, raw[1]) else {
-            return;
-         };
-         if let Some(expected) = conn.auth_required {
-            if constant_time_eq(pass.as_bytes(), expected.as_bytes()) {
-               conn.authenticated = true;
-               conn.parser.wbuf.extend_from_slice(b"+OK\r\n");
-            } else {
-               conn
-                  .parser
-                  .wbuf
-                  .extend_from_slice(b"-WRONGPASS invalid username-password pair\r\n");
-            }
-         } else {
-            conn.authenticated = true;
-            conn.parser.wbuf.extend_from_slice(b"+OK\r\n");
-         }
-      } else {
-         crate::utils::resp::write_wrong_args(&mut conn.parser.wbuf, "auth");
-      }
+      handle_auth(conn, raw);
+   } else if id == CmdId::Hello {
+      handle_hello(conn, raw);
    } else if id == CmdId::Ping {
       conn.parser.wbuf.extend_from_slice(b"+PONG\r\n");
    } else if id == CmdId::Quit {

@@ -24,20 +24,53 @@ pub struct Pool {
 
 const SPIN: std::time::Duration = std::time::Duration::from_micros(30);
 
-static CONFIG: OnceLock<(usize, Option<Vec<usize>>)> = OnceLock::new();
+static CONFIG: Mutex<Option<(usize, Option<Vec<usize>>)>> = Mutex::new(None);
 static GLOBAL: OnceLock<Arc<Pool>> = OnceLock::new();
 
+// Configures search thread pool size and CPU core affinity.
 pub fn configure(threads: usize, cores: Option<Vec<usize>>) {
-   let _ = CONFIG.set((threads.max(1), cores.filter(|c| !c.is_empty())));
+   let mut cfg = CONFIG.lock().unwrap();
+   *cfg = Some((threads.max(1), cores.filter(|c| !c.is_empty())));
+}
+
+// Queries process CPU affinity mask on Linux.
+pub fn allowed_cores() -> Vec<usize> {
+   #[cfg(target_os = "linux")]
+   unsafe {
+      let mut set: libc::cpu_set_t = std::mem::zeroed();
+      if libc::sched_getaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &mut set) == 0 {
+         let mut cpus = Vec::new();
+         for c in 0..libc::CPU_SETSIZE as usize {
+            if libc::CPU_ISSET(c, &set) {
+               cpus.push(c);
+            }
+         }
+         if !cpus.is_empty() {
+            return cpus;
+         }
+      }
+   }
+   (0..num_cpus::get()).collect()
 }
 
 pub fn global() -> &'static Pool {
    GLOBAL.get_or_init(|| {
-      let (threads, cores) = CONFIG
-         .get()
-         .cloned()
-         .unwrap_or_else(|| (num_cpus::get().max(1), None));
-      Pool::start(threads, cores)
+      let configured = CONFIG.lock().unwrap().clone();
+      let (threads, cores) = configured.unwrap_or_else(|| {
+         let env_threads = std::env::var("FYRODB_SEARCH_THREADS")
+            .or_else(|_| std::env::var("FYRODB_WORKERS"))
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|&t| t > 0);
+         let allowed = allowed_cores();
+         let count = env_threads.unwrap_or_else(|| allowed.len().max(1));
+         (count, None)
+      });
+      let final_cores = cores.or_else(|| {
+         let allowed = allowed_cores();
+         (threads < allowed.len()).then(|| allowed.into_iter().take(threads).collect())
+      });
+      Pool::start(threads, final_cores)
    })
 }
 

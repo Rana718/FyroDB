@@ -310,7 +310,11 @@ fn main() {
       }
    }
 
-   let workers = num_cpus::get();
+   let workers = std::env::var("FYRODB_WORKERS")
+      .ok()
+      .and_then(|v| v.parse::<usize>().ok())
+      .filter(|&w| w > 0)
+      .unwrap_or_else(num_cpus::get);
    let total_ops = clients * ops_per_client;
 
    println!("==========================================================================");

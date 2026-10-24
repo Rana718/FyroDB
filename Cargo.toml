@@ -5,7 +5,13 @@ edition = "2024"
 license = "Apache-2.0"
 
 [workspace]
-members = [".", "crates/customhash", "crates/rust-zmalloc", "crates/fyro-vector"]
+members = [
+    ".",
+    "crates/customhash",
+    "crates/rust-zmalloc",
+    "crates/fyro-vector",
+    "crates/fyro-dbcache",
+]
 
 
 [profile.dev]
@@ -27,6 +33,7 @@ overflow-checks = false
 [dependencies]
 customhash = { path = "crates/customhash" }
 fyro-vector = { path = "crates/fyro-vector" }
+fyro-dbcache = { path = "crates/fyro-dbcache" }
 rust-zmalloc = { path = "crates/rust-zmalloc" }
 num_cpus = "1.17.0"
 socket2 = { version = "0.6.5", features = ["all"] }
@@ -54,6 +61,10 @@ required-features = ["bench-tools"]
 name = "tcp_proto_bench"
 path = "src/bin/tcp_proto_bench.rs"
 required-features = ["bench-tools"]
+
+[[bin]]
+name = "pg_cache_bench"
+path = "src/bin/pg_cache_bench.rs"
 
 [features]
 io-uring = ["dep:io-uring"]
