@@ -71,7 +71,8 @@ func humanCount(n int64) string {
 
 func main() {
 	port := flag.Int("p", 8000, "server port (single-node mode)")
-	mode := flag.String("m", "all", "mode: all | bench | key | pub | mix | vec | lat | mem | ann")
+	mode := flag.String("m", "all", "mode: all | bench | key | pub | mix | vec | lat | mem | ann | pgcache")
+	pgPort := flag.Int("pgport", 15433, "pgcache: dbcache proxy port")
 	cluster := flag.String("cluster", "", "comma-separated list of cluster master addrs")
 	pid := flag.Int("pid", 0, "server PID for resource monitoring (auto-detect if 0)")
 	dockerName := flag.String("docker", "", "docker container name/ID to monitor (auto-detect if empty)")
@@ -251,8 +252,11 @@ func main() {
 		runMix()
 		fmt.Println()
 		runVector()
+	case "pgcache":
+		pgAddr := fmt.Sprintf("127.0.0.1:%d", *pgPort)
+		runPGCache(pgAddr, CLIENTS, OPS_CLIENT)
 	default:
-		fmt.Fprintf(os.Stderr, "unknown -m value %q (want: all | bench | key | pub | mix | vec | lat | mem | ann)\n", *mode)
+		fmt.Fprintf(os.Stderr, "unknown -m value %q (want: all | bench | key | pub | mix | vec | lat | mem | ann | pgcache)\n", *mode)
 		os.Exit(1)
 	}
 

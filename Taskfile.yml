@@ -211,6 +211,27 @@ tasks:
          - cargo run --release --features bench-tools --bin pg_cache_bench -- --smoke
          - cargo run --release --features bench-tools --bin without_tcp -- bench {{.CLI_ARGS}}
 
+   bench-all-v:
+      desc: "Combined FyroDB RESP (Go TCP, KV+pub/sub+mix, no vectors) + dbcache proxy benchmark — starts its own throwaway server"
+      cmds:
+         - task: build
+         - cargo build --release --bin pg_cache_bench
+         - echo ""
+         - echo "══════════════════════════════════════════════════════════════════════"
+         - echo "  bench-all-v  ▶  Section 1 — FyroDB RESP  (Go goroutine TCP clients)"
+         - echo "══════════════════════════════════════════════════════════════════════"
+         - ./scripts/bench_local.sh -m bench {{.CLI_ARGS}}
+         - echo ""
+         - echo "══════════════════════════════════════════════════════════════════════"
+         - echo "  bench-all-v  ▶  Section 2 — dbcache PostgreSQL proxy"
+         - echo "══════════════════════════════════════════════════════════════════════"
+         - ./target/release/pg_cache_bench {{.CLI_ARGS}}
+
+   bench-all-v-live:
+      desc: "dbcache proxy benchmark (Go goroutine TCP clients) against a running proxy — use -pgport to specify port (default 15433)"
+      cmds:
+         - cd bench && go run . -m pgcache {{.CLI_ARGS}}
+
    bench-pg:
       desc: "PostgreSQL cache-path benchmark: in-memory lookup, encoded multithread, joins, proxy TCP"
       cmds:

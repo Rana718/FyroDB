@@ -57,6 +57,9 @@ pub struct ParsedQuery {
    // A function call can alter session state (set_config); the context must be
    // re-probed after the statement runs.
    pub mutates_session: bool,
+   // True when is_cacheable && functions.is_empty(): the catalog snapshot
+   // cannot affect this query's cacheability, so the RwLock read is skipped.
+   pub catalog_independent: bool,
 }
 
 // AST visitor collecting table references, CTE definitions, and volatile functions.
@@ -287,6 +290,7 @@ pub fn parse_sql(raw: &str) -> ParsedQuery {
             .any(|table| is_system_relation(table));
       let writes = extractor.has_writes;
 
+      let catalog_independent = is_cacheable && extractor.functions.is_empty();
       return ParsedQuery {
          kind,
          tables: extractor.tables,
@@ -298,6 +302,7 @@ pub fn parse_sql(raw: &str) -> ParsedQuery {
          session_changes,
          schema_change: extractor.schema_change,
          mutates_session: extractor.mutates_session,
+         catalog_independent,
       };
    }
 
@@ -466,6 +471,8 @@ fn fallback_parse_sql(trimmed: &str, normalized: String, fingerprint: u64) -> Pa
          || lower.starts_with("alter ")
          || lower.starts_with("drop "),
       mutates_session: lower.contains("set_config("),
+      // Fallback path never extracts functions, so always catalog_independent.
+      catalog_independent: is_cacheable,
    }
 }
 
@@ -742,6 +749,38 @@ pub fn make_cache_key(prefix: &str, table: &str, fingerprint: u64) -> String {
    // SAFETY: all bytes are ASCII hex digits.
    key.push_str(unsafe { std::str::from_utf8_unchecked(&hex) });
    key
+}
+
+// Builds the cache key directly into `buf` without a heap allocation.
+// Returns a `&str` into the buffer. Falls back to an empty str if the key
+// would exceed the buffer — callers that get "" must use `make_cache_key`.
+pub fn make_cache_key_inline<'a>(
+   prefix: &str,
+   table: &str,
+   fingerprint: u64,
+   buf: &'a mut [u8; 512],
+) -> &'a str {
+   let p = prefix.as_bytes();
+   let t = table.as_bytes();
+   let needed = p.len() + t.len() + 17; // 1 ':' + 16 hex chars
+   if needed > buf.len() {
+      return "";
+   }
+   let mut pos = 0;
+   buf[pos..pos + p.len()].copy_from_slice(p);
+   pos += p.len();
+   buf[pos..pos + t.len()].copy_from_slice(t);
+   pos += t.len();
+   buf[pos] = b':';
+   pos += 1;
+   let b = fingerprint.to_be_bytes();
+   for byte in b {
+      buf[pos] = HEX[(byte >> 4) as usize];
+      buf[pos + 1] = HEX[(byte & 0xF) as usize];
+      pos += 2;
+   }
+   // SAFETY: all bytes are ASCII.
+   unsafe { std::str::from_utf8_unchecked(&buf[..pos]) }
 }
 
 // Sharded SQL analysis cache: parsing is the dominant cost on the hot path,

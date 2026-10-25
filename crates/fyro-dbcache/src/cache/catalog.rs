@@ -101,6 +101,10 @@ impl CatalogSnapshot {
             .contains(name.rsplit('.').next().unwrap_or(name))
    }
 
+   pub fn has_volatile_views(&self) -> bool {
+      !self.volatile_views.is_empty()
+   }
+
    pub fn references_volatile_view(&self, tables: &[String]) -> bool {
       tables.iter().any(|table| {
          let bare = table.rsplit('.').next().unwrap_or(table);
@@ -139,7 +143,6 @@ impl CatalogSnapshot {
    }
 }
 
-#[derive(Default)]
 pub(super) struct CatalogState {
    pub(super) snapshot: RwLock<Option<Arc<CatalogSnapshot>>>,
    pub(super) generation: AtomicU64,
@@ -147,6 +150,23 @@ pub(super) struct CatalogState {
    pub(super) refreshing: AtomicBool,
    pub(super) last_attempt_ms: AtomicU64,
    pub(super) last_refresh_ms: AtomicU64,
+   // Set to true once any snapshot contains volatile views.  Used by
+   // is_cacheable() to skip the RwLock entirely for function-free queries.
+   pub(super) has_volatile_views: AtomicBool,
+}
+
+impl Default for CatalogState {
+   fn default() -> Self {
+      Self {
+         snapshot: RwLock::new(None),
+         generation: AtomicU64::new(0),
+         stale: AtomicBool::new(false),
+         refreshing: AtomicBool::new(false),
+         last_attempt_ms: AtomicU64::new(0),
+         last_refresh_ms: AtomicU64::new(0),
+         has_volatile_views: AtomicBool::new(false),
+      }
+   }
 }
 
 impl CatalogState {

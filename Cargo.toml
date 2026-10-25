@@ -66,6 +66,11 @@ required-features = ["bench-tools"]
 name = "pg_cache_bench"
 path = "src/bin/pg_cache_bench.rs"
 
+[[bin]]
+name = "bench_all_v"
+path = "src/bin/bench_all_v.rs"
+required-features = ["bench-tools"]
+
 [features]
 io-uring = ["dep:io-uring"]
 profiling = ["dep:pprof"]

@@ -16,6 +16,7 @@ pub use util::{mix64, now_ms};
 
 use crate::query::{
    ParsedQuery, ParsedQueryCache, compute_fingerprint_with_params_base, make_cache_key,
+   make_cache_key_inline,
 };
 use catalog::CatalogState;
 use foldhash::fast::FixedState;
@@ -158,6 +159,11 @@ impl DbCacheManager {
    }
 
    pub fn install_catalog(&self, snapshot: CatalogSnapshot) {
+      // Update the cheap atomic flag before installing the snapshot so any
+      // concurrent is_cacheable() fast-path sees the correct value.
+      if snapshot.has_volatile_views() {
+         self.catalog.has_volatile_views.store(true, Ordering::Release);
+      }
       *self.catalog.snapshot.write() = Some(Arc::new(snapshot));
       self.catalog.generation.fetch_add(1, Ordering::AcqRel);
       self.catalog.stale.store(false, Ordering::Release);
@@ -179,6 +185,13 @@ impl DbCacheManager {
    pub fn is_cacheable(&self, parsed: &ParsedQuery) -> bool {
       if !parsed.is_cacheable {
          return false;
+      }
+      // Fast path: no user-defined functions AND catalog has no volatile views.
+      // Replaces a parking_lot RwLock acquisition with a single atomic load.
+      if parsed.catalog_independent
+         && !self.catalog.has_volatile_views.load(Ordering::Relaxed)
+      {
+         return true;
       }
       let snapshot = self.catalog.snapshot.read();
       match snapshot.as_ref() {
@@ -221,14 +234,24 @@ impl DbCacheManager {
       table: &str,
       fingerprint: u64,
    ) -> Option<Arc<EncodedResult>> {
-      let key = make_cache_key(prefix, table, fingerprint);
-      let shard = self.encoded_shard(&key);
+      // Stack-build the key — no heap allocation on the hot hit path.
+      let mut buf = [0u8; 512];
+      let inline_key = make_cache_key_inline(prefix, table, fingerprint, &mut buf);
+      // Fall back to heap for unusually long prefix+table names (rare).
+      let heap_key;
+      let key: &str = if inline_key.is_empty() {
+         heap_key = make_cache_key(prefix, table, fingerprint);
+         &heap_key
+      } else {
+         inline_key
+      };
 
-      let entry = { shard.read().get(&key).cloned() }?;
+      let shard = self.encoded_shard(key);
+      let entry = { shard.read().get(key).cloned() }?;
       let now = now_ms();
       let expired = entry.expires_at_ms != 0 && entry.expires_at_ms < now;
-      if expired || (!self.storage.is_local() && !self.storage.exists(&key)) {
-         shard.write().remove(&key);
+      if expired || (!self.storage.is_local() && !self.storage.exists(key)) {
+         shard.write().remove(key);
          return None;
       }
       self.metrics.hits.fetch_add(1, Ordering::Relaxed);
