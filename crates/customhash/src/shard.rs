@@ -26,8 +26,8 @@ pub(crate) fn stored_hash(state: u64) -> u64 {
    state >> STATE_HASH_SHIFT
 }
 
-pub(crate) const LOAD_NUM: usize = 3;
-pub(crate) const LOAD_DEN: usize = 4;
+pub(crate) const LOAD_NUM: usize = 2;
+pub(crate) const LOAD_DEN: usize = 3;
 // Keep idle shards tiny; tables grow lock-free as keys arrive.
 pub(crate) const INITIAL_SHARD_CAPACITY: usize = 65_536;
 pub(crate) const GROWING: usize = 1usize << (usize::BITS - 1);
@@ -509,6 +509,13 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
       unsafe { &*self.table.load(Ordering::Acquire) }
    }
 
+   /// Like `table()` but Relaxed — safe only when the caller holds an EBR
+   /// Guard whose Acquire fence already synchronized the table pointer.
+   #[inline(always)]
+   pub(crate) fn table_relaxed(&self) -> &SlotTable<V> {
+      unsafe { &*self.table.load(Ordering::Relaxed) }
+   }
+
    #[inline(always)]
    fn enter_insert(&self) -> InsertGuard<'_> {
       loop {
@@ -581,28 +588,79 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
          probes += 1;
 
          let slot = unsafe { t.slot(i) };
-         let word = slot.0.load(Ordering::Acquire) as usize;
+         let word = slot.0.load(Ordering::Relaxed) as usize;
          if word == 0 {
             return None;
          }
          if (word & RESERVED_MASK) == expected_tag {
             let p = (word & PTR_MASK) as *mut Entry<V>;
             let e = unsafe { &*p };
-            let state = e.state.load(Ordering::Acquire);
+            let state = e.state.load(Ordering::Relaxed);
             if (state & STATE_OCCUPIED) != 0
                && stored_hash(state) == expected_hash
                && e.key.eq_str(key)
             {
+               std::sync::atomic::fence(Ordering::Acquire);
                return Some(unsafe { (*e.value.get()).assume_init_ref().clone() });
             }
          } else if word & TAG_FLAG == 0 {
             let p = word as *mut Entry<V>;
             let e = unsafe { &*p };
-            let state = e.state.load(Ordering::Acquire);
+            let state = e.state.load(Ordering::Relaxed);
             if (state & STATE_OCCUPIED) != 0
                && stored_hash(state) == expected_hash
                && e.key.eq_str(key)
             {
+               std::sync::atomic::fence(Ordering::Acquire);
+               return Some(unsafe { (*e.value.get()).assume_init_ref().clone() });
+            }
+         }
+         i = (i + 1) & t.mask;
+      }
+   }
+
+   /// Like `get` but uses a Relaxed table load — caller must hold an EBR Guard
+   /// so the pin's Acquire fence already synchronizes the table pointer and all
+   /// entry writes. Eliminates 1 Acquire barrier on every call.
+   #[inline(always)]
+   pub(crate) fn get_pinned(&self, key: &str, hash: u64) -> Option<V> {
+      let t = self.table_relaxed();
+      let expected_tag = TAG_FLAG | (hash_tag(hash) << TAG_SHIFT);
+      let expected_hash = hash as u32 as u64;
+      let mut i = (hash as usize) & t.mask;
+      let mut probes = 0usize;
+
+      loop {
+         if probes >= t.capacity {
+            return None;
+         }
+         probes += 1;
+
+         let slot = unsafe { t.slot(i) };
+         let word = slot.0.load(Ordering::Relaxed) as usize;
+         if word == 0 {
+            return None;
+         }
+         if (word & RESERVED_MASK) == expected_tag {
+            let p = (word & PTR_MASK) as *mut Entry<V>;
+            let e = unsafe { &*p };
+            let state = e.state.load(Ordering::Relaxed);
+            if (state & STATE_OCCUPIED) != 0
+               && stored_hash(state) == expected_hash
+               && e.key.eq_str(key)
+            {
+               std::sync::atomic::fence(Ordering::Acquire);
+               return Some(unsafe { (*e.value.get()).assume_init_ref().clone() });
+            }
+         } else if word & TAG_FLAG == 0 {
+            let p = word as *mut Entry<V>;
+            let e = unsafe { &*p };
+            let state = e.state.load(Ordering::Relaxed);
+            if (state & STATE_OCCUPIED) != 0
+               && stored_hash(state) == expected_hash
+               && e.key.eq_str(key)
+            {
+               std::sync::atomic::fence(Ordering::Acquire);
                return Some(unsafe { (*e.value.get()).assume_init_ref().clone() });
             }
          }

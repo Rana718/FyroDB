@@ -17,8 +17,9 @@ fn make_key(i: usize) -> String {
 fn bench<F: Fn() -> u64>(label: &str, f: F) {
    // warm up
    let _ = f();
+   let _ = f();
    let t = Instant::now();
-   let iters = 5;
+   let iters = 10;
    let mut total = 0u64;
    for _ in 0..iters {
       total += f();
@@ -108,27 +109,53 @@ fn main() {
       sum
    });
 
-   // ── 3. CustomMap (lock-free sharded, foldhash internally) ─────────────────
-   let custom: CustomMap<u64> = CustomMap::with_capacity(128, N);
-   for (i, k) in keys.iter().enumerate() {
-      custom.insert_str(k, i as u64);
+   // Build helper so each variant gets its own independent map + warmup.
+   let make_custom = || {
+      let c: CustomMap<u64> = CustomMap::with_capacity(128, N);
+      for (i, k) in keys.iter().enumerate() { c.insert_str(k, i as u64); }
+      c
+   };
+
+   // ── 3. CustomMap pinned — server reality ──────────────────────────────────
+   // sock.rs holds one pin() per command-dispatch loop; all lookups pay zero
+   // EBR atomic ops. Uses table_relaxed() + Relaxed probe loads.
+   {
+      let custom_p = make_custom();
+      let guard = customhash::pin();
+      bench("CustomMap (pinned)     — hit", || {
+         let mut sum = 0u64;
+         for k in keys.iter().take(LOOKUPS % N + 1).cycle().take(LOOKUPS) {
+            sum = sum.wrapping_add(custom_p.get_pinned(k, &guard).unwrap_or(0));
+         }
+         sum
+      });
+      bench("CustomMap (pinned)     — miss", || {
+         let mut sum = 0u64;
+         for k in miss_keys.iter().cycle().take(LOOKUPS) {
+            sum = sum.wrapping_add(custom_p.get_pinned(k, &guard).unwrap_or(1));
+         }
+         sum
+      });
    }
 
-   bench("CustomMap (lock-free)  — hit", || {
-      let mut sum = 0u64;
-      for k in keys.iter().take(LOOKUPS % N + 1).cycle().take(LOOKUPS) {
-         sum = sum.wrapping_add(custom.get(k).unwrap_or(0));
-      }
-      sum
-   });
-   bench("CustomMap (lock-free)  — miss", || {
-      let mut sum = 0u64;
-      let miss = &miss_keys;
-      for k in miss.iter().cycle().take(LOOKUPS) {
-         sum = sum.wrapping_add(custom.get(k).unwrap_or(1));
-      }
-      sum
-   });
+   // ── 4. CustomMap unpinned — worst case (background/one-shot threads) ──────
+   {
+      let custom_u = make_custom();
+      bench("CustomMap (unpinned)   — hit", || {
+         let mut sum = 0u64;
+         for k in keys.iter().take(LOOKUPS % N + 1).cycle().take(LOOKUPS) {
+            sum = sum.wrapping_add(custom_u.get(k).unwrap_or(0));
+         }
+         sum
+      });
+      bench("CustomMap (unpinned)   — miss", || {
+         let mut sum = 0u64;
+         for k in miss_keys.iter().cycle().take(LOOKUPS) {
+            sum = sum.wrapping_add(custom_u.get(k).unwrap_or(1));
+         }
+         sum
+      });
+   }
 
    // ── Memory comparison ─────────────────────────────────────────────────────
    println!("\nMemory footprint ({N} String keys, u64 values):");

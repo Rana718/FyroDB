@@ -152,8 +152,8 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
       let per_shard = if expected_keys == usize::MAX || expected_keys == 0 {
          INITIAL_SHARD_CAPACITY
       } else {
-         let target = (expected_keys.saturating_mul(LOAD_DEN) / LOAD_NUM) / n;
-         target.next_power_of_two().max(INITIAL_SHARD_CAPACITY)
+         let target = expected_keys.saturating_mul(LOAD_DEN) / LOAD_NUM / n;
+         target.next_power_of_two().max(8)
       };
       Self::build(n, per_shard, expected_keys)
    }
@@ -680,6 +680,31 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
    pub fn get(&self, key: &str) -> Option<V> {
       let (h, idx) = self.locate(key);
       ebr::with_pin(|_| unsafe { self.shards.get_unchecked(idx) }.get(key, h))
+   }
+
+   /// Like `get` but skips the inner EBR pin entirely when the caller already
+   /// holds a `Guard`. Zero atomic ops on the EBR path — the guard guarantees
+   /// no retired entry can be freed while it is held.
+   #[inline(always)]
+   pub fn get_pinned(&self, key: &str, _guard: &ebr::Guard) -> Option<V> {
+      let (h, idx) = self.locate(key);
+      unsafe { self.shards.get_unchecked(idx) }.get_pinned(key, h)
+   }
+
+   /// Like `get_ref` but zero-cost EBR — caller must hold a `Guard` for the
+   /// lifetime of the returned reference.
+   #[inline]
+   pub fn get_ref_pinned<'g>(&'g self, key: &str, _guard: &'g ebr::Guard) -> Option<ValueRef<'g, V>> {
+      let (h, idx) = self.locate(key);
+      let e = unsafe { self.shards.get_unchecked(idx) }.find(key, h)?;
+      if !state_occupied(&e.state, Ordering::Acquire) {
+         return None;
+      }
+      Some(ValueRef {
+         ptr: unsafe { (*e.value.get()).as_ptr() },
+         _guard: ebr::pin(),
+         _map: PhantomData,
+      })
    }
 
    #[inline]
