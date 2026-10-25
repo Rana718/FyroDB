@@ -9,22 +9,107 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
+#[derive(Clone, Copy)]
+struct Scale {
+   threads: usize,
+   direct_ops: usize,
+   encoded_ops: usize,
+   joins: usize,
+   tcp_clients: usize,
+   tcp_queries: usize,
+}
+
+const FULL: Scale = Scale {
+   threads: 4,
+   direct_ops: 500_000,
+   encoded_ops: 2_000_000,
+   joins: 200_000,
+   tcp_clients: 4,
+   tcp_queries: 25_000,
+};
+
+// Small enough to run inside the regular benchmark tasks as a sanity check.
+const SMOKE: Scale = Scale {
+   threads: 2,
+   direct_ops: 10_000,
+   encoded_ops: 20_000,
+   joins: 2_000,
+   tcp_clients: 2,
+   tcp_queries: 500,
+};
+
+struct BenchResult {
+   label: &'static str,
+   ops: i64,
+   elapsed: Duration,
+}
+
+impl BenchResult {
+   fn ops_per_sec(&self) -> f64 {
+      self.ops as f64 / self.elapsed.as_secs_f64()
+   }
+}
+
+fn fmt_rate(rate: f64) -> String {
+   if rate >= 1e9 {
+      format!("{:.2}B ops/sec", rate / 1e9)
+   } else if rate >= 1e6 {
+      format!("{:.2}M ops/sec", rate / 1e6)
+   } else if rate >= 1e3 {
+      format!("{:.1}k ops/sec", rate / 1e3)
+   } else {
+      format!("{:.0} ops/sec", rate)
+   }
+}
+
+fn print_summary_table(results: &[BenchResult]) {
+   println!();
+   println!("── Summary ─────────────────────────────────────────────────────");
+   println!(
+      "  {:<36} {:>10} {:>16}",
+      "Benchmark", "Elapsed", "Throughput"
+   );
+   println!(
+      "  {:<36} {:>10} {:>16}",
+      "────────────────────────────────────", "──────────", "────────────────"
+   );
+   for r in results {
+      let elapsed_ms = format!("{:.0}ms", r.elapsed.as_secs_f64() * 1000.0);
+      println!(
+         "  {:<36} {:>10} {:>16}",
+         r.label,
+         elapsed_ms,
+         fmt_rate(r.ops_per_sec())
+      );
+   }
+   println!();
+}
+
 fn main() {
+   let smoke = std::env::args()
+      .skip(1)
+      .any(|arg| arg == "--smoke" || arg == "-s");
+   let scale = if smoke { SMOKE } else { FULL };
+
    println!("============================================================");
    println!("           FyroDB PostgreSQL Path Benchmark                 ");
+   if smoke {
+      println!("           (smoke mode: reduced iterations)                 ");
+   }
    println!("============================================================");
 
-   bench_in_memory_direct();
-   bench_encoded_multithread();
-   bench_in_memory_complex_joins();
-   bench_extended_protocol_tcp();
-   bench_tcp_wire_proxy();
+   let mut results = Vec::with_capacity(5);
+   bench_in_memory_direct(scale, &mut results);
+   bench_encoded_multithread(scale, &mut results);
+   bench_in_memory_complex_joins(scale, &mut results);
+   bench_extended_protocol_tcp(scale, &mut results);
+   bench_tcp_wire_proxy(scale, &mut results);
+
+   print_summary_table(&results);
 }
 
 // Microbenchmarks direct in-memory CustomMap lookup and JSON serialization.
-fn bench_in_memory_direct() {
-   println!("\n[1] In-Memory Cache Lookup (Single-Table Query)");
-
+fn bench_in_memory_direct(scale: Scale, results: &mut Vec<BenchResult>) {
    let store = Arc::new(Store::new());
    let manager = Arc::new(DbCacheManager::new(store.clone()));
 
@@ -34,8 +119,8 @@ fn bench_in_memory_direct() {
 
    manager.store_cached_query("db:", &parsed.tables, parsed.fingerprint, &rs, 60_000);
 
-   let threads = 4;
-   let ops_per_thread = 500_000;
+   let threads = scale.threads;
+   let ops_per_thread = scale.direct_ops;
    let total_ops = threads * ops_per_thread;
 
    let start = Instant::now();
@@ -56,25 +141,16 @@ fn bench_in_memory_direct() {
       h.join().unwrap();
    }
 
-   let elapsed = start.elapsed();
-   let qps = (total_ops as f64) / elapsed.as_secs_f64();
-   let avg_ns = elapsed.as_nanos() as f64 / (total_ops as f64);
-
-   println!("  Total Queries: {total_ops}");
-   println!("  Threads:       {threads}");
-   println!("  Duration:      {elapsed:.2?}");
-   println!(
-      "  Throughput:    {qps:.2} QPS ({:.2}M ops/sec)",
-      qps / 1_000_000.0
-   );
-   println!("  Avg Latency:   {avg_ns:.1} ns / op");
+   results.push(BenchResult {
+      label: "In-memory cache lookup",
+      ops: total_ops as i64,
+      elapsed: start.elapsed(),
+   });
 }
 
 // Microbenchmarks the proxy hot path: parse-once analysis plus a pre-encoded
 // wire response fetched from the sharded cache, on every core.
-fn bench_encoded_multithread() {
-   println!("\n[2] Parse-Once + Wire-Encoded Lookup (Multithreaded)");
-
+fn bench_encoded_multithread(scale: Scale, results: &mut Vec<BenchResult>) {
    let store = Arc::new(Store::new());
    let manager = Arc::new(DbCacheManager::new(store.clone()));
 
@@ -83,8 +159,8 @@ fn bench_encoded_multithread() {
    let rs = sample_result_set();
    manager.store_cached_query("db:", &parsed.tables, parsed.fingerprint, &rs, 60_000);
 
-   let threads = 4;
-   let ops_per_thread = 2_000_000;
+   let threads = scale.threads;
+   let ops_per_thread = scale.encoded_ops;
    let total_ops = threads * ops_per_thread;
 
    let start = Instant::now();
@@ -106,25 +182,15 @@ fn bench_encoded_multithread() {
       h.join().unwrap();
    }
 
-   let elapsed = start.elapsed();
-   let qps = (total_ops as f64) / elapsed.as_secs_f64();
-   let avg_ns = elapsed.as_nanos() as f64 / (total_ops as f64);
-
-   println!("  Total Queries: {total_ops}");
-   println!("  Threads:       {threads}");
-   println!("  Duration:      {elapsed:.2?}");
-   println!(
-      "  Throughput:    {qps:.2} QPS ({:.2}M ops/sec)",
-      qps / 1_000_000.0
-   );
-   println!("  Avg Latency:   {avg_ns:.1} ns / op");
-   println!("  Parsed SQL cache entries: {}", manager.parsed_cache_len());
+   results.push(BenchResult {
+      label: "Encoded cache lookup",
+      ops: total_ops as i64,
+      elapsed: start.elapsed(),
+   });
 }
 
 // Microbenchmarks complex 3-table JOIN queries and AST parsing.
-fn bench_in_memory_complex_joins() {
-   println!("\n[3] Complex 3-Table JOIN AST Parse + Cache Lookup");
-
+fn bench_in_memory_complex_joins(scale: Scale, results: &mut Vec<BenchResult>) {
    let store = Arc::new(Store::new());
    let manager = Arc::new(DbCacheManager::new(store.clone()));
 
@@ -138,7 +204,7 @@ fn bench_in_memory_complex_joins() {
 
    manager.store_cached_query("db:", &parsed.tables, parsed.fingerprint, &rs, 60_000);
 
-   let count = 200_000;
+   let count = scale.joins;
    let start = Instant::now();
 
    for _ in 0..count {
@@ -147,21 +213,16 @@ fn bench_in_memory_complex_joins() {
       std::hint::black_box(res);
    }
 
-   let elapsed = start.elapsed();
-   let qps = (count as f64) / elapsed.as_secs_f64();
-   let avg_us = elapsed.as_micros() as f64 / (count as f64);
-
-   println!("  Total Queries: {count}");
-   println!("  Duration:      {elapsed:.2?}");
-   println!("  Throughput:    {qps:.2} QPS (AST parse + memory lookup)");
-   println!("  Avg Latency:   {avg_us:.2} µs / op");
+   results.push(BenchResult {
+      label: "JOIN parse + cache lookup",
+      ops: count as i64,
+      elapsed: start.elapsed(),
+   });
 }
 
 // Benchmarks the extended query protocol (Parse once, then Bind/Execute/Sync)
 // served entirely from the wire cache, with four concurrent clients.
-fn bench_extended_protocol_tcp() {
-   println!("\n[4] Extended Protocol Cached Round-Trip (Port 15434)");
-
+fn bench_extended_protocol_tcp(scale: Scale, results: &mut Vec<BenchResult>) {
    let store = Arc::new(Store::new());
    let manager = Arc::new(DbCacheManager::new(store.clone()));
 
@@ -177,20 +238,22 @@ fn bench_extended_protocol_tcp() {
       sync_interval_ms: 0,
       cache_max_keys: 100_000,
       ttl_jitter_pct: 0,
+      ..DbCacheConfig::default()
    };
 
    let sql = "SELECT id, username, email FROM users WHERE id = $1;";
    let parsed = parse_sql(sql);
    let param = Some(b"42".to_vec());
-   let fingerprint = compute_fingerprint_with_params(&parsed.normalized, &[param.clone()], &[]);
+   let fingerprint =
+      compute_fingerprint_with_params(&parsed.normalized, std::slice::from_ref(&param), &[]);
    let rs = sample_result_set();
    manager.store_cached_query("db:", &parsed.tables, fingerprint, &rs, 60_000);
 
    let _handle = fyro_dbcache::start_proxy_listener(config, manager.clone()).expect("start proxy");
    std::thread::sleep(Duration::from_millis(50));
 
-   let num_clients = 4;
-   let queries_per_client = 25_000;
+   let num_clients = scale.tcp_clients;
+   let queries_per_client = scale.tcp_queries;
 
    let start = Instant::now();
    let completed = Arc::new(AtomicU64::new(0));
@@ -235,21 +298,15 @@ fn bench_extended_protocol_tcp() {
 
    let elapsed = start.elapsed();
    let total = completed.load(Ordering::Relaxed);
-   let qps = (total as f64) / elapsed.as_secs_f64();
-   let avg_us = elapsed.as_micros() as f64 / (total as f64);
-
-   println!("  Total Extended Queries: {total}");
-   println!("  Concurrent Clients:     {num_clients}");
-   println!("  Duration:               {elapsed:.2?}");
-   println!("  Network Throughput:     {qps:.2} QPS");
-   println!("  Avg TCP Latency:        {avg_us:.2} µs / query");
-   println!("  Upstream connections:   0 (cache-only mode)");
+   results.push(BenchResult {
+      label: "Extended protocol TCP",
+      ops: total as i64,
+      elapsed,
+   });
 }
 
 // Benchmarks real PostgreSQL TCP wire protocol round-trip through proxy port.
-fn bench_tcp_wire_proxy() {
-   println!("\n[5] Simple Query TCP Wire Round-Trip (Port 15433)");
-
+fn bench_tcp_wire_proxy(scale: Scale, results: &mut Vec<BenchResult>) {
    let store = Arc::new(Store::new());
    let manager = Arc::new(DbCacheManager::new(store.clone()));
 
@@ -265,6 +322,7 @@ fn bench_tcp_wire_proxy() {
       sync_interval_ms: 0,
       cache_max_keys: 100_000,
       ttl_jitter_pct: 0,
+      ..DbCacheConfig::default()
    };
 
    let sql = "SELECT id, username, email FROM users WHERE id = 42;";
@@ -275,9 +333,8 @@ fn bench_tcp_wire_proxy() {
    let _handle = fyro_dbcache::start_proxy_listener(config, manager.clone()).expect("start proxy");
    std::thread::sleep(Duration::from_millis(50));
 
-   let num_clients = 4;
-   let queries_per_client = 25_000;
-   let _total_queries = num_clients * queries_per_client;
+   let num_clients = scale.tcp_clients;
+   let queries_per_client = scale.tcp_queries;
 
    let start = Instant::now();
    let completed = Arc::new(AtomicU64::new(0));
@@ -313,15 +370,11 @@ fn bench_tcp_wire_proxy() {
 
    let elapsed = start.elapsed();
    let total = completed.load(Ordering::Relaxed);
-   let qps = (total as f64) / elapsed.as_secs_f64();
-   let avg_us = elapsed.as_micros() as f64 / (total as f64);
-
-   println!("  Total TCP Queries: {total}");
-   println!("  Concurrent Clients: {num_clients}");
-   println!("  Duration:           {elapsed:.2?}");
-   println!("  Network Throughput: {qps:.2} QPS");
-   println!("  Avg TCP Latency:    {avg_us:.2} µs / query");
-   println!("============================================================");
+   results.push(BenchResult {
+      label: "Simple query TCP",
+      ops: total as i64,
+      elapsed,
+   });
 }
 
 fn connect_startup(port: u16) -> TcpStream {

@@ -54,11 +54,23 @@ pub struct UpstreamConnection {
    writer: TcpStream,
    reader: FrameReader<BufReader<TcpStream>>,
    relay_buf: Vec<u8>,
+   // Startup frames a pooled connection must replay to a new client:
+   // AuthenticationOk and the ParameterStatus/BackendKeyData/ReadyForQuery
+   // tail. Cancellation keeps working because BackendKeyData is the origin's.
+   auth_ok: Vec<u8>,
+   post_auth: Vec<u8>,
+   required_password: bool,
 }
 
 impl UpstreamConnection {
    // Direct TCP connect without frontend auth relaying.
    pub fn connect(target: &str) -> io::Result<Self> {
+      let connection = Self::open(target)?;
+      connection.writer.set_read_timeout(Some(QUERY_TIMEOUT))?;
+      Ok(connection)
+   }
+
+   fn open(target: &str) -> io::Result<Self> {
       let addr = normalize_target(target);
       let socket_addr = addr
          .to_socket_addrs()?
@@ -72,7 +84,181 @@ impl UpstreamConnection {
          writer,
          reader,
          relay_buf: Vec::with_capacity(16 * 1024),
+         auth_ok: Vec::new(),
+         post_auth: Vec::new(),
+         required_password: false,
       })
+   }
+
+   // Opens a session with the proxy's own credentials instead of relaying a
+   // client exchange. This is what makes cross-session pooling possible.
+   pub fn connect_authenticated(
+      target: &str,
+      startup_frame: &[u8],
+      user: &str,
+      password: &str,
+   ) -> io::Result<Self> {
+      let mut connection = Self::open(target)?;
+      connection
+         .writer
+         .set_read_timeout(Some(HANDSHAKE_TIMEOUT))?;
+      connection.writer.write_all(startup_frame)?;
+      connection.writer.flush()?;
+      connection.authenticate(user, password)?;
+      connection.writer.set_read_timeout(Some(QUERY_TIMEOUT))?;
+      Ok(connection)
+   }
+
+   fn authenticate(&mut self, user: &str, password: &str) -> io::Result<()> {
+      let mut scram: Option<crate::auth::ScramClient> = None;
+      loop {
+         let tag = self.reader.read_raw()?;
+         match tag {
+            b'R' => {
+               let body = self.reader.last_body().to_vec();
+               let code = if body.len() >= 4 {
+                  i32::from_be_bytes([body[0], body[1], body[2], body[3]])
+               } else {
+                  -1
+               };
+               match code {
+                  0 => {
+                     self.auth_ok.extend_from_slice(self.reader.last_frame());
+                  }
+                  3 => {
+                     let mut message = password.as_bytes().to_vec();
+                     message.push(0);
+                     put_frontend(&mut self.writer, b'p', &message)?;
+                  }
+                  5 => {
+                     let salt = body.get(4..8).ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidData, "invalid MD5 salt")
+                     })?;
+                     let mut message = crate::auth::md5_response(password, user, salt).into_bytes();
+                     message.push(0);
+                     put_frontend(&mut self.writer, b'p', &message)?;
+                  }
+                  10 => {
+                     if !crate::auth::ScramClient::mechanism_supported(&body[4..]) {
+                        return Err(io::Error::new(
+                           io::ErrorKind::NotFound,
+                           "upstream offered no supported SASL mechanism",
+                        ));
+                     }
+                     let client = crate::auth::ScramClient::new()?;
+                     let initial = client.initial_response();
+                     let mut message = Vec::new();
+                     message.extend_from_slice(crate::auth::SCRAM_MECHANISM.as_bytes());
+                     message.push(0);
+                     message.extend_from_slice(&(initial.len() as i32).to_be_bytes());
+                     message.extend_from_slice(initial.as_bytes());
+                     put_frontend(&mut self.writer, b'p', &message)?;
+                     scram = Some(client);
+                  }
+                  11 => {
+                     let client = scram
+                        .as_mut()
+                        .ok_or_else(|| io::Error::other("unexpected SASL continue"))?;
+                     let server_first = std::str::from_utf8(&body[4..]).map_err(|_| {
+                        io::Error::new(io::ErrorKind::InvalidData, "invalid SASL message")
+                     })?;
+                     let final_message = client.finish(server_first, password)?;
+                     put_frontend(&mut self.writer, b'p', final_message.as_bytes())?;
+                  }
+                  12 => {
+                     let server_final = std::str::from_utf8(&body[4..]).map_err(|_| {
+                        io::Error::new(io::ErrorKind::InvalidData, "invalid SASL final")
+                     })?;
+                     if !scram
+                        .as_ref()
+                        .is_some_and(|client| client.verify_server_final(server_final))
+                     {
+                        return Err(io::Error::new(
+                           io::ErrorKind::InvalidData,
+                           "upstream SCRAM server signature mismatch",
+                        ));
+                     }
+                  }
+                  other => {
+                     return Err(io::Error::other(format!(
+                        "unsupported upstream authentication method {other}"
+                     )));
+                  }
+               }
+            }
+            b'E' => {
+               let message = error_message(self.reader.last_body());
+               return Err(io::Error::new(
+                  io::ErrorKind::PermissionDenied,
+                  format!("upstream rejected the proxy credentials: {message}"),
+               ));
+            }
+            b'S' | b'K' => self.post_auth.extend_from_slice(self.reader.last_frame()),
+            b'Z' => {
+               self.post_auth.extend_from_slice(self.reader.last_frame());
+               return Ok(());
+            }
+            _ => {}
+         }
+      }
+   }
+
+   // True when the upstream demanded a password during the relayed handshake,
+   // which means the connection can only be reused after re-authenticating.
+   pub fn required_password(&self) -> bool {
+      self.required_password
+   }
+
+   // Replays the origin's startup metadata to a new client. `include_auth_ok`
+   // is false when the proxy already authenticated the client itself.
+   pub fn write_replay<W: Write>(&self, writer: &mut W, include_auth_ok: bool) -> io::Result<()> {
+      if include_auth_ok {
+         writer.write_all(&self.auth_ok)?;
+      }
+      writer.write_all(&self.post_auth)?;
+      writer.flush()
+   }
+
+   // Resets session state before returning a connection to the pool.
+   pub fn reset_session(&mut self) -> io::Result<()> {
+      let outcome = self.forward_query("DISCARD ALL", &mut Vec::new(), false)?;
+      if outcome.error || outcome.status != b'I' {
+         return Err(io::Error::other("upstream session reset failed"));
+      }
+      Ok(())
+   }
+
+   // Restores session settings that `DISCARD ALL` clears. Only settings the
+   // pool key guarantees are re-appliable are permitted to reach this path.
+   pub fn apply_session_params(&mut self, application_name: Option<&str>) -> io::Result<()> {
+      let Some(name) = application_name else {
+         return Ok(());
+      };
+      let mut escaped = String::with_capacity(name.len());
+      for ch in name.chars() {
+         if ch == '\\' || ch == '\'' {
+            escaped.push('\\');
+         }
+         escaped.push(ch);
+      }
+      let outcome = self.forward_query(
+         &format!("SET application_name = E'{escaped}'"),
+         &mut Vec::new(),
+         false,
+      )?;
+      if outcome.error || outcome.status != b'I' {
+         return Err(io::Error::other("failed to restore session settings"));
+      }
+      Ok(())
+   }
+
+   // Cheap liveness probe for a pooled connection.
+   pub fn ping(&mut self) -> io::Result<()> {
+      let outcome = self.forward_query("", &mut Vec::new(), false)?;
+      if outcome.error || outcome.status != b'I' {
+         return Err(io::Error::other("pooled upstream connection is not idle"));
+      }
+      Ok(())
    }
 
    // Opens the upstream connection and relays startup/authentication traffic
@@ -96,6 +282,9 @@ impl UpstreamConnection {
       writer.flush()?;
 
       let mut reader = FrameReader::new(BufReader::with_capacity(32 * 1024, writer.try_clone()?));
+      let mut auth_ok = Vec::new();
+      let mut post_auth = Vec::new();
+      let mut required_password = false;
       loop {
          let tag = reader.read_raw()?;
          match tag {
@@ -106,12 +295,17 @@ impl UpstreamConnection {
                } else {
                   -1
                };
+               if code == 0 {
+                  auth_ok.extend_from_slice(reader.last_frame());
+               }
                client.write_all(reader.last_frame())?;
                client.flush()?;
-               // Codes 3 (cleartext), 5 (MD5), 10 (SASL initial) and 11
-               // (SASL continue) expect a frontend reply. SASLFinal (12) and
-               // the other mechanisms are server-to-client only.
-               if matches!(code, 3 | 5 | 10 | 11) {
+               // Only AuthenticationOk (0) and SASLFinal (12) are terminal for
+               // the client; every other AuthenticationRequest (cleartext,
+               // MD5, Kerberos, SCM, GSS/SSPI, SASL) expects a frontend
+               // PasswordMessage that the proxy relays untouched.
+               if !matches!(code, 0 | 12) {
+                  required_password = true;
                   // Relay the client's password/SASL response untouched.
                   let client_tag = client_reader.read_raw()?;
                   if client_tag == b'X' {
@@ -127,6 +321,7 @@ impl UpstreamConnection {
                return Err(HandshakeError::Rejected);
             }
             b'Z' => {
+               post_auth.extend_from_slice(reader.last_frame());
                client.write_all(reader.last_frame())?;
                client.flush()?;
                writer.set_read_timeout(Some(QUERY_TIMEOUT))?;
@@ -134,7 +329,14 @@ impl UpstreamConnection {
                   writer,
                   reader,
                   relay_buf: Vec::with_capacity(16 * 1024),
+                  auth_ok,
+                  post_auth,
+                  required_password,
                });
+            }
+            b'S' | b'K' => {
+               post_auth.extend_from_slice(reader.last_frame());
+               client.write_all(reader.last_frame())?;
             }
             _ => {
                client.write_all(reader.last_frame())?;
@@ -360,6 +562,32 @@ fn normalize_target(target: &str) -> String {
 fn command_tag(body: &[u8]) -> String {
    let tag = body.strip_suffix(&[0]).unwrap_or(body);
    String::from_utf8_lossy(tag).to_string()
+}
+
+fn put_frontend(writer: &mut TcpStream, tag: u8, body: &[u8]) -> io::Result<()> {
+   writer.write_all(&[tag])?;
+   writer.write_all(&((body.len() + 4) as i32).to_be_bytes())?;
+   writer.write_all(body)?;
+   writer.flush()
+}
+
+fn error_message(body: &[u8]) -> String {
+   let mut pos = 0;
+   while pos < body.len() {
+      let field = body[pos];
+      pos += 1;
+      if field == 0 {
+         break;
+      }
+      let Some(end) = body[pos..].iter().position(|byte| *byte == 0) else {
+         break;
+      };
+      if field == b'M' {
+         return String::from_utf8_lossy(&body[pos..pos + end]).to_string();
+      }
+      pos += end + 1;
+   }
+   String::new()
 }
 
 pub fn parse_row_description(data: &[u8]) -> io::Result<Vec<ColumnInfo>> {

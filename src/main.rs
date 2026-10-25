@@ -202,6 +202,13 @@ fn main() {
             "  dbcache=enabled listen={} upstream={:?} mode={:?}",
             config.dbcache.listen_addr, config.dbcache.upstream_addr, config.dbcache.mode
          );
+         println!(
+            "  dbcache pool_idle_max={} pool_idle={}ms auth_users={} bus={}",
+            config.dbcache.pool_max_idle,
+            config.dbcache.pool_idle_timeout_ms,
+            config.dbcache.auth_users.len(),
+            config.dbcache.bus_path.as_deref().unwrap_or("off"),
+         );
       }
    }
 
@@ -246,9 +253,20 @@ fn main() {
       }
       for worker_index in 0..workers {
          let core = worker_cores.as_ref().map(|c| c[worker_index % c.len()]);
+         // Debug builds use much larger frames than release, so keep a safety
+         // margin unless the operator sizes the stack explicitly.
+         let stack_size = env::var("FYRODB_WORKER_STACK_KB")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .map(|kb| kb.saturating_mul(1024))
+            .unwrap_or(if cfg!(debug_assertions) {
+               1024 * 1024
+            } else {
+               128 * 1024
+            });
          std::thread::Builder::new()
             .name("fyrodb-worker".into())
-            .stack_size(128 * 1024)
+            .stack_size(stack_size)
             .spawn_scoped(scope, move || {
                if let Some(core) = core {
                   fyro_db::utils::affinity::pin_current(core);

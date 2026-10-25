@@ -375,6 +375,11 @@ fn main() {
       "pub" => run_pubsub(&pubsub, &mut results),
       "mix" => run_mix(&store, &mut results),
       "vec" => run_vector(&store, workers, &mut results),
+      "bench" => {
+         run_kv(&store, &mut results);
+         run_pubsub(&pubsub, &mut results);
+         run_mix(&store, &mut results);
+      }
       "all" => {
          run_kv(&store, &mut results);
          run_pubsub(&pubsub, &mut results);
@@ -383,7 +388,7 @@ fn main() {
       }
       other => {
          eprintln!(
-            "unknown mode '{}' (want: all | key | pub | mix | vec)",
+            "unknown mode '{}' (want: all | bench | key | pub | mix | vec)",
             other
          );
          std::process::exit(1);

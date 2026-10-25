@@ -5,7 +5,8 @@ use fyro_dbcache::protocol::{
 };
 use fyro_dbcache::query::parse_sql;
 use fyro_dbcache::{
-   ColumnInfo, DbCacheConfig, DbCacheManager, DbCacheStorage, DbProxyMode, start_proxy_listener,
+   AuthUsers, ColumnInfo, DbCacheConfig, DbCacheManager, DbCacheStorage, DbProxyMode, ScramClient,
+   start_proxy_listener,
 };
 use std::collections::HashMap;
 use std::io::{self, BufReader, Read, Write};
@@ -13,6 +14,7 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
+use std::time::{Duration, Instant};
 
 const ROWS: [(&str, &str); 2] = [("1", "alpha"), ("2", "beta")];
 
@@ -24,7 +26,9 @@ struct Stats {
    executes: AtomicUsize,
    describes: AtomicUsize,
    sasl_rounds: AtomicUsize,
+   connections: AtomicUsize,
    password_ok: AtomicBool,
+   last_set: std::sync::Mutex<String>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -58,6 +62,7 @@ impl FakePg {
                let Ok(stream) = stream else {
                   break;
                };
+               shared.connections.fetch_add(1, Ordering::SeqCst);
                let stats = Arc::clone(&shared);
                thread::spawn(move || {
                   let _ = serve_conn(stream, stats, auth);
@@ -95,9 +100,15 @@ fn serve_conn(stream: TcpStream, stats: Arc<Stats>, auth: Auth) -> io::Result<()
          if tag != b'p' {
             return Ok(());
          }
-         if body.strip_suffix(&[0]) == Some(b"secret") {
-            stats.password_ok.store(true, Ordering::SeqCst);
+         if body.strip_suffix(&[0]) != Some(b"secret") {
+            write_msg(
+               &mut out,
+               b'E',
+               b"SERROR\0C28P01\0Mpassword authentication failed\0\0",
+            )?;
+            return Ok(());
          }
+         stats.password_ok.store(true, Ordering::SeqCst);
       }
       // SASL: two client responses, then a server-only SASLFinal round.
       Auth::Scram => {
@@ -150,6 +161,9 @@ fn serve_conn(stream: TcpStream, stats: Arc<Stats>, auth: Auth) -> io::Result<()
          b'Q' => {
             let sql = cstring(&body);
             let lower = sql.trim_start().to_ascii_lowercase();
+            if lower.starts_with("set application_name") {
+               *stats.last_set.lock().unwrap() = sql.clone();
+            }
             if is_internal_query(&lower) {
                respond_internal(&mut out, &lower)?;
             } else {
@@ -270,7 +284,11 @@ fn respond_internal<W: Write>(out: &mut W, lower: &str) -> io::Result<()> {
       )?;
    } else {
       out.write_all(&row_description_frame())?;
-      write_msg(out, b'D', &data_row_body(&[Some("public"), Some("postgres")]))?;
+      write_msg(
+         out,
+         b'D',
+         &data_row_body(&[Some("public"), Some("postgres")]),
+      )?;
    }
    out.write_all(&encode_command_complete("SELECT 1"))?;
    Ok(())
@@ -531,6 +549,99 @@ impl Client {
    }
 }
 
+// Real SCRAM-SHA-256 frontend login, including server-signature verification.
+fn connect_scram(port: u16, user: &str, password: &str) -> Result<Client, String> {
+   connect_scram_with_app(port, user, password, None)
+}
+
+fn connect_scram_with_app(
+   port: u16,
+   user: &str,
+   password: &str,
+   application_name: Option<&str>,
+) -> Result<Client, String> {
+   let mut stream = TcpStream::connect(("127.0.0.1", port)).map_err(|error| error.to_string())?;
+   stream.set_nodelay(true).unwrap();
+   stream
+      .set_read_timeout(Some(Duration::from_secs(5)))
+      .unwrap();
+   let mut payload = Vec::new();
+   payload.extend_from_slice(&PROTOCOL_VERSION_3.to_be_bytes());
+   payload.extend_from_slice(format!("user\0{user}\0database\0test\0").as_bytes());
+   if let Some(name) = application_name {
+      payload.extend_from_slice(format!("application_name\0{name}\0").as_bytes());
+   }
+   payload.push(0);
+   stream
+      .write_all(&((payload.len() + 4) as i32).to_be_bytes())
+      .map_err(|error| error.to_string())?;
+   stream
+      .write_all(&payload)
+      .map_err(|error| error.to_string())?;
+
+   let mut reader = BufReader::new(stream.try_clone().unwrap());
+   let mut scram: Option<ScramClient> = None;
+   loop {
+      let Some((tag, body)) = read_tagged(&mut reader) else {
+         return Err("proxy closed during startup".to_string());
+      };
+      match tag {
+         b'R' if body.len() >= 4 => {
+            let code = i32::from_be_bytes([body[0], body[1], body[2], body[3]]);
+            match code {
+               0 => {}
+               3 => {
+                  let mut message = password.as_bytes().to_vec();
+                  message.push(0);
+                  write_msg(&mut stream, b'p', &message).map_err(|error| error.to_string())?;
+               }
+               10 => {
+                  if !ScramClient::mechanism_supported(&body[4..]) {
+                     return Err("proxy offered no SCRAM-SHA-256".to_string());
+                  }
+                  let client = ScramClient::new().map_err(|error| error.to_string())?;
+                  let initial = client.initial_response();
+                  let mut message = Vec::new();
+                  message.extend_from_slice(b"SCRAM-SHA-256\0");
+                  message.extend_from_slice(&(initial.len() as i32).to_be_bytes());
+                  message.extend_from_slice(initial.as_bytes());
+                  write_msg(&mut stream, b'p', &message).map_err(|error| error.to_string())?;
+                  scram = Some(client);
+               }
+               11 => {
+                  let server_first =
+                     std::str::from_utf8(&body[4..]).map_err(|error| error.to_string())?;
+                  let client = scram
+                     .as_mut()
+                     .ok_or_else(|| "unexpected SASL continue".to_string())?;
+                  let final_message = client
+                     .finish(server_first, password)
+                     .map_err(|error| error.to_string())?;
+                  write_msg(&mut stream, b'p', final_message.as_bytes())
+                     .map_err(|error| error.to_string())?;
+               }
+               12 => {
+                  let server_final =
+                     std::str::from_utf8(&body[4..]).map_err(|error| error.to_string())?;
+                  let client = scram
+                     .as_ref()
+                     .ok_or_else(|| "unexpected SASL final".to_string())?;
+                  if !client.verify_server_final(server_final) {
+                     return Err("SCRAM server signature mismatch".to_string());
+                  }
+               }
+               other => return Err(format!("unsupported auth request {other}")),
+            }
+         }
+         b'E' => return Err(error_message(&body)),
+         b'Z' => break,
+         _ => {}
+      }
+   }
+
+   Ok(Client { stream, reader })
+}
+
 fn parse_data_row(body: &[u8]) -> Vec<Option<String>> {
    if body.len() < 2 {
       return Vec::new();
@@ -581,6 +692,15 @@ fn start(upstream: &str) -> (u16, Arc<DbCacheManager>, Arc<Store>) {
 }
 
 fn start_with(mode: DbProxyMode, upstream: Option<&str>) -> (u16, Arc<DbCacheManager>, Arc<Store>) {
+   start_configured(mode, upstream, AuthUsers::default(), 8)
+}
+
+fn start_configured(
+   mode: DbProxyMode,
+   upstream: Option<&str>,
+   auth_users: AuthUsers,
+   pool_max_idle: usize,
+) -> (u16, Arc<DbCacheManager>, Arc<Store>) {
    let store = Arc::new(Store::new());
    let manager = Arc::new(DbCacheManager::new(store.clone()));
    let port = free_port();
@@ -595,6 +715,9 @@ fn start_with(mode: DbProxyMode, upstream: Option<&str>) -> (u16, Arc<DbCacheMan
       sync_interval_ms: 0,
       cache_max_keys: 100_000,
       ttl_jitter_pct: 0,
+      auth_users,
+      pool_max_idle,
+      ..DbCacheConfig::default()
    };
    start_proxy_listener(config, Arc::clone(&manager)).expect("start proxy");
    (port, manager, store)
@@ -615,7 +738,11 @@ fn cached_keys(store: &Store, table: &str) -> Vec<String> {
 
 fn cached_key(store: &Store, table: &str) -> String {
    let mut keys = cached_keys(store, table);
-   assert_eq!(keys.len(), 1, "expected one cached key for {table}: {keys:?}");
+   assert_eq!(
+      keys.len(),
+      1,
+      "expected one cached key for {table}: {keys:?}"
+   );
    keys.remove(0)
 }
 
@@ -683,7 +810,7 @@ fn prepared_statements_cache_cursors_and_invalidation() {
 
    // First execution reaches the upstream: Parse, Bind, Describe (cache fill), Execute.
    client.parse("s1", sql);
-   client.bind("p1", "s1", &[param.clone()]);
+   client.bind("p1", "s1", std::slice::from_ref(&param));
    client.execute("p1", 0);
    client.sync();
    let reply = client.read_until_ready();
@@ -697,7 +824,7 @@ fn prepared_statements_cache_cursors_and_invalidation() {
    assert!(store.get(&key).is_some());
 
    // A second binding with the same parameters never reaches the upstream.
-   client.bind("p2", "s1", &[param.clone()]);
+   client.bind("p2", "s1", std::slice::from_ref(&param));
    client.execute("p2", 0);
    client.sync();
    let reply = client.read_until_ready();
@@ -715,7 +842,7 @@ fn prepared_statements_cache_cursors_and_invalidation() {
    assert_eq!(stats.describes.load(Ordering::SeqCst), 1);
 
    // Row-limited Execute suspends the portal and resumes from the cache.
-   client.bind("p3", "s1", &[param.clone()]);
+   client.bind("p3", "s1", std::slice::from_ref(&param));
    client.execute("p3", 1);
    client.sync();
    let reply = client.read_until_ready();
@@ -734,7 +861,7 @@ fn prepared_statements_cache_cursors_and_invalidation() {
 
    // Evict through the shared store, then the next execution refetches.
    assert!(store.del(&key));
-   client.bind("p4", "s1", &[param.clone()]);
+   client.bind("p4", "s1", std::slice::from_ref(&param));
    client.execute("p4", 0);
    client.sync();
    let reply = client.read_until_ready();
@@ -921,7 +1048,7 @@ fn extended_write_invalidates_all_cached_shapes() {
    assert_eq!(client.simple(simple_sql).rows, expected_rows());
    let simple_key = cached_key(&store, "users");
    client.parse("sp", prepared_sql);
-   client.bind("pp", "sp", &[param.clone()]);
+   client.bind("pp", "sp", std::slice::from_ref(&param));
    client.execute("pp", 0);
    client.sync();
    assert_eq!(client.read_until_ready().rows, expected_rows());
@@ -967,12 +1094,7 @@ fn session_context_separates_cache_entries() {
    assert_eq!(cached_keys(&store, "users").len(), 1);
 
    // A session that changed search_path must not share that entry.
-   assert!(
-      carol
-         .simple("set search_path to public")
-         .error
-         .is_none()
-   );
+   assert!(carol.simple("set search_path to public").error.is_none());
    assert_eq!(carol.simple(sql).rows, expected_rows());
    assert_eq!(stats.queries.load(Ordering::SeqCst), 3);
    assert_eq!(cached_keys(&store, "users").len(), 2);
@@ -983,11 +1105,7 @@ fn session_context_separates_cache_entries() {
 
    // A different session with the same SET text shares carol's entry.
    let mut dave = Client::connect(port);
-   assert!(
-      dave.simple("set search_path to public")
-         .error
-         .is_none()
-   );
+   assert!(dave.simple("set search_path to public").error.is_none());
    assert_eq!(dave.simple(sql).rows, expected_rows());
    assert_eq!(stats.queries.load(Ordering::SeqCst), 4);
    assert_eq!(cached_keys(&store, "users").len(), 2);
@@ -1038,4 +1156,61 @@ fn view_dependencies_invalidate_with_base_table() {
    assert_eq!(client.simple(sql).rows, expected_rows());
    assert_eq!(stats.queries.load(Ordering::SeqCst), 3);
    assert!(store.get(&key).is_some());
+}
+
+#[test]
+fn proxy_terminates_scram_and_reuses_pooled_upstream() {
+   let (upstream, stats) = FakePg::start_with_auth(Auth::Cleartext);
+   let users = AuthUsers::from_pairs([("alice", "secret")]);
+   let (port, manager, _store) = start_configured(DbProxyMode::Dual, Some(&upstream), users, 4);
+
+   // The proxy verifies the proof itself, so a bad password never reaches the
+   // origin.
+   let error = match connect_scram(port, "alice", "wrong") {
+      Ok(_) => panic!("bad password accepted"),
+      Err(error) => error,
+   };
+   assert!(error.contains("password authentication failed"), "{error}");
+   assert_eq!(stats.connections.load(Ordering::SeqCst), 0);
+
+   let mut first =
+      connect_scram_with_app(port, "alice", "secret", Some("first-app")).expect("first login");
+   assert_eq!(
+      first
+         .simple("select id, username from users where id = 1")
+         .rows,
+      expected_rows()
+   );
+   assert_eq!(stats.connections.load(Ordering::SeqCst), 1);
+   first.send(b'X', &[]);
+   drop(first);
+
+   // The upstream session is reset and checked in; the idle gauge tells the
+   // test when that completed so the next login deterministically reuses it.
+   let deadline = Instant::now() + Duration::from_secs(5);
+   while Instant::now() < deadline && manager.metrics().pool_idle.load(Ordering::Relaxed) == 0 {
+      thread::sleep(Duration::from_millis(10));
+   }
+   assert_eq!(manager.metrics().pool_idle.load(Ordering::Relaxed), 1);
+
+   let mut second =
+      connect_scram_with_app(port, "alice", "secret", Some("second's app")).expect("pooled login");
+   assert_eq!(
+      second
+         .simple("select id, username from users where id = 2")
+         .rows,
+      expected_rows()
+   );
+   assert_eq!(
+      stats.connections.load(Ordering::SeqCst),
+      1,
+      "the authenticated upstream session must be reused"
+   );
+   assert!(stats.password_ok.load(Ordering::SeqCst));
+   // DISCARD ALL clears the startup setting, so the checkout re-applies the
+   // new client's application_name on the reused session.
+   assert_eq!(
+      stats.last_set.lock().unwrap().as_str(),
+      "SET application_name = E'second\\'s app'"
+   );
 }

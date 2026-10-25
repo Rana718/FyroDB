@@ -1,5 +1,8 @@
+use crate::auth::{self, ClientAuthError};
+use crate::bus::InvalidationBus;
 use crate::cache::{DbCacheManager, EncodedResult, TableCounters, mix64};
 use crate::config::{DbCacheConfig, DbProxyMode};
+use crate::pool::{PoolKey, PoolLimits, UpstreamPool};
 use crate::protocol::{self, FrameReader, FrontendMessage};
 use crate::query::{ParsedQuery, QueryKind, SessionChange, compute_fingerprint};
 use crate::row::{DbRow, DbValue};
@@ -9,6 +12,7 @@ use std::io::{self, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
 use std::thread;
+use std::time::Duration;
 
 const CLIENT_STACK: usize = 512 * 1024;
 const CLIENT_READ_BUF: usize = 32 * 1024;
@@ -86,6 +90,48 @@ pub fn start_proxy_listener(
    let listener = TcpListener::bind(&config.listen_addr)?;
    let listen_addr = config.listen_addr.clone();
 
+   let pool = Arc::new(UpstreamPool::new(PoolLimits {
+      max_idle: config.pool_max_idle,
+      idle_timeout: Duration::from_millis(config.pool_idle_timeout_ms),
+   }));
+   let bus = if config.mode == DbProxyMode::Dual {
+      match config.bus_path.as_deref() {
+         Some(path) => {
+            match crate::bus::start(path, Arc::clone(&cache_mgr), config.key_prefix.clone()) {
+               Ok(bus) => Some(bus),
+               Err(error) => {
+                  eprintln!("fyrodb-dbproxy: invalidation bus unavailable ({path}): {error}");
+                  None
+               }
+            }
+         }
+         None => None,
+      }
+   } else {
+      None
+   };
+
+   // Reap idle upstream sessions even when no client is connected, so a quiet
+   // proxy does not pin origin backends indefinitely.
+   if config.pool_max_idle > 0 {
+      let janitor_pool = Arc::clone(&pool);
+      let janitor_mgr = Arc::clone(&cache_mgr);
+      let interval = Duration::from_millis((config.pool_idle_timeout_ms / 2).max(1_000));
+      let _ = thread::Builder::new()
+         .name("fyrodb-dbpool".into())
+         .stack_size(64 * 1024)
+         .spawn(move || {
+            loop {
+               thread::sleep(interval);
+               janitor_pool.prune();
+               janitor_mgr.metrics().pool_idle.store(
+                  janitor_pool.idle_count() as u64,
+                  std::sync::atomic::Ordering::Relaxed,
+               );
+            }
+         });
+   }
+
    thread::Builder::new()
       .name("fyrodb-dbproxy".into())
       .stack_size(256 * 1024)
@@ -95,11 +141,13 @@ pub fn start_proxy_listener(
                Ok(client) => {
                   let cfg = config.clone();
                   let mgr = Arc::clone(&cache_mgr);
+                  let pool = Arc::clone(&pool);
+                  let bus = bus.clone();
                   thread::Builder::new()
                      .name("fyrodb-dbconn".into())
                      .stack_size(CLIENT_STACK)
                      .spawn(move || {
-                        if let Err(e) = handle_client(client, cfg, mgr)
+                        if let Err(e) = handle_client(client, cfg, mgr, pool, bus)
                            && e.kind() != io::ErrorKind::UnexpectedEof
                         {
                            eprintln!("fyrodb-dbproxy client error: {e}");
@@ -119,6 +167,8 @@ fn handle_client(
    client: TcpStream,
    config: DbCacheConfig,
    cache_mgr: Arc<DbCacheManager>,
+   pool: Arc<UpstreamPool>,
+   bus: Option<Arc<InvalidationBus>>,
 ) -> io::Result<()> {
    client.set_nodelay(true)?;
    let read_stream = client.try_clone()?;
@@ -127,7 +177,12 @@ fn handle_client(
       reader: FrameReader::new(BufReader::with_capacity(CLIENT_READ_BUF, read_stream)),
       config,
       mgr: cache_mgr,
+      pool,
+      bus,
       upstream: None,
+      pool_key: None,
+      upstream_poolable: false,
+      client_authenticated: false,
       in_transaction: false,
       transaction_failed: false,
       transaction_writes: Vec::new(),
@@ -168,7 +223,14 @@ struct Session {
    reader: FrameReader<BufReader<TcpStream>>,
    config: DbCacheConfig,
    mgr: Arc<DbCacheManager>,
+   pool: Arc<UpstreamPool>,
+   bus: Option<Arc<InvalidationBus>>,
    upstream: Option<UpstreamConnection>,
+   pool_key: Option<PoolKey>,
+   // True when this upstream session may be returned to the pool: either the
+   // proxy authenticated both sides, or the origin demanded no password.
+   upstream_poolable: bool,
+   client_authenticated: bool,
    in_transaction: bool,
    transaction_failed: bool,
    // Tables this session wrote while its transaction was open. They are
@@ -189,6 +251,12 @@ struct Session {
 
 impl Session {
    fn run(&mut self) -> io::Result<()> {
+      let result = self.run_inner();
+      self.reclaim_upstream();
+      result
+   }
+
+   fn run_inner(&mut self) -> io::Result<()> {
       if !self.startup()? {
          return Ok(());
       }
@@ -275,7 +343,11 @@ impl Session {
                }
                return Ok(false);
             }
-            FrontendMessage::Startup { ref params, .. } => {
+            FrontendMessage::Startup {
+               ref user,
+               ref database,
+               ref params,
+            } => {
                if let Some((_, value)) = params
                   .iter()
                   .find(|(key, _)| key.eq_ignore_ascii_case("replication"))
@@ -292,30 +364,103 @@ impl Session {
                let startup_frame = self.reader.last_frame().to_vec();
                match self.upstream_target().map(str::to_string) {
                   Some(target) => {
-                     match UpstreamConnection::handshake(
-                        &target,
-                        &mut self.client,
-                        &mut self.reader,
-                        &startup_frame,
-                     ) {
-                        Ok(upstream) => {
-                           self.upstream = Some(upstream);
-                           // Learn the session settings and catalog metadata
-                           // before the first client query.
-                           self.context_state = ContextState::NeedsProbe;
-                           let _ = self.probe_context();
-                           let _ = self.refresh_catalog();
-                        }
-                        Err(HandshakeError::Rejected) => return Ok(false),
-                        Err(HandshakeError::Io(e)) => {
-                           protocol::write_fatal_response(
-                              &mut self.client,
-                              "08006",
-                              &format!("could not connect to upstream database: {e}"),
-                           )?;
-                           return Ok(false);
+                     let pool_key = PoolKey::from_startup(params, user, database);
+                     let pool_eligible = crate::pool::startup_allows_pooling(params);
+                     let application_name = crate::pool::application_name(params);
+                     let password = self.config.auth_users.password(user).map(str::to_string);
+                     self.client_authenticated = password.is_some();
+                     if let Some(password) = password.as_deref() {
+                        match auth::authenticate_client(
+                           &mut self.reader,
+                           &mut self.client,
+                           password,
+                        ) {
+                           Ok(()) => {}
+                           Err(ClientAuthError::Rejected) => {
+                              protocol::write_fatal_response(
+                                 &mut self.client,
+                                 "28P01",
+                                 &format!("password authentication failed for user \"{user}\""),
+                              )?;
+                              return Ok(false);
+                           }
+                           Err(ClientAuthError::Io(e)) => return Err(e),
                         }
                      }
+
+                     let usable = if pool_eligible {
+                        self
+                           .pool
+                           .checkout(&pool_key, !self.client_authenticated, application_name)
+                     } else {
+                        None
+                     };
+                     self.mgr.metrics().pool_idle.store(
+                        self.pool.idle_count() as u64,
+                        std::sync::atomic::Ordering::Relaxed,
+                     );
+                     if let Some(upstream) = usable {
+                        upstream.write_replay(&mut self.client, !self.client_authenticated)?;
+                        self.upstream = Some(upstream);
+                        self.upstream_poolable = true;
+                     } else if self.client_authenticated {
+                        let password = password.as_deref().unwrap_or_default();
+                        match UpstreamConnection::connect_authenticated(
+                           &target,
+                           &startup_frame,
+                           user,
+                           password,
+                        ) {
+                           Ok(upstream) => {
+                              upstream.write_replay(&mut self.client, false)?;
+                              self.upstream = Some(upstream);
+                              self.upstream_poolable = true;
+                           }
+                           Err(error) => {
+                              protocol::write_fatal_response(
+                                 &mut self.client,
+                                 "08006",
+                                 &format!("could not authenticate to upstream database: {error}"),
+                              )?;
+                              return Ok(false);
+                           }
+                        }
+                     } else {
+                        match UpstreamConnection::handshake(
+                           &target,
+                           &mut self.client,
+                           &mut self.reader,
+                           &startup_frame,
+                        ) {
+                           Ok(upstream) => {
+                              // Relayed sessions may only be reused when the
+                              // origin demanded no password; otherwise the
+                              // proxy has no credentials to log in again.
+                              self.upstream_poolable =
+                                 pool_eligible && !upstream.required_password();
+                              self.upstream = Some(upstream);
+                           }
+                           Err(HandshakeError::Rejected) => return Ok(false),
+                           Err(HandshakeError::Io(e)) => {
+                              protocol::write_fatal_response(
+                                 &mut self.client,
+                                 "08006",
+                                 &format!("could not connect to upstream database: {e}"),
+                              )?;
+                              return Ok(false);
+                           }
+                        }
+                     }
+                     if pool_eligible && self.upstream_poolable {
+                        self.pool_key = Some(pool_key);
+                     } else {
+                        self.upstream_poolable = false;
+                     }
+                     // Learn the session settings and catalog metadata
+                     // before the first client query.
+                     self.context_state = ContextState::NeedsProbe;
+                     let _ = self.probe_context();
+                     let _ = self.refresh_catalog();
                   }
                   None => {
                      protocol::write_startup_ok(&mut self.client)?;
@@ -391,9 +536,11 @@ impl Session {
             protocol::write_result_set(&mut self.out, &result, &tag)?;
             return self.flush_out();
          }
-         self.mgr.metrics().misses.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-      } else {
-         self.invalidate_for(&parsed);
+         self
+            .mgr
+            .metrics()
+            .misses
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
       }
 
       if self.upstream.is_none() {
@@ -403,9 +550,7 @@ impl Session {
       // One session loads a missing key; concurrent misses wait briefly for it
       // and re-check the cache instead of stampeding the upstream.
       let mut fill_guard = None;
-      if cacheable
-         && let Some(key) = self.fill_key(&parsed, fingerprint)
-      {
+      if cacheable && let Some(key) = self.fill_key(&parsed, fingerprint) {
          match self.mgr.begin_fill(&key) {
             Some(guard) => fill_guard = Some(guard),
             None => {
@@ -422,7 +567,9 @@ impl Session {
 
       self.flush_out()?;
       let tables = cacheable.then(|| self.mgr.expanded_tables(&parsed));
-      let versions = tables.as_ref().map(|tables| self.mgr.table_versions(tables));
+      let versions = tables
+         .as_ref()
+         .map(|tables| self.mgr.table_versions(tables));
       // Replies that may re-invalidate at commit are buffered so the client
       // cannot observe ReadyForQuery before the eviction has happened.
       let buffer_tail = cacheable || parsed.writes || !self.transaction_writes.is_empty();
@@ -443,12 +590,14 @@ impl Session {
       self.update_status(&outcome);
       if !outcome.error {
          if parsed.schema_change {
-            // Definition changes can add or remove dependencies that the
-            // tracker never saw, so every entry is suspicious.
-            self.mgr.mark_catalog_stale();
-            self.mgr.flush_all(&self.config.key_prefix);
+            self.flush_catalog_entries();
          }
          self.apply_session_changes(&parsed);
+      }
+      if !outcome.error && parsed.writes {
+         // The write has now landed. Invalidating after it completes closes
+         // the window where another session could refill pre-write rows.
+         self.invalidate_for(&parsed);
       }
       if parsed.kind == QueryKind::Commit {
          // Also covers COMMIT AND CHAIN, whose ReadyForQuery reports 'T'.
@@ -457,7 +606,11 @@ impl Session {
 
       if outcome.copy_in {
          self.flush_out()?;
-         return self.pump_copy_in(ReplyStop::Sync);
+         let result = self.pump_copy_in(ReplyStop::Sync);
+         if !self.cycle_error && parsed.writes {
+            self.invalidate_for(&parsed);
+         }
+         return result;
       }
 
       if let (Some(versions), Some(tables)) = (versions, tables.as_deref())
@@ -881,10 +1034,6 @@ impl Session {
          return Ok(());
       }
 
-      if parsed.writes {
-         self.invalidate_for(&parsed);
-      }
-
       // Track transaction boundaries as soon as the statement runs: a SELECT in
       // the same extended cycle after BEGIN must not be cached, and writes
       // after ROLLBACK must not be re-invalidated at commit.
@@ -938,9 +1087,7 @@ impl Session {
       }
 
       let mut fill_guard = None;
-      if wants_cache
-         && let Some(key) = self.fill_key(&parsed, fingerprint)
-      {
+      if wants_cache && let Some(key) = self.fill_key(&parsed, fingerprint) {
          match self.mgr.begin_fill(&key) {
             Some(guard) => fill_guard = Some(guard),
             None => {
@@ -960,7 +1107,9 @@ impl Session {
       let _fill_guard = fill_guard;
 
       let tables = wants_cache.then(|| self.mgr.expanded_tables(&parsed));
-      let versions = tables.as_ref().map(|tables| self.mgr.table_versions(tables));
+      let versions = tables
+         .as_ref()
+         .map(|tables| self.mgr.table_versions(tables));
       let execute_frame = self.reader.last_frame().to_vec();
       self.flush_out()?;
       // A COMMIT is buffered so its eviction lands before the client sees the
@@ -986,10 +1135,12 @@ impl Session {
          self.cycle_error = true;
       } else {
          if parsed.schema_change {
-            self.mgr.mark_catalog_stale();
-            self.mgr.flush_all(&self.config.key_prefix);
+            self.flush_catalog_entries();
          }
          self.apply_session_changes(&parsed);
+         if parsed.writes {
+            self.invalidate_for(&parsed);
+         }
       }
       if parsed.kind == QueryKind::Commit && !outcome.error {
          self.in_transaction = false;
@@ -1000,7 +1151,11 @@ impl Session {
          self.portals.remove(portal_name);
          self.cycle_error = false;
          self.flush_out()?;
-         return self.pump_copy_in(ReplyStop::Execute);
+         let result = self.pump_copy_in(ReplyStop::Execute);
+         if !self.cycle_error && parsed.writes {
+            self.invalidate_for(&parsed);
+         }
+         return result;
       }
 
       let command_is_select = outcome
@@ -1262,6 +1417,29 @@ impl Session {
 
    // ------------------------------------------------------------ helpers
 
+   // Returns an idle, reset upstream session to the pool. A session that
+   // ended inside a transaction is dropped so the origin rolls it back.
+   fn reclaim_upstream(&mut self) {
+      let Some(upstream) = self.upstream.take() else {
+         return;
+      };
+      let Some(key) = self.pool_key.take() else {
+         return;
+      };
+      if !self.upstream_poolable || self.in_transaction || self.transaction_failed {
+         return;
+      }
+      let mut upstream = upstream;
+      if upstream.reset_session().is_err() {
+         return;
+      }
+      self.pool.checkin(key, upstream);
+      self.mgr.metrics().pool_idle.store(
+         self.pool.idle_count() as u64,
+         std::sync::atomic::Ordering::Relaxed,
+      );
+   }
+
    // CacheOnly never contacts the upstream, even if one is configured.
    fn upstream_target(&self) -> Option<&str> {
       match self.config.mode {
@@ -1360,6 +1538,9 @@ impl Session {
          }
       }
       self.mgr.invalidate_tables(&tables);
+      if let Some(bus) = &self.bus {
+         bus.invalidate(&tables);
+      }
    }
 
    // Re-invalidates tables written while the transaction was open: a concurrent
@@ -1371,6 +1552,19 @@ impl Session {
       }
       let written = std::mem::take(&mut self.transaction_writes);
       self.mgr.invalidate_tables(&written);
+      if let Some(bus) = &self.bus {
+         bus.invalidate(&written);
+      }
+   }
+
+   // Definition changes can add or remove dependencies that the tracker never
+   // saw, so every entry is suspicious on every process.
+   fn flush_catalog_entries(&mut self) {
+      self.mgr.mark_catalog_stale();
+      self.mgr.flush_all(&self.config.key_prefix);
+      if let Some(bus) = &self.bus {
+         bus.flush();
+      }
    }
 
    // ------------------------------------------------------ session context
@@ -1448,8 +1642,7 @@ impl Session {
                if *local || self.in_transaction {
                   self.context_state = ContextState::NeedsProbe;
                } else if self.context_state == ContextState::Trusted {
-                  self.context_hash =
-                     mix64(self.context_hash ^ compute_fingerprint(statement));
+                  self.context_hash = mix64(self.context_hash ^ compute_fingerprint(statement));
                   if self.context_hash == 0 {
                      self.context_hash = 1;
                   }
@@ -1492,6 +1685,11 @@ impl Session {
       }
       if self.mgr.prune_due() {
          self.mgr.prune_expired(&self.config.key_prefix);
+         self.pool.prune();
+         self.mgr.metrics().pool_idle.store(
+            self.pool.idle_count() as u64,
+            std::sync::atomic::Ordering::Relaxed,
+         );
       }
       if self.mgr.external_sync_due() {
          self.poll_external_writes();
@@ -1539,7 +1737,12 @@ impl Session {
                .iter()
                .filter_map(table_counters)
                .collect::<Vec<_>>();
-            self.mgr.apply_external_counters(rows);
+            let changed = self.mgr.apply_external_counters(rows);
+            if !changed.is_empty()
+               && let Some(bus) = &self.bus
+            {
+               bus.invalidate(&changed);
+            }
          }
          Err(_) => self.mgr.abort_external_sync(),
       }

@@ -203,68 +203,73 @@ pub fn parse_sql(raw: &str) -> ParsedQuery {
       && !statements.is_empty()
    {
       let mut extractor = AstTableExtractor::default();
-         let mut session_changes = Vec::new();
-         for stmt in &statements {
-            let _ = stmt.visit(&mut extractor);
-            if let Some(change) = session_change_for(stmt, &normalized) {
-               session_changes.push(change);
-            }
-            // COPY FROM names its target table directly rather than through a
-            // query, so collect it explicitly.
-            if let Statement::Copy {
-               source: CopySource::Table { table_name, .. },
-               ..
-            } = stmt
-            {
-               let parts: Vec<String> = table_name
-                  .0
-                  .iter()
-                  .map(|ident| ident.to_string().to_ascii_lowercase())
-                  .collect();
-               push_relation(&mut extractor.tables, &parts);
-            }
+      let mut session_changes = Vec::new();
+      for stmt in &statements {
+         let _ = stmt.visit(&mut extractor);
+         if let Some(change) = session_change_for(stmt, &normalized) {
+            session_changes.push(change);
          }
-
-         let kind = match &statements[0] {
-            Statement::Query(_) => QueryKind::Select,
-            Statement::Insert { .. } => QueryKind::Insert,
-            Statement::Update { .. } => QueryKind::Update,
-            Statement::Delete { .. } => QueryKind::Delete,
-            Statement::StartTransaction { .. } => QueryKind::Begin,
-            Statement::Commit { .. } => QueryKind::Commit,
-            // ROLLBACK TO SAVEPOINT keeps the transaction open, so it must not
-            // be treated as a transaction end.
-            Statement::Rollback { savepoint: None, .. } => QueryKind::Rollback,
-            Statement::Rollback { .. } => QueryKind::Other,
-            Statement::Set { .. } => QueryKind::Set,
-            Statement::CreateTable { .. }
-            | Statement::Drop { .. }
-            | Statement::AlterTable { .. }
-            | Statement::Truncate { .. } => QueryKind::Ddl,
-            _ => QueryKind::Other,
-         };
-
-         let is_cacheable = statements.len() == 1
-            && kind == QueryKind::Select
-            && is_plain_select(&statements[0])
-            && !extractor.has_volatile_functions
-            && !extractor.tables.is_empty()
-            && !extractor.tables.iter().any(|table| is_system_relation(table));
-         let writes = extractor.has_writes || statements.iter().any(is_write_statement);
-
-         return ParsedQuery {
-            kind,
-            tables: extractor.tables,
-            normalized,
-            fingerprint,
-            is_cacheable,
-            writes,
-            functions: extractor.functions,
-            session_changes,
-            schema_change: extractor.schema_change,
-            mutates_session: extractor.mutates_session,
-         };
+         // COPY FROM names its target table directly rather than through a
+         // query, so collect it explicitly.
+         if let Statement::Copy {
+            source: CopySource::Table { table_name, .. },
+            ..
+         } = stmt
+         {
+            let parts: Vec<String> = table_name
+               .0
+               .iter()
+               .map(|ident| ident.to_string().to_ascii_lowercase())
+               .collect();
+            push_relation(&mut extractor.tables, &parts);
+         }
       }
+
+      let kind = match &statements[0] {
+         Statement::Query(_) => QueryKind::Select,
+         Statement::Insert { .. } => QueryKind::Insert,
+         Statement::Update { .. } => QueryKind::Update,
+         Statement::Delete { .. } => QueryKind::Delete,
+         Statement::StartTransaction { .. } => QueryKind::Begin,
+         Statement::Commit { .. } => QueryKind::Commit,
+         // ROLLBACK TO SAVEPOINT keeps the transaction open, so it must not
+         // be treated as a transaction end.
+         Statement::Rollback {
+            savepoint: None, ..
+         } => QueryKind::Rollback,
+         Statement::Rollback { .. } => QueryKind::Other,
+         Statement::Set { .. } => QueryKind::Set,
+         Statement::CreateTable { .. }
+         | Statement::Drop { .. }
+         | Statement::AlterTable { .. }
+         | Statement::Truncate { .. } => QueryKind::Ddl,
+         _ => QueryKind::Other,
+      };
+
+      let is_cacheable = statements.len() == 1
+         && kind == QueryKind::Select
+         && is_plain_select(&statements[0])
+         && !extractor.has_volatile_functions
+         && !extractor.tables.is_empty()
+         && !extractor
+            .tables
+            .iter()
+            .any(|table| is_system_relation(table));
+      let writes = extractor.has_writes || statements.iter().any(is_write_statement);
+
+      return ParsedQuery {
+         kind,
+         tables: extractor.tables,
+         normalized,
+         fingerprint,
+         is_cacheable,
+         writes,
+         functions: extractor.functions,
+         session_changes,
+         schema_change: extractor.schema_change,
+         mutates_session: extractor.mutates_session,
+      };
+   }
 
    fallback_parse_sql(trimmed, normalized, fingerprint)
 }

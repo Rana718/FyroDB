@@ -321,6 +321,11 @@ pub struct DbCacheMetrics {
    pub expired_pruned: AtomicU64,
    pub external_invalidations: AtomicU64,
    pub coalesced_waits: AtomicU64,
+   pub bus_messages_sent: AtomicU64,
+   pub bus_messages_received: AtomicU64,
+   pub bus_connected: AtomicBool,
+   // Idle authenticated upstream sessions currently parked in the pool.
+   pub pool_idle: AtomicU64,
 }
 
 // Tunables that live with the manager so cross-protocol callers share them.
@@ -619,7 +624,10 @@ impl DbCacheManager {
       let snapshot = self.catalog.snapshot.read();
       match snapshot.as_ref() {
          Some(snapshot) if !self.catalog.stale.load(Ordering::Acquire) => {
-            !parsed.functions.iter().any(|name| snapshot.is_volatile(name))
+            !parsed
+               .functions
+               .iter()
+               .any(|name| snapshot.is_volatile(name))
                && !snapshot.references_volatile_view(&parsed.tables)
          }
          Some(_) => parsed.functions.is_empty(),
@@ -875,7 +883,8 @@ impl DbCacheManager {
          }
          let excess = total - max;
          let keys: Vec<String> = tracker.markers.keys().take(excess).cloned().collect();
-         keys.into_iter()
+         keys
+            .into_iter()
             .map(|key| {
                let markers = tracker.detach_key(prefix, &key);
                (key, markers)
@@ -979,8 +988,8 @@ impl DbCacheManager {
 
    // Compares the latest `pg_stat_all_tables` counters with the previous poll
    // and invalidates tables that changed. The first poll only records a
-   // baseline. Returns the number of tables invalidated.
-   pub fn apply_external_counters(&self, rows: Vec<(String, TableCounters)>) -> usize {
+   // baseline. Returns the tables that changed so peers can be told as well.
+   pub fn apply_external_counters(&self, rows: Vec<(String, TableCounters)>) -> Vec<String> {
       let mut changed = Vec::new();
       {
          let mut snapshot = self.sync.snapshot.lock();
@@ -999,14 +1008,14 @@ impl DbCacheManager {
       }
       self.sync.in_progress.store(false, Ordering::Release);
       if changed.is_empty() {
-         return 0;
+         return changed;
       }
       self
          .metrics
          .external_invalidations
          .fetch_add(changed.len() as u64, Ordering::Relaxed);
       self.invalidate_tables(&changed);
-      changed.len()
+      changed
    }
 
    // ----------------------------------------------------------- coalescing
@@ -1038,11 +1047,9 @@ impl DbCacheManager {
       if *done {
          return true;
       }
-      self
-         .metrics
-         .coalesced_waits
-         .fetch_add(1, Ordering::Relaxed);
-      slot.cond
+      self.metrics.coalesced_waits.fetch_add(1, Ordering::Relaxed);
+      slot
+         .cond
          .wait_for(&mut done, Duration::from_millis(FILL_WAIT_MS));
       *done
    }
@@ -1061,7 +1068,10 @@ impl DbCacheManager {
          ("hits", self.metrics.hits.load(Ordering::Relaxed)),
          ("misses", self.metrics.misses.load(Ordering::Relaxed)),
          ("fills", self.metrics.fills.load(Ordering::Relaxed)),
-         ("fill_races", self.metrics.fill_races.load(Ordering::Relaxed)),
+         (
+            "fill_races",
+            self.metrics.fill_races.load(Ordering::Relaxed),
+         ),
          (
             "invalidated_entries",
             self.metrics.invalidated_entries.load(Ordering::Relaxed),
@@ -1090,6 +1100,19 @@ impl DbCacheManager {
          ("max_keys", self.limits.max_keys as u64),
          ("ttl_jitter_pct", self.limits.ttl_jitter_pct),
          ("sync_interval_ms", self.limits.sync_interval_ms),
+         (
+            "bus_messages_sent",
+            self.metrics.bus_messages_sent.load(Ordering::Relaxed),
+         ),
+         (
+            "bus_messages_received",
+            self.metrics.bus_messages_received.load(Ordering::Relaxed),
+         ),
+         (
+            "bus_connected",
+            u64::from(self.metrics.bus_connected.load(Ordering::Relaxed)),
+         ),
+         ("pool_idle", self.metrics.pool_idle.load(Ordering::Relaxed)),
       ]
    }
 }
@@ -1119,7 +1142,9 @@ fn jittered_ttl(ttl_ms: u64, jitter_pct: u64, seed: u64) -> u64 {
    if ttl_ms == 0 || jitter_pct == 0 {
       return ttl_ms;
    }
-   let span = (ttl_ms / 100).saturating_mul(jitter_pct.clamp(0, 50)).max(1);
+   let span = (ttl_ms / 100)
+      .saturating_mul(jitter_pct.clamp(0, 50))
+      .max(1);
    ttl_ms + (mix64(seed ^ now_ms()) % (span + 1))
 }
 

@@ -1056,14 +1056,14 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
    fn rehash(&self, observed: &SlotTable<V>) {
       let observed = observed as *const SlotTable<V>;
       let _lock = self.grow_lock.lock().unwrap_or_else(|e| e.into_inner());
-      if self.table.load(Ordering::Acquire) as *const SlotTable<V> != observed {
+      if !std::ptr::eq(self.table.load(Ordering::Acquire), observed) {
          return;
       }
       self.insert_gate.fetch_or(GROWING, Ordering::AcqRel);
       while (self.insert_gate.load(Ordering::Acquire) & !GROWING) != 0 {
          std::hint::spin_loop();
       }
-      if self.table.load(Ordering::Acquire) as *const SlotTable<V> == observed {
+      if std::ptr::eq(self.table.load(Ordering::Acquire), observed) {
          self.rebuild_locked();
       }
       self.insert_gate.fetch_and(!GROWING, Ordering::Release);

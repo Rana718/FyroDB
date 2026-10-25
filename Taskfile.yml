@@ -200,9 +200,31 @@ tasks:
          - cargo pgo bolt optimize --with-pgo
 
    without-tcp:
-      desc: "Full in-memory benchmark suite against FyroDB engine directly without TCP/network bottleneck"
+      desc: "Full in-memory suite against FyroDB without TCP/network bottleneck, plus a PG cache-path smoke run"
       cmds:
+         - cargo run --release --features bench-tools --bin pg_cache_bench -- --smoke
          - cargo run --release --features bench-tools --bin without_tcp -- {{.CLI_ARGS}}
+
+   without-tcp-v:
+      desc: "In-memory suite skipping the slow vector/KNN phase, plus a PG cache-path smoke run"
+      cmds:
+         - cargo run --release --features bench-tools --bin pg_cache_bench -- --smoke
+         - cargo run --release --features bench-tools --bin without_tcp -- bench {{.CLI_ARGS}}
+
+   bench-pg:
+      desc: "PostgreSQL cache-path benchmark: in-memory lookup, encoded multithread, joins, proxy TCP"
+      cmds:
+         - cargo run --release --features bench-tools --bin pg_cache_bench -- {{.CLI_ARGS}}
+
+   bench-pg-smoke:
+      desc: "Reduced-iteration PG cache-path smoke run (same checks, short runtime)"
+      cmds:
+         - cargo run --release --features bench-tools --bin pg_cache_bench -- --smoke {{.CLI_ARGS}}
+
+   bench-full:
+      desc: "Full FyroDB suite skipping the slow vector/KNN phase: KV, Pub/Sub, mixed types"
+      cmds:
+         - cd bench && go run . -m bench {{.CLI_ARGS}}
 
    bench-fyrodb:
       desc: "Full suite against FyroDB: KV, Pub/Sub, INCR, Hash, List, Set, ZSet, JSON, TTL, HotKey, Queue, Stream, Bitmap, HLL, Geo"

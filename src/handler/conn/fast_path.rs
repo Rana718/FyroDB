@@ -143,25 +143,6 @@ pub(super) fn cmd_id(cmd: &[u8]) -> CmdId {
    }
 }
 
-#[cfg(test)]
-mod cmd_id_tests {
-   use super::{CmdId, cmd_id};
-
-   #[test]
-   fn classifies_case_insensitively_and_rejects_others() {
-      assert_eq!(cmd_id(b"GET"), CmdId::Get);
-      assert_eq!(cmd_id(b"get"), CmdId::Get);
-      assert_eq!(cmd_id(b"GeT"), CmdId::Get);
-      assert_eq!(cmd_id(b"JSON.SET"), CmdId::JsonSet);
-      assert_eq!(cmd_id(b"json.set"), CmdId::JsonSet);
-      assert_eq!(cmd_id(b"LPUSH"), CmdId::Lpush);
-      assert_eq!(cmd_id(b"BITCOUNT"), CmdId::Bitcount);
-      assert_eq!(cmd_id(b""), CmdId::Other);
-      assert_eq!(cmd_id(b"GETX"), CmdId::Other);
-      assert_eq!(cmd_id(b"FT.SEARCH"), CmdId::Other);
-   }
-}
-
 #[inline(always)]
 pub(super) fn dispatch_get_run(conn: &mut Conn<'_>, first_key: (*const u8, usize)) {
    const BATCH: usize = 256;
@@ -1401,35 +1382,36 @@ pub(super) fn handle_auth(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
 pub(super) fn handle_hello(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
    let mut proto = 2u32;
    let mut auth_pass = None;
-   if raw.len() >= 2 {
-      if let Some(p) = part_str(&mut conn.parser.wbuf, raw[1]) {
-         proto = p.parse().unwrap_or(2);
-      }
+   if raw.len() >= 2
+      && let Some(p) = part_str(&mut conn.parser.wbuf, raw[1])
+   {
+      proto = p.parse().unwrap_or(2);
    }
    let mut i = 2;
    while i < raw.len() {
-      if let Some(kw) = part_str(&mut conn.parser.wbuf, raw[i]) {
-         if kw.eq_ignore_ascii_case("AUTH") && i + 2 < raw.len() {
-            auth_pass = part_str(&mut conn.parser.wbuf, raw[i + 2]);
-            i += 3;
-            continue;
-         }
+      if let Some(kw) = part_str(&mut conn.parser.wbuf, raw[i])
+         && kw.eq_ignore_ascii_case("AUTH")
+         && i + 2 < raw.len()
+      {
+         auth_pass = part_str(&mut conn.parser.wbuf, raw[i + 2]);
+         i += 3;
+         continue;
       }
       i += 1;
    }
 
-   if let Some(expected) = conn.auth_required {
-      if let Some(pass) = auth_pass {
-         if !constant_time_eq(pass.as_bytes(), expected.as_bytes()) {
-            conn.authenticated = false;
-            conn
-               .parser
-               .wbuf
-               .extend_from_slice(b"-WRONGPASS invalid username-password pair\r\n");
-            return;
-         }
-         conn.authenticated = true;
+   if let Some(expected) = conn.auth_required
+      && let Some(pass) = auth_pass
+   {
+      if !constant_time_eq(pass.as_bytes(), expected.as_bytes()) {
+         conn.authenticated = false;
+         conn
+            .parser
+            .wbuf
+            .extend_from_slice(b"-WRONGPASS invalid username-password pair\r\n");
+         return;
       }
+      conn.authenticated = true;
    }
 
    if proto == 3 {
@@ -1597,5 +1579,24 @@ pub(super) fn ft_search_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
       conn.submit(run);
    } else {
       run(&mut conn.parser.wbuf);
+   }
+}
+
+#[cfg(test)]
+mod cmd_id_tests {
+   use super::{CmdId, cmd_id};
+
+   #[test]
+   fn classifies_case_insensitively_and_rejects_others() {
+      assert_eq!(cmd_id(b"GET"), CmdId::Get);
+      assert_eq!(cmd_id(b"get"), CmdId::Get);
+      assert_eq!(cmd_id(b"GeT"), CmdId::Get);
+      assert_eq!(cmd_id(b"JSON.SET"), CmdId::JsonSet);
+      assert_eq!(cmd_id(b"json.set"), CmdId::JsonSet);
+      assert_eq!(cmd_id(b"LPUSH"), CmdId::Lpush);
+      assert_eq!(cmd_id(b"BITCOUNT"), CmdId::Bitcount);
+      assert_eq!(cmd_id(b""), CmdId::Other);
+      assert_eq!(cmd_id(b"GETX"), CmdId::Other);
+      assert_eq!(cmd_id(b"FT.SEARCH"), CmdId::Other);
    }
 }

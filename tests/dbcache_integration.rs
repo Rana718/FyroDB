@@ -82,7 +82,7 @@ fn test_dbcache_stats_over_resp_port() {
    let mut out = Vec::new();
    fyro_db::commands::execute(&["DBCACHE", "STATS"], &store, &mut out);
    let text = String::from_utf8(out).expect("RESP is ascii");
-   assert!(text.starts_with("*34\r\n"), "unexpected header: {text}");
+   assert!(text.starts_with("*42\r\n"), "unexpected header: {text}");
    assert!(text.contains("$5\r\nfills\r\n:1\r\n"));
    assert!(text.contains("$12\r\ntracked_keys\r\n:1\r\n"));
 }

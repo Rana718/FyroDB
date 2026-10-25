@@ -1,4 +1,4 @@
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::sync::Arc;
 use std::time::Duration;
@@ -28,12 +28,41 @@ fn spawn_server(auth: Option<&'static str>) -> u16 {
    port
 }
 
+// Reads one complete RESP value (recursively consuming array/map members) and
+// returns its header line, so bulk payload lines are never mistaken for the
+// next reply.
+fn read_value(reader: &mut BufReader<TcpStream>) -> String {
+   let mut line = String::new();
+   reader.read_line(&mut line).expect("read response");
+   let header = line.trim_end().to_string();
+   let count = |header: &str| header[1..].parse::<usize>().unwrap_or(0);
+   match header.as_bytes().first() {
+      Some(b'*') | Some(b'~') | Some(b'>') => {
+         for _ in 0..count(&header) {
+            read_value(reader);
+         }
+      }
+      Some(b'%') => {
+         for _ in 0..count(&header) * 2 {
+            read_value(reader);
+         }
+      }
+      Some(b'$') => {
+         let len = header[1..].parse::<i64>().unwrap_or(-1);
+         if len >= 0 {
+            let mut payload = vec![0u8; len as usize + 2];
+            reader.read_exact(&mut payload).expect("read bulk payload");
+         }
+      }
+      _ => {}
+   }
+   header
+}
+
 fn send_cmd(stream: &mut TcpStream, reader: &mut BufReader<TcpStream>, cmd: &str) -> String {
    stream.write_all(cmd.as_bytes()).expect("write cmd");
    stream.flush().expect("flush cmd");
-   let mut line = String::new();
-   reader.read_line(&mut line).expect("read response");
-   line.trim_end().to_string()
+   read_value(reader)
 }
 
 #[test]
@@ -44,7 +73,11 @@ fn test_auth_not_required() {
    let mut reader = BufReader::new(conn.try_clone().unwrap());
 
    // Can run commands directly
-   let reply = send_cmd(&mut conn, &mut reader, "*3\r\n$3\r\nSET\r\n$1\r\na\r\n$1\r\n1\r\n");
+   let reply = send_cmd(
+      &mut conn,
+      &mut reader,
+      "*3\r\n$3\r\nSET\r\n$1\r\na\r\n$1\r\n1\r\n",
+   );
    assert_eq!(reply, "+OK");
 
    // Calling AUTH when not required returns +OK
@@ -60,23 +93,48 @@ fn test_auth_single_password() {
    let mut reader = BufReader::new(conn.try_clone().unwrap());
 
    // Data command before auth rejected
-   let reply = send_cmd(&mut conn, &mut reader, "*3\r\n$3\r\nSET\r\n$1\r\na\r\n$1\r\n1\r\n");
-   assert!(reply.starts_with("-NOAUTH"), "expected NOAUTH, got: {reply}");
+   let reply = send_cmd(
+      &mut conn,
+      &mut reader,
+      "*3\r\n$3\r\nSET\r\n$1\r\na\r\n$1\r\n1\r\n",
+   );
+   assert!(
+      reply.starts_with("-NOAUTH"),
+      "expected NOAUTH, got: {reply}"
+   );
 
    // Wrong password rejected
-   let reply = send_cmd(&mut conn, &mut reader, "*2\r\n$4\r\nAUTH\r\n$5\r\nwrong\r\n");
-   assert!(reply.starts_with("-WRONGPASS"), "expected WRONGPASS, got: {reply}");
+   let reply = send_cmd(
+      &mut conn,
+      &mut reader,
+      "*2\r\n$4\r\nAUTH\r\n$5\r\nwrong\r\n",
+   );
+   assert!(
+      reply.starts_with("-WRONGPASS"),
+      "expected WRONGPASS, got: {reply}"
+   );
 
    // Still unauthenticated
    let reply = send_cmd(&mut conn, &mut reader, "*2\r\n$3\r\nGET\r\n$1\r\na\r\n");
-   assert!(reply.starts_with("-NOAUTH"), "expected NOAUTH, got: {reply}");
+   assert!(
+      reply.starts_with("-NOAUTH"),
+      "expected NOAUTH, got: {reply}"
+   );
 
    // Correct password authenticates
-   let reply = send_cmd(&mut conn, &mut reader, "*2\r\n$4\r\nAUTH\r\n$11\r\nsupersecret\r\n");
+   let reply = send_cmd(
+      &mut conn,
+      &mut reader,
+      "*2\r\n$4\r\nAUTH\r\n$11\r\nsupersecret\r\n",
+   );
    assert_eq!(reply, "+OK");
 
    // Now data commands work
-   let reply = send_cmd(&mut conn, &mut reader, "*3\r\n$3\r\nSET\r\n$1\r\na\r\n$3\r\nfoo\r\n");
+   let reply = send_cmd(
+      &mut conn,
+      &mut reader,
+      "*3\r\n$3\r\nSET\r\n$1\r\na\r\n$3\r\nfoo\r\n",
+   );
    assert_eq!(reply, "+OK");
 }
 
@@ -93,7 +151,10 @@ fn test_auth_username_password_redis6() {
       &mut reader,
       "*3\r\n$4\r\nAUTH\r\n$7\r\ndefault\r\n$5\r\nwrong\r\n",
    );
-   assert!(reply.starts_with("-WRONGPASS"), "expected WRONGPASS, got: {reply}");
+   assert!(
+      reply.starts_with("-WRONGPASS"),
+      "expected WRONGPASS, got: {reply}"
+   );
 
    // AUTH default mypass123 -> OK
    let reply = send_cmd(
@@ -119,14 +180,12 @@ fn test_auth_hello_inline_and_unauth() {
    let reply = send_cmd(&mut conn, &mut reader, "*2\r\n$5\r\nHELLO\r\n$1\r\n2\r\n");
    assert!(reply.starts_with('*'), "expected array, got: {reply}");
 
-   // Consume the 14 pairs (28 lines)
-   for _ in 0..28 {
-      let mut line = String::new();
-      reader.read_line(&mut line).unwrap();
-   }
-
    // Still unauthenticated
-   let reply = send_cmd(&mut conn, &mut reader, "*3\r\n$3\r\nSET\r\n$1\r\nx\r\n$1\r\ny\r\n");
+   let reply = send_cmd(
+      &mut conn,
+      &mut reader,
+      "*3\r\n$3\r\nSET\r\n$1\r\nx\r\n$1\r\ny\r\n",
+   );
    assert!(reply.starts_with("-NOAUTH"));
 
    // HELLO 3 with wrong inline AUTH -> WRONGPASS
@@ -145,13 +204,11 @@ fn test_auth_hello_inline_and_unauth() {
    );
    assert!(reply.starts_with('%'), "expected RESP3 map, got: {reply}");
 
-   // Consume map entries (7 pairs = 14 lines)
-   for _ in 0..14 {
-      let mut line = String::new();
-      reader.read_line(&mut line).unwrap();
-   }
-
    // Now authenticated
-   let reply = send_cmd(&mut conn, &mut reader, "*3\r\n$3\r\nSET\r\n$1\r\nx\r\n$1\r\ny\r\n");
+   let reply = send_cmd(
+      &mut conn,
+      &mut reader,
+      "*3\r\n$3\r\nSET\r\n$1\r\nx\r\n$1\r\ny\r\n",
+   );
    assert_eq!(reply, "+OK");
 }

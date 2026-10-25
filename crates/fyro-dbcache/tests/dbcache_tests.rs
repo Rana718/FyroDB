@@ -700,9 +700,7 @@ fn test_catalog_snapshot_marks_functions_and_expands_views() {
       "SELECT id FROM users WHERE my_stable_fn(id) = 1"
    )));
    assert!(!manager.is_cacheable(&parse_sql("SELECT id FROM volatile_view")));
-   assert!(manager.is_cacheable(&parse_sql(
-      "SELECT id FROM users WHERE id = 1"
-   )));
+   assert!(manager.is_cacheable(&parse_sql("SELECT id FROM users WHERE id = 1")));
 }
 
 #[test]
@@ -729,7 +727,7 @@ fn test_external_write_detection_invalidates_changed_tables() {
          deletes: 0,
       },
    )];
-   assert_eq!(manager.apply_external_counters(baseline), 0);
+   assert!(manager.apply_external_counters(baseline).is_empty());
    assert!(
       manager
          .get_cached_query("db:", "users", parsed.fingerprint)
@@ -745,14 +743,18 @@ fn test_external_write_detection_invalidates_changed_tables() {
          deletes: 0,
       },
    )];
-   assert_eq!(manager.apply_external_counters(changed), 1);
+   let changed_tables = manager.apply_external_counters(changed);
+   assert_eq!(changed_tables, vec!["users".to_string()]);
    assert!(
       manager
          .get_cached_query("db:", "users", parsed.fingerprint)
          .is_none()
    );
    assert_eq!(
-      manager.metrics().external_invalidations.load(Ordering::Relaxed),
+      manager
+         .metrics()
+         .external_invalidations
+         .load(Ordering::Relaxed),
       1
    );
 }
@@ -821,4 +823,108 @@ fn test_stats_report_counters_and_gauges() {
    assert_eq!(stats["tracked_keys"], 1);
    assert_eq!(stats["encoded_entries"], 1);
    assert_eq!(stats["max_keys"], 100_000);
+}
+
+#[cfg(unix)]
+fn wait_until(timeout: std::time::Duration, mut condition: impl FnMut() -> bool) -> bool {
+   let deadline = std::time::Instant::now() + timeout;
+   while std::time::Instant::now() < deadline {
+      if condition() {
+         return true;
+      }
+      std::thread::sleep(std::time::Duration::from_millis(20));
+   }
+   condition()
+}
+
+#[cfg(unix)]
+#[test]
+fn test_bus_propagates_invalidations_between_managers() {
+   use std::sync::atomic::Ordering;
+   use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+   let nanos = SystemTime::now()
+      .duration_since(UNIX_EPOCH)
+      .unwrap()
+      .as_nanos();
+   let path = std::env::temp_dir().join(format!("fyrodb-bus-{}-{nanos}.sock", std::process::id()));
+   let path = path.to_string_lossy().to_string();
+
+   let manager_a = Arc::new(DbCacheManager::new(Arc::new(MemoryStorage::default())));
+   let manager_b = Arc::new(DbCacheManager::new(Arc::new(MemoryStorage::default())));
+   let bus_a = fyro_dbcache::bus::start(&path, Arc::clone(&manager_a), "db:".to_string())
+      .expect("start bus a");
+   let bus_b = fyro_dbcache::bus::start(&path, Arc::clone(&manager_b), "db:".to_string())
+      .expect("start bus b");
+   assert!(wait_until(Duration::from_secs(5), || {
+      manager_a.metrics().bus_connected.load(Ordering::Relaxed)
+         && manager_b.metrics().bus_connected.load(Ordering::Relaxed)
+   }));
+
+   // Entries stored after both peers joined are invalidated across processes.
+   let parsed = parse_sql("SELECT id, name FROM users");
+   manager_b.store_cached_query(
+      "db:",
+      &parsed.tables,
+      parsed.fingerprint,
+      &probe_result(),
+      60_000,
+   );
+   assert!(
+      manager_b
+         .get_cached_query("db:", "users", parsed.fingerprint)
+         .is_some()
+   );
+
+   bus_a.invalidate(&["users".to_string()]);
+   assert!(wait_until(Duration::from_secs(5), || {
+      manager_b
+         .get_cached_query("db:", "users", parsed.fingerprint)
+         .is_none()
+   }));
+
+   // A flush broadcast clears unrelated local entries too.
+   let orders = parse_sql("SELECT id FROM orders");
+   manager_b.store_cached_query(
+      "db:",
+      &orders.tables,
+      orders.fingerprint,
+      &probe_result(),
+      60_000,
+   );
+   bus_a.flush();
+   assert!(wait_until(Duration::from_secs(5), || {
+      manager_b
+         .get_cached_query("db:", "orders", orders.fingerprint)
+         .is_none()
+   }));
+   assert!(
+      manager_b
+         .metrics()
+         .bus_messages_received
+         .load(Ordering::Relaxed)
+         >= 2
+   );
+
+   // A manager that joins with persisted keys flushes them: the broker may
+   // have relayed invalidations while this process was not listening.
+   let late = Arc::new(DbCacheManager::new(Arc::new(MemoryStorage::default())));
+   let late_parsed = parse_sql("SELECT id FROM accounts");
+   late.store_cached_query(
+      "db:",
+      &late_parsed.tables,
+      late_parsed.fingerprint,
+      &probe_result(),
+      60_000,
+   );
+   let _late_bus = fyro_dbcache::bus::start(&path, Arc::clone(&late), "db:".to_string())
+      .expect("start late bus");
+   assert!(wait_until(Duration::from_secs(5), || {
+      late
+         .get_cached_query("db:", "accounts", late_parsed.fingerprint)
+         .is_none()
+   }));
+
+   // Keep the publishers alive until the assertions complete.
+   drop((bus_a, bus_b));
 }

@@ -71,7 +71,7 @@ func humanCount(n int64) string {
 
 func main() {
 	port := flag.Int("p", 8000, "server port (single-node mode)")
-	mode := flag.String("m", "all", "mode: all | key | pub | mix | vec | lat | mem | ann")
+	mode := flag.String("m", "all", "mode: all | bench | key | pub | mix | vec | lat | mem | ann")
 	cluster := flag.String("cluster", "", "comma-separated list of cluster master addrs")
 	pid := flag.Int("pid", 0, "server PID for resource monitoring (auto-detect if 0)")
 	dockerName := flag.String("docker", "", "docker container name/ID to monitor (auto-detect if empty)")
@@ -237,6 +237,12 @@ func main() {
 		runMemory()
 	case "ann":
 		runANN()
+	case "bench":
+		runKV()
+		fmt.Println()
+		runPubSub(addrs[0])
+		fmt.Println()
+		runMix()
 	case "all":
 		runKV()
 		fmt.Println()
@@ -246,7 +252,7 @@ func main() {
 		fmt.Println()
 		runVector()
 	default:
-		fmt.Fprintf(os.Stderr, "unknown -m value %q (want: all | key | pub | mix | vec | lat | mem | ann)\n", *mode)
+		fmt.Fprintf(os.Stderr, "unknown -m value %q (want: all | bench | key | pub | mix | vec | lat | mem | ann)\n", *mode)
 		os.Exit(1)
 	}
 
