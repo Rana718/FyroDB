@@ -1,11 +1,11 @@
 use crate::auth::{self, ClientAuthError};
 use crate::bus::InvalidationBus;
-use crate::cache::{DbCacheManager, EncodedResult, TableCounters, mix64};
+use crate::cache::{DbCacheManager, EncodedResult, mix64};
 use crate::config::{DbCacheConfig, DbProxyMode};
 use crate::pool::{PoolKey, PoolLimits, UpstreamPool};
 use crate::protocol::{self, FrameReader, FrontendMessage};
 use crate::query::{ParsedQuery, QueryKind, SessionChange, compute_fingerprint};
-use crate::row::{DbRow, DbValue};
+use crate::row::DbValue;
 use crate::upstream::{HandshakeError, RelayOutcome, ReplyStop, UpstreamConnection};
 use std::collections::HashMap;
 use std::io::{self, BufReader, Write};
@@ -45,8 +45,8 @@ const CATALOG_VIEWS_SQL: &str = "SELECT v.relname, pg_get_viewdef(v.oid), \
       AND d.refclassid = 'pg_class'::regclass AND d.deptype = 'n' \
    WHERE r.rulename = '_RETURN'";
 
-const EXTERNAL_SYNC_SQL: &str = "SELECT relname, n_tup_ins, n_tup_upd, n_tup_del \
-   FROM pg_stat_all_tables WHERE schemaname NOT IN ('pg_catalog', 'information_schema')";
+// const EXTERNAL_SYNC_SQL: &str = "SELECT relname, n_tup_ins, n_tup_upd, n_tup_del \
+//    FROM pg_stat_all_tables WHERE schemaname NOT IN ('pg_catalog', 'information_schema')";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ContextState {
@@ -132,6 +132,7 @@ pub fn start_proxy_listener(
          });
    }
 
+   /*
    if config.sync_interval_ms > 0
       && let Some(upstream_target) = config.upstream_addr.clone()
    {
@@ -232,6 +233,7 @@ pub fn start_proxy_listener(
             }
          });
    }
+   */
 
    thread::Builder::new()
       .name("fyrodb-dbproxy".into())
@@ -1957,6 +1959,7 @@ fn value_fingerprint(value: &DbValue) -> u64 {
    }
 }
 
+/*
 fn table_counters(row: &DbRow) -> Option<(String, TableCounters)> {
    let name = String::from_utf8(row.values.first()?.as_bytes()?).ok()?;
    let inserts = parse_counter(row.values.get(1)?)?;
@@ -1976,3 +1979,4 @@ fn parse_counter(value: &DbValue) -> Option<u64> {
    let bytes = value.as_bytes()?;
    std::str::from_utf8(&bytes).ok()?.trim().parse().ok()
 }
+*/
