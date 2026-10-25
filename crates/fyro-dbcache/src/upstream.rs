@@ -9,7 +9,6 @@ use std::time::Duration;
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
 const QUERY_TIMEOUT: Duration = Duration::from_secs(300);
-const RELAY_FLUSH_BYTES: usize = 32 * 1024;
 const MAX_CAPTURE_BYTES: usize = 4 << 20;
 
 #[derive(Debug)]
@@ -116,7 +115,6 @@ impl Write for SharedTransport {
 pub struct UpstreamConnection {
    writer: SharedTransport,
    reader: FrameReader<BufReader<SharedTransport>>,
-   relay_buf: Vec<u8>,
    auth_ok: Vec<u8>,
    post_auth: Vec<u8>,
    required_password: bool,
@@ -171,7 +169,6 @@ impl UpstreamConnection {
       Ok(Self {
          writer: shared,
          reader,
-         relay_buf: Vec::with_capacity(16 * 1024),
          auth_ok: Vec::new(),
          post_auth: Vec::new(),
          required_password: false,
@@ -477,12 +474,7 @@ impl UpstreamConnection {
 
       loop {
          let tag = self.reader.read_raw()?;
-         let frame = self.reader.last_frame();
-         self.relay_buf.extend_from_slice(frame);
-         if self.relay_buf.len() >= RELAY_FLUSH_BYTES {
-            sink.write_all(&self.relay_buf)?;
-            self.relay_buf.clear();
-         }
+         sink.write_all(self.reader.last_frame())?;
 
          let terminal = match tag {
             b'N' | b'A' | b'S' | b'K' => false,
@@ -553,10 +545,6 @@ impl UpstreamConnection {
          }
       }
 
-      if !self.relay_buf.is_empty() {
-         sink.write_all(&self.relay_buf)?;
-         self.relay_buf.clear();
-      }
       Ok(outcome)
    }
 
@@ -618,7 +606,7 @@ fn normalize_target(target: &str) -> String {
 
 fn command_tag(body: &[u8]) -> String {
    let tag = body.strip_suffix(&[0]).unwrap_or(body);
-   String::from_utf8_lossy(tag).to_string()
+   std::str::from_utf8(tag).unwrap_or("").to_string()
 }
 
 fn put_frontend<W: Write>(writer: &mut W, tag: u8, body: &[u8]) -> io::Result<()> {
@@ -640,7 +628,7 @@ fn error_message(body: &[u8]) -> String {
          break;
       };
       if field == b'M' {
-         return String::from_utf8_lossy(&body[pos..pos + end]).to_string();
+         return std::str::from_utf8(&body[pos..pos + end]).unwrap_or("").to_string();
       }
       pos += end + 1;
    }
@@ -660,7 +648,7 @@ pub fn parse_row_description(data: &[u8]) -> io::Result<Vec<ColumnInfo>> {
          .iter()
          .position(|&b| b == 0)
          .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid column name"))?;
-      let name = String::from_utf8_lossy(&data[offset..offset + end]).to_string();
+      let name = std::str::from_utf8(&data[offset..offset + end]).unwrap_or("").to_string();
       offset += end + 1 + 6; // name + null + table_oid (4) + col_attr (2)
 
       if offset + 4 > data.len() {
@@ -706,7 +694,7 @@ pub fn parse_data_row(data: &[u8]) -> io::Result<DbRow> {
          if offset + len > data.len() {
             break;
          }
-         let text = String::from_utf8_lossy(&data[offset..offset + len]).to_string();
+         let text = std::str::from_utf8(&data[offset..offset + len]).unwrap_or("").to_string();
          offset += len;
          values.push(DbValue::Text(text));
       }

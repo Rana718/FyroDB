@@ -12,12 +12,14 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const ENCODED_SHARDS: usize = 64;
+const INFLIGHT_SHARDS: usize = 16;
 
-type EncodedShard = RwLock<HashMap<String, Arc<EncodedResult>>>;
+type EncodedShard = RwLock<HashMap<String, Arc<EncodedResult>, FixedState>>;
+type InflightShard = Mutex<HashMap<String, Arc<FillWait>, FixedState>>;
 const CATALOG_REFRESH_MIN_MS: u64 = 1_000;
 const CATALOG_REFRESH_RETRY_MS: u64 = 5_000;
 const PRUNE_INTERVAL_MS: u64 = 60_000;
-const FILL_WAIT_MS: u64 = 250;
+const FILL_WAIT_MS: u64 = 50;
 
 // Storage backend interface implemented by FyroDB's core Store.
 pub trait DbCacheStorage: Send + Sync {
@@ -25,76 +27,84 @@ pub trait DbCacheStorage: Send + Sync {
    fn set(&self, key: &str, value: &str, ttl_ms: u64);
    fn del(&self, key: &str) -> bool;
 
-   // Cheap liveness check used to keep the local encoded-response cache in
-   // sync with keys deleted through the RESP port.
    fn exists(&self, key: &str) -> bool {
       self.get(key).is_some()
    }
 
-   // Enumerates live key/value pairs under a prefix. Used for startup cache
-   // flushing and table-index rebuilds.
    fn scan_prefix(&self, prefix: &str) -> Vec<(String, Option<String>)> {
       let _ = prefix;
       Vec::new()
    }
+
+   // Returns true when the storage is local and cannot have keys deleted
+   // through a separate RESP port. Skips the per-hit existence check.
+   fn is_local(&self) -> bool { false }
 }
 
-#[derive(Default)]
 pub struct MemoryStorage {
-   map: RwLock<HashMap<String, (String, u64)>>,
+   shards: Box<[RwLock<HashMap<String, (String, u64), FixedState>>]>,
+}
+
+impl Default for MemoryStorage {
+   fn default() -> Self {
+      let mut shards = Vec::with_capacity(64);
+      for _ in 0..64 {
+         shards.push(RwLock::new(HashMap::with_hasher(FixedState::with_seed(0))));
+      }
+      Self { shards: shards.into_boxed_slice() }
+   }
+}
+
+impl MemoryStorage {
+   fn shard(&self, key: &str) -> &RwLock<HashMap<String, (String, u64), FixedState>> {
+      let mut h = FixedState::with_seed(0).build_hasher();
+      use std::hash::Hasher;
+      h.write(key.as_bytes());
+      &self.shards[(h.finish() as usize) & 63]
+   }
 }
 
 impl DbCacheStorage for MemoryStorage {
    fn get(&self, key: &str) -> Option<String> {
       let now = now_ms();
-      let guard = self.map.read();
+      let guard = self.shard(key).read();
       let (val, exp) = guard.get(key)?;
-      if *exp != 0 && *exp < now {
-         None
-      } else {
-         Some(val.clone())
-      }
+      if *exp != 0 && *exp < now { None } else { Some(val.clone()) }
    }
 
    fn set(&self, key: &str, value: &str, ttl_ms: u64) {
       let exp = if ttl_ms > 0 { now_ms() + ttl_ms } else { 0 };
-      self
-         .map
-         .write()
-         .insert(key.to_string(), (value.to_string(), exp));
+      self.shard(key).write().insert(key.to_string(), (value.to_string(), exp));
    }
 
    fn del(&self, key: &str) -> bool {
-      self.map.write().remove(key).is_some()
+      self.shard(key).write().remove(key).is_some()
    }
 
    fn exists(&self, key: &str) -> bool {
       let now = now_ms();
-      self
-         .map
-         .read()
-         .get(key)
-         .is_some_and(|(_, exp)| *exp == 0 || *exp >= now)
+      self.shard(key).read().get(key).is_some_and(|(_, exp)| *exp == 0 || *exp >= now)
    }
 
    fn scan_prefix(&self, prefix: &str) -> Vec<(String, Option<String>)> {
       let now = now_ms();
-      self
-         .map
-         .read()
-         .iter()
-         .filter(|(key, (_, exp))| key.starts_with(prefix) && (*exp == 0 || *exp >= now))
-         .map(|(key, (value, _))| (key.clone(), Some(value.clone())))
-         .collect()
+      self.shards.iter().flat_map(|shard| {
+         shard.read().iter()
+            .filter(|(k, (_, exp))| k.starts_with(prefix) && (*exp == 0 || *exp >= now))
+            .map(|(k, (v, _))| (k.clone(), Some(v.clone())))
+            .collect::<Vec<_>>()
+      }).collect()
    }
+
+   fn is_local(&self) -> bool { true }
 }
 
-// Wire-ready encoding of a cached result: no JSON parsing or row encoding on
-// the hot path, just memcpy into the response buffer.
+// Wire-ready encoding of a cached result: RowDescription + DataRows + CommandComplete
+// stored contiguously in one allocation; split0 and split1 mark the boundaries.
 pub struct EncodedResult {
-   pub row_description: Vec<u8>,
-   pub data_rows: Vec<u8>,
-   pub command_complete: Vec<u8>,
+   wire: Vec<u8>,
+   split0: u32,
+   split1: u32,
    pub columns: Vec<ColumnInfo>,
    pub row_count: u32,
    pub expires_at_ms: u64,
@@ -104,34 +114,33 @@ impl EncodedResult {
    pub fn from_result_set(result: &DbResultSet, ttl_ms: u64) -> Self {
       let (row_description, data_rows, row_count) =
          protocol::encode_result(&result.columns, &result.rows);
-      Self {
-         row_description,
-         data_rows,
-         command_complete: protocol::encode_command_complete(&format!("SELECT {row_count}")),
-         columns: result.columns.clone(),
-         row_count,
-         expires_at_ms: expiry_ms(ttl_ms),
-      }
+      let cc = protocol::encode_command_complete(&format!("SELECT {row_count}"));
+      let split0 = row_description.len() as u32;
+      let split1 = split0 + data_rows.len() as u32;
+      let mut wire = Vec::with_capacity(split1 as usize + cc.len());
+      wire.extend_from_slice(&row_description);
+      wire.extend_from_slice(&data_rows);
+      wire.extend_from_slice(&cc);
+      Self { wire, split0, split1, columns: result.columns.clone(), row_count, expires_at_ms: expiry_ms(ttl_ms) }
    }
+
+   #[inline] pub(crate) fn row_description(&self) -> &[u8] { &self.wire[..self.split0 as usize] }
+   #[inline] pub(crate) fn data_rows(&self) -> &[u8] { &self.wire[self.split0 as usize..self.split1 as usize] }
+   #[inline] pub(crate) fn command_complete(&self) -> &[u8] { &self.wire[self.split1 as usize..] }
 
    // Simple-query response: RowDescription, rows, CommandComplete, ReadyForQuery.
    pub fn write_simple_response(&self, out: &mut Vec<u8>) {
-      let needed = self.row_description.len()
-         + self.data_rows.len()
-         + self.command_complete.len()
-         + protocol::READY_IDLE.len();
-      out.reserve(needed);
-      out.extend_from_slice(&self.row_description);
-      out.extend_from_slice(&self.data_rows);
-      out.extend_from_slice(&self.command_complete);
+      out.reserve(self.wire.len() + protocol::READY_IDLE.len());
+      out.extend_from_slice(&self.wire);
       out.extend_from_slice(&protocol::READY_IDLE);
    }
 
    // Extended-protocol Execute response: rows plus CommandComplete.
    pub fn write_execute_response(&self, out: &mut Vec<u8>) {
-      out.reserve(self.data_rows.len() + self.command_complete.len());
-      out.extend_from_slice(&self.data_rows);
-      out.extend_from_slice(&self.command_complete);
+      let payload = self.data_rows().len() + self.command_complete().len();
+      out.reserve(payload);
+      out.extend_from_slice(self.data_rows());
+      out.extend_from_slice(self.command_complete());
    }
 }
 
@@ -140,24 +149,26 @@ impl std::fmt::Debug for EncodedResult {
       f.debug_struct("EncodedResult")
          .field("columns", &self.columns)
          .field("row_count", &self.row_count)
-         .field(
-            "bytes",
-            &(self.row_description.len() + self.data_rows.len()),
-         )
+         .field("bytes", &self.wire.len())
          .finish()
    }
 }
 
 // Catalog metadata that decides whether a query result is shareable.
-#[derive(Default)]
 pub struct CatalogSnapshot {
-   // Functions with provolatile 's' (stable) or 'v' (volatile), keyed by both
-   // bare and schema-qualified names.
-   volatile: HashSet<String>,
-   // View or materialized view -> directly referenced relations.
-   view_tables: HashMap<String, Vec<String>>,
-   // Views whose definition calls a non-immutable function.
-   volatile_views: HashSet<String>,
+   volatile: HashSet<String, FixedState>,
+   view_tables: HashMap<String, Vec<String>, FixedState>,
+   volatile_views: HashSet<String, FixedState>,
+}
+
+impl Default for CatalogSnapshot {
+   fn default() -> Self {
+      Self {
+         volatile: HashSet::with_hasher(FixedState::with_seed(0)),
+         view_tables: HashMap::with_hasher(FixedState::with_seed(0)),
+         volatile_views: HashSet::with_hasher(FixedState::with_seed(0)),
+      }
+   }
 }
 
 impl CatalogSnapshot {
@@ -173,7 +184,7 @@ impl CatalogSnapshot {
          snapshot.volatile.insert(format!("{schema}.{name}"));
       }
 
-      let mut definitions: HashMap<String, String> = HashMap::new();
+      let mut definitions: HashMap<String, String, FixedState> = HashMap::with_hasher(FixedState::with_seed(0));
       for row in view_rows {
          let Some(view) = row_text(row, 0) else {
             continue;
@@ -200,11 +211,11 @@ impl CatalogSnapshot {
          }
       }
 
-      let volatile_names: Vec<&String> = snapshot.volatile.iter().collect();
+      let needles: Vec<String> = snapshot.volatile.iter().map(|n| format!("{n}(")).collect();
       for (view, definition) in &definitions {
-         if volatile_names
+         if needles
             .iter()
-            .any(|name| definition_mentions(definition, name))
+            .any(|needle| definition_mentions(definition, needle))
          {
             snapshot.volatile_views.insert(view.clone());
          }
@@ -249,27 +260,27 @@ impl CatalogSnapshot {
    // nesting depth. Used for invalidation registration only, never for keys.
    pub fn expand(&self, tables: &[String]) -> Vec<String> {
       let mut out: Vec<String> = Vec::with_capacity(tables.len());
+      let mut seen: HashSet<String, FixedState> = HashSet::with_capacity_and_hasher(tables.len() * 4, FixedState::with_seed(0));
       let mut queue: VecDeque<(String, usize)> = tables.iter().map(|t| (t.clone(), 0)).collect();
       while let Some((table, depth)) = queue.pop_front() {
-         if out.contains(&table) {
+         if !seen.insert(table.clone()) {
             continue;
          }
-         out.push(table.clone());
-         if depth >= 8 {
-            continue;
-         }
-         let bare = table.rsplit('.').next().unwrap_or(&table);
-         let bases = self
-            .view_tables
-            .get(&table)
-            .or_else(|| self.view_tables.get(bare));
-         if let Some(bases) = bases {
-            for base in bases {
-               if !out.contains(base) {
-                  queue.push_back((base.clone(), depth + 1));
+         if depth < 8 {
+            let bare = table.rsplit('.').next().unwrap_or(&table);
+            let bases = self
+               .view_tables
+               .get(&table)
+               .or_else(|| self.view_tables.get(bare));
+            if let Some(bases) = bases {
+               for base in bases {
+                  if !seen.contains(base.as_str()) {
+                     queue.push_back((base.clone(), depth + 1));
+                  }
                }
             }
          }
+         out.push(table);
       }
       out
    }
@@ -282,11 +293,9 @@ fn row_text(row: &DbRow, index: usize) -> Option<&str> {
    }
 }
 
-// Matches `name(` while ignoring qualified prefixes like `pg_catalog.name(`.
-fn definition_mentions(definition: &str, name: &str) -> bool {
-   let needle = format!("{name}(");
+fn definition_mentions(definition: &str, needle: &str) -> bool {
    let mut from = 0;
-   while let Some(offset) = definition[from..].find(&needle) {
+   while let Some(offset) = definition[from..].find(needle) {
       let position = from + offset;
       let qualified = position > 0 && definition.as_bytes()[position - 1] == b'.';
       if !qualified {
@@ -353,27 +362,38 @@ impl Default for CacheLimits {
 }
 
 // Tracks table-to-cache-keys relations for granular write invalidations.
-#[derive(Default)]
 struct TableTracker {
-   tables: HashMap<String, HashSet<String>>,
-   // Cache key -> index marker keys, so invalidation can drop both. The number
-   // of entries here is the number of tracked cache keys.
-   markers: HashMap<String, Vec<String>>,
-   // Bumped on every invalidation so a fill that raced with a write can be
-   // discarded instead of resurrecting stale rows.
-   epochs: HashMap<String, u64>,
+   tables: HashMap<String, HashSet<String, FixedState>, FixedState>,
+   markers: HashMap<String, Vec<String>, FixedState>,
+   epochs: HashMap<String, u64, FixedState>,
+   insert_order: VecDeque<String>,
+}
+
+impl Default for TableTracker {
+   fn default() -> Self {
+      Self {
+         tables: HashMap::with_hasher(FixedState::with_seed(0)),
+         markers: HashMap::with_hasher(FixedState::with_seed(0)),
+         epochs: HashMap::with_hasher(FixedState::with_seed(0)),
+         insert_order: VecDeque::new(),
+      }
+   }
 }
 
 impl TableTracker {
    fn register(&mut self, table: &str, key: String, marker: String) {
+      let is_new = !self.markers.contains_key(&key);
       self
          .tables
          .entry(table.to_string())
-         .or_default()
+         .or_insert_with(|| HashSet::with_hasher(FixedState::with_seed(0)))
          .insert(key.clone());
-      let markers = self.markers.entry(key).or_default();
+      let markers = self.markers.entry(key.clone()).or_default();
       if !markers.contains(&marker) {
          markers.push(marker);
+      }
+      if is_new {
+         self.insert_order.push_back(key);
       }
    }
 
@@ -432,6 +452,7 @@ impl TableTracker {
    fn clear(&mut self) {
       self.tables.clear();
       self.markers.clear();
+      self.insert_order.clear();
    }
 
    fn key_count(&self) -> usize {
@@ -439,7 +460,7 @@ impl TableTracker {
    }
 
    fn tracked_table_names(&self) -> Vec<String> {
-      let mut set = HashSet::new();
+      let mut set: HashSet<String, FixedState> = HashSet::with_hasher(FixedState::with_seed(0));
       for table in self.tables.keys() {
          let norm = normalize_table_name(table);
          if !norm.is_empty() {
@@ -476,12 +497,22 @@ pub struct TableCounters {
    pub deletes: u64,
 }
 
-#[derive(Default)]
 struct ExternalSync {
    last_poll_ms: AtomicU64,
    poll_started_ms: AtomicU64,
    in_progress: AtomicBool,
-   snapshot: Mutex<HashMap<String, TableCounters>>,
+   snapshot: Mutex<HashMap<String, TableCounters, FixedState>>,
+}
+
+impl Default for ExternalSync {
+   fn default() -> Self {
+      Self {
+         last_poll_ms: AtomicU64::new(0),
+         poll_started_ms: AtomicU64::new(0),
+         in_progress: AtomicBool::new(false),
+         snapshot: Mutex::new(HashMap::with_hasher(FixedState::with_seed(0))),
+      }
+   }
 }
 
 #[derive(Default)]
@@ -495,23 +526,30 @@ struct FillWait {
 pub struct FillGuard {
    key: String,
    slot: Arc<FillWait>,
-   inflight: Arc<Mutex<HashMap<String, Arc<FillWait>>>>,
+   inflight: Arc<Box<[InflightShard]>>,
 }
 
 impl Drop for FillGuard {
    fn drop(&mut self) {
       {
-         let mut inflight = self.inflight.lock();
-         if inflight
+         let idx = inflight_shard_idx(&self.key);
+         let mut shard = self.inflight[idx].lock();
+         if shard
             .get(&self.key)
             .is_some_and(|slot| Arc::ptr_eq(slot, &self.slot))
          {
-            inflight.remove(&self.key);
+            shard.remove(&self.key);
          }
       }
       *self.slot.done.lock() = true;
       self.slot.cond.notify_all();
    }
+}
+
+fn inflight_shard_idx(key: &str) -> usize {
+   let mut hasher = FixedState::with_seed(0).build_hasher();
+   hasher.write(key.as_bytes());
+   (hasher.finish() as usize) & (INFLIGHT_SHARDS - 1)
 }
 
 pub struct DbCacheManager {
@@ -524,7 +562,7 @@ pub struct DbCacheManager {
    limits: CacheLimits,
    sync: ExternalSync,
    last_prune_ms: AtomicU64,
-   inflight: Arc<Mutex<HashMap<String, Arc<FillWait>>>>,
+   inflight: Arc<Box<[InflightShard]>>,
 }
 
 impl DbCacheManager {
@@ -535,7 +573,11 @@ impl DbCacheManager {
    pub fn with_limits(storage: Arc<dyn DbCacheStorage>, limits: CacheLimits) -> Self {
       let mut encoded = Vec::with_capacity(ENCODED_SHARDS);
       for _ in 0..ENCODED_SHARDS {
-         encoded.push(RwLock::new(HashMap::new()));
+         encoded.push(RwLock::new(HashMap::with_hasher(FixedState::with_seed(0))));
+      }
+      let mut inflight_shards: Vec<InflightShard> = Vec::with_capacity(INFLIGHT_SHARDS);
+      for _ in 0..INFLIGHT_SHARDS {
+         inflight_shards.push(Mutex::new(HashMap::with_hasher(FixedState::with_seed(0))));
       }
       Self {
          storage,
@@ -547,7 +589,7 @@ impl DbCacheManager {
          limits,
          sync: ExternalSync::default(),
          last_prune_ms: AtomicU64::new(now_ms()),
-         inflight: Arc::new(Mutex::new(HashMap::new())),
+         inflight: Arc::new(inflight_shards.into_boxed_slice()),
       }
    }
 
@@ -685,7 +727,7 @@ impl DbCacheManager {
 
    // -------------------------------------------------------------- cache
 
-   fn encoded_shard(&self, key: &str) -> &RwLock<HashMap<String, Arc<EncodedResult>>> {
+   fn encoded_shard(&self, key: &str) -> &RwLock<HashMap<String, Arc<EncodedResult>, FixedState>> {
       let mut hasher = FixedState::with_seed(0).build_hasher();
       hasher.write(key.as_bytes());
       &self.encoded[(hasher.finish() as usize) & (ENCODED_SHARDS - 1)]
@@ -708,7 +750,8 @@ impl DbCacheManager {
 
       let entry = { shard.read().get(&key).cloned() }?;
       let now = now_ms();
-      if (entry.expires_at_ms != 0 && entry.expires_at_ms < now) || !self.storage.exists(&key) {
+      let expired = entry.expires_at_ms != 0 && entry.expires_at_ms < now;
+      if expired || (!self.storage.is_local() && !self.storage.exists(&key)) {
          shard.write().remove(&key);
          return None;
       }
@@ -832,7 +875,7 @@ impl DbCacheManager {
       {
          let mut tracker = self.tracker.write();
          tracker.bump(tables);
-         let mut matched: HashSet<String> = HashSet::new();
+         let mut matched: HashSet<String, FixedState> = HashSet::with_hasher(FixedState::with_seed(0));
          for table in tables {
             for name in tracker.matching_tables(table) {
                if matched.insert(name.clone()) {
@@ -911,7 +954,7 @@ impl DbCacheManager {
 
    // ---------------------------------------------------- capacity / pruning
 
-   // Evicts arbitrary entries once the tracked key count exceeds the limit.
+   // Evicts oldest-inserted entries (FIFO) once the tracked key count exceeds the limit.
    fn enforce_capacity(&self, prefix: &str) -> usize {
       let max = self.limits.max_keys;
       if max == 0 {
@@ -924,7 +967,14 @@ impl DbCacheManager {
             return 0;
          }
          let excess = total - max;
-         let keys: Vec<String> = tracker.markers.keys().take(excess).cloned().collect();
+         let mut keys = Vec::with_capacity(excess);
+         while keys.len() < excess {
+            match tracker.insert_order.pop_front() {
+               Some(k) if tracker.markers.contains_key(&k) => keys.push(k),
+               Some(_) => {}
+               None => break,
+            }
+         }
          keys
             .into_iter()
             .map(|key| {
@@ -1066,12 +1116,13 @@ impl DbCacheManager {
    // Elects this caller as the single loader for a cache key. Returns None when
    // another caller is already loading it.
    pub fn begin_fill(&self, key: &str) -> Option<FillGuard> {
-      let mut inflight = self.inflight.lock();
-      if inflight.contains_key(key) {
+      let idx = inflight_shard_idx(key);
+      let mut shard = self.inflight[idx].lock();
+      if shard.contains_key(key) {
          return None;
       }
       let slot = Arc::new(FillWait::default());
-      inflight.insert(key.to_string(), Arc::clone(&slot));
+      shard.insert(key.to_string(), Arc::clone(&slot));
       Some(FillGuard {
          key: key.to_string(),
          slot,
@@ -1082,7 +1133,8 @@ impl DbCacheManager {
    // Waits briefly for the current loader of `key`. Returns true when the
    // loader finished within the window.
    pub fn wait_for_fill(&self, key: &str) -> bool {
-      let slot = self.inflight.lock().get(key).cloned();
+      let idx = inflight_shard_idx(key);
+      let slot = self.inflight[idx].lock().get(key).cloned();
       let Some(slot) = slot else {
          return false;
       };
@@ -1202,7 +1254,7 @@ fn jittered_ttl(ttl_ms: u64, jitter_pct: u64, seed: u64) -> u64 {
    let span = (ttl_ms / 100)
       .saturating_mul(jitter_pct.clamp(0, 50))
       .max(1);
-   ttl_ms + (mix64(seed ^ now_ms()) % (span + 1))
+   ttl_ms + (mix64(seed) % (span + 1))
 }
 
 pub(crate) fn mix64(mut value: u64) -> u64 {
@@ -1213,9 +1265,23 @@ pub(crate) fn mix64(mut value: u64) -> u64 {
    value ^ (value >> 31)
 }
 
+thread_local! {
+   static NOW_CACHE: std::cell::Cell<(u64, u8)> = std::cell::Cell::new((0, 0));
+}
+
 pub(crate) fn now_ms() -> u64 {
-   SystemTime::now()
-      .duration_since(UNIX_EPOCH)
-      .map(|d| d.as_millis() as u64)
-      .unwrap_or(0)
+   NOW_CACHE.with(|c| {
+      let (cached, count) = c.get();
+      if count == 0 {
+         let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+         c.set((now, 7));
+         now
+      } else {
+         c.set((cached, count - 1));
+         cached
+      }
+   })
 }

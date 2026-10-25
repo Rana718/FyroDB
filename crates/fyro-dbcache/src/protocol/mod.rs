@@ -209,7 +209,7 @@ impl<R: Read> FrameReader<R> {
          b'Q' => {
             let sql = body.strip_suffix(&[0]).unwrap_or(body);
             Ok(FrontendMessage::Query(
-               String::from_utf8_lossy(sql).to_string(),
+               std::str::from_utf8(sql).unwrap_or("").to_string(),
             ))
          }
          b'P' => {
@@ -440,11 +440,24 @@ pub fn append_data_row(out: &mut Vec<u8>, values: &[DbValue]) {
 }
 
 fn format_i64<'a>(value: &i64, buf: &'a mut [u8; 20]) -> &'a [u8] {
-   use std::io::Write as _;
-   let mut cursor = std::io::Cursor::new(&mut buf[..]);
-   write!(&mut cursor, "{value}").expect("write int");
-   let len = cursor.position() as usize;
-   &buf[..len]
+   let n = *value;
+   if n == 0 {
+      buf[0] = b'0';
+      return &buf[..1];
+   }
+   let neg = n < 0;
+   let mut abs = if neg { n.wrapping_neg() as u64 } else { n as u64 };
+   let mut pos = 20usize;
+   while abs > 0 {
+      pos -= 1;
+      buf[pos] = b'0' + (abs % 10) as u8;
+      abs /= 10;
+   }
+   if neg {
+      pos -= 1;
+      buf[pos] = b'-';
+   }
+   &buf[pos..]
 }
 
 pub fn encode_result(

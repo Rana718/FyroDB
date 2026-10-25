@@ -7,6 +7,7 @@ use crate::protocol::{self, FrameReader, FrontendMessage};
 use crate::query::{ParsedQuery, QueryKind, SessionChange, compute_fingerprint};
 use crate::row::DbValue;
 use crate::upstream::{HandshakeError, RelayOutcome, ReplyStop, UpstreamConnection};
+use foldhash::fast::FixedState;
 use std::collections::HashMap;
 use std::io::{self, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
@@ -19,6 +20,7 @@ const CLIENT_READ_BUF: usize = 32 * 1024;
 const RELAY_FLUSH_BYTES: usize = 32 * 1024;
 const PORTAL_SUSPENDED: [u8; 5] = [b's', 0, 0, 0, 4];
 const MAX_CONTEXT_SETS: u32 = 64;
+const MAX_NAMED_STATEMENTS: usize = 512;
 
 // Settings that can change the rows a query returns for the same SQL text.
 // `current_setting(name, true)` yields NULL for settings this server version
@@ -253,7 +255,7 @@ pub fn start_proxy_listener(
                   let mgr = Arc::clone(&cache_mgr);
                   let pool = Arc::clone(&pool);
                   let bus = bus.clone();
-                  thread::Builder::new()
+                  if let Err(e) = thread::Builder::new()
                      .name("fyrodb-dbconn".into())
                      .stack_size(CLIENT_STACK)
                      .spawn(move || {
@@ -263,7 +265,9 @@ pub fn start_proxy_listener(
                            eprintln!("fyrodb-dbproxy client error: {e}");
                         }
                      })
-                     .ok();
+                  {
+                     eprintln!("fyrodb-dbproxy: spawn failed: {e}");
+                  }
                }
                Err(e) => {
                   eprintln!("fyrodb-dbproxy accept error on {listen_addr}: {e}");
@@ -298,8 +302,8 @@ fn handle_client(
       transaction_writes: Vec::new(),
       cycle_forwarded: false,
       cycle_error: false,
-      statements: HashMap::new(),
-      portals: HashMap::new(),
+      statements: HashMap::with_hasher(FixedState::with_seed(0)),
+      portals: HashMap::with_hasher(FixedState::with_seed(0)),
       out: Vec::with_capacity(16 * 1024),
       context_hash: 0,
       context_state: ContextState::Untrusted,
@@ -349,8 +353,8 @@ struct Session {
    transaction_writes: Vec<String>,
    cycle_forwarded: bool,
    cycle_error: bool,
-   statements: HashMap<String, StatementState>,
-   portals: HashMap<String, PortalState>,
+   statements: HashMap<String, StatementState, FixedState>,
+   portals: HashMap<String, PortalState, FixedState>,
    out: Vec<u8>,
    // Result-affecting session settings (search_path, role, GUCs) folded into
    // every cache fingerprint so different sessions never share results.
@@ -809,6 +813,11 @@ impl Session {
       if self.cycle_error {
          return Ok(());
       }
+      if !name.is_empty() && !self.statements.contains_key(&name) && self.statements.len() >= MAX_NAMED_STATEMENTS {
+         self.queue_error("53400", "too many prepared statements");
+         self.cycle_error = true;
+         return Ok(());
+      }
 
       let parsed = self.mgr.analyze(&sql);
       let locally_servable = parsed.is_cacheable
@@ -902,6 +911,11 @@ impl Session {
       result_formats: Vec<i16>,
    ) -> io::Result<()> {
       if self.cycle_error {
+         return Ok(());
+      }
+      if !portal.is_empty() && !self.portals.contains_key(&portal) && self.portals.len() >= MAX_NAMED_STATEMENTS {
+         self.queue_error("53400", "too many open portals");
+         self.cycle_error = true;
          return Ok(());
       }
 
@@ -1033,9 +1047,9 @@ impl Session {
                && let Some(entry) =
                   self.lookup_encoded(&parsed, fingerprint.unwrap_or(base_fingerprint))
             {
-               self.out.extend_from_slice(&entry.row_description);
+               self.out.extend_from_slice(entry.row_description());
                if let Some(portal) = self.portals.get_mut(name) {
-                  portal.row_description = Some(entry.row_description.clone());
+                  portal.row_description = Some(entry.row_description().to_vec());
                }
                return Ok(());
             }
@@ -1142,7 +1156,6 @@ impl Session {
       let parsed = Arc::clone(&portal.parsed);
       let base_fingerprint = portal.fingerprint;
       let text_results = portal.text_results;
-      let statement = portal.statement.clone();
 
       let initial = self.effective_fingerprint(base_fingerprint);
       let cacheable = parsed.is_cacheable
@@ -1189,6 +1202,7 @@ impl Session {
          _ => {}
       }
 
+      let statement = self.portals.get(portal_name).map(|p| p.statement.clone()).unwrap_or_default();
       let bind_forwarded = self
          .portals
          .get(portal_name)
@@ -1394,34 +1408,33 @@ impl Session {
       };
 
       Self::write_encoded_rows_into(out, &mut portal.cursor, entry, limit);
-      let exhausted = next_data_frame(&entry.data_rows, portal.cursor).is_none();
+      let exhausted = next_data_frame(entry.data_rows(), portal.cursor).is_none();
       if max_rows > 0 && !exhausted {
          out.extend_from_slice(&PORTAL_SUSPENDED);
       } else {
-         out.extend_from_slice(&entry.command_complete);
-         portal.cursor = entry.data_rows.len();
+         out.extend_from_slice(entry.command_complete());
+         portal.cursor = entry.data_rows().len();
          portal.finished = true;
       }
    }
 
-   // Copies at most `limit` DataRow frames starting at `cursor`. Returns the
-   // number of rows emitted.
    fn write_encoded_rows_into(
       out: &mut Vec<u8>,
       cursor: &mut usize,
       entry: &EncodedResult,
       limit: usize,
    ) -> usize {
+      let data = entry.data_rows();
       if limit == usize::MAX && *cursor == 0 {
-         out.reserve(entry.data_rows.len() + entry.command_complete.len());
-         out.extend_from_slice(&entry.data_rows);
-         *cursor = entry.data_rows.len();
+         out.reserve(data.len() + entry.command_complete().len());
+         out.extend_from_slice(data);
+         *cursor = data.len();
          return entry.row_count as usize;
       }
       let mut sent = 0usize;
       let mut offset = *cursor;
       while sent < limit {
-         let Some((next, frame)) = next_data_frame(&entry.data_rows, offset) else {
+         let Some((next, frame)) = next_data_frame(data, offset) else {
             break;
          };
          out.extend_from_slice(frame);
@@ -1640,22 +1653,7 @@ impl Session {
             return Some(result);
          }
       }
-      let table = parsed
-         .tables
-         .first()
-         .map(String::as_str)
-         .unwrap_or("default");
-      let result = self
-         .mgr
-         .get_cached_query(&self.config.key_prefix, table, fingerprint)?;
-      self.mgr.remember_encoded(
-         &self.config.key_prefix,
-         table,
-         fingerprint,
-         &result,
-         self.config.default_ttl_ms,
-      );
-      Some(result)
+      None
    }
 
    fn fill_cache(
@@ -1961,32 +1959,15 @@ fn next_data_frame(data: &[u8], offset: usize) -> Option<(usize, &[u8])> {
 fn value_fingerprint(value: &DbValue) -> u64 {
    match value {
       DbValue::Null => 0x9e37_79b9_7f4a_7c15,
+      DbValue::Bool(b) => compute_fingerprint(if *b { "true" } else { "false" }),
       DbValue::Text(text) => compute_fingerprint(text),
-      other => other
-         .as_bytes()
-         .map(|bytes| compute_fingerprint(&String::from_utf8_lossy(&bytes)))
-         .unwrap_or(0),
+      DbValue::Int(n) => {
+         let s = n.to_string();
+         compute_fingerprint(&s)
+      }
+      DbValue::Float(f) => {
+         let s = f.to_string();
+         compute_fingerprint(&s)
+      }
    }
 }
-
-/*
-fn table_counters(row: &DbRow) -> Option<(String, TableCounters)> {
-   let name = String::from_utf8(row.values.first()?.as_bytes()?).ok()?;
-   let inserts = parse_counter(row.values.get(1)?)?;
-   let updates = parse_counter(row.values.get(2)?)?;
-   let deletes = parse_counter(row.values.get(3)?)?;
-   Some((
-      name,
-      TableCounters {
-         inserts,
-         updates,
-         deletes,
-      },
-   ))
-}
-
-fn parse_counter(value: &DbValue) -> Option<u64> {
-   let bytes = value.as_bytes()?;
-   std::str::from_utf8(&bytes).ok()?.trim().parse().ok()
-}
-*/

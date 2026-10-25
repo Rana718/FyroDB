@@ -64,6 +64,8 @@ pub struct ParsedQuery {
 struct AstTableExtractor {
    tables: Vec<String>,
    functions: Vec<String>,
+   seen_tables: HashSet<String>,
+   seen_functions: HashSet<String>,
    ctes: HashSet<String>,
    has_volatile_functions: bool,
    has_writes: bool,
@@ -105,7 +107,7 @@ impl Visitor for AstTableExtractor {
       if self.ctes.contains(bare) {
          return ControlFlow::Continue(());
       }
-      push_relation(&mut self.tables, &parts);
+      push_relation(&mut self.tables, &mut self.seen_tables, &parts);
       ControlFlow::Continue(())
    }
 
@@ -131,7 +133,7 @@ impl Visitor for AstTableExtractor {
          } else {
             bare.clone()
          };
-         if !self.functions.contains(&name) {
+         if self.seen_functions.insert(name.clone()) {
             self.functions.push(name);
          }
       }
@@ -141,15 +143,15 @@ impl Visitor for AstTableExtractor {
 
 // Registers both the qualified and bare name so unqualified writes still evict
 // schema-qualified cache entries.
-fn push_relation(tables: &mut Vec<String>, parts: &[String]) {
+fn push_relation(tables: &mut Vec<String>, seen: &mut HashSet<String>, parts: &[String]) {
    if parts.len() > 1 {
       let full = parts.join(".");
-      if !tables.contains(&full) {
+      if seen.insert(full.clone()) {
          tables.push(full);
       }
    }
    if let Some(bare) = parts.last()
-      && !tables.contains(bare)
+      && seen.insert(bare.clone())
    {
       tables.push(bare.clone());
    }
@@ -221,7 +223,7 @@ pub fn parse_sql(raw: &str) -> ParsedQuery {
                .iter()
                .map(|ident| ident.to_string().to_ascii_lowercase())
                .collect();
-            push_relation(&mut extractor.tables, &parts);
+            push_relation(&mut extractor.tables, &mut extractor.seen_tables, &parts);
          }
       }
 
@@ -495,39 +497,34 @@ fn has_write_keyword(sql: &str) -> bool {
    const WRITE_KEYWORDS: [&str; 9] = [
       "insert", "update", "delete", "truncate", "create", "drop", "alter", "merge", "copy",
    ];
-
    let mut in_quote = false;
-   let mut quote_char = ' ';
-   let mut word = String::new();
+   let mut quote_char = b' ';
+   let mut word = [0u8; 12];
+   let mut wlen = 0usize;
 
-   for ch in sql.chars() {
+   for &b in sql.as_bytes() {
       if in_quote {
-         if ch == quote_char {
-            in_quote = false;
-         }
+         if b == quote_char { in_quote = false; }
          continue;
       }
-      if ch == '\'' || ch == '"' {
+      if b == b'\'' || b == b'"' {
          in_quote = true;
-         quote_char = ch;
-         word.clear();
+         quote_char = b;
+         wlen = 0;
          continue;
       }
-      if ch.is_alphanumeric() || ch == '_' {
-         word.push(ch.to_ascii_lowercase());
+      if b.is_ascii_alphanumeric() || b == b'_' {
+         if wlen < 12 { word[wlen] = b.to_ascii_lowercase(); wlen += 1; }
          continue;
       }
-      if !word.is_empty() {
-         if WRITE_KEYWORDS.contains(&word.as_str()) {
+      if wlen > 0 {
+         if WRITE_KEYWORDS.contains(&&*unsafe { std::str::from_utf8_unchecked(&word[..wlen]) }) {
             return true;
          }
-         word.clear();
+         wlen = 0;
       }
    }
-   if !word.is_empty() {
-      return WRITE_KEYWORDS.contains(&word.as_str());
-   }
-   false
+   wlen > 0 && WRITE_KEYWORDS.contains(&&*unsafe { std::str::from_utf8_unchecked(&word[..wlen]) })
 }
 
 fn has_volatile_keyword(lower: &str) -> bool {
@@ -609,6 +606,7 @@ pub fn normalize_sql(sql: &str) -> String {
 
 fn extract_tables_fallback(lower: &str, kind: QueryKind) -> Vec<String> {
    let mut tables = Vec::new();
+   let mut seen: HashSet<String, FixedState> = HashSet::with_hasher(FixedState::with_seed(0));
    let tokens: Vec<&str> = lower.split_whitespace().collect();
 
    for i in 0..tokens.len() {
@@ -623,7 +621,7 @@ fn extract_tables_fallback(lower: &str, kind: QueryKind) -> Vec<String> {
 
       if target && i + 1 < tokens.len() {
          let candidate = clean_table_name(tokens[i + 1]);
-         if !candidate.is_empty() && !tables.contains(&candidate) {
+         if !candidate.is_empty() && seen.insert(candidate.clone()) {
             tables.push(candidate);
          }
       }
@@ -681,26 +679,38 @@ pub fn compute_fingerprint_with_params_base(
    hasher.finish()
 }
 
+const HEX: &[u8; 16] = b"0123456789abcdef";
+
 // Builds the cache key for this query result in the shared key-value store.
 pub fn make_cache_key(prefix: &str, table: &str, fingerprint: u64) -> String {
    let mut key = String::with_capacity(prefix.len() + table.len() + 17);
    key.push_str(prefix);
    key.push_str(table);
    key.push(':');
-   use std::fmt::Write;
-   let _ = write!(key, "{fingerprint:016x}");
+   let b = fingerprint.to_be_bytes();
+   let hex = [
+      HEX[(b[0] >> 4) as usize], HEX[(b[0] & 0xF) as usize],
+      HEX[(b[1] >> 4) as usize], HEX[(b[1] & 0xF) as usize],
+      HEX[(b[2] >> 4) as usize], HEX[(b[2] & 0xF) as usize],
+      HEX[(b[3] >> 4) as usize], HEX[(b[3] & 0xF) as usize],
+      HEX[(b[4] >> 4) as usize], HEX[(b[4] & 0xF) as usize],
+      HEX[(b[5] >> 4) as usize], HEX[(b[5] & 0xF) as usize],
+      HEX[(b[6] >> 4) as usize], HEX[(b[6] & 0xF) as usize],
+      HEX[(b[7] >> 4) as usize], HEX[(b[7] & 0xF) as usize],
+   ];
+   // SAFETY: all bytes are ASCII hex digits.
+   key.push_str(unsafe { std::str::from_utf8_unchecked(&hex) });
    key
 }
 
 // Sharded SQL analysis cache: parsing is the dominant cost on the hot path,
 // so each distinct statement text is parsed only once per process.
 pub struct ParsedQueryCache {
-   shards: Box<[RwLock<HashMap<u64, ParsedEntry>>]>,
+   shards: Box<[RwLock<HashMap<u64, ParsedEntry, FixedState>>]>,
    max_per_shard: usize,
 }
 
 struct ParsedEntry {
-   sql: Box<str>,
    parsed: Arc<ParsedQuery>,
 }
 
@@ -715,7 +725,7 @@ impl ParsedQueryCache {
       let shard_count = shard_count.next_power_of_two().max(1);
       let mut shards = Vec::with_capacity(shard_count);
       for _ in 0..shard_count {
-         shards.push(RwLock::new(HashMap::new()));
+         shards.push(RwLock::new(HashMap::with_hasher(FixedState::with_seed(0))));
       }
       Self {
          shards: shards.into_boxed_slice(),
@@ -728,26 +738,18 @@ impl ParsedQueryCache {
       let index = (hash as usize) & (self.shards.len() - 1);
       let shard = &self.shards[index];
 
-      if let Some(parsed) = shard
-         .read()
-         .get(&hash)
-         .and_then(|entry| (entry.sql.as_ref() == sql).then(|| Arc::clone(&entry.parsed)))
-      {
-         return parsed;
+      if let Some(entry) = shard.read().get(&hash) {
+         return Arc::clone(&entry.parsed);
       }
 
       let parsed = Arc::new(parse_sql(sql));
       let mut guard = shard.write();
       if guard.len() >= self.max_per_shard && !guard.contains_key(&hash) {
-         guard.clear();
+         if let Some(evict) = guard.keys().next().copied() {
+            guard.remove(&evict);
+         }
       }
-      guard.insert(
-         hash,
-         ParsedEntry {
-            sql: sql.into(),
-            parsed: Arc::clone(&parsed),
-         },
-      );
+      guard.insert(hash, ParsedEntry { parsed: Arc::clone(&parsed) });
       parsed
    }
 

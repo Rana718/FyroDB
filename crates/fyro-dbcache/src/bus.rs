@@ -281,10 +281,15 @@ impl InvalidationBus {
                   if !peer.local.load(Ordering::Relaxed) {
                      apply_message(&manager, &prefix, line.trim());
                   }
-                  for other in relay.lock().iter() {
-                     if Arc::ptr_eq(other, &peer) || other.local.load(Ordering::Relaxed) {
-                        continue;
-                     }
+                  let to_relay: Vec<Arc<Peer>> = relay
+                     .lock()
+                     .iter()
+                     .filter(|other| {
+                        !Arc::ptr_eq(other, &peer) && !other.local.load(Ordering::Relaxed)
+                     })
+                     .cloned()
+                     .collect();
+                  for other in to_relay {
                      let mut stream = other.stream.lock();
                      if stream
                         .write_all(line.as_bytes())

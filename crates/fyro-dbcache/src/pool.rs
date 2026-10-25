@@ -114,8 +114,9 @@ impl UpstreamPool {
             })?;
             idle.swap_remove(index)
          };
+         let idle_since = candidate.idle_since;
          let mut connection = candidate.connection;
-         if connection.ping().is_err() {
+         if idle_since.elapsed() > Duration::from_secs(5) && connection.ping().is_err() {
             continue;
          }
          if connection.apply_session_params(application_name).is_err() {
@@ -132,7 +133,6 @@ impl UpstreamPool {
       }
       let required_password = connection.required_password();
       let mut idle = self.idle.lock();
-      idle.retain(|slot| slot.idle_since.elapsed() <= self.limits.idle_timeout);
       if idle.len() >= self.limits.max_idle {
          return;
       }
