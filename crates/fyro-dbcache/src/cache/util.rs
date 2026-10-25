@@ -9,9 +9,10 @@ pub fn mix64(mut value: u64) -> u64 {
 }
 
 thread_local! {
-   static NOW_CACHE: std::cell::Cell<(u64, u8)> = const { std::cell::Cell::new((0, 0)) };
+   static NOW_CACHE: std::cell::Cell<(u64, u16)> = const { std::cell::Cell::new((0, 0)) };
 }
 
+#[inline(always)]
 pub fn now_ms() -> u64 {
    NOW_CACHE.with(|c| {
       let (cached, count) = c.get();
@@ -20,13 +21,18 @@ pub fn now_ms() -> u64 {
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
-         c.set((now, 7));
+         c.set((now, 1023));
          now
       } else {
          c.set((cached, count - 1));
          cached
       }
    })
+}
+
+#[inline(always)]
+pub fn coarse_now_ms() -> u64 {
+   now_ms()
 }
 
 pub(super) fn expiry_ms(ttl_ms: u64) -> u64 {

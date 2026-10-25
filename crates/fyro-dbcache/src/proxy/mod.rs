@@ -1,5 +1,5 @@
-mod session;
 pub(crate) mod mio_worker;
+mod session;
 
 use crate::bus::InvalidationBus;
 use crate::cache::DbCacheManager;
@@ -131,13 +131,19 @@ pub fn start_proxy_listener_mio(
    use socket2::{Domain, Protocol, Socket, Type};
 
    let n_workers = if config.proxy_workers == 0 {
-      (std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2) / 2).max(1)
+      std::thread::available_parallelism()
+         .map(|n| n.get())
+         .unwrap_or(4)
+         .min(16)
    } else {
       config.proxy_workers
    };
 
    let addr: std::net::SocketAddr = config.listen_addr.parse().map_err(|e| {
-      io::Error::new(io::ErrorKind::InvalidInput, format!("invalid listen addr: {e}"))
+      io::Error::new(
+         io::ErrorKind::InvalidInput,
+         format!("invalid listen addr: {e}"),
+      )
    })?;
 
    let pool = Arc::new(UpstreamPool::new(PoolLimits {
@@ -147,13 +153,15 @@ pub fn start_proxy_listener_mio(
 
    let bus: Option<Arc<InvalidationBus>> = if config.mode == DbProxyMode::Dual {
       match config.bus_path.as_deref() {
-         Some(path) => match crate::bus::start(path, Arc::clone(&cache_mgr), config.key_prefix.clone()) {
-            Ok(b) => Some(b),
-            Err(e) => {
-               eprintln!("fyrodb-dbproxy-mio: invalidation bus unavailable ({path}): {e}");
-               None
+         Some(path) => {
+            match crate::bus::start(path, Arc::clone(&cache_mgr), config.key_prefix.clone()) {
+               Ok(b) => Some(b),
+               Err(e) => {
+                  eprintln!("fyrodb-dbproxy-mio: invalidation bus unavailable ({path}): {e}");
+                  None
+               }
             }
-         },
+         }
          None => None,
       }
    } else {
@@ -167,7 +175,11 @@ pub fn start_proxy_listener_mio(
    let mut handles = Vec::with_capacity(n_workers);
    for i in 0..n_workers {
       let sock = Socket::new(
-         if addr.is_ipv6() { Domain::IPV6 } else { Domain::IPV4 },
+         if addr.is_ipv6() {
+            Domain::IPV6
+         } else {
+            Domain::IPV4
+         },
          Type::STREAM,
          Some(Protocol::TCP),
       )?;
@@ -192,16 +204,7 @@ pub fn start_proxy_listener_mio(
          .name(format!("fyrodb-mio-proxy-{i}"))
          .stack_size(256 * 1024)
          .spawn(move || {
-            mio_worker::run_proxy_worker(
-               mio_listener,
-               mgr,
-               cfg,
-               pool_c,
-               bus_c,
-               bp,
-               drx,
-               dtx,
-            );
+            mio_worker::run_proxy_worker(mio_listener, mgr, cfg, pool_c, bus_c, bp, drx, dtx);
          })?;
       handles.push(handle);
    }

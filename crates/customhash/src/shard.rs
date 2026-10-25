@@ -32,8 +32,7 @@ pub(crate) const LOAD_DEN: usize = 3;
 pub(crate) const INITIAL_SHARD_CAPACITY: usize = 65_536;
 pub(crate) const GROWING: usize = 1usize << (usize::BITS - 1);
 
-/// Smallest power-of-two capacity that holds `live + 1` entries below the
-/// load factor, leaving room for the insert that triggered the rebuild.
+/// Smallest power-of-two capacity holding `live + 1` entries below load factor.
 #[inline]
 pub(crate) fn capacity_for(live: usize) -> usize {
    ((live + 1) * LOAD_DEN / LOAD_NUM + 1)
@@ -41,9 +40,7 @@ pub(crate) fn capacity_for(live: usize) -> usize {
       .max(8)
 }
 
-/// Slots holding a retired entry that still lengthen the probe chain.
-/// `len` counts every insertion since the last rebuild, `live` the occupied
-/// ones, so their difference approximates the tombstone count under churn.
+/// Approximate tombstone count from insertions and live entries.
 #[inline]
 pub(crate) fn dead_estimate(len: usize, live: usize) -> usize {
    len.saturating_sub(live)
@@ -160,17 +157,12 @@ pub(crate) fn state_lock(state: &AtomicU64) {
    }
 }
 
-/// A spinning worker serves no other connections; back off to yield.
 const MAX_SPIN_BACKOFF: u32 = 64;
 
 #[cold]
 fn state_lock_slow(state: &AtomicU64) {
-   // TTAS with exponential backoff: without it N contenders hammer the same
-   // line with CAS and one handoff costs N ownership transfers.
    let mut backoff = 1u32;
    loop {
-      // Plain load keeps the line shared; a CAS takes it exclusively and
-      // invalidates every other waiter.
       while state.load(Ordering::Relaxed) & STATE_LOCK != 0 {
          for _ in 0..backoff {
             std::hint::spin_loop();
@@ -178,7 +170,6 @@ fn state_lock_slow(state: &AtomicU64) {
          if backoff < MAX_SPIN_BACKOFF {
             backoff <<= 1;
          } else {
-            // The holder may be descheduled; hand the CPU over.
             std::thread::yield_now();
          }
       }
@@ -203,8 +194,7 @@ pub(crate) fn state_unlock(state: &AtomicU64) {
    state.fetch_and(!STATE_LOCK, Ordering::Release);
 }
 
-/// Plain store (no RMW): caller holds the lock. The release fence keeps
-/// value writes behind the odd sequence number for seqlock readers.
+/// Publishes sequence increment with release barrier.
 #[inline(always)]
 pub(crate) fn write_begin(state: &AtomicU64) {
    let current = state.load(Ordering::Relaxed);
@@ -242,8 +232,7 @@ pub(crate) struct SlotTable<V> {
    pub(crate) threshold: usize,
 }
 
-/// Userspace pointers leave bits 48..63 clear (x86-64/AArch64 4-level),
-/// so the tag rides in the slot word; bit 63 marks presence.
+/// Tag bits stored in upper pointer bits; bit 63 marks presence.
 const TAG_FLAG: usize = 1 << 63;
 const TAG_BITS: usize = 14;
 const TAG_SHIFT: u32 = 49;
@@ -257,8 +246,7 @@ fn hash_tag(hash: u64) -> usize {
    ((hash >> 18) as usize) & TAG_MAX
 }
 
-/// The tag makes the raw word non-dereferenceable; this type deposits
-/// and strips it.
+/// Atomic slot wrapping an entry pointer and hash tag.
 #[repr(transparent)]
 pub(crate) struct TaggedSlot<V>(AtomicPtr<Entry<V>>);
 
@@ -268,8 +256,7 @@ impl<V> TaggedSlot<V> {
       Self(AtomicPtr::new(ptr::null_mut()))
    }
 
-   /// Combine a pointer with its tag, or return it verbatim when it already
-   /// occupies the reserved bits.
+   /// Embeds hash tag into upper pointer bits if clear.
    #[inline(always)]
    fn encode(entry: *mut Entry<V>, hash: u64) -> *mut Entry<V> {
       let addr = entry as usize;
@@ -630,9 +617,7 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
       }
    }
 
-   /// Like `get` but uses a Relaxed table load — caller must hold an EBR Guard
-   /// so the pin's Acquire fence already synchronizes the table pointer and all
-   /// entry writes. Eliminates 1 Acquire barrier on every call.
+   /// Like `get` with relaxed table load when caller holds an EBR Guard.
    #[inline(always)]
    pub(crate) fn get_pinned(&self, key: &str, hash: u64) -> Option<V> {
       let t = self.table_relaxed();
@@ -652,9 +637,6 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
          if word == 0 {
             return None;
          }
-         // Issue prefetch for the Entry before the tag comparison so the
-         // CPU can fetch the entry cache line while we compute the match.
-         // Free if already in L1; hides L2/L3 latency for probe hits.
          unsafe {
             #[cfg(target_arch = "x86_64")]
             std::arch::x86_64::_mm_prefetch(
@@ -726,18 +708,12 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
       false
    }
 
-   /// Single-pass lookup-or-insert: walks the probe chain once and, on a
-   /// miss, claims the empty slot the walk stopped at instead of probing
-   /// again from the base. Returns the existing entry for the caller to
-   /// overwrite, or `Retry` when a rebuild or a competing insert intervened.
+   /// Single-pass lookup-or-insert: returns existing entry or claims empty slot.
    #[inline(always)]
    pub(crate) fn probe_or_insert<F>(&self, hash: u64, key: &str, make_value: F) -> FastSet<V>
    where
       F: FnOnce() -> V,
    {
-      // The overwrite path stays guard-free: entering the insert gate is an
-      // atomic RMW on a per-shard cache line, and a contended key would make
-      // every reader of that shard serialize on it.
       let table_ptr = self.table.load(Ordering::Acquire);
       let t = unsafe { &*table_ptr };
       let base_idx = (hash as usize) & t.mask;
@@ -749,8 +725,6 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
          let slot = unsafe { t.slot(base_idx + j) };
          let word = slot.0.load(Ordering::Relaxed) as usize;
          if word == 0 {
-            // Slots past `capacity` are allocator padding that shadows the
-            // wrapped positions; do not hand them back as insertion points.
             if base_idx + j < t.capacity {
                vacant = j;
             }
@@ -764,7 +738,6 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
                if (state & STATE_MATCH_MASK) == (hash_bits(hash) | STATE_OCCUPIED) {
                   return FastSet::Existing(p);
                }
-               // Locked or tombstoned: the general path resolves it.
                return FastSet::Retry;
             }
          }
@@ -774,8 +747,6 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
          return FastSet::Retry;
       }
 
-      // Insertions do need the gate: it keeps a rebuild from swapping the
-      // table between the probe and the claim.
       let insert_guard = self.enter_insert();
       if self.table.load(Ordering::Acquire) != table_ptr {
          drop(insert_guard);
@@ -855,9 +826,7 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
                   value = Some(extracted_val);
                }
                drop(insert_guard);
-               // A full scan without an empty slot means the table is all
-               // tombstones (live count below the growth threshold). Growing
-               // is gated on `len`, so force a same-capacity rebuild.
+               // Rebuild at current capacity to reclaim tombstones.
                self.rehash(t);
                break;
             }
@@ -985,9 +954,7 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
                   value = Some(extracted_val);
                }
                drop(insert_guard);
-               // A full scan without an empty slot means the table is all
-               // tombstones (live count below the growth threshold). Growing
-               // is gated on `len`, so force a same-capacity rebuild.
+               // Rebuild at current capacity to reclaim tombstones.
                self.rehash(t);
                break;
             }
@@ -1130,10 +1097,7 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
       self.insert_gate.fetch_and(!GROWING, Ordering::Release);
    }
 
-   /// Rebuild after probing walked the whole table without finding an empty
-   /// slot. `len` can still sit below the growth threshold when every slot is
-   /// a tombstone, so `grow` would refuse; rebuild at the current capacity to
-   /// reclaim the chain instead.
+   /// Rebuild at current capacity when table is full of tombstones.
    fn rehash(&self, observed: &SlotTable<V>) {
       let observed = observed as *const SlotTable<V>;
       let _lock = self.grow_lock.lock().unwrap_or_else(|e| e.into_inner());
@@ -1168,8 +1132,7 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
       self.rebuild_to(old_ptr, new_cap);
    }
 
-   /// Move every occupied entry into a fresh table of `new_cap` slots,
-   /// dropping (and retiring) the rest. Caller holds `grow_lock` and GROWING.
+   /// Migrate occupied entries to new table and retire old table.
    pub(crate) fn rebuild_to(&self, old_ptr: *mut SlotTable<V>, new_cap: usize) {
       let old_table = unsafe { &*old_ptr };
       let new_table = SlotTable::<V>::new(new_cap);
@@ -1305,8 +1268,7 @@ mod tests {
       assert_eq!(tags.len(), 1024);
    }
 
-   /// Slot words must stay dereferenceable after the tag is stripped, and the
-   /// tag must occupy only the reserved bits.
+   /// Slot words remain dereferenceable after stripping tag bits.
    #[test]
    fn tag_bits_do_not_overlap_the_address() {
       let value = Box::into_raw(Box::new(0u64));
@@ -1323,8 +1285,7 @@ mod tests {
       unsafe { drop(Box::from_raw(value)) };
    }
 
-   /// 5-level/LVA pointers may use those bits: stored verbatim, never
-   /// masked unconditionally.
+   /// Pointers using high bits are stored untagged.
    #[test]
    fn addresses_using_reserved_bits_survive_untagged() {
       let high = ((1usize << TAG_SHIFT) | 0x40) as *mut Entry<u64>;
@@ -1337,8 +1298,7 @@ mod tests {
       let slot = TaggedSlot::<u64>::null();
       slot.store(high, u64::MAX, Ordering::Relaxed);
       assert_eq!(slot.load(Ordering::Relaxed), high);
-      // With no tag present there is nothing to filter on, so every hash has
-      // to be handed the pointer rather than skipped.
+      // Untagged slots match every hash probe.
       assert_eq!(slot.load_if_tag_matches(0, Ordering::Relaxed), Ok(high));
       assert_eq!(
          slot.load_if_tag_matches(u64::MAX, Ordering::Relaxed),

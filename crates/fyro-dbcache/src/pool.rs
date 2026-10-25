@@ -7,9 +7,7 @@ use std::time::{Duration, Instant};
 pub struct PoolKey {
    pub user: String,
    pub database: String,
-   // Stable hash of startup parameters that cannot be re-applied after a
-   // session reset (search_path, options, client_encoding, ...). Sessions
-   // carrying those are never pooled, so this is empty in practice.
+   // Hash of startup parameters that cannot be restored after session reset.
    pub params: u64,
 }
 
@@ -45,10 +43,7 @@ pub fn application_name(params: &[(String, String)]) -> Option<&str> {
       .map(|(_, value)| value.as_str())
 }
 
-// A pooled session is reset with DISCARD ALL, which clears settings applied
-// from the startup packet. Only parameters the proxy can restore exactly are
-// accepted; anything else keeps the transparent (unpooled) path so a reset
-// can never silently change what a query returns.
+// Validates that session parameters can be restored before pooling.
 pub fn startup_allows_pooling(params: &[(String, String)]) -> bool {
    params.iter().all(|(key, _)| {
       key.eq_ignore_ascii_case("user")
@@ -80,9 +75,6 @@ struct IdleConnection {
 }
 
 // Keeps authenticated upstream sessions alive across client connections.
-// Credential-authenticated sessions may be reused for any client that the
-// proxy authenticated as the same user; relayed sessions are reused only when
-// the origin demanded no password at all.
 pub struct UpstreamPool {
    limits: PoolLimits,
    idle: Mutex<Vec<IdleConnection>>,

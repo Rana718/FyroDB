@@ -9,7 +9,6 @@ use fyro_dbcache::{
 };
 use std::io::Cursor;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 
 #[test]
 fn test_sql_parsing_and_tables() {
@@ -1079,13 +1078,23 @@ fn test_store_overwrite_replaces_entry() {
    let parsed = parse_sql(sql);
 
    let rs1 = DbResultSet {
-      columns: vec![ColumnInfo { name: "id".to_string(), type_oid: 23 }],
-      rows: vec![DbRow { values: vec![DbValue::Int(1)] }],
+      columns: vec![ColumnInfo {
+         name: "id".to_string(),
+         type_oid: 23,
+      }],
+      rows: vec![DbRow {
+         values: vec![DbValue::Int(1)],
+      }],
       rows_affected: 1,
    };
    let rs2 = DbResultSet {
-      columns: vec![ColumnInfo { name: "id".to_string(), type_oid: 23 }],
-      rows: vec![DbRow { values: vec![DbValue::Int(999)] }],
+      columns: vec![ColumnInfo {
+         name: "id".to_string(),
+         type_oid: 23,
+      }],
+      rows: vec![DbRow {
+         values: vec![DbValue::Int(999)],
+      }],
       rows_affected: 1,
    };
 
@@ -1151,8 +1160,16 @@ fn test_invalidate_single_table_leaves_others_intact() {
 
    let evicted = manager.invalidate_tables(&["users".to_string()]);
    assert_eq!(evicted, 1);
-   assert!(manager.get_cached_query("db:", "users", up.fingerprint).is_none());
-   assert!(manager.get_cached_query("db:", "orders", op.fingerprint).is_some());
+   assert!(
+      manager
+         .get_cached_query("db:", "users", up.fingerprint)
+         .is_none()
+   );
+   assert!(
+      manager
+         .get_cached_query("db:", "orders", op.fingerprint)
+         .is_some()
+   );
 }
 
 #[test]
@@ -1165,12 +1182,22 @@ fn test_invalidate_joined_query_when_any_constituent_table_is_written() {
    assert!(parsed.tables.contains(&"users".to_string()));
    assert!(parsed.tables.contains(&"posts".to_string()));
 
-   manager.store_cached_query("db:", &parsed.tables, parsed.fingerprint, &make_one_row_result(), 60_000);
+   manager.store_cached_query(
+      "db:",
+      &parsed.tables,
+      parsed.fingerprint,
+      &make_one_row_result(),
+      60_000,
+   );
 
    // Write to 'posts' → should invalidate the JOIN entry.
    let evicted = manager.invalidate_tables(&["posts".to_string()]);
    assert_eq!(evicted, 1);
-   assert!(manager.get_cached_query("db:", "users", parsed.fingerprint).is_none());
+   assert!(
+      manager
+         .get_cached_query("db:", "users", parsed.fingerprint)
+         .is_none()
+   );
 }
 
 #[test]
@@ -1194,9 +1221,7 @@ fn test_flush_all_clears_encoded_and_json_caches() {
 
 #[test]
 fn test_fingerprint_normalizes_whitespace() {
-   // Normalize collapses multiple spaces between tokens and lowercases keywords.
-   // Note: whitespace immediately before ';' is preserved by the normalizer,
-   // so the comparison pairs must agree on semicolon placement.
+   // Normalizer collapses multiple spaces between tokens and lowercases keywords.
    let a = parse_sql("SELECT id FROM users WHERE id = 1;");
    let b = parse_sql("  SELECT   id  FROM  users  WHERE  id  =  1;  ");
    assert_eq!(a.fingerprint, b.fingerprint, "normalized forms must match");
@@ -1268,7 +1293,13 @@ fn test_encoded_cache_hot_path_completes_quickly() {
    let manager = DbCacheManager::new(storage);
    let sql = "SELECT id, username FROM users WHERE id = 1;";
    let parsed = parse_sql(sql);
-   manager.store_cached_query("db:", &parsed.tables, parsed.fingerprint, &make_one_row_result(), 60_000);
+   manager.store_cached_query(
+      "db:",
+      &parsed.tables,
+      parsed.fingerprint,
+      &make_one_row_result(),
+      60_000,
+   );
    let fp = parsed.fingerprint;
 
    let start = Instant::now();
@@ -1288,8 +1319,14 @@ fn test_encoded_cache_hot_path_completes_quickly() {
 fn make_one_row_result() -> DbResultSet {
    DbResultSet {
       columns: vec![
-         ColumnInfo { name: "id".to_string(), type_oid: 23 },
-         ColumnInfo { name: "name".to_string(), type_oid: 25 },
+         ColumnInfo {
+            name: "id".to_string(),
+            type_oid: 23,
+         },
+         ColumnInfo {
+            name: "name".to_string(),
+            type_oid: 25,
+         },
       ],
       rows: vec![DbRow {
          values: vec![DbValue::Int(42), DbValue::Text("test".to_string())],

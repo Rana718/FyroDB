@@ -12,11 +12,11 @@ pub use inflight::FillGuard;
 pub use metrics::{CacheLimits, DbCacheMetrics};
 pub use storage::{DbCacheStorage, MemoryStorage};
 pub use tracker::TableCounters;
-pub use util::{mix64, now_ms};
+pub use util::{coarse_now_ms, mix64, now_ms};
 
 use crate::query::{
-   ParsedQuery, ParsedQueryCache, compute_fingerprint_with_params_base, make_cache_key,
-   make_cache_key_inline,
+   ParsedQuery, ParsedQueryCache, compute_fingerprint_with_params_base,
+   compute_fingerprint_with_params_slice, make_cache_key, make_cache_key_inline,
 };
 use catalog::CatalogState;
 use foldhash::fast::FixedState;
@@ -35,6 +35,43 @@ const PRUNE_INTERVAL_MS: u64 = 60_000;
 
 type EncodedShard = RwLock<HashMap<String, Arc<EncodedResult>, FixedState>>;
 
+#[derive(Clone)]
+struct L1Entry {
+   manager_id: usize,
+   epoch: u64,
+   fp: u64,
+   entry: Arc<EncodedResult>,
+   result: Arc<crate::row::DbResultSet>,
+}
+
+thread_local! {
+   static L1_CACHE: std::cell::RefCell<[Option<L1Entry>; 256]> = const { std::cell::RefCell::new([const { None }; 256]) };
+   static HIT_BATCH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+   static LAST_ANALYZED: std::cell::RefCell<(*const u8, usize, Option<Arc<ParsedQuery>>)> = const { std::cell::RefCell::new((std::ptr::null(), 0, None)) };
+}
+
+#[inline(always)]
+fn record_hit(metrics: &DbCacheMetrics) {
+   HIT_BATCH.with(|b| {
+      let val = b.get() + 1;
+      if val >= 64 {
+         b.set(0);
+         metrics.hits.fetch_add(64, Ordering::Relaxed);
+      } else {
+         b.set(val);
+      }
+   });
+}
+
+pub fn flush_hit_batches(metrics: &DbCacheMetrics) {
+   HIT_BATCH.with(|b| {
+      let val = b.replace(0);
+      if val > 0 {
+         metrics.hits.fetch_add(val as u64, Ordering::Relaxed);
+      }
+   });
+}
+
 pub struct DbCacheManager {
    storage: Arc<dyn DbCacheStorage>,
    tracker: RwLock<TableTracker>,
@@ -46,6 +83,7 @@ pub struct DbCacheManager {
    sync: ExternalSync,
    last_prune_ms: AtomicU64,
    inflight: Arc<Box<[InflightShard]>>,
+   generation: AtomicU64,
 }
 
 impl DbCacheManager {
@@ -75,6 +113,7 @@ impl DbCacheManager {
          sync: ExternalSync::default(),
          last_prune_ms: AtomicU64::new(now_ms()),
          inflight: Arc::new(inflight_shards.into_boxed_slice()),
+         generation: AtomicU64::new(1),
       }
    }
 
@@ -88,7 +127,25 @@ impl DbCacheManager {
 
    // Parses a statement at most once per process, regardless of client count.
    pub fn analyze(&self, sql: &str) -> Arc<ParsedQuery> {
-      self.parsed.get_or_parse(sql)
+      let ptr = sql.as_ptr();
+      let len = sql.len();
+      if let Some(p) = LAST_ANALYZED.with(|cell| {
+         let b = cell.borrow();
+         if b.0 == ptr
+            && b.1 == len
+            && let Some(ref p) = b.2
+         {
+            return Some(Arc::clone(p));
+         }
+         None
+      }) {
+         return p;
+      }
+      let parsed = self.parsed.get_or_parse(sql);
+      LAST_ANALYZED.with(|cell| {
+         *cell.borrow_mut() = (ptr, len, Some(Arc::clone(&parsed)));
+      });
+      parsed
    }
 
    // Prepared-statement fingerprint combining SQL text and bound values.
@@ -104,6 +161,21 @@ impl DbCacheManager {
       }
       let fingerprint =
          compute_fingerprint_with_params_base(parsed.fingerprint, params, param_formats);
+      (parsed, fingerprint)
+   }
+
+   pub fn analyze_bound_slice(
+      &self,
+      sql: &str,
+      params: &[Option<&[u8]>],
+      param_formats: &[i16],
+   ) -> (Arc<ParsedQuery>, u64) {
+      let parsed = self.analyze(sql);
+      if params.is_empty() {
+         return (Arc::clone(&parsed), parsed.fingerprint);
+      }
+      let fingerprint =
+         compute_fingerprint_with_params_slice(parsed.fingerprint, params, param_formats);
       (parsed, fingerprint)
    }
 
@@ -162,7 +234,10 @@ impl DbCacheManager {
       // Update the cheap atomic flag before installing the snapshot so any
       // concurrent is_cacheable() fast-path sees the correct value.
       if snapshot.has_volatile_views() {
-         self.catalog.has_volatile_views.store(true, Ordering::Release);
+         self
+            .catalog
+            .has_volatile_views
+            .store(true, Ordering::Release);
       }
       *self.catalog.snapshot.write() = Some(Arc::new(snapshot));
       self.catalog.generation.fetch_add(1, Ordering::AcqRel);
@@ -186,11 +261,8 @@ impl DbCacheManager {
       if !parsed.is_cacheable {
          return false;
       }
-      // Fast path: no user-defined functions AND catalog has no volatile views.
-      // Replaces a parking_lot RwLock acquisition with a single atomic load.
-      if parsed.catalog_independent
-         && !self.catalog.has_volatile_views.load(Ordering::Relaxed)
-      {
+      // Fast path: catalog has no volatile views or user functions.
+      if parsed.catalog_independent && !self.catalog.has_volatile_views.load(Ordering::Relaxed) {
          return true;
       }
       let snapshot = self.catalog.snapshot.read();
@@ -217,7 +289,17 @@ impl DbCacheManager {
 
    // -------------------------------------------------------------- cache
 
+   #[inline(always)]
+   fn encoded_shard_from_fp(&self, fingerprint: u64) -> &EncodedShard {
+      &self.encoded[(fingerprint as usize) & (ENCODED_SHARDS - 1)]
+   }
+
    fn encoded_shard(&self, key: &str) -> &EncodedShard {
+      if key.len() >= 16
+         && let Ok(fp) = u64::from_str_radix(&key[key.len() - 16..], 16)
+      {
+         return self.encoded_shard_from_fp(fp);
+      }
       use std::hash::{BuildHasher, Hasher};
       let mut hasher = FixedState::with_seed(0).build_hasher();
       hasher.write(key.as_bytes());
@@ -234,6 +316,27 @@ impl DbCacheManager {
       table: &str,
       fingerprint: u64,
    ) -> Option<Arc<EncodedResult>> {
+      let mgr_id = self as *const _ as usize;
+      let epoch = self.generation.load(Ordering::Relaxed);
+      let idx = (fingerprint as usize) & 255;
+      if let Some(cached) = L1_CACHE.with(|c| {
+         let b = c.borrow();
+         if let Some(slot) = &b[idx]
+            && slot.manager_id == mgr_id
+            && slot.epoch == epoch
+            && slot.fp == fingerprint
+         {
+            let now = coarse_now_ms();
+            if slot.entry.expires_at_ms == 0 || slot.entry.expires_at_ms >= now {
+               return Some(Arc::clone(&slot.entry));
+            }
+         }
+         None
+      }) {
+         record_hit(&self.metrics);
+         return Some(cached);
+      }
+
       // Stack-build the key — no heap allocation on the hot hit path.
       let mut buf = [0u8; 512];
       let inline_key = make_cache_key_inline(prefix, table, fingerprint, &mut buf);
@@ -246,15 +349,29 @@ impl DbCacheManager {
          inline_key
       };
 
-      let shard = self.encoded_shard(key);
+      let shard = self.encoded_shard_from_fp(fingerprint);
       let entry = { shard.read().get(key).cloned() }?;
-      let now = now_ms();
-      let expired = entry.expires_at_ms != 0 && entry.expires_at_ms < now;
-      if expired || (!self.storage.is_local() && !self.storage.exists(key)) {
+      let now = coarse_now_ms();
+      if entry.expires_at_ms != 0 && entry.expires_at_ms < now {
          shard.write().remove(key);
+         self.generation.fetch_add(1, Ordering::Release);
          return None;
       }
-      self.metrics.hits.fetch_add(1, Ordering::Relaxed);
+      if !self.storage.is_local() && !self.storage.exists(key) {
+         shard.write().remove(key);
+         self.generation.fetch_add(1, Ordering::Release);
+         return None;
+      }
+      record_hit(&self.metrics);
+      L1_CACHE.with(|c| {
+         c.borrow_mut()[idx] = Some(L1Entry {
+            manager_id: mgr_id,
+            epoch,
+            fp: fingerprint,
+            result: Arc::clone(&entry.result),
+            entry: Arc::clone(&entry),
+         });
+      });
       Some(entry)
    }
 
@@ -263,10 +380,35 @@ impl DbCacheManager {
       prefix: &str,
       table: &str,
       fingerprint: u64,
-   ) -> Option<crate::row::DbResultSet> {
+   ) -> Option<Arc<crate::row::DbResultSet>> {
+      let mgr_id = self as *const _ as usize;
+      let epoch = self.generation.load(Ordering::Relaxed);
+      let idx = (fingerprint as usize) & 255;
+      if let Some(res) = L1_CACHE.with(|c| {
+         let b = c.borrow();
+         if let Some(slot) = &b[idx]
+            && slot.manager_id == mgr_id
+            && slot.epoch == epoch
+            && slot.fp == fingerprint
+         {
+            let now = coarse_now_ms();
+            if slot.entry.expires_at_ms == 0 || slot.entry.expires_at_ms >= now {
+               return Some(Arc::clone(&slot.result));
+            }
+         }
+         None
+      }) {
+         record_hit(&self.metrics);
+         return Some(res);
+      }
+
+      if let Some(encoded) = self.get_encoded(prefix, table, fingerprint) {
+         return Some(Arc::clone(&encoded.result));
+      }
       let key = make_cache_key(prefix, table, fingerprint);
       let raw = self.storage.get(&key)?;
-      crate::row::DbResultSet::from_json(&raw)
+      let rs = crate::row::DbResultSet::from_json(&raw)?;
+      Some(Arc::new(rs))
    }
 
    pub fn store_cached_query(
@@ -338,6 +480,7 @@ impl DbCacheManager {
       drop(tracker);
 
       self.metrics.fills.fetch_add(1, Ordering::Relaxed);
+      self.generation.fetch_add(1, Ordering::Release);
       self.enforce_capacity(prefix);
       true
    }
@@ -353,6 +496,7 @@ impl DbCacheManager {
       let key = make_cache_key(prefix, table, fingerprint);
       let encoded = Arc::new(EncodedResult::from_result_set(result, ttl_ms));
       self.encoded_shard(&key).write().insert(key, encoded);
+      self.generation.fetch_add(1, Ordering::Release);
    }
 
    pub fn invalidate_tables(&self, tables: &[String]) -> usize {
@@ -389,6 +533,7 @@ impl DbCacheManager {
          .metrics
          .invalidated_entries
          .fetch_add(count as u64, Ordering::Relaxed);
+      self.generation.fetch_add(1, Ordering::Release);
       count
    }
 
@@ -403,6 +548,7 @@ impl DbCacheManager {
       for shard in &self.encoded {
          shard.write().clear();
       }
+      self.generation.fetch_add(1, Ordering::Release);
       removed
    }
 
@@ -623,6 +769,7 @@ impl DbCacheManager {
    // --------------------------------------------------------------- stats
 
    pub fn stats(&self) -> Vec<(&'static str, u64)> {
+      flush_hit_batches(&self.metrics);
       let encoded_entries: usize = self.encoded.iter().map(|shard| shard.read().len()).sum();
       let last_refresh = self.catalog.last_refresh_ms.load(Ordering::Relaxed);
       let catalog_age = if last_refresh == 0 {

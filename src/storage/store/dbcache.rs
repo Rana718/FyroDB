@@ -23,6 +23,10 @@ impl DbCacheStorage for Store {
       self.exists(key)
    }
 
+   fn is_local(&self) -> bool {
+      true
+   }
+
    fn scan_prefix(&self, prefix: &str) -> Vec<(String, Option<String>)> {
       let mut entries = Vec::new();
       self.data.for_each(|key, val| {

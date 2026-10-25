@@ -100,9 +100,7 @@ impl<R: Read> FrameReader<R> {
 }
 
 impl FrameReader<BufReader<TcpStream>> {
-   // Returns true when the BufReader still has bytes in its internal buffer,
-   // indicating the client has already sent more messages after the current one.
-   // Used by the session to defer response flushes and batch output.
+   // Returns true if unread bytes remain in the internal buffer.
    pub fn has_buffered_input(&self) -> bool {
       !self.inner.buffer().is_empty()
    }
@@ -370,9 +368,7 @@ fn take_cstr<'a>(body: &'a [u8], pos: &mut usize) -> io::Result<&'a str> {
 
 pub const READY_IDLE: [u8; 6] = [b'Z', 0, 0, 0, 5, b'I'];
 
-// Frontend Flush: makes the backend release buffered extended-protocol
-// replies without ending the cycle, which the proxy needs because it reads
-// one reply at a time.
+// Requests backend to flush buffered extended-protocol replies.
 pub const FLUSH_REQUEST: [u8; 5] = [b'H', 0, 0, 0, 4];
 
 #[inline]

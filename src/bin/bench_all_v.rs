@@ -10,7 +10,7 @@
 //!   FYRODB_WORKERS=N   override RESP worker count (default: num_cpus)
 
 use fyro_db::storage::store::Store;
-use fyro_dbcache::protocol::{encode_bind, put_message, PROTOCOL_VERSION_3};
+use fyro_dbcache::protocol::{PROTOCOL_VERSION_3, encode_bind, put_message};
 use fyro_dbcache::query::{compute_fingerprint_with_params, parse_sql};
 use fyro_dbcache::row::{ColumnInfo, DbResultSet, DbRow, DbValue};
 use fyro_dbcache::{DbCacheConfig, DbCacheManager, DbProxyMode};
@@ -36,10 +36,15 @@ impl Row {
 }
 
 fn fmt_rate(r: f64) -> String {
-   if r >= 1e9 { format!("{:.2}B ops/s", r / 1e9) }
-   else if r >= 1e6 { format!("{:.2}M ops/s", r / 1e6) }
-   else if r >= 1e3 { format!("{:.1}k ops/s", r / 1e3) }
-   else { format!("{:.0} ops/s", r) }
+   if r >= 1e9 {
+      format!("{:.2}B ops/s", r / 1e9)
+   } else if r >= 1e6 {
+      format!("{:.2}M ops/s", r / 1e6)
+   } else if r >= 1e3 {
+      format!("{:.1}k ops/s", r / 1e3)
+   } else {
+      format!("{:.0} ops/s", r)
+   }
 }
 
 fn print_summary(rows: &[Row]) {
@@ -49,15 +54,29 @@ fn print_summary(rows: &[Row]) {
    const W_TP: usize = 16;
    println!();
    println!("══ Summary ═══════════════════════════════════════════════════════════════");
-   println!("  {:<W_SEC$}  {:<W_LBL$}  {:>W_EL$}  {:>W_TP$}", "Section", "Benchmark", "Elapsed", "Throughput");
-   println!("  {:<W_SEC$}  {:<W_LBL$}  {:>W_EL$}  {:>W_TP$}",
-      "─".repeat(W_SEC), "─".repeat(W_LBL), "─".repeat(W_EL), "─".repeat(W_TP));
+   println!(
+      "  {:<W_SEC$}  {:<W_LBL$}  {:>W_EL$}  {:>W_TP$}",
+      "Section", "Benchmark", "Elapsed", "Throughput"
+   );
+   println!(
+      "  {:<W_SEC$}  {:<W_LBL$}  {:>W_EL$}  {:>W_TP$}",
+      "─".repeat(W_SEC),
+      "─".repeat(W_LBL),
+      "─".repeat(W_EL),
+      "─".repeat(W_TP)
+   );
    let mut last = "";
    for r in rows {
-      let sec = if r.section != last { last = r.section; r.section } else { "" };
+      let sec = if r.section != last {
+         last = r.section;
+         r.section
+      } else {
+         ""
+      };
       println!(
          "  {:<W_SEC$}  {:<W_LBL$}  {:>W_EL$}  {:>W_TP$}",
-         sec, r.label,
+         sec,
+         r.label,
          format!("{:.0}ms", r.elapsed.as_millis()),
          fmt_rate(r.rate()),
       );
@@ -77,7 +96,13 @@ fn build_set_batch(base: usize, n: usize, out: &mut Vec<u8>) {
    out.clear();
    for i in 0..n {
       let k = format!("bk{}", base + i);
-      write!(out, "*3\r\n$3\r\nSET\r\n${}\r\n{}\r\n$5\r\nvalue\r\n", k.len(), k).unwrap();
+      write!(
+         out,
+         "*3\r\n$3\r\nSET\r\n${}\r\n{}\r\n$5\r\nvalue\r\n",
+         k.len(),
+         k
+      )
+      .unwrap();
    }
 }
 
@@ -120,9 +145,14 @@ fn bench_resp(
                let mut sent = 0usize;
                while sent < ops {
                   let n = batch.min(ops - sent);
-                  if is_set { build_set_batch(id * ops + sent, n, &mut send); }
-                  else { build_get_batch(id * ops + sent, n, &mut send); }
-                  if w.write_all(&send).is_err() { break; }
+                  if is_set {
+                     build_set_batch(id * ops + sent, n, &mut send);
+                  } else {
+                     build_get_batch(id * ops + sent, n, &mut send);
+                  }
+                  if w.write_all(&send).is_err() {
+                     break;
+                  }
                   sent += n;
                }
             });
@@ -154,7 +184,9 @@ fn pg_drain_ready(s: &mut TcpStream) {
       let body_len = i32::from_be_bytes([head[1], head[2], head[3], head[4]]) as usize - 4;
       let mut body = vec![0u8; body_len];
       s.read_exact(&mut body).unwrap();
-      if head[0] == b'Z' { break; }
+      if head[0] == b'Z' {
+         break;
+      }
    }
 }
 
@@ -184,7 +216,9 @@ fn bench_pg_simple(port: u16, clients: usize, ops: usize, sql: &str) -> Duration
          }
       }));
    }
-   for h in handles { h.join().unwrap(); }
+   for h in handles {
+      h.join().unwrap();
+   }
    start.elapsed()
 }
 
@@ -240,7 +274,9 @@ fn bench_pg_extended(port: u16, clients: usize, ops: usize, sql: &str) -> Durati
          }
       }));
    }
-   for h in handles { h.join().unwrap(); }
+   for h in handles {
+      h.join().unwrap();
+   }
    start.elapsed()
 }
 
@@ -249,9 +285,18 @@ fn bench_pg_extended(port: u16, clients: usize, ops: usize, sql: &str) -> Durati
 fn sample_rs() -> DbResultSet {
    DbResultSet {
       columns: vec![
-         ColumnInfo { name: "id".into(), type_oid: 23 },
-         ColumnInfo { name: "username".into(), type_oid: 25 },
-         ColumnInfo { name: "email".into(), type_oid: 25 },
+         ColumnInfo {
+            name: "id".into(),
+            type_oid: 23,
+         },
+         ColumnInfo {
+            name: "username".into(),
+            type_oid: 25,
+         },
+         ColumnInfo {
+            name: "email".into(),
+            type_oid: 25,
+         },
       ],
       rows: vec![DbRow {
          values: vec![
@@ -287,7 +332,9 @@ fn main() {
    println!("══════════════════════════════════════════════════════════════════════════");
    println!("  RESP workers: {workers} | RESP clients: {resp_c}×{resp_ops} ops");
    println!("  PG proxy clients: {pg_c}×{pg_ops} queries (cache-hit only)");
-   if smoke { println!("  (smoke mode)"); }
+   if smoke {
+      println!("  (smoke mode)");
+   }
    println!("══════════════════════════════════════════════════════════════════════════\n");
 
    let mut rows: Vec<Row> = Vec::new();
@@ -319,16 +366,36 @@ fn main() {
 
    // ── Section 1: FyroDB RESP ────────────────────────────────────────────────
    let total_resp = (resp_c * resp_ops) as u64;
-   println!("── FyroDB RESP  ({resp_c} clients × {resp_ops} ops, batch {batch}) ─────────────────────────────");
+   println!(
+      "── FyroDB RESP  ({resp_c} clients × {resp_ops} ops, batch {batch}) ─────────────────────────────"
+   );
 
    let el = bench_resp(resp_port, resp_c, resp_ops, batch, true, 5);
-   println!("  SET pipelined    {:>7.0}ms  {}", el.as_millis(), fmt_rate(total_resp as f64 / el.as_secs_f64()));
-   rows.push(Row { section: "FyroDB", label: "SET pipelined", ops: total_resp, elapsed: el });
+   println!(
+      "  SET pipelined    {:>7.0}ms  {}",
+      el.as_millis(),
+      fmt_rate(total_resp as f64 / el.as_secs_f64())
+   );
+   rows.push(Row {
+      section: "FyroDB",
+      label: "SET pipelined",
+      ops: total_resp,
+      elapsed: el,
+   });
 
    // GET: keys were populated by the SET run above (same key range)
    let el = bench_resp(resp_port, resp_c, resp_ops, batch, false, 11);
-   println!("  GET pipelined    {:>7.0}ms  {}\n", el.as_millis(), fmt_rate(total_resp as f64 / el.as_secs_f64()));
-   rows.push(Row { section: "FyroDB", label: "GET pipelined", ops: total_resp, elapsed: el });
+   println!(
+      "  GET pipelined    {:>7.0}ms  {}\n",
+      el.as_millis(),
+      fmt_rate(total_resp as f64 / el.as_secs_f64())
+   );
+   rows.push(Row {
+      section: "FyroDB",
+      label: "GET pipelined",
+      ops: total_resp,
+      elapsed: el,
+   });
 
    // ── dbcache proxy servers ─────────────────────────────────────────────────
    let pg_store = Arc::new(Store::new());
@@ -370,13 +437,19 @@ fn main() {
    };
 
    let _ph1 = fyro_dbcache::start_proxy_listener(
-      DbCacheConfig { listen_addr: format!("127.0.0.1:{port_simple}"), ..base_cfg.clone() },
+      DbCacheConfig {
+         listen_addr: format!("127.0.0.1:{port_simple}"),
+         ..base_cfg.clone()
+      },
       Arc::clone(&pg_mgr),
    )
    .expect("start simple proxy");
 
    let _ph2 = fyro_dbcache::start_proxy_listener(
-      DbCacheConfig { listen_addr: format!("127.0.0.1:{port_ext}"), ..base_cfg },
+      DbCacheConfig {
+         listen_addr: format!("127.0.0.1:{port_ext}"),
+         ..base_cfg
+      },
       Arc::clone(&pg_mgr),
    )
    .expect("start ext proxy");
@@ -385,15 +458,35 @@ fn main() {
 
    // ── Section 2: dbcache ────────────────────────────────────────────────────
    let total_pg = (pg_c * pg_ops) as u64;
-   println!("── dbcache proxy  ({pg_c} clients × {pg_ops} queries, cache-hit only) ─────────────────────");
+   println!(
+      "── dbcache proxy  ({pg_c} clients × {pg_ops} queries, cache-hit only) ─────────────────────"
+   );
 
    let el = bench_pg_simple(port_simple, pg_c, pg_ops, sql_simple);
-   println!("  Simple query     {:>7.0}ms  {}", el.as_millis(), fmt_rate(total_pg as f64 / el.as_secs_f64()));
-   rows.push(Row { section: "dbcache", label: "simple query (cache hit)", ops: total_pg, elapsed: el });
+   println!(
+      "  Simple query     {:>7.0}ms  {}",
+      el.as_millis(),
+      fmt_rate(total_pg as f64 / el.as_secs_f64())
+   );
+   rows.push(Row {
+      section: "dbcache",
+      label: "simple query (cache hit)",
+      ops: total_pg,
+      elapsed: el,
+   });
 
    let el = bench_pg_extended(port_ext, pg_c, pg_ops, sql_ext);
-   println!("  Extended proto   {:>7.0}ms  {}\n", el.as_millis(), fmt_rate(total_pg as f64 / el.as_secs_f64()));
-   rows.push(Row { section: "dbcache", label: "extended protocol (cache hit)", ops: total_pg, elapsed: el });
+   println!(
+      "  Extended proto   {:>7.0}ms  {}\n",
+      el.as_millis(),
+      fmt_rate(total_pg as f64 / el.as_secs_f64())
+   );
+   rows.push(Row {
+      section: "dbcache",
+      label: "extended protocol (cache hit)",
+      ops: total_pg,
+      elapsed: el,
+   });
 
    print_summary(&rows);
 }

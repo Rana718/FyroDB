@@ -23,10 +23,7 @@ const MAX_LINE: usize = 1 << 20;
 const FLUSH_LINE: &str = "{\"flush\":true}\n";
 const LOCAL_HELLO: &str = "{\"local\":true}\n";
 
-// Publishes table invalidations to sibling FyroDB processes and applies the
-// ones they publish. One process automatically becomes the broker; if it dies,
-// a survivor takes over. After a reconnect each side flushes locally so an
-// invalidation lost while disconnected cannot leave stale rows behind.
+// Publishes and syncs table invalidations across sibling FyroDB processes.
 pub struct InvalidationBus {
    #[cfg(unix)]
    manager: Arc<DbCacheManager>,
@@ -160,9 +157,7 @@ impl InvalidationBus {
       };
       *self.writer.lock() = Some(write_half);
       self.set_connected(true);
-      // Invalidations published while this process was disconnected never left
-      // the machine, so make every peer flush; its own cache was cleared by
-      // `recover` first.
+      // Flush peers to reconcile invalidations missed while disconnected.
       if rejoined {
          self.publish(FLUSH_LINE);
       }
@@ -182,10 +177,7 @@ impl InvalidationBus {
       if UnixStream::connect(&self.path).is_ok() {
          return None;
       }
-      // Election lock so two processes that notice the dead broker at the same
-      // time cannot both remove and rebind the socket, which would split peers
-      // across two brokers. A lock left by a crash is stolen after a grace
-      // period since elections finish in milliseconds.
+      // Election lock preventing split-brain broker socket rebinding.
       let lock_path = self
          .path
          .with_file_name(format!("{}.lock", self.path.file_name()?.to_string_lossy()));
@@ -275,9 +267,7 @@ impl InvalidationBus {
                         continue;
                      }
                   }
-                  // A local publisher already applied this invalidation; relay
-                  // only. Remote messages are applied here because the broker
-                  // process is often also a proxy.
+                  // Relay local invalidations; apply remote ones locally.
                   if !peer.local.load(Ordering::Relaxed) {
                      apply_message(&manager, &prefix, line.trim());
                   }

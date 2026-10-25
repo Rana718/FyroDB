@@ -1254,7 +1254,11 @@ fn pipelined_simple_queries_all_receive_response() {
    let mut ready_count = 0usize;
    for _ in 0..PIPE {
       let reply = client.read_until_ready();
-      assert!(reply.error.is_none(), "query {ready_count} had error: {:?}", reply.error);
+      assert!(
+         reply.error.is_none(),
+         "query {ready_count} had error: {:?}",
+         reply.error
+      );
       ready_count += 1;
    }
    assert_eq!(ready_count, PIPE);
@@ -1309,7 +1313,11 @@ fn pipelined_extended_protocol_all_receive_response() {
 
    for i in 0..PIPE {
       let reply = client.read_until_ready();
-      assert!(reply.error.is_none(), "iteration {i} had error: {:?}", reply.error);
+      assert!(
+         reply.error.is_none(),
+         "iteration {i} had error: {:?}",
+         reply.error
+      );
    }
 }
 
@@ -1428,8 +1436,17 @@ fn large_batch_simple_queries_all_receive_correct_response() {
    let mut ok = 0usize;
    for i in 0..PIPE {
       let reply = client.read_until_ready();
-      assert!(reply.error.is_none(), "query {i} returned error: {:?}", reply.error);
-      assert_eq!(reply.rows.len(), 1, "query {i} expected 1 row, got {}", reply.rows.len());
+      assert!(
+         reply.error.is_none(),
+         "query {i} returned error: {:?}",
+         reply.error
+      );
+      assert_eq!(
+         reply.rows.len(),
+         1,
+         "query {i} expected 1 row, got {}",
+         reply.rows.len()
+      );
       ok += 1;
    }
    assert_eq!(ok, PIPE);
@@ -1485,7 +1502,11 @@ fn large_batch_extended_protocol_all_receive_correct_response() {
    let mut ok = 0usize;
    for i in 0..PIPE {
       let reply = client.read_until_ready();
-      assert!(reply.error.is_none(), "iteration {i} returned error: {:?}", reply.error);
+      assert!(
+         reply.error.is_none(),
+         "iteration {i} returned error: {:?}",
+         reply.error
+      );
       assert_eq!(reply.rows.len(), 1, "iteration {i} expected 1 row");
       ok += 1;
    }
@@ -1511,11 +1532,19 @@ fn hot_sql_parse_cache_1000_repeated_queries_stay_correct() {
    let mut client = Client::connect(port);
    for i in 0..1000usize {
       let reply = client.simple(sql);
-      assert!(reply.error.is_none(), "query {i} had error: {:?}", reply.error);
+      assert!(
+         reply.error.is_none(),
+         "query {i} had error: {:?}",
+         reply.error
+      );
       assert_eq!(reply.rows.len(), 1, "query {i}: expected 1 row");
       let row = &reply.rows[0];
       assert_eq!(row[0].as_deref(), Some("42"), "query {i}: wrong id");
-      assert_eq!(row[1].as_deref(), Some("testuser"), "query {i}: wrong username");
+      assert_eq!(
+         row[1].as_deref(),
+         Some("testuser"),
+         "query {i}: wrong username"
+      );
    }
 }
 
@@ -1533,33 +1562,69 @@ fn alternating_sql_queries_bypass_hot_cache_correctly() {
    use fyro_dbcache::{ColumnInfo, DbResultSet, DbRow, DbValue};
    let result_a = DbResultSet {
       columns: vec![
-         ColumnInfo { name: "id".to_string(), type_oid: 23 },
-         ColumnInfo { name: "username".to_string(), type_oid: 25 },
+         ColumnInfo {
+            name: "id".to_string(),
+            type_oid: 23,
+         },
+         ColumnInfo {
+            name: "username".to_string(),
+            type_oid: 25,
+         },
       ],
-      rows: vec![DbRow { values: vec![DbValue::Int(42), DbValue::Text("alice".to_string())] }],
+      rows: vec![DbRow {
+         values: vec![DbValue::Int(42), DbValue::Text("alice".to_string())],
+      }],
       rows_affected: 1,
    };
    let result_b = DbResultSet {
       columns: vec![
-         ColumnInfo { name: "id".to_string(), type_oid: 23 },
-         ColumnInfo { name: "username".to_string(), type_oid: 25 },
+         ColumnInfo {
+            name: "id".to_string(),
+            type_oid: 23,
+         },
+         ColumnInfo {
+            name: "username".to_string(),
+            type_oid: 25,
+         },
       ],
-      rows: vec![DbRow { values: vec![DbValue::Int(43), DbValue::Text("bob".to_string())] }],
+      rows: vec![DbRow {
+         values: vec![DbValue::Int(43), DbValue::Text("bob".to_string())],
+      }],
       rows_affected: 1,
    };
 
-   manager.store_cached_query("db:", &parsed_a.tables, parsed_a.fingerprint, &result_a, 60_000);
-   manager.store_cached_query("db:", &parsed_b.tables, parsed_b.fingerprint, &result_b, 60_000);
+   manager.store_cached_query(
+      "db:",
+      &parsed_a.tables,
+      parsed_a.fingerprint,
+      &result_a,
+      60_000,
+   );
+   manager.store_cached_query(
+      "db:",
+      &parsed_b.tables,
+      parsed_b.fingerprint,
+      &result_b,
+      60_000,
+   );
 
    let mut client = Client::connect(port);
    for i in 0..100usize {
       let ra = client.simple(sql_a);
       assert!(ra.error.is_none(), "round {i} sql_a error: {:?}", ra.error);
-      assert_eq!(ra.rows[0][1].as_deref(), Some("alice"), "round {i} sql_a wrong user");
+      assert_eq!(
+         ra.rows[0][1].as_deref(),
+         Some("alice"),
+         "round {i} sql_a wrong user"
+      );
 
       let rb = client.simple(sql_b);
       assert!(rb.error.is_none(), "round {i} sql_b error: {:?}", rb.error);
-      assert_eq!(rb.rows[0][1].as_deref(), Some("bob"), "round {i} sql_b wrong user");
+      assert_eq!(
+         rb.rows[0][1].as_deref(),
+         Some("bob"),
+         "round {i} sql_b wrong user"
+      );
    }
 }
 
@@ -1568,8 +1633,8 @@ fn alternating_sql_queries_bypass_hot_cache_correctly() {
 // upstream and without producing any errors.
 #[test]
 fn cache_only_large_extended_protocol_pipeline() {
-   use fyro_dbcache::protocol::{encode_bind, put_message};
    use fyro_db::storage::store::Store;
+   use fyro_dbcache::protocol::{encode_bind, put_message};
 
    let store = Arc::new(Store::new());
    let manager = Arc::new(DbCacheManager::new(store));
@@ -1581,7 +1646,13 @@ fn cache_only_large_extended_protocol_pipeline() {
       std::slice::from_ref(&param),
       &[],
    );
-   manager.store_cached_query("db:", &parsed.tables, fp, &make_one_row_result_local(), 60_000);
+   manager.store_cached_query(
+      "db:",
+      &parsed.tables,
+      fp,
+      &make_one_row_result_local(),
+      60_000,
+   );
 
    let config = fyro_dbcache::DbCacheConfig {
       enabled: true,
@@ -1596,7 +1667,13 @@ fn cache_only_large_extended_protocol_pipeline() {
       ttl_jitter_pct: 0,
       ..Default::default()
    };
-   let port: u16 = config.listen_addr.split(':').last().unwrap().parse().unwrap();
+   let port: u16 = config
+      .listen_addr
+      .split(':')
+      .next_back()
+      .unwrap()
+      .parse()
+      .unwrap();
    let _handle = fyro_dbcache::start_proxy_listener(config, manager).expect("start proxy");
    std::thread::sleep(Duration::from_millis(30));
 
@@ -1623,7 +1700,11 @@ fn cache_only_large_extended_protocol_pipeline() {
 
    for i in 0..PIPE {
       let reply = client.read_until_ready();
-      assert!(reply.error.is_none(), "iteration {i} cache-only extended error: {:?}", reply.error);
+      assert!(
+         reply.error.is_none(),
+         "iteration {i} cache-only extended error: {:?}",
+         reply.error
+      );
       assert_eq!(reply.rows.len(), 1, "iteration {i}: expected 1 row");
    }
 }
@@ -1647,7 +1728,11 @@ fn cache_miss_then_hit_sequence_is_consistent() {
    // Subsequent queries: should hit cache now that it's populated.
    for i in 1..10usize {
       let r = client.simple(sql);
-      assert!(r.error.is_none(), "query {i} error after cache fill: {:?}", r.error);
+      assert!(
+         r.error.is_none(),
+         "query {i} error after cache fill: {:?}",
+         r.error
+      );
       assert_eq!(r.rows, expected_rows(), "query {i} returned different rows");
    }
 }
@@ -1680,7 +1765,11 @@ fn pipeline_transitions_from_miss_to_hit_correctly() {
 
    for i in 0..64usize {
       let reply = client.read_until_ready();
-      assert!(reply.error.is_none(), "batch query {i} error: {:?}", reply.error);
+      assert!(
+         reply.error.is_none(),
+         "batch query {i} error: {:?}",
+         reply.error
+      );
       assert_eq!(reply.rows, expected_rows(), "batch query {i} wrong rows");
    }
 }
@@ -1704,7 +1793,13 @@ fn concurrent_extended_protocol_clients_get_correct_responses() {
       std::slice::from_ref(&param),
       &[],
    );
-   manager.store_cached_query("db:", &parsed.tables, fp, &make_one_row_result_local(), 60_000);
+   manager.store_cached_query(
+      "db:",
+      &parsed.tables,
+      fp,
+      &make_one_row_result_local(),
+      60_000,
+   );
 
    const CLIENTS: usize = 16;
    const QUERIES: usize = 128;
@@ -1748,15 +1843,24 @@ fn concurrent_extended_protocol_clients_get_correct_responses() {
       .collect();
 
    let total_errors: usize = handles.into_iter().map(|h| h.join().unwrap()).sum();
-   assert_eq!(total_errors, 0, "{total_errors} extended-protocol queries returned errors");
+   assert_eq!(
+      total_errors, 0,
+      "{total_errors} extended-protocol queries returned errors"
+   );
 }
 
 fn make_one_row_result_local() -> fyro_dbcache::DbResultSet {
    use fyro_dbcache::{ColumnInfo, DbResultSet, DbRow, DbValue};
    DbResultSet {
       columns: vec![
-         ColumnInfo { name: "id".to_string(), type_oid: 23 },
-         ColumnInfo { name: "username".to_string(), type_oid: 25 },
+         ColumnInfo {
+            name: "id".to_string(),
+            type_oid: 23,
+         },
+         ColumnInfo {
+            name: "username".to_string(),
+            type_oid: 25,
+         },
       ],
       rows: vec![DbRow {
          values: vec![DbValue::Int(42), DbValue::Text("testuser".to_string())],

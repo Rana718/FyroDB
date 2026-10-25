@@ -316,9 +316,7 @@ fn is_system_relation(name: &str) -> bool {
    bare.starts_with("pg_") || name.starts_with("information_schema.")
 }
 
-// Translates SET/RESET/DISCARD into a session-context update. The normalized
-// statement text is hashed into the context rather than interpreted, so any
-// spelling of the same change yields the same key on every connection.
+// Translates SET/RESET/DISCARD statements into a session-context update.
 fn session_change_for(statement: &Statement, normalized: &str) -> Option<SessionChange> {
    match statement {
       Statement::Set(set) => {
@@ -719,6 +717,30 @@ pub fn compute_fingerprint_with_params_base(
    hasher.finish()
 }
 
+// Slice-based parameter-bound fingerprint with zero allocations.
+pub fn compute_fingerprint_with_params_slice(
+   base_fingerprint: u64,
+   params: &[Option<&[u8]>],
+   param_formats: &[i16],
+) -> u64 {
+   let mut hasher = FixedState::with_seed(0).build_hasher();
+   hasher.write_u64(base_fingerprint);
+   hasher.write_u8(0xFF);
+   hasher.write_u32(params.len() as u32);
+   for (index, param) in params.iter().enumerate() {
+      let format = param_formats.get(index).copied().unwrap_or(0);
+      hasher.write_i16(format);
+      match param {
+         None => hasher.write_i32(-1),
+         Some(bytes) => {
+            hasher.write_i32(bytes.len() as i32);
+            hasher.write(bytes);
+         }
+      }
+   }
+   hasher.finish()
+}
+
 const HEX: &[u8; 16] = b"0123456789abcdef";
 
 // Builds the cache key for this query result in the shared key-value store.
@@ -751,9 +773,7 @@ pub fn make_cache_key(prefix: &str, table: &str, fingerprint: u64) -> String {
    key
 }
 
-// Builds the cache key directly into `buf` without a heap allocation.
-// Returns a `&str` into the buffer. Falls back to an empty str if the key
-// would exceed the buffer — callers that get "" must use `make_cache_key`.
+// Formats cache key into buffer; returns empty str if buffer overflows.
 pub fn make_cache_key_inline<'a>(
    prefix: &str,
    table: &str,
@@ -800,6 +820,17 @@ impl Default for ParsedQueryCache {
    }
 }
 
+#[derive(Clone)]
+struct ParsedL1Entry {
+   hash: u64,
+   sql_len: usize,
+   parsed: Arc<ParsedQuery>,
+}
+
+thread_local! {
+   static PARSED_L1: std::cell::RefCell<[Option<ParsedL1Entry>; 64]> = const { std::cell::RefCell::new([const { None }; 64]) };
+}
+
 impl ParsedQueryCache {
    pub fn new(shard_count: usize, max_per_shard: usize) -> Self {
       let shard_count = shard_count.next_power_of_two().max(1);
@@ -815,11 +846,33 @@ impl ParsedQueryCache {
 
    pub fn get_or_parse(&self, sql: &str) -> Arc<ParsedQuery> {
       let hash = hash_sql(sql);
+      let idx = (hash as usize) & 63;
+      if let Some(parsed) = PARSED_L1.with(|c| {
+         let b = c.borrow();
+         if let Some(slot) = &b[idx]
+            && slot.hash == hash
+            && slot.sql_len == sql.len()
+         {
+            return Some(Arc::clone(&slot.parsed));
+         }
+         None
+      }) {
+         return parsed;
+      }
+
       let index = (hash as usize) & (self.shards.len() - 1);
       let shard = &self.shards[index];
 
       if let Some(entry) = shard.read().get(&hash) {
-         return Arc::clone(&entry.parsed);
+         let p = Arc::clone(&entry.parsed);
+         PARSED_L1.with(|c| {
+            c.borrow_mut()[idx] = Some(ParsedL1Entry {
+               hash,
+               sql_len: sql.len(),
+               parsed: Arc::clone(&p),
+            });
+         });
+         return p;
       }
 
       let parsed = Arc::new(parse_sql(sql));
@@ -836,6 +889,13 @@ impl ParsedQueryCache {
             parsed: Arc::clone(&parsed),
          },
       );
+      PARSED_L1.with(|c| {
+         c.borrow_mut()[idx] = Some(ParsedL1Entry {
+            hash,
+            sql_len: sql.len(),
+            parsed: Arc::clone(&parsed),
+         });
+      });
       parsed
    }
 

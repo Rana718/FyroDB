@@ -628,8 +628,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
       f: impl FnOnce(&V) -> R,
    ) -> Option<R> {
       let entry = unsafe { self.shards.get_unchecked(idx) }.find(key, hash)?;
-      // find() already verified occupied+hash with a Relaxed load; one Acquire
-      // fence here is enough to synchronize the subsequent value read.
+      // Synchronize subsequent value read.
       std::sync::atomic::fence(Ordering::Acquire);
       Some(f(unsafe { (*entry.value.get()).assume_init_ref() }))
    }
@@ -682,17 +681,14 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
       ebr::with_pin(|_| unsafe { self.shards.get_unchecked(idx) }.get(key, h))
    }
 
-   /// Like `get` but skips the inner EBR pin entirely when the caller already
-   /// holds a `Guard`. Zero atomic ops on the EBR path — the guard guarantees
-   /// no retired entry can be freed while it is held.
+   /// Like `get` without re-pinning EBR when caller already holds a Guard.
    #[inline(always)]
    pub fn get_pinned(&self, key: &str, _guard: &ebr::Guard) -> Option<V> {
       let (h, idx) = self.locate(key);
       unsafe { self.shards.get_unchecked(idx) }.get_pinned(key, h)
    }
 
-   /// Like `get_ref` but zero-cost EBR — caller must hold a `Guard` for the
-   /// lifetime of the returned reference.
+   /// Like `get_ref` when caller holds an EBR Guard for returned reference lifetime.
    #[inline]
    pub fn get_ref_pinned<'g>(
       &'g self,
@@ -819,9 +815,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
       false
    }
 
-   /// Probe once for `key`; on a miss `make_value` builds the value that the
-   /// same walk inserts. `FastSet::Existing` hands back the entry so the
-   /// caller can overwrite it without allocating a new value.
+   /// Probes for key; inserts make_value() on miss or returns existing entry.
    #[inline(always)]
    pub fn probe_or_insert_fast<F>(&self, hash: u64, key: &str, make_value: F) -> FastSet<V>
    where
@@ -1577,10 +1571,7 @@ mod tests {
       assert_eq!(map.len(), 0);
    }
 
-   /// Churn must rebuild the table in place. Growing is keyed on insertions
-   /// since the last rebuild, so a table that repeatedly fills and empties
-   /// used to double or quadruple even though only a handful of keys were
-   /// ever live.
+   /// Churn rebuilds table in place without expanding capacity.
    #[test]
    fn churn_rebuilds_in_place_instead_of_growing() {
       let map = CustomMap::<u64>::build(1, 32, usize::MAX);

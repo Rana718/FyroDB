@@ -253,7 +253,8 @@ fn bench_extended_protocol_tcp(scale: Scale, results: &mut Vec<BenchResult>) {
    let rs = sample_result_set();
    manager.store_cached_query("db:", &parsed.tables, fingerprint, &rs, 60_000);
 
-   let _handles = fyro_dbcache::start_proxy_listener_mio(config, manager.clone()).expect("start proxy");
+   let _handles =
+      fyro_dbcache::start_proxy_listener_mio(config, manager.clone()).expect("start proxy");
    std::thread::sleep(Duration::from_millis(50));
 
    let num_clients = scale.tcp_clients;
@@ -286,24 +287,29 @@ fn bench_extended_protocol_tcp(scale: Scale, results: &mut Vec<BenchResult>) {
          let mut execute_frame = Vec::new();
          put_message(&mut execute_frame, b'E', &execute_body);
 
-         // Pre-build one Bind+Execute+Sync unit.
+         // Pre-build one Bind+Execute+Sync unit and the full PIPE batch buffer.
          const PIPE: usize = 512;
          let unit_len = bind_frame.len() + execute_frame.len() + 5;
-         let mut batch_buf = Vec::with_capacity(PIPE * unit_len);
+         let mut unit = Vec::with_capacity(unit_len);
+         unit.extend_from_slice(&bind_frame);
+         unit.extend_from_slice(&execute_frame);
+         unit.extend_from_slice(&[b'S', 0, 0, 0, 4]);
+
+         let mut full_batch_buf = Vec::with_capacity(PIPE * unit_len);
+         for _ in 0..PIPE {
+            full_batch_buf.extend_from_slice(&unit);
+         }
 
          let mut sent = 0;
          while sent < queries_per_client {
             let batch = PIPE.min(queries_per_client - sent);
-            batch_buf.clear();
-            for _ in 0..batch {
-               batch_buf.extend_from_slice(&bind_frame);
-               batch_buf.extend_from_slice(&execute_frame);
-               batch_buf.extend_from_slice(&[b'S', 0, 0, 0, 4]);
-            }
-            (&write_stream).write_all(&batch_buf).unwrap();
-            for _ in 0..batch {
-               drain_until_ready(&mut br);
-            }
+            let send_slice = if batch == PIPE {
+               &full_batch_buf
+            } else {
+               &full_batch_buf[..batch * unit_len]
+            };
+            (&write_stream).write_all(send_slice).unwrap();
+            drain_ready_batches(&mut br, batch);
             done.fetch_add(batch as u64, Ordering::Relaxed);
             sent += batch;
          }
@@ -349,7 +355,8 @@ fn bench_tcp_wire_proxy(scale: Scale, results: &mut Vec<BenchResult>) {
    let rs = sample_result_set();
    manager.store_cached_query("db:", &parsed.tables, parsed.fingerprint, &rs, 60_000);
 
-   let _handles = fyro_dbcache::start_proxy_listener_mio(config, manager.clone()).expect("start proxy");
+   let _handles =
+      fyro_dbcache::start_proxy_listener_mio(config, manager.clone()).expect("start proxy");
    std::thread::sleep(Duration::from_millis(50));
 
    let num_clients = scale.tcp_clients;
@@ -373,20 +380,23 @@ fn bench_tcp_wire_proxy(scale: Scale, results: &mut Vec<BenchResult>) {
          q_pkt.extend_from_slice(q_bytes);
          q_pkt.push(0);
 
-         // Batch PIPE requests into a single write syscall, then read all responses.
+         // Pre-build the full PIPE batch buffer once.
          const PIPE: usize = 512;
-         let mut batch_buf = Vec::with_capacity(PIPE * q_pkt.len());
+         let mut full_batch_buf = Vec::with_capacity(PIPE * q_pkt.len());
+         for _ in 0..PIPE {
+            full_batch_buf.extend_from_slice(&q_pkt);
+         }
+
          let mut sent = 0;
          while sent < queries_per_client {
             let batch = PIPE.min(queries_per_client - sent);
-            batch_buf.clear();
-            for _ in 0..batch {
-               batch_buf.extend_from_slice(&q_pkt);
-            }
-            (&write_stream).write_all(&batch_buf).unwrap();
-            for _ in 0..batch {
-               drain_until_ready(&mut br);
-            }
+            let send_slice = if batch == PIPE {
+               &full_batch_buf
+            } else {
+               &full_batch_buf[..batch * q_pkt.len()]
+            };
+            (&write_stream).write_all(send_slice).unwrap();
+            drain_ready_batches(&mut br, batch);
             done.fetch_add(batch as u64, Ordering::Relaxed);
             sent += batch;
          }
@@ -429,6 +439,38 @@ fn connect_startup_streams(port: u16) -> (TcpStream, BufReader<TcpStream>) {
 
 // Drains backend messages from a buffered reader until ReadyForQuery ('Z'),
 // discarding message bodies without heap allocation.
+#[inline(always)]
+fn drain_ready_batches(r: &mut BufReader<TcpStream>, mut count: usize) {
+   while count > 0 {
+      let buf = r.fill_buf().unwrap();
+      if buf.is_empty() {
+         break;
+      }
+      let mut pos = 0;
+      let len = buf.len();
+      while pos + 5 <= len && count > 0 {
+         let tag = buf[pos];
+         let msg_len =
+            i32::from_be_bytes([buf[pos + 1], buf[pos + 2], buf[pos + 3], buf[pos + 4]]) as usize;
+         let total = 1 + msg_len;
+         if pos + total <= len {
+            pos += total;
+            if tag == b'Z' {
+               count -= 1;
+            }
+         } else {
+            break;
+         }
+      }
+      if pos > 0 {
+         r.consume(pos);
+      } else {
+         drain_until_ready(r);
+         count -= 1;
+      }
+   }
+}
+
 fn drain_until_ready(r: &mut BufReader<TcpStream>) {
    let mut head = [0u8; 5];
    loop {

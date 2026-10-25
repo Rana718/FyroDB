@@ -1397,7 +1397,7 @@ impl Session {
                &result,
                self.config.default_ttl_ms,
             );
-            return Some(result);
+            return Some((*result).clone());
          }
       }
       None
@@ -1664,10 +1664,7 @@ impl Session {
       Ok(())
    }
 
-   // Variant of flush_out used only on the cache-hit path of simple queries.
-   // When the client has pipelined more messages, defers the write so multiple
-   // cache-hit responses are coalesced into one write syscall. Safe only when
-   // all output for the current request is in self.out (no direct client writes).
+   // Coalesces simple-query cache hits when pipelined requests are pending.
    fn flush_out_batched(&mut self) -> io::Result<()> {
       if self.out.is_empty() {
          return Ok(());

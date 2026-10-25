@@ -419,9 +419,7 @@ impl UpstreamConnection {
       self.writer.write_all(frame)
    }
 
-   // Sends a message followed by Flush. PostgreSQL buffers extended-protocol
-   // replies until Sync/Flush, so the proxy must request a flush before it can
-   // read the reply for a single forwarded message.
+   // Sends message and flushes buffered replies from PostgreSQL backend.
    pub fn send_and_flush(&mut self, frame: &[u8]) -> io::Result<()> {
       self.writer.write_all(frame)?;
       self.request_flush()

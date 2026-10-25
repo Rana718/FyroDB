@@ -267,8 +267,7 @@ pub fn force_collect() {
    });
 }
 
-/// Demand-driven quiescence used by destructive commands.  It never frees an
-/// object while a reader is pinned; it simply gives concurrent readers a short
+/// Repeatedly runs garbage collection and yields to allow readers to quiesce.
 pub fn force_collect_quiescent() {
    for _ in 0..64 {
       force_collect();

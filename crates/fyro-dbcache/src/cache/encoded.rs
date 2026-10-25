@@ -11,6 +11,7 @@ pub struct EncodedResult {
    pub columns: Vec<ColumnInfo>,
    pub row_count: u32,
    pub expires_at_ms: u64,
+   pub result: std::sync::Arc<DbResultSet>,
 }
 
 impl EncodedResult {
@@ -31,7 +32,13 @@ impl EncodedResult {
          columns: result.columns.clone(),
          row_count,
          expires_at_ms: expiry_ms(ttl_ms),
+         result: std::sync::Arc::new(result.clone()),
       }
+   }
+
+   #[inline(always)]
+   pub fn is_expired(&self, now: u64) -> bool {
+      self.expires_at_ms != 0 && self.expires_at_ms < now
    }
 
    #[inline]

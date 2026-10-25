@@ -25,9 +25,7 @@ impl From<io::Error> for ClientAuthError {
    }
 }
 
-// Authenticates a frontend with a stored plaintext password using the
-// SCRAM-SHA-256 mechanism. This lets the proxy terminate authentication and
-// reuse authenticated upstream connections.
+// Authenticates frontend with SCRAM-SHA-256 using stored password.
 pub fn authenticate_client<R: Read, W: Write>(
    reader: &mut FrameReader<R>,
    writer: &mut W,

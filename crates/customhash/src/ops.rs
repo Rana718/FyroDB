@@ -234,10 +234,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
          return;
       };
 
-      // Cheap gate: this runs on every dbsize drop and every maintenance
-      // tick, and most shards have nothing to reclaim. `len` counts inserts
-      // since the last rebuild and `live` the occupied slots, so their
-      // difference approximates the tombstone population.
+      // Skip compaction if estimated tombstone count is low.
       let live_hint = shard.live.load(Ordering::Relaxed);
       let capacity_hint = shard.mask.load(Ordering::Relaxed) + 1;
       let dead_hint = dead_estimate(shard.len.load(Ordering::Relaxed), live_hint);
