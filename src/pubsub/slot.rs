@@ -129,7 +129,10 @@ impl WorkerNotifier {
          .cloned()
    }
 
-   pub fn with_local_subs<R>(&self, f: impl FnOnce(&HashMap<String, Vec<usize>, FixedState>) -> R) -> R {
+   pub fn with_local_subs<R>(
+      &self,
+      f: impl FnOnce(&HashMap<String, Vec<usize>, FixedState>) -> R,
+   ) -> R {
       f(&self.local_subs.lock().unwrap_or_else(|e| e.into_inner()))
    }
 

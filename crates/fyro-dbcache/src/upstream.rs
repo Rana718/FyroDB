@@ -628,7 +628,9 @@ fn error_message(body: &[u8]) -> String {
          break;
       };
       if field == b'M' {
-         return std::str::from_utf8(&body[pos..pos + end]).unwrap_or("").to_string();
+         return std::str::from_utf8(&body[pos..pos + end])
+            .unwrap_or("")
+            .to_string();
       }
       pos += end + 1;
    }
@@ -648,7 +650,9 @@ pub fn parse_row_description(data: &[u8]) -> io::Result<Vec<ColumnInfo>> {
          .iter()
          .position(|&b| b == 0)
          .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid column name"))?;
-      let name = std::str::from_utf8(&data[offset..offset + end]).unwrap_or("").to_string();
+      let name = std::str::from_utf8(&data[offset..offset + end])
+         .unwrap_or("")
+         .to_string();
       offset += end + 1 + 6; // name + null + table_oid (4) + col_attr (2)
 
       if offset + 4 > data.len() {
@@ -694,7 +698,9 @@ pub fn parse_data_row(data: &[u8]) -> io::Result<DbRow> {
          if offset + len > data.len() {
             break;
          }
-         let text = std::str::from_utf8(&data[offset..offset + len]).unwrap_or("").to_string();
+         let text = std::str::from_utf8(&data[offset..offset + len])
+            .unwrap_or("")
+            .to_string();
          offset += len;
          values.push(DbValue::Text(text));
       }

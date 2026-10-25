@@ -446,7 +446,11 @@ fn format_i64<'a>(value: &i64, buf: &'a mut [u8; 20]) -> &'a [u8] {
       return &buf[..1];
    }
    let neg = n < 0;
-   let mut abs = if neg { n.wrapping_neg() as u64 } else { n as u64 };
+   let mut abs = if neg {
+      n.wrapping_neg() as u64
+   } else {
+      n as u64
+   };
    let mut pos = 20usize;
    while abs > 0 {
       pos -= 1;

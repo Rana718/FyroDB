@@ -164,7 +164,11 @@ impl Visitor for AstTableExtractor {
 
 // Registers both the qualified and bare name so unqualified writes still evict
 // schema-qualified cache entries.
-fn push_relation(tables: &mut Vec<String>, seen: &mut HashSet<String, FixedState>, parts: &[String]) {
+fn push_relation(
+   tables: &mut Vec<String>,
+   seen: &mut HashSet<String, FixedState>,
+   parts: &[String],
+) {
    if parts.len() > 1 {
       let full = parts.join(".");
       if seen.insert(full.clone()) {
@@ -528,7 +532,9 @@ fn has_write_keyword(sql: &str) -> bool {
 
    for &b in sql.as_bytes() {
       if in_quote {
-         if b == quote_char { in_quote = false; }
+         if b == quote_char {
+            in_quote = false;
+         }
          continue;
       }
       if b == b'\'' || b == b'"' {
@@ -538,17 +544,20 @@ fn has_write_keyword(sql: &str) -> bool {
          continue;
       }
       if b.is_ascii_alphanumeric() || b == b'_' {
-         if wlen < 12 { word[wlen] = b.to_ascii_lowercase(); wlen += 1; }
+         if wlen < 12 {
+            word[wlen] = b.to_ascii_lowercase();
+            wlen += 1;
+         }
          continue;
       }
       if wlen > 0 {
-         if WRITE_KEYWORDS.contains(&&*unsafe { std::str::from_utf8_unchecked(&word[..wlen]) }) {
+         if WRITE_KEYWORDS.contains(&unsafe { std::str::from_utf8_unchecked(&word[..wlen]) }) {
             return true;
          }
          wlen = 0;
       }
    }
-   wlen > 0 && WRITE_KEYWORDS.contains(&&*unsafe { std::str::from_utf8_unchecked(&word[..wlen]) })
+   wlen > 0 && WRITE_KEYWORDS.contains(&unsafe { std::str::from_utf8_unchecked(&word[..wlen]) })
 }
 
 fn has_volatile_keyword(lower: &str) -> bool {
@@ -572,7 +581,9 @@ fn count_statements(sql: &str) -> usize {
    let mut quote_char = 0u8;
    for &b in sql.as_bytes() {
       if in_quote {
-         if b == quote_char { in_quote = false; }
+         if b == quote_char {
+            in_quote = false;
+         }
          continue;
       }
       if b == b'\'' || b == b'"' {
@@ -582,7 +593,9 @@ fn count_statements(sql: &str) -> usize {
          count += 1;
       }
    }
-   if sql.trim_end().ends_with(';') { count -= 1; }
+   if sql.trim_end().ends_with(';') {
+      count -= 1;
+   }
    count.max(1)
 }
 
@@ -597,7 +610,9 @@ pub fn normalize_sql(sql: &str) -> String {
    for &b in bytes {
       if in_str {
          out.push(b);
-         if b == quote_char { in_str = false; }
+         if b == quote_char {
+            in_str = false;
+         }
          continue;
       }
       if b == b'\'' || b == b'"' {
@@ -607,7 +622,10 @@ pub fn normalize_sql(sql: &str) -> String {
          continue;
       }
       if b == b' ' || b == b'\t' || b == b'\n' || b == b'\r' {
-         if !in_whitespace { out.push(b' '); in_whitespace = true; }
+         if !in_whitespace {
+            out.push(b' ');
+            in_whitespace = true;
+         }
       } else {
          in_whitespace = false;
          out.push(b.to_ascii_lowercase());
@@ -704,14 +722,22 @@ pub fn make_cache_key(prefix: &str, table: &str, fingerprint: u64) -> String {
    key.push(':');
    let b = fingerprint.to_be_bytes();
    let hex = [
-      HEX[(b[0] >> 4) as usize], HEX[(b[0] & 0xF) as usize],
-      HEX[(b[1] >> 4) as usize], HEX[(b[1] & 0xF) as usize],
-      HEX[(b[2] >> 4) as usize], HEX[(b[2] & 0xF) as usize],
-      HEX[(b[3] >> 4) as usize], HEX[(b[3] & 0xF) as usize],
-      HEX[(b[4] >> 4) as usize], HEX[(b[4] & 0xF) as usize],
-      HEX[(b[5] >> 4) as usize], HEX[(b[5] & 0xF) as usize],
-      HEX[(b[6] >> 4) as usize], HEX[(b[6] & 0xF) as usize],
-      HEX[(b[7] >> 4) as usize], HEX[(b[7] & 0xF) as usize],
+      HEX[(b[0] >> 4) as usize],
+      HEX[(b[0] & 0xF) as usize],
+      HEX[(b[1] >> 4) as usize],
+      HEX[(b[1] & 0xF) as usize],
+      HEX[(b[2] >> 4) as usize],
+      HEX[(b[2] & 0xF) as usize],
+      HEX[(b[3] >> 4) as usize],
+      HEX[(b[3] & 0xF) as usize],
+      HEX[(b[4] >> 4) as usize],
+      HEX[(b[4] & 0xF) as usize],
+      HEX[(b[5] >> 4) as usize],
+      HEX[(b[5] & 0xF) as usize],
+      HEX[(b[6] >> 4) as usize],
+      HEX[(b[6] & 0xF) as usize],
+      HEX[(b[7] >> 4) as usize],
+      HEX[(b[7] & 0xF) as usize],
    ];
    // SAFETY: all bytes are ASCII hex digits.
    key.push_str(unsafe { std::str::from_utf8_unchecked(&hex) });
@@ -759,12 +785,18 @@ impl ParsedQueryCache {
 
       let parsed = Arc::new(parse_sql(sql));
       let mut guard = shard.write();
-      if guard.len() >= self.max_per_shard && !guard.contains_key(&hash) {
-         if let Some(evict) = guard.keys().next().copied() {
-            guard.remove(&evict);
-         }
+      if guard.len() >= self.max_per_shard
+         && !guard.contains_key(&hash)
+         && let Some(evict) = guard.keys().next().copied()
+      {
+         guard.remove(&evict);
       }
-      guard.insert(hash, ParsedEntry { parsed: Arc::clone(&parsed) });
+      guard.insert(
+         hash,
+         ParsedEntry {
+            parsed: Arc::clone(&parsed),
+         },
+      );
       parsed
    }
 

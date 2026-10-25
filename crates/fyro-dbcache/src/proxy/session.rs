@@ -2,7 +2,7 @@ use crate::auth::{self, ClientAuthError};
 use crate::bus::InvalidationBus;
 use crate::cache::{DbCacheManager, EncodedResult, mix64};
 use crate::config::{DbCacheConfig, DbProxyMode};
-use crate::pool::{PoolKey, PoolLimits, UpstreamPool};
+use crate::pool::{PoolKey, UpstreamPool};
 use crate::protocol::{self, FrameReader, FrontendMessage};
 use crate::query::{ParsedQuery, QueryKind, SessionChange, compute_fingerprint};
 use crate::row::DbValue;
@@ -10,58 +10,23 @@ use crate::upstream::{HandshakeError, RelayOutcome, ReplyStop, UpstreamConnectio
 use foldhash::fast::FixedState;
 use std::collections::HashMap;
 use std::io::{self, BufReader, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpStream;
 use std::sync::Arc;
-use std::thread;
-use std::time::Duration;
 
-const CLIENT_STACK: usize = 512 * 1024;
+pub(super) const CLIENT_STACK: usize = 512 * 1024;
 const CLIENT_READ_BUF: usize = 32 * 1024;
 const RELAY_FLUSH_BYTES: usize = 32 * 1024;
 const PORTAL_SUSPENDED: [u8; 5] = [b's', 0, 0, 0, 4];
 const MAX_CONTEXT_SETS: u32 = 64;
 const MAX_NAMED_STATEMENTS: usize = 512;
 
-// Settings that can change the rows a query returns for the same SQL text.
-// `current_setting(name, true)` yields NULL for settings this server version
-// does not expose instead of failing the whole probe.
-const CONTEXT_PROBE: &str = "SELECT current_setting('search_path', true), current_user, \
-   current_setting('is_superuser', true), current_setting('row_security', true), \
-   current_setting('default_transaction_isolation', true), \
-   current_setting('timezone', true), current_setting('datestyle', true), \
-   current_setting('intervalstyle', true), current_setting('extra_float_digits', true), \
-   current_setting('client_encoding', true), current_setting('lc_numeric', true), \
-   current_setting('default_text_search_config', true), \
-   current_setting('bytea_output', true), \
-   current_setting('standard_conforming_strings', true), \
-   current_setting('server_encoding', true), current_database()";
-
-const CATALOG_FUNCTIONS_SQL: &str = "SELECT n.nspname, p.proname FROM pg_proc p \
-   JOIN pg_namespace n ON n.oid = p.pronamespace \
-   WHERE p.provolatile IN ('s', 'v')";
-
-const CATALOG_VIEWS_SQL: &str = "SELECT v.relname, pg_get_viewdef(v.oid), \
-   d.refobjid::regclass::text FROM pg_rewrite r \
-   JOIN pg_class v ON v.oid = r.ev_class AND v.relkind IN ('v', 'm') \
-   JOIN pg_depend d ON d.objid = r.oid AND d.classid = 'pg_rewrite'::regclass \
-      AND d.refclassid = 'pg_class'::regclass AND d.deptype = 'n' \
-   WHERE r.rulename = '_RETURN'";
-
-// const EXTERNAL_SYNC_SQL: &str = "SELECT relname, n_tup_ins, n_tup_upd, n_tup_del \
-//    FROM pg_stat_all_tables WHERE schemaname NOT IN ('pg_catalog', 'information_schema')";
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ContextState {
-   // `context_hash` describes the session's result-affecting settings.
    Trusted,
-   // A session change happened; re-probe before caching again.
    NeedsProbe,
-   // The probe failed or a LOCAL change is active; nothing may be shared.
    Untrusted,
 }
 
-// Buffers the tail of a relayed reply in `out` so the cache can be filled
-// before the client observes ReadyForQuery. Rows still stream in chunks.
 struct ClientSink<'a> {
    out: &'a mut Vec<u8>,
    client: &'a mut TcpStream,
@@ -84,200 +49,7 @@ impl Write for ClientSink<'_> {
    }
 }
 
-// Spawns the background TCP listener for PostgreSQL wire proxy caching.
-pub fn start_proxy_listener(
-   config: DbCacheConfig,
-   cache_mgr: Arc<DbCacheManager>,
-) -> io::Result<thread::JoinHandle<()>> {
-   let listener = TcpListener::bind(&config.listen_addr)?;
-   let listen_addr = config.listen_addr.clone();
-
-   let pool = Arc::new(UpstreamPool::new(PoolLimits {
-      max_idle: config.pool_max_idle,
-      idle_timeout: Duration::from_millis(config.pool_idle_timeout_ms),
-   }));
-   let bus = if config.mode == DbProxyMode::Dual {
-      match config.bus_path.as_deref() {
-         Some(path) => {
-            match crate::bus::start(path, Arc::clone(&cache_mgr), config.key_prefix.clone()) {
-               Ok(bus) => Some(bus),
-               Err(error) => {
-                  eprintln!("fyrodb-dbproxy: invalidation bus unavailable ({path}): {error}");
-                  None
-               }
-            }
-         }
-         None => None,
-      }
-   } else {
-      None
-   };
-
-   // Background janitor for idle upstream sessions and expired cache tracking.
-   let janitor_pool = Arc::clone(&pool);
-   let janitor_mgr = Arc::clone(&cache_mgr);
-   let janitor_prefix = config.key_prefix.clone();
-   let interval = Duration::from_millis(if config.pool_max_idle > 0 {
-      (config.pool_idle_timeout_ms / 2).max(1_000).min(5_000)
-   } else {
-      1_000
-   });
-   let _ = thread::Builder::new()
-      .name("fyrodb-dbjanitor".into())
-      .stack_size(128 * 1024)
-      .spawn(move || {
-         loop {
-            thread::sleep(interval);
-            if janitor_mgr.prune_due() {
-               janitor_mgr.prune_expired(&janitor_prefix);
-            }
-            if janitor_pool.idle_count() > 0 {
-               janitor_pool.prune();
-               janitor_mgr.metrics().pool_idle.store(
-                  janitor_pool.idle_count() as u64,
-                  std::sync::atomic::Ordering::Relaxed,
-               );
-            }
-         }
-      });
-
-   /*
-   if config.sync_interval_ms > 0
-      && let Some(upstream_target) = config.upstream_addr.clone()
-   {
-      let sync_mgr = Arc::clone(&cache_mgr);
-      let sync_interval = Duration::from_millis(config.sync_interval_ms);
-      let sync_bus = bus.clone();
-      let _ = thread::Builder::new()
-         .name("fyrodb-dbsync".into())
-         .stack_size(128 * 1024)
-         .spawn(move || {
-            let parsed_target = crate::config::UpstreamTarget::parse(&upstream_target);
-            let startup = crate::protocol::encode_startup(&[
-               (
-                  "user".to_string(),
-                  parsed_target
-                     .user
-                     .clone()
-                     .unwrap_or_else(|| "postgres".to_string()),
-               ),
-               (
-                  "database".to_string(),
-                  parsed_target
-                     .database
-                     .clone()
-                     .unwrap_or_else(|| "postgres".to_string()),
-               ),
-            ]);
-            let user = parsed_target.user.as_deref().unwrap_or("postgres");
-            let password = parsed_target.password.as_deref().unwrap_or_default();
-            let mut conn: Option<crate::upstream::UpstreamConnection> = None;
-            let mut current_interval = sync_interval;
-            let max_interval = sync_interval.saturating_mul(3).min(Duration::from_secs(30));
-            loop {
-               thread::sleep(current_interval);
-               if sync_mgr.external_sync_due() {
-                  let active_conn = if let Some(c) = conn.as_mut() {
-                     if c.ping().is_ok() {
-                        Some(c)
-                     } else {
-                        conn = crate::upstream::UpstreamConnection::connect_authenticated(
-                           &upstream_target,
-                           &startup,
-                           user,
-                           password,
-                        )
-                        .ok();
-                        conn.as_mut()
-                     }
-                  } else {
-                     conn = crate::upstream::UpstreamConnection::connect_authenticated(
-                        &upstream_target,
-                        &startup,
-                        user,
-                        password,
-                     )
-                     .ok();
-                     conn.as_mut()
-                  };
-                  if let Some(c) = active_conn {
-                     let tables = sync_mgr.tracked_table_names();
-                     if tables.is_empty() {
-                        sync_mgr.abort_external_sync();
-                        current_interval = max_interval;
-                        continue;
-                     }
-                     let in_clause = tables
-                        .iter()
-                        .map(|t| format!("'{}'", t.replace('\'', "''")))
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                     let targeted_sql = format!(
-                        "SELECT relname, n_tup_ins, n_tup_upd, n_tup_del FROM pg_stat_user_tables WHERE lower(relname) IN ({in_clause})"
-                     );
-                     let res = c.execute_select(&targeted_sql).or_else(|_| c.execute_select(EXTERNAL_SYNC_SQL));
-                     if let Ok(res) = res {
-                        let rows = res
-                           .rows
-                           .iter()
-                           .filter_map(table_counters)
-                           .collect::<Vec<_>>();
-                        let changed = sync_mgr.apply_external_counters(rows);
-                        if !changed.is_empty() {
-                           current_interval = sync_interval;
-                           if let Some(bus) = &sync_bus {
-                              bus.invalidate(&changed);
-                           }
-                        } else {
-                           current_interval = (current_interval + Duration::from_millis(2500)).min(max_interval);
-                        }
-                     } else {
-                        conn = None;
-                        sync_mgr.abort_external_sync();
-                     }
-                  } else {
-                     sync_mgr.abort_external_sync();
-                  }
-               }
-            }
-         });
-   }
-   */
-
-   thread::Builder::new()
-      .name("fyrodb-dbproxy".into())
-      .stack_size(256 * 1024)
-      .spawn(move || {
-         for stream in listener.incoming() {
-            match stream {
-               Ok(client) => {
-                  let cfg = config.clone();
-                  let mgr = Arc::clone(&cache_mgr);
-                  let pool = Arc::clone(&pool);
-                  let bus = bus.clone();
-                  if let Err(e) = thread::Builder::new()
-                     .name("fyrodb-dbconn".into())
-                     .stack_size(CLIENT_STACK)
-                     .spawn(move || {
-                        if let Err(e) = handle_client(client, cfg, mgr, pool, bus)
-                           && e.kind() != io::ErrorKind::UnexpectedEof
-                        {
-                           eprintln!("fyrodb-dbproxy client error: {e}");
-                        }
-                     })
-                  {
-                     eprintln!("fyrodb-dbproxy: spawn failed: {e}");
-                  }
-               }
-               Err(e) => {
-                  eprintln!("fyrodb-dbproxy accept error on {listen_addr}: {e}");
-               }
-            }
-         }
-      })
-}
-
-fn handle_client(
+pub(super) fn handle_client(
    client: TcpStream,
    config: DbCacheConfig,
    cache_mgr: Arc<DbCacheManager>,
@@ -341,23 +113,16 @@ struct Session {
    bus: Option<Arc<InvalidationBus>>,
    upstream: Option<UpstreamConnection>,
    pool_key: Option<PoolKey>,
-   // True when this upstream session may be returned to the pool: either the
-   // proxy authenticated both sides, or the origin demanded no password.
    upstream_poolable: bool,
    client_authenticated: bool,
    in_transaction: bool,
    transaction_failed: bool,
-   // Tables this session wrote while its transaction was open. They are
-   // re-invalidated at COMMIT because another session may have refilled a
-   // cache entry with pre-commit rows after the write invalidated it.
    transaction_writes: Vec<String>,
    cycle_forwarded: bool,
    cycle_error: bool,
    statements: HashMap<String, StatementState, FixedState>,
    portals: HashMap<String, PortalState, FixedState>,
    out: Vec<u8>,
-   // Result-affecting session settings (search_path, role, GUCs) folded into
-   // every cache fingerprint so different sessions never share results.
    context_hash: u64,
    context_state: ContextState,
    context_sets: u32,
@@ -383,10 +148,6 @@ impl Session {
             Err(e) => return Err(e),
          };
 
-         // Internal probes run only between protocol cycles so they can never
-         // interleave with an extended-protocol exchange. Doing this before the
-         // next client message means an external write detected here is
-         // invalidated before the query that follows can be served from cache.
          self.maintain_idle();
 
          match msg {
@@ -578,9 +339,6 @@ impl Session {
                            &startup_frame,
                         ) {
                            Ok(upstream) => {
-                              // Relayed sessions may only be reused when the
-                              // origin demanded no password; otherwise the
-                              // proxy has no credentials to log in again.
                               self.upstream_poolable =
                                  pool_eligible && !upstream.required_password();
                               self.upstream = Some(upstream);
@@ -601,16 +359,12 @@ impl Session {
                      } else {
                         self.upstream_poolable = false;
                      }
-                     // Learn the session settings and catalog metadata
-                     // before the first client query.
                      self.context_state = ContextState::NeedsProbe;
                      let _ = self.probe_context();
                      let _ = self.refresh_catalog();
                   }
                   None => {
                      protocol::write_startup_ok(&mut self.client)?;
-                     // Without an upstream every session sees the same context,
-                     // so prefilled entries remain addressable.
                      self.context_hash = 0;
                      self.context_state = ContextState::Trusted;
                   }
@@ -692,8 +446,6 @@ impl Session {
          return self.local_query_fallback(&parsed);
       }
 
-      // One session loads a missing key; concurrent misses wait briefly for it
-      // and re-check the cache instead of stampeding the upstream.
       let mut fill_guard = None;
       if cacheable && let Some(key) = self.fill_key(&parsed, fingerprint) {
          match self.mgr.begin_fill(&key) {
@@ -715,8 +467,6 @@ impl Session {
       let versions = tables
          .as_ref()
          .map(|tables| self.mgr.table_versions(tables));
-      // Replies that may re-invalidate at commit are buffered so the client
-      // cannot observe ReadyForQuery before the eviction has happened.
       let buffer_tail = cacheable || parsed.writes || !self.transaction_writes.is_empty();
       let outcome = {
          let Some(upstream) = self.upstream.as_mut() else {
@@ -740,12 +490,9 @@ impl Session {
          self.apply_session_changes(&parsed);
       }
       if !outcome.error && parsed.writes {
-         // The write has now landed. Invalidating after it completes closes
-         // the window where another session could refill pre-write rows.
          self.invalidate_for(&parsed);
       }
       if parsed.kind == QueryKind::Commit {
-         // Also covers COMMIT AND CHAIN, whose ReadyForQuery reports 'T'.
          self.invalidate_committed();
       }
 
@@ -772,13 +519,9 @@ impl Session {
             &versions,
          );
       }
-      // The tail (including ReadyForQuery) is released only after the cache is
-      // filled, so a hit is visible to every client once this reply is seen.
       self.flush_out()
    }
 
-   // Serves BEGIN/COMMIT/SET locally when no upstream exists and rejects
-   // data statements that cannot be resolved from cache.
    fn local_query_fallback(&mut self, parsed: &ParsedQuery) -> io::Result<()> {
       let tag = match parsed.kind {
          QueryKind::Begin => "BEGIN",
@@ -796,7 +539,6 @@ impl Session {
             return self.flush_out();
          }
       };
-
       self
          .out
          .extend_from_slice(&protocol::encode_command_complete(tag));
@@ -813,7 +555,10 @@ impl Session {
       if self.cycle_error {
          return Ok(());
       }
-      if !name.is_empty() && !self.statements.contains_key(&name) && self.statements.len() >= MAX_NAMED_STATEMENTS {
+      if !name.is_empty()
+         && !self.statements.contains_key(&name)
+         && self.statements.len() >= MAX_NAMED_STATEMENTS
+      {
          self.queue_error("53400", "too many prepared statements");
          self.cycle_error = true;
          return Ok(());
@@ -855,8 +600,6 @@ impl Session {
       Ok(())
    }
 
-   // Sends a stored Parse message upstream. When `relay_success` is false the
-   // ParseComplete reply is swallowed because it was already synthesized.
    fn send_parse(&mut self, name: &str, relay_success: bool) -> io::Result<bool> {
       let Some(statement) = self.statements.get(name) else {
          return Ok(false);
@@ -913,7 +656,10 @@ impl Session {
       if self.cycle_error {
          return Ok(());
       }
-      if !portal.is_empty() && !self.portals.contains_key(&portal) && self.portals.len() >= MAX_NAMED_STATEMENTS {
+      if !portal.is_empty()
+         && !self.portals.contains_key(&portal)
+         && self.portals.len() >= MAX_NAMED_STATEMENTS
+      {
          self.queue_error("53400", "too many open portals");
          self.cycle_error = true;
          return Ok(());
@@ -1116,7 +862,6 @@ impl Session {
       Ok(())
    }
 
-   // Forwards a deferred Bind and swallows its BindComplete reply.
    fn forward_bind(&mut self, portal: &str) -> io::Result<bool> {
       let Some(state) = self.portals.get(portal) else {
          return Ok(false);
@@ -1186,9 +931,6 @@ impl Session {
          return Ok(());
       }
 
-      // Track transaction boundaries as soon as the statement runs: a SELECT in
-      // the same extended cycle after BEGIN must not be cached, and writes
-      // after ROLLBACK must not be re-invalidated at commit.
       match parsed.kind {
          QueryKind::Begin => {
             self.in_transaction = true;
@@ -1202,7 +944,11 @@ impl Session {
          _ => {}
       }
 
-      let statement = self.portals.get(portal_name).map(|p| p.statement.clone()).unwrap_or_default();
+      let statement = self
+         .portals
+         .get(portal_name)
+         .map(|p| p.statement.clone())
+         .unwrap_or_default();
       let bind_forwarded = self
          .portals
          .get(portal_name)
@@ -1218,8 +964,6 @@ impl Session {
          }
       }
 
-      // Execute replies do not carry RowDescription, so describe once when the
-      // client never asked for it and the response is going to be cached.
       let wants_cache = parsed.is_cacheable
          && parsed.kind == QueryKind::Select
          && !self.in_transaction
@@ -1263,8 +1007,6 @@ impl Session {
          .map(|tables| self.mgr.table_versions(tables));
       let execute_frame = self.reader.last_frame().to_vec();
       self.flush_out()?;
-      // A COMMIT is buffered so its eviction lands before the client sees the
-      // command complete.
       let buffer_tail = wants_cache || parsed.kind == QueryKind::Commit;
       let outcome = {
          let Some(upstream) = self.upstream.as_mut() else {
@@ -1352,8 +1094,6 @@ impl Session {
             );
          }
       }
-      // Release the tail only after any cache fill, so the next execution on
-      // another connection can observe the cached result.
       self.flush_out()
    }
 
@@ -1394,7 +1134,6 @@ impl Session {
       Ok(captured)
    }
 
-   // Serves rows from the pre-encoded response, honoring row-limited Execute.
    fn serve_encoded_into(
       out: &mut Vec<u8>,
       portal: &mut PortalState,
@@ -1406,7 +1145,6 @@ impl Session {
       } else {
          usize::MAX
       };
-
       Self::write_encoded_rows_into(out, &mut portal.cursor, entry, limit);
       let exhausted = next_data_frame(entry.data_rows(), portal.cursor).is_none();
       if max_rows > 0 && !exhausted {
@@ -1461,8 +1199,6 @@ impl Session {
          };
          upstream.send_raw(&frame)?;
          upstream.flush()?;
-         // When a transaction wrote, its commit eviction must happen before the
-         // client observes the ReadyForQuery that ends the cycle.
          if self.transaction_writes.is_empty() {
             let outcome = upstream.relay_until(&mut self.client, ReplyStop::Sync, false)?;
             self.update_status(&outcome);
@@ -1578,8 +1314,6 @@ impl Session {
 
    // ------------------------------------------------------------ helpers
 
-   // Returns an idle, reset upstream session to the pool. A session that
-   // ended inside a transaction is dropped so the origin rolls it back.
    fn reclaim_upstream(&mut self) {
       let Some(upstream) = self.upstream.take() else {
          return;
@@ -1601,7 +1335,6 @@ impl Session {
       );
    }
 
-   // CacheOnly never contacts the upstream, even if one is configured.
    fn upstream_target(&self) -> Option<&str> {
       match self.config.mode {
          DbProxyMode::Dual => self.config.upstream_addr.as_deref(),
@@ -1717,9 +1450,6 @@ impl Session {
       }
    }
 
-   // Re-invalidates tables written while the transaction was open: a concurrent
-   // session can refill a cache entry with pre-commit rows after the write-time
-   // invalidation but before COMMIT.
    fn invalidate_committed(&mut self) {
       if self.transaction_writes.is_empty() {
          return;
@@ -1731,8 +1461,6 @@ impl Session {
       }
    }
 
-   // Definition changes can add or remove dependencies that the tracker never
-   // saw, so every entry is suspicious on every process.
    fn flush_catalog_entries(&mut self) {
       self.mgr.mark_catalog_stale();
       self.mgr.flush_all(&self.config.key_prefix);
@@ -1743,8 +1471,6 @@ impl Session {
 
    // ------------------------------------------------------ session context
 
-   // Mixes the session-context hash into a base fingerprint. Returns None when
-   // this session's results must not be shared at all.
    fn effective_fingerprint(&self, base: u64) -> Option<u64> {
       if self.context_state != ContextState::Trusted {
          return None;
@@ -1756,8 +1482,6 @@ impl Session {
       })
    }
 
-   // Until catalog metadata is available, only share queries that call no
-   // functions; their volatility is fully decided by the AST blocklist.
    fn catalog_allows(&self, parsed: &ParsedQuery) -> bool {
       self.upstream.is_none() || self.mgr.catalog_ready() || parsed.functions.is_empty()
    }
@@ -1775,14 +1499,13 @@ impl Session {
       )
    }
 
-   // Re-reads the upstream session settings that can change results.
    fn probe_context(&mut self) -> bool {
       let Some(upstream) = self.upstream.as_mut() else {
          self.context_hash = 0;
          self.context_state = ContextState::Trusted;
          return true;
       };
-      let Ok(result) = upstream.execute_select(CONTEXT_PROBE) else {
+      let Ok(result) = upstream.execute_select(super::CONTEXT_PROBE) else {
          self.context_state = ContextState::Untrusted;
          return false;
       };
@@ -1802,7 +1525,6 @@ impl Session {
       true
    }
 
-   // Applies SET/RESET/DISCARD effects after a successful statement.
    fn apply_session_changes(&mut self, parsed: &ParsedQuery) {
       if self.upstream.is_none() {
          return;
@@ -1829,8 +1551,6 @@ impl Session {
             SessionChange::Reset => self.context_state = ContextState::NeedsProbe,
             SessionChange::DiscardAll => {
                self.context_state = ContextState::NeedsProbe;
-               // DISCARD ALL deallocates every server-side statement and
-               // portal, so the proxy's mirrors are no longer valid.
                self.statements.clear();
                self.portals.clear();
             }
@@ -1840,8 +1560,6 @@ impl Session {
 
    // ------------------------------------------------------- upkeep (idle)
 
-   // Runs only between protocol cycles: context re-probes, catalog refreshes,
-   // tracker pruning, and external-write detection.
    fn maintain_idle(&mut self) {
       if self.cycle_forwarded
          || self.cycle_error
@@ -1867,8 +1585,8 @@ impl Session {
          self.mgr.catalog_refresh_failed();
          return false;
       };
-      let functions = upstream.execute_select(CATALOG_FUNCTIONS_SQL);
-      let views = upstream.execute_select(CATALOG_VIEWS_SQL);
+      let functions = upstream.execute_select(super::CATALOG_FUNCTIONS_SQL);
+      let views = upstream.execute_select(super::CATALOG_VIEWS_SQL);
       match (functions, views) {
          (Ok(functions), Ok(views)) => {
             self
@@ -1898,8 +1616,6 @@ impl Session {
          b'I' => {
             self.in_transaction = false;
             self.transaction_failed = false;
-            // Covers multi-statement batches that end a transaction: their
-            // writes were recorded while the transaction was open.
             self.invalidate_committed();
          }
          _ => {}

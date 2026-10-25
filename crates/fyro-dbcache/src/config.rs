@@ -128,15 +128,15 @@ impl UpstreamTarget {
 
       if let Some(query) = query {
          for pair in query.split('&') {
-            if let Some((k, v)) = pair.split_once('=') {
-               if k.eq_ignore_ascii_case("sslmode") {
-                  sslmode = match v.to_ascii_lowercase().as_str() {
-                     "disable" => SslMode::Disable,
-                     "prefer" | "allow" => SslMode::Prefer,
-                     "require" | "verify-ca" | "verify-full" => SslMode::Require,
-                     _ => SslMode::Prefer,
-                  };
-               }
+            if let Some((k, v)) = pair.split_once('=')
+               && k.eq_ignore_ascii_case("sslmode")
+            {
+               sslmode = match v.to_ascii_lowercase().as_str() {
+                  "disable" => SslMode::Disable,
+                  "prefer" | "allow" => SslMode::Prefer,
+                  "require" | "verify-ca" | "verify-full" => SslMode::Require,
+                  _ => SslMode::Prefer,
+               };
             }
          }
       }
