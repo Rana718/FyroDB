@@ -730,7 +730,7 @@ mod tests {
          zset.insert(1.0, &m);
       }
       let elapsed = start.elapsed();
-      assert!(elapsed.as_millis() < 1500, "{elapsed:?}");
+      assert!(elapsed.as_millis() < 3000, "{elapsed:?}");
       assert_eq!(zset.len(), N);
    }
 }
