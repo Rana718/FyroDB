@@ -1,8 +1,8 @@
 use foldhash::fast::FixedState;
 use parking_lot::RwLock;
 use sqlparser::ast::{
-   ContextModifier, CopySource, DiscardObject, Expr, ObjectName, Query, Set, SetExpr, Statement,
-   Visit, Visitor,
+   ContextModifier, CopySource, DiscardObject, Expr, ObjectName, ObjectNamePart, Query, Set,
+   SetExpr, Statement, Visit, Visitor,
 };
 use sqlparser::dialect::{GenericDialect, PostgreSqlDialect};
 use sqlparser::parser::Parser;
@@ -60,17 +60,32 @@ pub struct ParsedQuery {
 }
 
 // AST visitor collecting table references, CTE definitions, and volatile functions.
-#[derive(Default)]
 struct AstTableExtractor {
    tables: Vec<String>,
    functions: Vec<String>,
-   seen_tables: HashSet<String>,
-   seen_functions: HashSet<String>,
-   ctes: HashSet<String>,
+   seen_tables: HashSet<String, FixedState>,
+   seen_functions: HashSet<String, FixedState>,
+   ctes: HashSet<String, FixedState>,
    has_volatile_functions: bool,
    has_writes: bool,
    schema_change: bool,
    mutates_session: bool,
+}
+
+impl Default for AstTableExtractor {
+   fn default() -> Self {
+      Self {
+         tables: Vec::new(),
+         functions: Vec::new(),
+         seen_tables: HashSet::with_hasher(FixedState::with_seed(0)),
+         seen_functions: HashSet::with_hasher(FixedState::with_seed(0)),
+         ctes: HashSet::with_hasher(FixedState::with_seed(0)),
+         has_volatile_functions: false,
+         has_writes: false,
+         schema_change: false,
+         mutates_session: false,
+      }
+   }
 }
 
 impl Visitor for AstTableExtractor {
@@ -99,7 +114,10 @@ impl Visitor for AstTableExtractor {
       let parts: Vec<String> = relation
          .0
          .iter()
-         .map(|ident| ident.to_string().to_ascii_lowercase())
+         .map(|part| match part {
+            ObjectNamePart::Identifier(ident) => ident.value.to_ascii_lowercase(),
+            other => other.to_string().to_ascii_lowercase(),
+         })
          .collect();
       let Some(bare) = parts.last() else {
          return ControlFlow::Continue(());
@@ -117,7 +135,10 @@ impl Visitor for AstTableExtractor {
             .name
             .0
             .iter()
-            .map(|ident| ident.to_string().to_ascii_lowercase())
+            .map(|part| match part {
+               ObjectNamePart::Identifier(ident) => ident.value.to_ascii_lowercase(),
+               other => other.to_string().to_ascii_lowercase(),
+            })
             .collect();
          let Some(bare) = parts.last() else {
             return ControlFlow::Continue(());
@@ -143,7 +164,7 @@ impl Visitor for AstTableExtractor {
 
 // Registers both the qualified and bare name so unqualified writes still evict
 // schema-qualified cache entries.
-fn push_relation(tables: &mut Vec<String>, seen: &mut HashSet<String>, parts: &[String]) {
+fn push_relation(tables: &mut Vec<String>, seen: &mut HashSet<String, FixedState>, parts: &[String]) {
    if parts.len() > 1 {
       let full = parts.join(".");
       if seen.insert(full.clone()) {
@@ -221,7 +242,10 @@ pub fn parse_sql(raw: &str) -> ParsedQuery {
             let parts: Vec<String> = table_name
                .0
                .iter()
-               .map(|ident| ident.to_string().to_ascii_lowercase())
+               .map(|part| match part {
+                  ObjectNamePart::Identifier(ident) => ident.value.to_ascii_lowercase(),
+                  other => other.to_string().to_ascii_lowercase(),
+               })
                .collect();
             push_relation(&mut extractor.tables, &mut extractor.seen_tables, &parts);
          }
@@ -257,7 +281,7 @@ pub fn parse_sql(raw: &str) -> ParsedQuery {
             .tables
             .iter()
             .any(|table| is_system_relation(table));
-      let writes = extractor.has_writes || statements.iter().any(is_write_statement);
+      let writes = extractor.has_writes;
 
       return ParsedQuery {
          kind,
@@ -545,63 +569,54 @@ fn has_volatile_keyword(lower: &str) -> bool {
 fn count_statements(sql: &str) -> usize {
    let mut count = 1;
    let mut in_quote = false;
-   let mut quote_char = ' ';
-   for ch in sql.chars() {
+   let mut quote_char = 0u8;
+   for &b in sql.as_bytes() {
       if in_quote {
-         if ch == quote_char {
-            in_quote = false;
-         }
+         if b == quote_char { in_quote = false; }
          continue;
       }
-      if ch == '\'' || ch == '"' {
+      if b == b'\'' || b == b'"' {
          in_quote = true;
-         quote_char = ch;
-      } else if ch == ';' {
+         quote_char = b;
+      } else if b == b';' {
          count += 1;
       }
    }
-   // A trailing semicolon does not introduce another statement.
-   if sql.trim_end().ends_with(';') {
-      count -= 1;
-   }
+   if sql.trim_end().ends_with(';') { count -= 1; }
    count.max(1)
 }
 
 // Normalizes SQL whitespace and lowercases keywords while preserving literal values.
 pub fn normalize_sql(sql: &str) -> String {
-   let mut out = String::with_capacity(sql.len());
+   let bytes = sql.as_bytes();
+   let mut out = Vec::with_capacity(bytes.len());
    let mut in_str = false;
-   let mut quote_char = ' ';
+   let mut quote_char = 0u8;
    let mut in_whitespace = false;
 
-   for ch in sql.chars() {
+   for &b in bytes {
       if in_str {
-         out.push(ch);
-         if ch == quote_char {
-            in_str = false;
-         }
+         out.push(b);
+         if b == quote_char { in_str = false; }
          continue;
       }
-
-      if ch == '\'' || ch == '"' {
+      if b == b'\'' || b == b'"' {
          in_str = true;
-         quote_char = ch;
-         out.push(ch);
+         quote_char = b;
+         out.push(b);
          continue;
       }
-
-      if ch.is_whitespace() {
-         if !in_whitespace {
-            out.push(' ');
-            in_whitespace = true;
-         }
+      if b == b' ' || b == b'\t' || b == b'\n' || b == b'\r' {
+         if !in_whitespace { out.push(b' '); in_whitespace = true; }
       } else {
          in_whitespace = false;
-         out.push(ch.to_ascii_lowercase());
+         out.push(b.to_ascii_lowercase());
       }
    }
-
-   out.trim().to_string()
+   // SAFETY: ASCII bytes are lowercased (still ASCII); multi-byte UTF-8 sequences
+   // (bytes ≥ 0x80) pass through unchanged, so output is valid UTF-8.
+   let s = unsafe { String::from_utf8_unchecked(out) };
+   s.trim().to_string()
 }
 
 fn extract_tables_fallback(lower: &str, kind: QueryKind) -> Vec<String> {
