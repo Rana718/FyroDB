@@ -1,6 +1,6 @@
 use crate::protocol;
 use crate::query::{
-   ParsedQuery, ParsedQueryCache, compute_fingerprint_with_params, make_cache_key,
+   ParsedQuery, ParsedQueryCache, compute_fingerprint_with_params_base, make_cache_key,
 };
 use crate::row::{ColumnInfo, DbResultSet, DbRow, DbValue};
 use foldhash::fast::FixedState;
@@ -116,6 +116,11 @@ impl EncodedResult {
 
    // Simple-query response: RowDescription, rows, CommandComplete, ReadyForQuery.
    pub fn write_simple_response(&self, out: &mut Vec<u8>) {
+      let needed = self.row_description.len()
+         + self.data_rows.len()
+         + self.command_complete.len()
+         + protocol::READY_IDLE.len();
+      out.reserve(needed);
       out.extend_from_slice(&self.row_description);
       out.extend_from_slice(&self.data_rows);
       out.extend_from_slice(&self.command_complete);
@@ -124,6 +129,7 @@ impl EncodedResult {
 
    // Extended-protocol Execute response: rows plus CommandComplete.
    pub fn write_execute_response(&self, out: &mut Vec<u8>) {
+      out.reserve(self.data_rows.len() + self.command_complete.len());
       out.extend_from_slice(&self.data_rows);
       out.extend_from_slice(&self.command_complete);
    }
@@ -569,7 +575,8 @@ impl DbCacheManager {
       if params.is_empty() {
          return (Arc::clone(&parsed), parsed.fingerprint);
       }
-      let fingerprint = compute_fingerprint_with_params(&parsed.normalized, params, param_formats);
+      let fingerprint =
+         compute_fingerprint_with_params_base(parsed.fingerprint, params, param_formats);
       (parsed, fingerprint)
    }
 
@@ -953,20 +960,21 @@ impl DbCacheManager {
       }
       self.last_prune_ms.store(now_ms(), Ordering::Relaxed);
       let now = now_ms();
-      let keys: Vec<String> = self.tracker.read().markers.keys().cloned().collect();
-      let mut expired = Vec::new();
-      for key in keys {
-         let is_expired = {
-            let shard = self.encoded_shard(&key);
-            let guard = shard.read();
-            guard
-               .get(&key)
-               .is_some_and(|entry| entry.expires_at_ms != 0 && entry.expires_at_ms < now)
-         };
-         if is_expired {
-            expired.push(key);
-         }
-      }
+      let expired: Vec<String> = {
+         let tracker = self.tracker.read();
+         tracker
+            .markers
+            .keys()
+            .filter(|key| {
+               let shard = self.encoded_shard(key);
+               shard
+                  .read()
+                  .get(*key)
+                  .is_some_and(|entry| entry.expires_at_ms != 0 && entry.expires_at_ms < now)
+            })
+            .cloned()
+            .collect()
+      };
       if expired.is_empty() {
          return 0;
       }

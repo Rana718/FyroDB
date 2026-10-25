@@ -21,7 +21,8 @@ pub use protocol::{FrameReader, FrontendMessage};
 pub use proxy::start_proxy_listener;
 pub use query::{
    ParsedQuery, ParsedQueryCache, QueryKind, SessionChange, compute_fingerprint,
-   compute_fingerprint_with_params, make_cache_key, normalize_sql, parse_sql,
+   compute_fingerprint_with_params, compute_fingerprint_with_params_base, make_cache_key,
+   normalize_sql, parse_sql,
 };
 pub use row::{ColumnInfo, DbResultSet, DbRow, DbValue};
 pub use upstream::{HandshakeError, RelayOutcome, ReplyStop, UpstreamConnection};

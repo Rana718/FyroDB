@@ -111,26 +111,33 @@ pub fn start_proxy_listener(
       None
    };
 
-   // Reap idle upstream sessions even when no client is connected, so a quiet
-   // proxy does not pin origin backends indefinitely.
-   if config.pool_max_idle > 0 {
-      let janitor_pool = Arc::clone(&pool);
-      let janitor_mgr = Arc::clone(&cache_mgr);
-      let interval = Duration::from_millis((config.pool_idle_timeout_ms / 2).max(1_000));
-      let _ = thread::Builder::new()
-         .name("fyrodb-dbpool".into())
-         .stack_size(64 * 1024)
-         .spawn(move || {
-            loop {
-               thread::sleep(interval);
+   // Background janitor for idle upstream sessions and expired cache tracking.
+   let janitor_pool = Arc::clone(&pool);
+   let janitor_mgr = Arc::clone(&cache_mgr);
+   let janitor_prefix = config.key_prefix.clone();
+   let interval = Duration::from_millis(if config.pool_max_idle > 0 {
+      (config.pool_idle_timeout_ms / 2).max(1_000).min(5_000)
+   } else {
+      1_000
+   });
+   let _ = thread::Builder::new()
+      .name("fyrodb-dbjanitor".into())
+      .stack_size(128 * 1024)
+      .spawn(move || {
+         loop {
+            thread::sleep(interval);
+            if janitor_mgr.prune_due() {
+               janitor_mgr.prune_expired(&janitor_prefix);
+            }
+            if janitor_pool.idle_count() > 0 {
                janitor_pool.prune();
                janitor_mgr.metrics().pool_idle.store(
                   janitor_pool.idle_count() as u64,
                   std::sync::atomic::Ordering::Relaxed,
                );
             }
-         });
-   }
+         }
+      });
 
    /*
    if config.sync_interval_ms > 0
@@ -1148,11 +1155,9 @@ impl Session {
       if cacheable {
          let fingerprint = initial.unwrap_or(base_fingerprint);
          if let Some(entry) = self.lookup_encoded(&parsed, fingerprint) {
-            let Some(mut portal) = self.portals.remove(portal_name) else {
-               return Ok(());
-            };
-            self.serve_encoded(&mut portal, &entry, max_rows);
-            self.portals.insert(portal_name.to_string(), portal);
+            if let Some(portal) = self.portals.get_mut(portal_name) {
+               Self::serve_encoded_into(&mut self.out, portal, &entry, max_rows);
+            }
             return Ok(());
          }
          self
@@ -1227,11 +1232,9 @@ impl Session {
             None => {
                self.mgr.wait_for_fill(&key);
                if let Some(entry) = self.lookup_encoded(&parsed, fingerprint) {
-                  let Some(mut portal) = self.portals.remove(portal_name) else {
-                     return Ok(());
-                  };
-                  self.serve_encoded(&mut portal, &entry, max_rows);
-                  self.portals.insert(portal_name.to_string(), portal);
+                  if let Some(portal) = self.portals.get_mut(portal_name) {
+                     Self::serve_encoded_into(&mut self.out, portal, &entry, max_rows);
+                  }
                   return Ok(());
                }
                fill_guard = self.mgr.begin_fill(&key);
@@ -1378,19 +1381,24 @@ impl Session {
    }
 
    // Serves rows from the pre-encoded response, honoring row-limited Execute.
-   fn serve_encoded(&mut self, portal: &mut PortalState, entry: &EncodedResult, max_rows: i32) {
+   fn serve_encoded_into(
+      out: &mut Vec<u8>,
+      portal: &mut PortalState,
+      entry: &EncodedResult,
+      max_rows: i32,
+   ) {
       let limit = if max_rows > 0 {
          max_rows as usize
       } else {
          usize::MAX
       };
 
-      self.write_encoded_rows(&mut portal.cursor, entry, limit);
+      Self::write_encoded_rows_into(out, &mut portal.cursor, entry, limit);
       let exhausted = next_data_frame(&entry.data_rows, portal.cursor).is_none();
       if max_rows > 0 && !exhausted {
-         self.out.extend_from_slice(&PORTAL_SUSPENDED);
+         out.extend_from_slice(&PORTAL_SUSPENDED);
       } else {
-         self.out.extend_from_slice(&entry.command_complete);
+         out.extend_from_slice(&entry.command_complete);
          portal.cursor = entry.data_rows.len();
          portal.finished = true;
       }
@@ -1398,19 +1406,25 @@ impl Session {
 
    // Copies at most `limit` DataRow frames starting at `cursor`. Returns the
    // number of rows emitted.
-   fn write_encoded_rows(
-      &mut self,
+   fn write_encoded_rows_into(
+      out: &mut Vec<u8>,
       cursor: &mut usize,
       entry: &EncodedResult,
       limit: usize,
    ) -> usize {
+      if limit == usize::MAX && *cursor == 0 {
+         out.reserve(entry.data_rows.len() + entry.command_complete.len());
+         out.extend_from_slice(&entry.data_rows);
+         *cursor = entry.data_rows.len();
+         return entry.row_count as usize;
+      }
       let mut sent = 0usize;
       let mut offset = *cursor;
       while sent < limit {
          let Some((next, frame)) = next_data_frame(&entry.data_rows, offset) else {
             break;
          };
-         self.out.extend_from_slice(frame);
+         out.extend_from_slice(frame);
          offset = next;
          sent += 1;
       }
@@ -1583,7 +1597,18 @@ impl Session {
    }
 
    fn lookup_encoded(&self, parsed: &ParsedQuery, fingerprint: u64) -> Option<Arc<EncodedResult>> {
-      for table in &parsed.tables {
+      let primary = parsed
+         .tables
+         .first()
+         .map(String::as_str)
+         .unwrap_or("default");
+      if let Some(entry) = self
+         .mgr
+         .get_encoded(&self.config.key_prefix, primary, fingerprint)
+      {
+         return Some(entry);
+      }
+      for table in parsed.tables.iter().skip(1) {
          if let Some(entry) = self
             .mgr
             .get_encoded(&self.config.key_prefix, table, fingerprint)
@@ -1591,14 +1616,7 @@ impl Session {
             return Some(entry);
          }
       }
-      let table = parsed
-         .tables
-         .first()
-         .map(String::as_str)
-         .unwrap_or("default");
-      self
-         .mgr
-         .get_encoded(&self.config.key_prefix, table, fingerprint)
+      None
    }
 
    fn lookup_json(
@@ -1840,14 +1858,6 @@ impl Session {
       }
       if self.mgr.catalog_refresh_due() {
          let _ = self.refresh_catalog();
-      }
-      if self.mgr.prune_due() {
-         self.mgr.prune_expired(&self.config.key_prefix);
-         self.pool.prune();
-         self.mgr.metrics().pool_idle.store(
-            self.pool.idle_count() as u64,
-            std::sync::atomic::Ordering::Relaxed,
-         );
       }
    }
 

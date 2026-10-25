@@ -27,6 +27,7 @@ pub fn info(store: &Store, out: &mut Vec<u8>) {
 }
 
 // DBCACHE STATS exposes the PostgreSQL proxy's cache counters over RESP.
+// DBCACHE PURGE drops all cached database query entries and index markers.
 pub fn dbcache_cmd(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
    let Some(manager) = store.dbcache_manager() else {
       resp::write_err(out, "dbcache is not enabled");
@@ -42,7 +43,32 @@ pub fn dbcache_cmd(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
          }
       }
       Some("STATS") => resp::write_wrong_args(out, "dbcache stats"),
+      Some("PURGE") | Some("FLUSH") => {
+         let flushed = manager.flush_all("db:");
+         resp::write_integer(out, flushed as i64);
+      }
       _ => resp::write_err(out, "unknown DBCACHE subcommand"),
+   }
+}
+
+// PURGE DB purges all database query cache entries without affecting normal keys.
+pub fn purge_cmd(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
+   let Some(manager) = store.dbcache_manager() else {
+      resp::write_err(out, "dbcache is not enabled");
+      return;
+   };
+   match parts {
+      [_, target]
+         if target.eq_ignore_ascii_case("DB") || target.eq_ignore_ascii_case("DBCACHE") =>
+      {
+         let flushed = manager.flush_all("db:");
+         resp::write_integer(out, flushed as i64);
+      }
+      [_] => {
+         let flushed = manager.flush_all("db:");
+         resp::write_integer(out, flushed as i64);
+      }
+      _ => resp::write_wrong_args(out, "purge db"),
    }
 }
 

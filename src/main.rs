@@ -203,7 +203,8 @@ fn main() {
             config.dbcache.listen_addr, config.dbcache.upstream_addr, config.dbcache.mode
          );
          println!(
-            "  dbcache pool_idle_max={} pool_idle={}ms auth_users={} bus={}",
+            "  dbcache default_ttl={}s pool_idle_max={} pool_idle={}ms auth_users={} bus={}",
+            config.dbcache.default_ttl_ms / 1000,
             config.dbcache.pool_max_idle,
             config.dbcache.pool_idle_timeout_ms,
             config.dbcache.auth_users.len(),
@@ -338,6 +339,12 @@ impl Config {
                if let Ok(p) = args[i + 1].parse::<u16>() {
                   let bind = env::var("FYRODB_DB_BIND").unwrap_or_else(|_| "0.0.0.0".to_string());
                   dbcache.listen_addr = format!("{bind}:{p}");
+               }
+               i += 1;
+            }
+            "--db-ttl" | "--db-cache-ttl" if i + 1 < args.len() => {
+               if let Some(ttl) = parse_ttl_duration(&args[i + 1]) {
+                  dbcache.default_ttl_ms = ttl;
                }
                i += 1;
             }
@@ -581,6 +588,23 @@ fn signal_loop(store: &Arc<Store>, rdb_path: &str) {
    }
    eprintln!("fyrodb: shutdown complete");
    std::process::exit(0);
+}
+
+fn parse_ttl_duration(val: &str) -> Option<u64> {
+   let trimmed = val.trim();
+   if let Some(s) = trimmed.strip_suffix("ms") {
+      s.trim().parse::<u64>().ok()
+   } else if let Some(s) = trimmed.strip_suffix('s') {
+      s.trim().parse::<u64>().ok().map(|v| v * 1000)
+   } else if let Some(s) = trimmed.strip_suffix('m') {
+      s.trim().parse::<u64>().ok().map(|v| v * 60 * 1000)
+   } else if let Some(s) = trimmed.strip_suffix('h') {
+      s.trim().parse::<u64>().ok().map(|v| v * 3600 * 1000)
+   } else if let Ok(v) = trimmed.parse::<u64>() {
+      if v >= 10_000 { Some(v) } else { Some(v * 1000) }
+   } else {
+      None
+   }
 }
 
 mod libc {

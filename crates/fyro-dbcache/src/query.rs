@@ -647,15 +647,24 @@ pub fn compute_fingerprint(sql: &str) -> u64 {
    hasher.finish()
 }
 
-// Fingerprint including bound parameter values. Prepared statements reuse the
-// same SQL text with different parameters, so the values must key the entry.
+// Fingerprint including bound parameter values for prepared statements.
 pub fn compute_fingerprint_with_params(
    normalized_sql: &str,
    params: &[Option<Vec<u8>>],
    param_formats: &[i16],
 ) -> u64 {
+   let base = compute_fingerprint(normalized_sql);
+   compute_fingerprint_with_params_base(base, params, param_formats)
+}
+
+// Computes parameter-bound fingerprint directly from a pre-calculated SQL base fingerprint.
+pub fn compute_fingerprint_with_params_base(
+   base_fingerprint: u64,
+   params: &[Option<Vec<u8>>],
+   param_formats: &[i16],
+) -> u64 {
    let mut hasher = FixedState::with_seed(0).build_hasher();
-   hasher.write(normalized_sql.as_bytes());
+   hasher.write_u64(base_fingerprint);
    hasher.write_u8(0xFF);
    hasher.write_u32(params.len() as u32);
    for (index, param) in params.iter().enumerate() {
@@ -674,7 +683,13 @@ pub fn compute_fingerprint_with_params(
 
 // Builds the cache key for this query result in the shared key-value store.
 pub fn make_cache_key(prefix: &str, table: &str, fingerprint: u64) -> String {
-   format!("{prefix}{table}:{fingerprint:016x}")
+   let mut key = String::with_capacity(prefix.len() + table.len() + 17);
+   key.push_str(prefix);
+   key.push_str(table);
+   key.push(':');
+   use std::fmt::Write;
+   let _ = write!(key, "{fingerprint:016x}");
+   key
 }
 
 // Sharded SQL analysis cache: parsing is the dominant cost on the hot path,

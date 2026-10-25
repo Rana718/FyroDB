@@ -107,29 +107,38 @@ impl<R: Read> FrameReader<R> {
 
    // Reads any tagged message and returns its tag.
    pub fn read_raw(&mut self) -> io::Result<u8> {
-      self.frame.clear();
-      self.frame.resize(5, 0);
-      self.inner.read_exact(&mut self.frame[..5])?;
-      let tag = self.frame[0];
-      let len = i32::from_be_bytes([self.frame[1], self.frame[2], self.frame[3], self.frame[4]]);
+      let mut header = [0u8; 5];
+      self.inner.read_exact(&mut header)?;
+      let tag = header[0];
+      let len = i32::from_be_bytes([header[1], header[2], header[3], header[4]]);
       if len < 4 || len as usize > MAX_MESSAGE_LEN {
          return Err(invalid("invalid message length"));
       }
-      self.frame.resize(1 + len as usize, 0);
-      self.inner.read_exact(&mut self.frame[5..])?;
+      let total = 1 + len as usize;
+      self.frame.clear();
+      self.frame.reserve(total);
+      self.frame.extend_from_slice(&header);
+      let payload_len = len as usize - 4;
+      let cur = self.frame.len();
+      self.frame.resize(cur + payload_len, 0);
+      self.inner.read_exact(&mut self.frame[cur..])?;
       Ok(tag)
    }
 
    fn read_initial(&mut self) -> io::Result<FrontendMessage> {
-      self.frame.clear();
-      self.frame.resize(4, 0);
-      self.inner.read_exact(&mut self.frame[..4])?;
-      let len = i32::from_be_bytes([self.frame[0], self.frame[1], self.frame[2], self.frame[3]]);
+      let mut header = [0u8; 4];
+      self.inner.read_exact(&mut header)?;
+      let len = i32::from_be_bytes(header);
       if len < 8 || len as usize > MAX_STARTUP_LEN {
          return Err(invalid("invalid startup packet length"));
       }
-      self.frame.resize(len as usize, 0);
-      self.inner.read_exact(&mut self.frame[4..])?;
+      self.frame.clear();
+      self.frame.reserve(len as usize);
+      self.frame.extend_from_slice(&header);
+      let payload_len = len as usize - 4;
+      let cur = self.frame.len();
+      self.frame.resize(cur + payload_len, 0);
+      self.inner.read_exact(&mut self.frame[cur..])?;
 
       let code = rd_i32_at(&self.frame, 4)?;
       match code {
@@ -179,16 +188,21 @@ impl<R: Read> FrameReader<R> {
    }
 
    fn read_regular(&mut self) -> io::Result<FrontendMessage> {
-      self.frame.clear();
-      self.frame.resize(5, 0);
-      self.inner.read_exact(&mut self.frame[..5])?;
-      let tag = self.frame[0];
-      let len = i32::from_be_bytes([self.frame[1], self.frame[2], self.frame[3], self.frame[4]]);
+      let mut header = [0u8; 5];
+      self.inner.read_exact(&mut header)?;
+      let tag = header[0];
+      let len = i32::from_be_bytes([header[1], header[2], header[3], header[4]]);
       if len < 4 || len as usize > MAX_MESSAGE_LEN {
          return Err(invalid("invalid message length"));
       }
-      self.frame.resize(1 + len as usize, 0);
-      self.inner.read_exact(&mut self.frame[5..])?;
+      let total = 1 + len as usize;
+      self.frame.clear();
+      self.frame.reserve(total);
+      self.frame.extend_from_slice(&header);
+      let payload_len = len as usize - 4;
+      let cur = self.frame.len();
+      self.frame.resize(cur + payload_len, 0);
+      self.inner.read_exact(&mut self.frame[cur..])?;
       let body = &self.frame[5..];
 
       match tag {
