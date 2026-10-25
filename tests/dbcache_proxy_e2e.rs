@@ -1214,3 +1214,553 @@ fn proxy_terminates_scram_and_reuses_pooled_upstream() {
       "SET application_name = E'second\\'s app'"
    );
 }
+
+// ── Pipelining and concurrency deep tests ────────────────────────────────────
+
+// Sends N simple-query messages without reading any responses, then reads them
+// all in one go. Verifies the proxy lazy-flush correctly accumulates responses
+// when client input is buffered, and that all N replies are correct.
+#[test]
+fn pipelined_simple_queries_all_receive_response() {
+   let (upstream, _stats) = FakePg::start();
+   let (port, manager, _store) = start(&upstream);
+
+   // Pre-warm the cache so no upstream round-trips are needed during the test.
+   let sql = "select id, username from users where id = 42";
+   let parsed = fyro_dbcache::query::parse_sql(sql);
+   manager.store_cached_query(
+      "db:",
+      &parsed.tables,
+      parsed.fingerprint,
+      &make_one_row_result_local(),
+      60_000,
+   );
+
+   let mut client = Client::connect(port);
+
+   const PIPE: usize = 64;
+   // Send PIPE queries without reading.
+   let mut body = Vec::from(sql.as_bytes());
+   body.push(0);
+   let mut frame = Vec::new();
+   put_message(&mut frame, b'Q', &body);
+   let mut batch = Vec::with_capacity(PIPE * frame.len());
+   for _ in 0..PIPE {
+      batch.extend_from_slice(&frame);
+   }
+   client.stream.write_all(&batch).unwrap();
+
+   // Now read all PIPE responses — each must end with ReadyForQuery.
+   let mut ready_count = 0usize;
+   for _ in 0..PIPE {
+      let reply = client.read_until_ready();
+      assert!(reply.error.is_none(), "query {ready_count} had error: {:?}", reply.error);
+      ready_count += 1;
+   }
+   assert_eq!(ready_count, PIPE);
+}
+
+// Extended-protocol pipelining: sends PIPE × (Bind+Execute+Sync) as one batch
+// after a single Parse, verifies all PIPE responses are received and correct.
+#[test]
+fn pipelined_extended_protocol_all_receive_response() {
+   use fyro_dbcache::protocol::{encode_bind, put_message};
+
+   let (upstream, _stats) = FakePg::start();
+   let (port, manager, _store) = start(&upstream);
+
+   let sql = "select id, username from users where id = $1";
+   let param = Some(b"42".to_vec());
+   let parsed = fyro_dbcache::query::parse_sql(sql);
+   let fp = fyro_dbcache::query::compute_fingerprint_with_params(
+      &parsed.normalized,
+      std::slice::from_ref(&param),
+      &[],
+   );
+   manager.store_cached_query(
+      "db:",
+      &parsed.tables,
+      fp,
+      &make_one_row_result_local(),
+      60_000,
+   );
+
+   let mut client = Client::connect(port);
+
+   // Parse once.
+   client.parse("s1", sql);
+
+   let bind_frame = encode_bind("p1", "s1", &[], std::slice::from_ref(&param), &[]);
+   let mut exec_body = b"p1\0".to_vec();
+   exec_body.extend_from_slice(&0i32.to_be_bytes());
+   let mut exec_frame = Vec::new();
+   put_message(&mut exec_frame, b'E', &exec_body);
+   let sync_frame = [b'S', 0, 0, 0, 4];
+
+   const PIPE: usize = 32;
+   let unit = bind_frame.len() + exec_frame.len() + 5;
+   let mut batch = Vec::with_capacity(PIPE * unit);
+   for _ in 0..PIPE {
+      batch.extend_from_slice(&bind_frame);
+      batch.extend_from_slice(&exec_frame);
+      batch.extend_from_slice(&sync_frame);
+   }
+   client.stream.write_all(&batch).unwrap();
+
+   for i in 0..PIPE {
+      let reply = client.read_until_ready();
+      assert!(reply.error.is_none(), "iteration {i} had error: {:?}", reply.error);
+   }
+}
+
+// 8 concurrent clients each issuing 200 simple queries against the same
+// cached entry. Verifies there are no data races in the encoded cache path.
+#[test]
+fn concurrent_clients_all_get_correct_cached_response() {
+   use std::sync::Barrier;
+   use std::thread;
+
+   let (upstream, _stats) = FakePg::start();
+   let (port, manager, _store) = start(&upstream);
+
+   let sql = "select id, username from users where id = 42";
+   let parsed = fyro_dbcache::query::parse_sql(sql);
+   manager.store_cached_query(
+      "db:",
+      &parsed.tables,
+      parsed.fingerprint,
+      &make_one_row_result_local(),
+      60_000,
+   );
+
+   const CLIENTS: usize = 8;
+   const QUERIES: usize = 200;
+   let barrier = Arc::new(Barrier::new(CLIENTS));
+   let mut handles = Vec::new();
+
+   for _ in 0..CLIENTS {
+      let b = Arc::clone(&barrier);
+      handles.push(thread::spawn(move || {
+         let mut client = Client::connect(port);
+         b.wait(); // start simultaneously
+         let mut errors = 0usize;
+         for _ in 0..QUERIES {
+            let reply = client.simple(sql);
+            if reply.error.is_some() {
+               errors += 1;
+            }
+         }
+         errors
+      }));
+   }
+
+   let total_errors: usize = handles.into_iter().map(|h| h.join().unwrap()).sum();
+   assert_eq!(total_errors, 0, "{total_errors} queries returned errors");
+}
+
+// SSL request must be rejected with 'N' — the proxy does not support TLS.
+#[test]
+fn ssl_request_is_rejected_with_n() {
+   let (upstream, _stats) = FakePg::start();
+   let (port, _manager, _store) = start(&upstream);
+
+   let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+   // SSL request packet: length=8, code=80877103
+   stream.write_all(&[0, 0, 0, 8, 4, 210, 22, 47]).unwrap();
+   let mut resp = [0u8; 1];
+   stream.read_exact(&mut resp).unwrap();
+   assert_eq!(resp[0], b'N', "SSL request must be rejected with 'N'");
+}
+
+// Terminate message causes the proxy to close cleanly without panicking.
+#[test]
+fn terminate_message_closes_connection_cleanly() {
+   let (upstream, _stats) = FakePg::start();
+   let (port, _manager, _store) = start(&upstream);
+
+   let mut client = Client::connect(port);
+   // Send Terminate ('X').
+   client.send(b'X', &[]);
+   // The connection should now be closed from the proxy side.
+   // Attempting to read should return EOF.
+   client
+      .stream
+      .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+      .unwrap();
+   let mut buf = [0u8; 1];
+   let result = client.stream.read(&mut buf);
+   assert!(
+      matches!(result, Ok(0) | Err(_)),
+      "expected EOF or error after Terminate, got {result:?}"
+   );
+}
+
+// 512-query simple-query batch: validates flush_out_batched coalescing at
+// production-scale PIPE sizes and that the hot_sql_fp cache stays consistent
+// when the same SQL is sent 512 times in a row.
+#[test]
+fn large_batch_simple_queries_all_receive_correct_response() {
+   let (port, manager, _store) = start_with(DbProxyMode::Dual, None);
+
+   let sql = "select id, username from users where id = 42";
+   let parsed = fyro_dbcache::query::parse_sql(sql);
+   manager.store_cached_query(
+      "db:",
+      &parsed.tables,
+      parsed.fingerprint,
+      &make_one_row_result_local(),
+      60_000,
+   );
+
+   let mut client = Client::connect(port);
+
+   const PIPE: usize = 512;
+   let mut body = Vec::from(sql.as_bytes());
+   body.push(0);
+   let mut frame = Vec::new();
+   put_message(&mut frame, b'Q', &body);
+   let mut batch = Vec::with_capacity(PIPE * frame.len());
+   for _ in 0..PIPE {
+      batch.extend_from_slice(&frame);
+   }
+   client.stream.write_all(&batch).unwrap();
+
+   let mut ok = 0usize;
+   for i in 0..PIPE {
+      let reply = client.read_until_ready();
+      assert!(reply.error.is_none(), "query {i} returned error: {:?}", reply.error);
+      assert_eq!(reply.rows.len(), 1, "query {i} expected 1 row, got {}", reply.rows.len());
+      ok += 1;
+   }
+   assert_eq!(ok, PIPE);
+}
+
+// 512-unit extended-protocol batch (Bind+Execute+Sync): validates handle_sync
+// using flush_out_batched so all 512 ReadyForQuery responses are coalesced and
+// correctly delivered.
+#[test]
+fn large_batch_extended_protocol_all_receive_correct_response() {
+   use fyro_dbcache::protocol::{encode_bind, put_message};
+
+   let (port, manager, _store) = start_with(DbProxyMode::Dual, None);
+
+   let sql = "select id, username from users where id = $1";
+   let param = Some(b"42".to_vec());
+   let parsed = fyro_dbcache::query::parse_sql(sql);
+   let fp = fyro_dbcache::query::compute_fingerprint_with_params(
+      &parsed.normalized,
+      std::slice::from_ref(&param),
+      &[],
+   );
+   manager.store_cached_query(
+      "db:",
+      &parsed.tables,
+      fp,
+      &make_one_row_result_local(),
+      60_000,
+   );
+
+   let mut client = Client::connect(port);
+   // Send Parse without reading ParseComplete — it will be included with
+   // the first Sync's flushed response.
+   client.parse("s1", sql);
+
+   let bind_frame = encode_bind("p1", "s1", &[], std::slice::from_ref(&param), &[]);
+   let mut exec_body = b"p1\0".to_vec();
+   exec_body.extend_from_slice(&0i32.to_be_bytes());
+   let mut exec_frame = Vec::new();
+   put_message(&mut exec_frame, b'E', &exec_body);
+   let sync_frame: [u8; 5] = [b'S', 0, 0, 0, 4];
+
+   const PIPE: usize = 512;
+   let unit = bind_frame.len() + exec_frame.len() + 5;
+   let mut batch = Vec::with_capacity(PIPE * unit);
+   for _ in 0..PIPE {
+      batch.extend_from_slice(&bind_frame);
+      batch.extend_from_slice(&exec_frame);
+      batch.extend_from_slice(&sync_frame);
+   }
+   client.stream.write_all(&batch).unwrap();
+
+   let mut ok = 0usize;
+   for i in 0..PIPE {
+      let reply = client.read_until_ready();
+      assert!(reply.error.is_none(), "iteration {i} returned error: {:?}", reply.error);
+      assert_eq!(reply.rows.len(), 1, "iteration {i} expected 1 row");
+      ok += 1;
+   }
+   assert_eq!(ok, PIPE);
+}
+
+// 1000 repeated identical simple queries: the per-session hot_sql_fp cache
+// must keep returning the correct cached result for every repetition.
+#[test]
+fn hot_sql_parse_cache_1000_repeated_queries_stay_correct() {
+   let (port, manager, _store) = start_with(DbProxyMode::Dual, None);
+
+   let sql = "select id, username from users where id = 42";
+   let parsed = fyro_dbcache::query::parse_sql(sql);
+   manager.store_cached_query(
+      "db:",
+      &parsed.tables,
+      parsed.fingerprint,
+      &make_one_row_result_local(),
+      60_000,
+   );
+
+   let mut client = Client::connect(port);
+   for i in 0..1000usize {
+      let reply = client.simple(sql);
+      assert!(reply.error.is_none(), "query {i} had error: {:?}", reply.error);
+      assert_eq!(reply.rows.len(), 1, "query {i}: expected 1 row");
+      let row = &reply.rows[0];
+      assert_eq!(row[0].as_deref(), Some("42"), "query {i}: wrong id");
+      assert_eq!(row[1].as_deref(), Some("testuser"), "query {i}: wrong username");
+   }
+}
+
+// Alternating between two different SQL queries must bypass the hot_sql_fp
+// cache for the second query in each pair and return correct results.
+#[test]
+fn alternating_sql_queries_bypass_hot_cache_correctly() {
+   let (port, manager, _store) = start_with(DbProxyMode::Dual, None);
+
+   let sql_a = "select id, username from users where id = 42";
+   let sql_b = "select id, username from users where id = 43";
+   let parsed_a = fyro_dbcache::query::parse_sql(sql_a);
+   let parsed_b = fyro_dbcache::query::parse_sql(sql_b);
+
+   use fyro_dbcache::{ColumnInfo, DbResultSet, DbRow, DbValue};
+   let result_a = DbResultSet {
+      columns: vec![
+         ColumnInfo { name: "id".to_string(), type_oid: 23 },
+         ColumnInfo { name: "username".to_string(), type_oid: 25 },
+      ],
+      rows: vec![DbRow { values: vec![DbValue::Int(42), DbValue::Text("alice".to_string())] }],
+      rows_affected: 1,
+   };
+   let result_b = DbResultSet {
+      columns: vec![
+         ColumnInfo { name: "id".to_string(), type_oid: 23 },
+         ColumnInfo { name: "username".to_string(), type_oid: 25 },
+      ],
+      rows: vec![DbRow { values: vec![DbValue::Int(43), DbValue::Text("bob".to_string())] }],
+      rows_affected: 1,
+   };
+
+   manager.store_cached_query("db:", &parsed_a.tables, parsed_a.fingerprint, &result_a, 60_000);
+   manager.store_cached_query("db:", &parsed_b.tables, parsed_b.fingerprint, &result_b, 60_000);
+
+   let mut client = Client::connect(port);
+   for i in 0..100usize {
+      let ra = client.simple(sql_a);
+      assert!(ra.error.is_none(), "round {i} sql_a error: {:?}", ra.error);
+      assert_eq!(ra.rows[0][1].as_deref(), Some("alice"), "round {i} sql_a wrong user");
+
+      let rb = client.simple(sql_b);
+      assert!(rb.error.is_none(), "round {i} sql_b error: {:?}", rb.error);
+      assert_eq!(rb.rows[0][1].as_deref(), Some("bob"), "round {i} sql_b wrong user");
+   }
+}
+
+// Cache-only proxy (no upstream) with a large extended-protocol pipeline.
+// The proxy must serve all responses from cache without ever contacting an
+// upstream and without producing any errors.
+#[test]
+fn cache_only_large_extended_protocol_pipeline() {
+   use fyro_dbcache::protocol::{encode_bind, put_message};
+   use fyro_db::storage::store::Store;
+
+   let store = Arc::new(Store::new());
+   let manager = Arc::new(DbCacheManager::new(store));
+   let sql = "select id, username from users where id = $1";
+   let param = Some(b"99".to_vec());
+   let parsed = fyro_dbcache::query::parse_sql(sql);
+   let fp = fyro_dbcache::query::compute_fingerprint_with_params(
+      &parsed.normalized,
+      std::slice::from_ref(&param),
+      &[],
+   );
+   manager.store_cached_query("db:", &parsed.tables, fp, &make_one_row_result_local(), 60_000);
+
+   let config = fyro_dbcache::DbCacheConfig {
+      enabled: true,
+      mode: fyro_dbcache::DbProxyMode::Dual,
+      upstream_addr: None,
+      listen_addr: format!("127.0.0.1:{}", free_port()),
+      default_ttl_ms: 60_000,
+      key_prefix: "db:".to_string(),
+      flush_on_start: false,
+      sync_interval_ms: 0,
+      cache_max_keys: 10_000,
+      ttl_jitter_pct: 0,
+      ..Default::default()
+   };
+   let port: u16 = config.listen_addr.split(':').last().unwrap().parse().unwrap();
+   let _handle = fyro_dbcache::start_proxy_listener(config, manager).expect("start proxy");
+   std::thread::sleep(Duration::from_millis(30));
+
+   let mut client = Client::connect(port);
+   // Don't read ParseComplete — it coalesces with the first Sync response.
+   client.parse("s1", sql);
+
+   let bind_frame = encode_bind("p1", "s1", &[], std::slice::from_ref(&param), &[]);
+   let mut exec_body = b"p1\0".to_vec();
+   exec_body.extend_from_slice(&0i32.to_be_bytes());
+   let mut exec_frame = Vec::new();
+   put_message(&mut exec_frame, b'E', &exec_body);
+   let sync_frame: [u8; 5] = [b'S', 0, 0, 0, 4];
+
+   const PIPE: usize = 256;
+   let unit = bind_frame.len() + exec_frame.len() + 5;
+   let mut batch = Vec::with_capacity(PIPE * unit);
+   for _ in 0..PIPE {
+      batch.extend_from_slice(&bind_frame);
+      batch.extend_from_slice(&exec_frame);
+      batch.extend_from_slice(&sync_frame);
+   }
+   client.stream.write_all(&batch).unwrap();
+
+   for i in 0..PIPE {
+      let reply = client.read_until_ready();
+      assert!(reply.error.is_none(), "iteration {i} cache-only extended error: {:?}", reply.error);
+      assert_eq!(reply.rows.len(), 1, "iteration {i}: expected 1 row");
+   }
+}
+
+// When the first query goes to upstream (cache miss) and subsequent identical
+// queries should hit the cache, the proxy must serve all of them correctly
+// without panicking or returning stale data.
+#[test]
+fn cache_miss_then_hit_sequence_is_consistent() {
+   let (upstream, _stats) = FakePg::start();
+   let (port, _manager, _store) = start(&upstream);
+
+   let mut client = Client::connect(port);
+   let sql = "select id, username from users where id = 2";
+
+   // First query: upstream miss, result forwarded from fake upstream.
+   let r1 = client.simple(sql);
+   assert!(r1.error.is_none(), "first query error: {:?}", r1.error);
+   assert_eq!(r1.rows, expected_rows());
+
+   // Subsequent queries: should hit cache now that it's populated.
+   for i in 1..10usize {
+      let r = client.simple(sql);
+      assert!(r.error.is_none(), "query {i} error after cache fill: {:?}", r.error);
+      assert_eq!(r.rows, expected_rows(), "query {i} returned different rows");
+   }
+}
+
+// Pipeline of simple queries where the first batch goes upstream (cold) and a
+// second batch is served from cache. The proxy must keep producing correct
+// responses across the cache-cold → cache-hot transition.
+#[test]
+fn pipeline_transitions_from_miss_to_hit_correctly() {
+   let (upstream, _stats) = FakePg::start();
+   let (port, _manager, _store) = start(&upstream);
+
+   let mut client = Client::connect(port);
+   let sql = "select id, username from users where id = 2";
+
+   // Warm the cache with a single query.
+   let warm = client.simple(sql);
+   assert!(warm.error.is_none());
+
+   // Now send a batch of 64 queries that should all hit the cache.
+   let mut body = Vec::from(sql.as_bytes());
+   body.push(0);
+   let mut frame = Vec::new();
+   put_message(&mut frame, b'Q', &body);
+   let mut batch = Vec::with_capacity(64 * frame.len());
+   for _ in 0..64 {
+      batch.extend_from_slice(&frame);
+   }
+   client.stream.write_all(&batch).unwrap();
+
+   for i in 0..64usize {
+      let reply = client.read_until_ready();
+      assert!(reply.error.is_none(), "batch query {i} error: {:?}", reply.error);
+      assert_eq!(reply.rows, expected_rows(), "batch query {i} wrong rows");
+   }
+}
+
+// 16 concurrent clients each issue 128 extended-protocol queries against the
+// same cache entry. This stresses the sharded encoded cache under concurrent
+// reads while also exercising handle_sync coalescing per session.
+#[test]
+fn concurrent_extended_protocol_clients_get_correct_responses() {
+   use fyro_dbcache::protocol::{encode_bind, put_message};
+   use std::sync::Barrier;
+   use std::thread;
+
+   let (port, manager, _store) = start_with(DbProxyMode::Dual, None);
+
+   let sql = "select id, username from users where id = $1";
+   let param = Some(b"42".to_vec());
+   let parsed = fyro_dbcache::query::parse_sql(sql);
+   let fp = fyro_dbcache::query::compute_fingerprint_with_params(
+      &parsed.normalized,
+      std::slice::from_ref(&param),
+      &[],
+   );
+   manager.store_cached_query("db:", &parsed.tables, fp, &make_one_row_result_local(), 60_000);
+
+   const CLIENTS: usize = 16;
+   const QUERIES: usize = 128;
+   let barrier = Arc::new(Barrier::new(CLIENTS));
+
+   let handles: Vec<_> = (0..CLIENTS)
+      .map(|_| {
+         let b = Arc::clone(&barrier);
+         let bind_frame = encode_bind("p1", "s1", &[], std::slice::from_ref(&param), &[]);
+         thread::spawn(move || {
+            let mut client = Client::connect(port);
+            // ParseComplete coalesces with first Sync; no read needed here.
+            client.parse("s1", sql);
+
+            let mut exec_body = b"p1\0".to_vec();
+            exec_body.extend_from_slice(&0i32.to_be_bytes());
+            let mut exec_frame = Vec::new();
+            put_message(&mut exec_frame, b'E', &exec_body);
+            let sync_frame: [u8; 5] = [b'S', 0, 0, 0, 4];
+
+            let unit = bind_frame.len() + exec_frame.len() + 5;
+            let mut batch = Vec::with_capacity(QUERIES * unit);
+            for _ in 0..QUERIES {
+               batch.extend_from_slice(&bind_frame);
+               batch.extend_from_slice(&exec_frame);
+               batch.extend_from_slice(&sync_frame);
+            }
+
+            b.wait();
+            client.stream.write_all(&batch).unwrap();
+
+            let mut errors = 0usize;
+            for _ in 0..QUERIES {
+               if client.read_until_ready().error.is_some() {
+                  errors += 1;
+               }
+            }
+            errors
+         })
+      })
+      .collect();
+
+   let total_errors: usize = handles.into_iter().map(|h| h.join().unwrap()).sum();
+   assert_eq!(total_errors, 0, "{total_errors} extended-protocol queries returned errors");
+}
+
+fn make_one_row_result_local() -> fyro_dbcache::DbResultSet {
+   use fyro_dbcache::{ColumnInfo, DbResultSet, DbRow, DbValue};
+   DbResultSet {
+      columns: vec![
+         ColumnInfo { name: "id".to_string(), type_oid: 23 },
+         ColumnInfo { name: "username".to_string(), type_oid: 25 },
+      ],
+      rows: vec![DbRow {
+         values: vec![DbValue::Int(42), DbValue::Text("testuser".to_string())],
+      }],
+      rows_affected: 1,
+   }
+}

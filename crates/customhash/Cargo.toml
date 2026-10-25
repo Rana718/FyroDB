@@ -16,3 +16,4 @@ rust-zmalloc = { path = "../rust-zmalloc" }
 dashmap = "6.2"
 scc = "3.8"
 ahash = "0.8"
+bbtree = "0.1.5"

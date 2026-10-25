@@ -76,10 +76,12 @@ pub(super) fn handle_client(
       cycle_error: false,
       statements: HashMap::with_hasher(FixedState::with_seed(0)),
       portals: HashMap::with_hasher(FixedState::with_seed(0)),
-      out: Vec::with_capacity(16 * 1024),
+      out: Vec::with_capacity(RELAY_FLUSH_BYTES + 512),
       context_hash: 0,
       context_state: ContextState::Untrusted,
       context_sets: 0,
+      hot_sql_fp: 0,
+      hot_parsed: None,
    };
    session.run()
 }
@@ -126,6 +128,9 @@ struct Session {
    context_hash: u64,
    context_state: ContextState,
    context_sets: u32,
+   // Per-session hot cache: skip the global RwLock for repeated identical SQL parse.
+   hot_sql_fp: u64,
+   hot_parsed: Option<Arc<ParsedQuery>>,
 }
 
 impl Session {
@@ -394,7 +399,16 @@ impl Session {
          return self.flush_out();
       }
 
-      let parsed = self.mgr.analyze(trimmed);
+      let sql_fp = compute_fingerprint(trimmed);
+      let parsed = match &self.hot_parsed {
+         Some(p) if self.hot_sql_fp == sql_fp => Arc::clone(p),
+         _ => {
+            let p = self.mgr.analyze(trimmed);
+            self.hot_sql_fp = sql_fp;
+            self.hot_parsed = Some(Arc::clone(&p));
+            p
+         }
+      };
       match parsed.kind {
          QueryKind::Begin => {
             self.in_transaction = true;
@@ -424,16 +438,16 @@ impl Session {
       if cacheable {
          if let Some(entry) = self.lookup_encoded(&parsed, fingerprint) {
             entry.write_simple_response(&mut self.out);
-            return self.flush_out();
+            return self.flush_out_batched();
          }
          if let Some(result) = self.lookup_json(&parsed, fingerprint) {
             if let Some(entry) = self.lookup_encoded(&parsed, fingerprint) {
                entry.write_simple_response(&mut self.out);
-               return self.flush_out();
+               return self.flush_out_batched();
             }
             let tag = format!("SELECT {}", result.rows.len());
             protocol::write_result_set(&mut self.out, &result, &tag)?;
-            return self.flush_out();
+            return self.flush_out_batched();
          }
          self
             .mgr
@@ -454,7 +468,7 @@ impl Session {
                self.mgr.wait_for_fill(&key);
                if let Some(entry) = self.lookup_encoded(&parsed, fingerprint) {
                   entry.write_simple_response(&mut self.out);
-                  return self.flush_out();
+                  return self.flush_out_batched();
                }
                fill_guard = self.mgr.begin_fill(&key);
             }
@@ -1211,7 +1225,7 @@ impl Session {
          Ok(())
       } else {
          self.queue_ready();
-         self.flush_out()
+         self.flush_out_batched()
       }
    }
 
@@ -1645,9 +1659,24 @@ impl Session {
    fn flush_out(&mut self) -> io::Result<()> {
       if !self.out.is_empty() {
          self.client.write_all(&self.out)?;
-         self.client.flush()?;
          self.out.clear();
       }
+      Ok(())
+   }
+
+   // Variant of flush_out used only on the cache-hit path of simple queries.
+   // When the client has pipelined more messages, defers the write so multiple
+   // cache-hit responses are coalesced into one write syscall. Safe only when
+   // all output for the current request is in self.out (no direct client writes).
+   fn flush_out_batched(&mut self) -> io::Result<()> {
+      if self.out.is_empty() {
+         return Ok(());
+      }
+      if self.reader.has_buffered_input() && self.out.len() < RELAY_FLUSH_BYTES {
+         return Ok(());
+      }
+      self.client.write_all(&self.out)?;
+      self.out.clear();
       Ok(())
    }
 }

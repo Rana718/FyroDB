@@ -1,5 +1,6 @@
 use crate::row::{ColumnInfo, DbValue};
-use std::io::{self, Read, Write};
+use std::io::{self, BufReader, Read, Write};
+use std::net::TcpStream;
 
 pub const SSL_REQUEST_CODE: i32 = 80877103;
 pub const SSL_REQUEST: [u8; 8] = [0, 0, 0, 8, 4, 210, 22, 47];
@@ -96,7 +97,18 @@ impl<R: Read> FrameReader<R> {
    pub fn into_inner(self) -> R {
       self.inner
    }
+}
 
+impl FrameReader<BufReader<TcpStream>> {
+   // Returns true when the BufReader still has bytes in its internal buffer,
+   // indicating the client has already sent more messages after the current one.
+   // Used by the session to defer response flushes and batch output.
+   pub fn has_buffered_input(&self) -> bool {
+      !self.inner.buffer().is_empty()
+   }
+}
+
+impl<R: Read> FrameReader<R> {
    pub fn read_frontend(&mut self, initial: bool) -> io::Result<FrontendMessage> {
       if initial {
          self.read_initial()

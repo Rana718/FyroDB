@@ -29,7 +29,7 @@ tasks:
    build:
       desc: Release build
       cmds:
-         - cargo build --release
+         - cargo build --release --bin {{.BINARY}}
    fmt:
       desc: Format entire codebase (all workspace crates) with rustfmt
       cmds:
@@ -43,12 +43,12 @@ tasks:
    build-avx:
       desc: Release build with x86-64-v3 (FMA/AVX2) codegen for max vector-kernel throughput
       cmds:
-         - RUSTFLAGS="-C target-cpu=x86-64-v3 -C link-arg=-fuse-ld=lld" cargo build --release
+         - RUSTFLAGS="-C target-cpu=x86-64-v3 -C link-arg=-fuse-ld=lld" cargo build --release --bin {{.BINARY}}
 
    build-uring:
       desc: "Release build with the experimental io_uring batched-send path (enable at runtime with FYRODB_IO_URING=1)"
       cmds:
-         - cargo build --release --features io-uring
+         - cargo build --release --features io-uring --bin {{.BINARY}}
 
    run-io:
       desc: "Build and run FyroDB with the io_uring batched-send path enabled"
@@ -80,7 +80,7 @@ tasks:
    test-e2e:
       desc: Run isolated Python end-to-end suites
       cmds:
-         - cargo build --release
+         - cargo build --release --bin {{.BINARY}}
          - python3 tests/e2e/python/run.py {{.CLI_ARGS}}
 
    bench-local:
@@ -156,7 +156,7 @@ tasks:
    build-prof:
       desc: Release build with frame pointers and symbols for perf / flamegraphs
       cmds:
-         - CARGO_PROFILE_RELEASE_DEBUG=line-tables-only CARGO_PROFILE_RELEASE_STRIP=none RUSTFLAGS="-C force-frame-pointers=yes -C target-cpu=x86-64-v3 -C link-arg=-fuse-ld=lld" cargo build --release
+         - CARGO_PROFILE_RELEASE_DEBUG=line-tables-only CARGO_PROFILE_RELEASE_STRIP=none RUSTFLAGS="-C force-frame-pointers=yes -C target-cpu=x86-64-v3 -C link-arg=-fuse-ld=lld" cargo build --release --bin {{.BINARY}}
 
    perf-record:
       desc: "Record a CPU profile of a running server for 20s (PID=<pid>, default: pidof fyro_db)"
@@ -215,7 +215,7 @@ tasks:
       desc: "Combined FyroDB RESP (Go TCP, KV+pub/sub+mix, no vectors) + dbcache proxy benchmark — starts its own throwaway server"
       cmds:
          - task: build
-         - cargo build --release --bin pg_cache_bench
+         - cargo build --release --features bench-tools --bin pg_cache_bench
          - echo ""
          - echo "══════════════════════════════════════════════════════════════════════"
          - echo "  bench-all-v  ▶  Section 1 — FyroDB RESP  (Go goroutine TCP clients)"
@@ -231,6 +231,16 @@ tasks:
       desc: "dbcache proxy benchmark (Go goroutine TCP clients) against a running proxy — use -pgport to specify port (default 15433)"
       cmds:
          - cd bench && go run . -m pgcache {{.CLI_ARGS}}
+
+   bench-all-v-rs:
+      desc: "Combined Rust in-process RESP + dbcache proxy benchmark (src/bin/bench_all_v.rs)"
+      cmds:
+         - cargo run --release --features bench-tools --bin bench_all_v -- {{.CLI_ARGS}}
+
+   bench-hashmap:
+      desc: "Benchmark std HashMap vs foldhash vs CustomMap cache lookup (src/bin/hashmap_bench.rs)"
+      cmds:
+         - cargo run --release --features bench-tools --bin hashmap_bench
 
    bench-pg:
       desc: "PostgreSQL cache-path benchmark: in-memory lookup, encoded multithread, joins, proxy TCP"

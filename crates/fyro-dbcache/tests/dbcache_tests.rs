@@ -4,11 +4,12 @@ use fyro_dbcache::protocol::{
 use fyro_dbcache::query::{QueryKind, compute_fingerprint_with_params, make_cache_key, parse_sql};
 use fyro_dbcache::row::{ColumnInfo, DbResultSet, DbRow, DbValue};
 use fyro_dbcache::{
-   CacheLimits, CatalogSnapshot, DbCacheManager, DbCacheStorage, MemoryStorage, SessionChange,
-   TableCounters,
+   CacheLimits, CatalogSnapshot, DbCacheManager, DbCacheStorage, MemoryStorage, ParsedQueryCache,
+   SessionChange, TableCounters,
 };
 use std::io::Cursor;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 #[test]
 fn test_sql_parsing_and_tables() {
@@ -944,4 +945,355 @@ fn test_bus_propagates_invalidations_between_managers() {
 
    // Keep the publishers alive until the assertions complete.
    drop((bus_a, bus_b));
+}
+
+// ── ParsedQueryCache deep tests ───────────────────────────────────────────────
+
+#[test]
+fn test_parse_cache_same_arc_on_repeated_calls() {
+   let cache = ParsedQueryCache::default();
+   let sql = "SELECT id, name FROM customers WHERE id = 1;";
+   let first = cache.get_or_parse(sql);
+   let second = cache.get_or_parse(sql);
+   // Repeated calls must return the same Arc (no extra parse).
+   assert!(Arc::ptr_eq(&first, &second));
+   assert_eq!(cache.len(), 1);
+}
+
+#[test]
+fn test_parse_cache_distinct_sqls_produce_distinct_arcs() {
+   let cache = ParsedQueryCache::default();
+   let a = cache.get_or_parse("SELECT 1;");
+   let b = cache.get_or_parse("SELECT 2;");
+   assert!(!Arc::ptr_eq(&a, &b));
+   assert_eq!(cache.len(), 2);
+}
+
+#[test]
+fn test_parse_cache_concurrent_hits_return_consistent_result() {
+   use std::thread;
+   let cache = Arc::new(ParsedQueryCache::default());
+   let sql = "SELECT id, email FROM accounts WHERE id = $1;";
+   // Pre-seed so the first writer wins; all concurrent readers see the same Arc.
+   let expected = cache.get_or_parse(sql);
+
+   let mut handles = Vec::new();
+   for _ in 0..16 {
+      let c = Arc::clone(&cache);
+      handles.push(thread::spawn(move || c.get_or_parse(sql)));
+   }
+   for h in handles {
+      let got = h.join().unwrap();
+      assert_eq!(got.fingerprint, expected.fingerprint);
+      assert_eq!(got.tables, expected.tables);
+   }
+}
+
+#[test]
+fn test_parse_cache_manager_analyze_caches_across_calls() {
+   let storage = Arc::new(MemoryStorage::default());
+   let manager = DbCacheManager::new(storage);
+   let sql = "SELECT u.id, o.total FROM users u JOIN orders o ON u.id = o.user_id WHERE u.id = 5;";
+
+   assert_eq!(manager.parsed_cache_len(), 0);
+   let a = manager.analyze(sql);
+   assert_eq!(manager.parsed_cache_len(), 1);
+   let b = manager.analyze(sql);
+   // Same entry reused — cache length does not grow.
+   assert_eq!(manager.parsed_cache_len(), 1);
+   assert!(Arc::ptr_eq(&a, &b));
+}
+
+#[test]
+fn test_parse_cache_fingerprint_is_stable() {
+   let cache = ParsedQueryCache::default();
+   let sql = "SELECT id FROM widgets WHERE active = true;";
+   let fp1 = cache.get_or_parse(sql).fingerprint;
+   let fp2 = cache.get_or_parse(sql).fingerprint;
+   let fp3 = ParsedQueryCache::default().get_or_parse(sql).fingerprint;
+   assert_eq!(fp1, fp2);
+   assert_eq!(fp1, fp3);
+}
+
+#[test]
+fn test_analyze_bound_empty_params_equals_base_fingerprint() {
+   let storage = Arc::new(MemoryStorage::default());
+   let manager = DbCacheManager::new(storage);
+   let sql = "SELECT id FROM widgets WHERE id = 1;";
+   let (parsed, fp) = manager.analyze_bound(sql, &[], &[]);
+   assert_eq!(fp, parsed.fingerprint);
+}
+
+#[test]
+fn test_analyze_bound_different_params_produce_different_fingerprints() {
+   let storage = Arc::new(MemoryStorage::default());
+   let manager = DbCacheManager::new(storage);
+   let sql = "SELECT id FROM users WHERE id = $1;";
+   let p42 = Some(b"42".to_vec());
+   let p99 = Some(b"99".to_vec());
+   let (_, fp42) = manager.analyze_bound(sql, &[p42], &[]);
+   let (_, fp99) = manager.analyze_bound(sql, &[p99], &[]);
+   assert_ne!(fp42, fp99);
+}
+
+// ── Encoded cache deep tests ──────────────────────────────────────────────────
+
+#[test]
+fn test_get_encoded_returns_none_on_miss() {
+   let storage = Arc::new(MemoryStorage::default());
+   let manager = DbCacheManager::new(storage);
+   let result = manager.get_encoded("db:", "users", 0xdeadbeef_u64);
+   assert!(result.is_none());
+}
+
+#[test]
+fn test_get_encoded_returns_wire_bytes_after_store() {
+   let storage = Arc::new(MemoryStorage::default());
+   let manager = DbCacheManager::new(storage);
+   let sql = "SELECT id, username FROM users WHERE id = 1;";
+   let parsed = parse_sql(sql);
+   let rs = make_one_row_result();
+   manager.store_cached_query("db:", &parsed.tables, parsed.fingerprint, &rs, 60_000);
+
+   let entry = manager
+      .get_encoded("db:", "users", parsed.fingerprint)
+      .expect("expected encoded entry");
+   let mut buf = Vec::new();
+   entry.write_simple_response(&mut buf);
+   // A valid response must start with RowDescription ('T').
+   assert_eq!(buf[0], b'T', "response must start with RowDescription");
+   // ReadyForQuery message is [b'Z', 0, 0, 0, 5, status]; find it in the tail.
+   // The last byte is the transaction-status byte ('I', 'T', or 'E'), not 'Z'.
+   assert!(
+      buf.len() >= 6 && buf[buf.len() - 6] == b'Z',
+      "response must contain ReadyForQuery ('Z') message; last 6 bytes: {:?}",
+      &buf[buf.len().saturating_sub(6)..]
+   );
+}
+
+#[test]
+fn test_store_overwrite_replaces_entry() {
+   let storage = Arc::new(MemoryStorage::default());
+   let manager = DbCacheManager::new(storage);
+   let sql = "SELECT id FROM widgets WHERE id = 1;";
+   let parsed = parse_sql(sql);
+
+   let rs1 = DbResultSet {
+      columns: vec![ColumnInfo { name: "id".to_string(), type_oid: 23 }],
+      rows: vec![DbRow { values: vec![DbValue::Int(1)] }],
+      rows_affected: 1,
+   };
+   let rs2 = DbResultSet {
+      columns: vec![ColumnInfo { name: "id".to_string(), type_oid: 23 }],
+      rows: vec![DbRow { values: vec![DbValue::Int(999)] }],
+      rows_affected: 1,
+   };
+
+   manager.store_cached_query("db:", &parsed.tables, parsed.fingerprint, &rs1, 60_000);
+   manager.store_cached_query("db:", &parsed.tables, parsed.fingerprint, &rs2, 60_000);
+
+   // Should return the second (overwritten) entry.
+   let entry = manager
+      .get_encoded("db:", "widgets", parsed.fingerprint)
+      .expect("entry should exist");
+   let mut buf = Vec::new();
+   entry.write_simple_response(&mut buf);
+   // DataRow body should contain "999".
+   let response_str = String::from_utf8_lossy(&buf);
+   assert!(response_str.contains("999"));
+}
+
+#[test]
+fn test_encoded_cache_concurrent_readers() {
+   use std::thread;
+   let storage = Arc::new(MemoryStorage::default());
+   let manager = Arc::new(DbCacheManager::new(storage));
+   let sql = "SELECT id, status FROM orders WHERE id = 7;";
+   let parsed = parse_sql(sql);
+   manager.store_cached_query(
+      "db:",
+      &parsed.tables,
+      parsed.fingerprint,
+      &make_one_row_result(),
+      60_000,
+   );
+
+   let mut handles = Vec::new();
+   for _ in 0..16 {
+      let mgr = Arc::clone(&manager);
+      let fp = parsed.fingerprint;
+      handles.push(thread::spawn(move || {
+         for _ in 0..1_000 {
+            let r = mgr.get_encoded("db:", "orders", fp);
+            assert!(r.is_some());
+         }
+      }));
+   }
+   for h in handles {
+      h.join().unwrap();
+   }
+}
+
+// ── Cache invalidation deep tests ─────────────────────────────────────────────
+
+#[test]
+fn test_invalidate_single_table_leaves_others_intact() {
+   let storage = Arc::new(MemoryStorage::default());
+   let manager = DbCacheManager::new(storage);
+
+   let users_sql = "SELECT id FROM users WHERE id = 1;";
+   let orders_sql = "SELECT id FROM orders WHERE id = 1;";
+   let up = parse_sql(users_sql);
+   let op = parse_sql(orders_sql);
+   let rs = make_one_row_result();
+   manager.store_cached_query("db:", &up.tables, up.fingerprint, &rs, 60_000);
+   manager.store_cached_query("db:", &op.tables, op.fingerprint, &rs, 60_000);
+
+   let evicted = manager.invalidate_tables(&["users".to_string()]);
+   assert_eq!(evicted, 1);
+   assert!(manager.get_cached_query("db:", "users", up.fingerprint).is_none());
+   assert!(manager.get_cached_query("db:", "orders", op.fingerprint).is_some());
+}
+
+#[test]
+fn test_invalidate_joined_query_when_any_constituent_table_is_written() {
+   let storage = Arc::new(MemoryStorage::default());
+   let manager = DbCacheManager::new(storage);
+
+   let join_sql = "SELECT u.id, p.title FROM users u JOIN posts p ON u.id = p.author_id;";
+   let parsed = parse_sql(join_sql);
+   assert!(parsed.tables.contains(&"users".to_string()));
+   assert!(parsed.tables.contains(&"posts".to_string()));
+
+   manager.store_cached_query("db:", &parsed.tables, parsed.fingerprint, &make_one_row_result(), 60_000);
+
+   // Write to 'posts' → should invalidate the JOIN entry.
+   let evicted = manager.invalidate_tables(&["posts".to_string()]);
+   assert_eq!(evicted, 1);
+   assert!(manager.get_cached_query("db:", "users", parsed.fingerprint).is_none());
+}
+
+#[test]
+fn test_flush_all_clears_encoded_and_json_caches() {
+   let storage = Arc::new(MemoryStorage::default());
+   let manager = DbCacheManager::new(storage);
+
+   for i in 0..10u64 {
+      let rs = make_one_row_result();
+      manager.store_cached_query("db:", &["t1".to_string()], i, &rs, 60_000);
+   }
+   assert!(manager.get_encoded("db:", "t1", 0).is_some());
+
+   manager.flush_all("db:");
+   for i in 0..10u64 {
+      assert!(manager.get_encoded("db:", "t1", i).is_none());
+   }
+}
+
+// ── Fingerprint correctness ───────────────────────────────────────────────────
+
+#[test]
+fn test_fingerprint_normalizes_whitespace() {
+   // Normalize collapses multiple spaces between tokens and lowercases keywords.
+   // Note: whitespace immediately before ';' is preserved by the normalizer,
+   // so the comparison pairs must agree on semicolon placement.
+   let a = parse_sql("SELECT id FROM users WHERE id = 1;");
+   let b = parse_sql("  SELECT   id  FROM  users  WHERE  id  =  1;  ");
+   assert_eq!(a.fingerprint, b.fingerprint, "normalized forms must match");
+}
+
+#[test]
+fn test_fingerprint_normalizes_keyword_case() {
+   let a = parse_sql("SELECT id FROM users WHERE id = 1;");
+   let b = parse_sql("select id from users where id = 1;");
+   assert_eq!(a.fingerprint, b.fingerprint);
+}
+
+#[test]
+fn test_fingerprint_distinguishes_different_tables() {
+   let a = parse_sql("SELECT id FROM users WHERE id = 1;");
+   let b = parse_sql("SELECT id FROM orders WHERE id = 1;");
+   assert_ne!(a.fingerprint, b.fingerprint);
+}
+
+#[test]
+fn test_parameterized_fingerprint_varies_with_param_value() {
+   let sql = "SELECT id FROM users WHERE id = $1;";
+   let parsed = parse_sql(sql);
+   let p42 = Some(b"42".to_vec());
+   let p43 = Some(b"43".to_vec());
+   let fp42 = compute_fingerprint_with_params(&parsed.normalized, std::slice::from_ref(&p42), &[]);
+   let fp43 = compute_fingerprint_with_params(&parsed.normalized, std::slice::from_ref(&p43), &[]);
+   assert_ne!(fp42, fp43);
+}
+
+#[test]
+fn test_parameterized_fingerprint_stable_across_calls() {
+   let sql = "SELECT id FROM users WHERE id = $1;";
+   let parsed = parse_sql(sql);
+   let param = Some(b"42".to_vec());
+   let fp1 = compute_fingerprint_with_params(&parsed.normalized, std::slice::from_ref(&param), &[]);
+   let fp2 = compute_fingerprint_with_params(&parsed.normalized, std::slice::from_ref(&param), &[]);
+   assert_eq!(fp1, fp2);
+}
+
+// ── analyze() hot-path throughput ────────────────────────────────────────────
+
+#[test]
+fn test_analyze_cache_hot_path_completes_quickly() {
+   // 500k analyze() calls on the same SQL should complete in well under 2s
+   // even on slow CI — this guards against accidental lock contention regressions.
+   use std::time::Instant;
+   let storage = Arc::new(MemoryStorage::default());
+   let manager = DbCacheManager::new(storage);
+   let sql = "SELECT id, username, email FROM users WHERE id = 42;";
+   manager.analyze(sql); // warm the cache
+
+   let start = Instant::now();
+   for _ in 0..500_000 {
+      std::hint::black_box(manager.analyze(sql));
+   }
+   let elapsed = start.elapsed();
+   assert!(
+      elapsed.as_secs() < 2,
+      "analyze() cache hit took {}ms for 500k calls — too slow",
+      elapsed.as_millis()
+   );
+}
+
+#[test]
+fn test_encoded_cache_hot_path_completes_quickly() {
+   use std::time::Instant;
+   let storage = Arc::new(MemoryStorage::default());
+   let manager = DbCacheManager::new(storage);
+   let sql = "SELECT id, username FROM users WHERE id = 1;";
+   let parsed = parse_sql(sql);
+   manager.store_cached_query("db:", &parsed.tables, parsed.fingerprint, &make_one_row_result(), 60_000);
+   let fp = parsed.fingerprint;
+
+   let start = Instant::now();
+   for _ in 0..500_000 {
+      std::hint::black_box(manager.get_encoded("db:", "users", fp));
+   }
+   let elapsed = start.elapsed();
+   assert!(
+      elapsed.as_secs() < 2,
+      "get_encoded() cache hit took {}ms for 500k calls — too slow",
+      elapsed.as_millis()
+   );
+}
+
+// ── Utility ───────────────────────────────────────────────────────────────────
+
+fn make_one_row_result() -> DbResultSet {
+   DbResultSet {
+      columns: vec![
+         ColumnInfo { name: "id".to_string(), type_oid: 23 },
+         ColumnInfo { name: "name".to_string(), type_oid: 25 },
+      ],
+      rows: vec![DbRow {
+         values: vec![DbValue::Int(42), DbValue::Text("test".to_string())],
+      }],
+      rows_affected: 1,
+   }
 }

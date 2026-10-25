@@ -41,7 +41,10 @@ fn test_dashmap_vs_scc_vs_fyrodb_custommap() {
    // 4. scc::HashMap AHash
    let (s_ah_r, s_ah_mix, s_ah_w) = bench_scc_ahash(&keys);
 
-   // 5. FyroDB CustomMap
+   // 5. bbtree::BBTreeMap
+   let (bb_r, bb_mix, bb_w) = bench_bbtree(&keys);
+
+   // 6. FyroDB CustomMap
    let (f_r, f_mix, f_w) = bench_fyro_custommap(&keys);
 
    println!(
@@ -73,6 +76,10 @@ fn test_dashmap_vs_scc_vs_fyrodb_custommap() {
    println!(
       "{:<35} | {:>10.2} M/s | {:>10.2} M/s | {:>10.2} M/s",
       "scc::HashMap (AHash)", s_ah_r, s_ah_mix, s_ah_w
+   );
+   println!(
+      "{:<35} | {:>10.2} M/s | {:>10.2} M/s | {:>10.2} M/s",
+      "bbtree::BBTreeMap (Concurrent)", bb_r, bb_mix, bb_w
    );
    println!(
       "{:<35} | {:>10.2} M/s | {:>10.2} M/s | {:>10.2} M/s",
@@ -285,6 +292,56 @@ fn bench_scc_ahash(keys: &Arc<Vec<String>>) -> (f64, f64, f64) {
          let base = tid * OPS_PER_THREAD;
          for i in 0..OPS_PER_THREAD {
             let _ = map.insert_sync(format!("ins_sa_{}_{}", tid, i), (base + i) as u64);
+         }
+      }
+   });
+   (r, mix, w)
+}
+
+fn bench_bbtree(keys: &Arc<Vec<String>>) -> (f64, f64, f64) {
+   let map = Arc::new(bbtree::BBTreeMap::<String, u64>::new());
+   for (i, k) in keys.iter().enumerate() {
+      let _ = map.insert(k.clone(), i as u64);
+   }
+   let r = run_bench({
+      let map = map.clone();
+      let keys = keys.clone();
+      move |tid| {
+         let start = tid * (OPS_PER_THREAD / 2);
+         let mut sum = 0u64;
+         for i in 0..OPS_PER_THREAD {
+            let key = &keys[(start + i) % INITIAL_KEYS];
+            if let Some(v) = map.get_copied(key.as_str()) {
+               sum = sum.wrapping_add(v);
+            }
+         }
+         std::hint::black_box(sum);
+      }
+   });
+
+   let mix = run_bench({
+      let map = map.clone();
+      let keys = keys.clone();
+      move |tid| {
+         let start = tid * (OPS_PER_THREAD / 2);
+         for i in 0..OPS_PER_THREAD {
+            let key = &keys[(start + i) % INITIAL_KEYS];
+            if i % 10 == 0 {
+               let _ = map.insert(key.clone(), i as u64);
+            } else {
+               let _ = map.get_copied(key.as_str());
+            }
+         }
+      }
+   });
+
+   let map_w = Arc::new(bbtree::BBTreeMap::<String, u64>::new());
+   let w = run_bench({
+      let map = map_w.clone();
+      move |tid| {
+         let base = tid * OPS_PER_THREAD;
+         for i in 0..OPS_PER_THREAD {
+            let _ = map.insert(format!("ins_bb_{}_{}", tid, i), (base + i) as u64);
          }
       }
    });

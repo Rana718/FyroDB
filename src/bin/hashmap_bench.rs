@@ -1,6 +1,6 @@
-//! Standalone benchmark: std HashMap (SipHash) vs foldhash FixedState vs CustomMap
+//! Standalone benchmark: std HashMap (SipHash) vs foldhash FixedState vs bbtree vs CustomMap
 //! Simulates fyro-dbcache cache-key access patterns: prefixed 32-char hex string keys.
-//! Usage: cargo run --release --bin hashmap_bench
+//! Usage: cargo run --release --features bench-tools --bin hashmap_bench
 
 use customhash::CustomMap;
 use foldhash::fast::FixedState;
@@ -109,6 +109,50 @@ fn main() {
       sum
    });
 
+   // ── 3. bbtree unsync (single-threaded drop-in) ───────────────────────────
+   let mut bb_unsync: bbtree::unsync::BBTreeMap<String, u64> = bbtree::unsync::BBTreeMap::new();
+   for (i, k) in keys.iter().enumerate() {
+      bb_unsync.insert(k.clone(), i as u64);
+   }
+
+   bench("bbtree::unsync::BBTreeMap — hit", || {
+      let mut sum = 0u64;
+      for k in keys.iter().take(LOOKUPS % N + 1).cycle().take(LOOKUPS) {
+         sum = sum.wrapping_add(*bb_unsync.get(k.as_str()).unwrap_or(&0));
+      }
+      sum
+   });
+   bench("bbtree::unsync::BBTreeMap — miss", || {
+      let mut sum = 0u64;
+      let miss = &miss_keys;
+      for k in miss.iter().cycle().take(LOOKUPS) {
+         sum = sum.wrapping_add(bb_unsync.get(k.as_str()).copied().unwrap_or(1));
+      }
+      sum
+   });
+
+   // ── 4. bbtree concurrent (multi-threaded shared B-tree) ───────────────────
+   let bb_concurrent: bbtree::BBTreeMap<String, u64> = bbtree::BBTreeMap::new();
+   for (i, k) in keys.iter().enumerate() {
+      let _ = bb_concurrent.insert(k.clone(), i as u64);
+   }
+
+   bench("bbtree::BBTreeMap (concurrent)— hit", || {
+      let mut sum = 0u64;
+      for k in keys.iter().take(LOOKUPS % N + 1).cycle().take(LOOKUPS) {
+         sum = sum.wrapping_add(bb_concurrent.get_copied(k.as_str()).unwrap_or(0));
+      }
+      sum
+   });
+   bench("bbtree::BBTreeMap (concurrent)— miss", || {
+      let mut sum = 0u64;
+      let miss = &miss_keys;
+      for k in miss.iter().cycle().take(LOOKUPS) {
+         sum = sum.wrapping_add(bb_concurrent.get_copied(k.as_str()).unwrap_or(1));
+      }
+      sum
+   });
+
    // Build helper so each variant gets its own independent map + warmup.
    let make_custom = || {
       let c: CustomMap<u64> = CustomMap::with_capacity(128, N);
@@ -118,7 +162,7 @@ fn main() {
       c
    };
 
-   // ── 3. CustomMap pinned — server reality ──────────────────────────────────
+   // ── 5. CustomMap pinned — server reality ──────────────────────────────────
    // sock.rs holds one pin() per command-dispatch loop; all lookups pay zero
    // EBR atomic ops. Uses table_relaxed() + Relaxed probe loads.
    {
@@ -140,7 +184,7 @@ fn main() {
       });
    }
 
-   // ── 4. CustomMap unpinned — worst case (background/one-shot threads) ──────
+   // ── 6. CustomMap unpinned — worst case (background/one-shot threads) ──────
    {
       let custom_u = make_custom();
       bench("CustomMap (unpinned)   — hit", || {
@@ -187,6 +231,24 @@ fn main() {
             cm.insert_str(k, i as u64);
          }
          cm.len()
+      });
+   }
+   {
+      let mut m: bbtree::unsync::BBTreeMap<String, u64> = bbtree::unsync::BBTreeMap::new();
+      mem_kb("bbtree::unsync::BBTreeMap", || {
+         for (i, k) in keys.iter().enumerate() {
+            m.insert(k.clone(), i as u64);
+         }
+         m.len()
+      });
+   }
+   {
+      let m: bbtree::BBTreeMap<String, u64> = bbtree::BBTreeMap::new();
+      mem_kb("bbtree::BBTreeMap (concurrent)", || {
+         for (i, k) in keys.iter().enumerate() {
+            let _ = m.insert(k.clone(), i as u64);
+         }
+         N
       });
    }
 }
