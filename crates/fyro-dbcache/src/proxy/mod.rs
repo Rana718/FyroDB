@@ -1,11 +1,13 @@
 mod session;
+pub(crate) mod mio_worker;
 
+use crate::bus::InvalidationBus;
 use crate::cache::DbCacheManager;
 use crate::config::{DbCacheConfig, DbProxyMode};
 use crate::pool::{PoolLimits, UpstreamPool};
 use std::io;
 use std::net::TcpListener;
-use std::sync::Arc;
+use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::Duration;
 
@@ -118,4 +120,90 @@ pub fn start_proxy_listener(
             }
          }
       })
+}
+
+// Spawns N mio worker threads, each owning a SO_REUSEPORT listener on the
+// same address. FyroDB's event loop is completely unaffected.
+pub fn start_proxy_listener_mio(
+   config: DbCacheConfig,
+   cache_mgr: Arc<DbCacheManager>,
+) -> io::Result<Vec<thread::JoinHandle<()>>> {
+   use socket2::{Domain, Protocol, Socket, Type};
+
+   let n_workers = if config.proxy_workers == 0 {
+      (std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2) / 2).max(1)
+   } else {
+      config.proxy_workers
+   };
+
+   let addr: std::net::SocketAddr = config.listen_addr.parse().map_err(|e| {
+      io::Error::new(io::ErrorKind::InvalidInput, format!("invalid listen addr: {e}"))
+   })?;
+
+   let pool = Arc::new(UpstreamPool::new(PoolLimits {
+      max_idle: config.pool_max_idle,
+      idle_timeout: Duration::from_millis(config.pool_idle_timeout_ms),
+   }));
+
+   let bus: Option<Arc<InvalidationBus>> = if config.mode == DbProxyMode::Dual {
+      match config.bus_path.as_deref() {
+         Some(path) => match crate::bus::start(path, Arc::clone(&cache_mgr), config.key_prefix.clone()) {
+            Ok(b) => Some(b),
+            Err(e) => {
+               eprintln!("fyrodb-dbproxy-mio: invalidation bus unavailable ({path}): {e}");
+               None
+            }
+         },
+         None => None,
+      }
+   } else {
+      None
+   };
+
+   // Shared blocking sub-pool for connections that need upstream access.
+   let blocking_threads = n_workers.max(2);
+   let blocking_pool = mio_worker::BlockingPool::start(blocking_threads);
+
+   let mut handles = Vec::with_capacity(n_workers);
+   for i in 0..n_workers {
+      let sock = Socket::new(
+         if addr.is_ipv6() { Domain::IPV6 } else { Domain::IPV4 },
+         Type::STREAM,
+         Some(Protocol::TCP),
+      )?;
+      sock.set_reuse_address(true)?;
+      #[cfg(unix)]
+      sock.set_reuse_port(true)?;
+      sock.set_nonblocking(true)?;
+      sock.bind(&addr.into())?;
+      sock.listen(1024)?;
+
+      let std_listener: TcpListener = sock.into();
+      let mio_listener = mio::net::TcpListener::from_std(std_listener);
+
+      let cfg = Arc::new(config.clone());
+      let mgr = Arc::clone(&cache_mgr);
+      let pool_c = Arc::clone(&pool);
+      let bus_c = bus.clone();
+      let bp = Arc::clone(&blocking_pool);
+      let (dtx, drx) = mpsc::sync_channel::<usize>(blocking_threads * 16);
+
+      let handle = thread::Builder::new()
+         .name(format!("fyrodb-mio-proxy-{i}"))
+         .stack_size(256 * 1024)
+         .spawn(move || {
+            mio_worker::run_proxy_worker(
+               mio_listener,
+               mgr,
+               cfg,
+               pool_c,
+               bus_c,
+               bp,
+               drx,
+               dtx,
+            );
+         })?;
+      handles.push(handle);
+   }
+   Ok(handles)
 }

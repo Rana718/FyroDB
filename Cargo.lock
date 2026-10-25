@@ -476,11 +476,13 @@ dependencies = [
  "foldhash",
  "getrandom 0.3.4",
  "md-5",
+ "mio",
  "native-tls",
  "parking_lot",
  "serde",
  "serde_json",
  "sha2",
+ "socket2",
  "sqlparser",
 ]
 

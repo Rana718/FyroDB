@@ -245,6 +245,9 @@ pub struct DbCacheConfig {
    pub trust_auth: bool,
    // Unix socket used to broadcast invalidations to sibling processes.
    pub bus_path: Option<String>,
+   // Number of mio worker threads for start_proxy_listener_mio.
+   // 0 = auto (num_cpus / 2, min 1).
+   pub proxy_workers: usize,
 }
 
 impl Default for DbCacheConfig {
@@ -265,6 +268,7 @@ impl Default for DbCacheConfig {
          auth_users: AuthUsers::default(),
          trust_auth: false,
          bus_path: None,
+         proxy_workers: 0,
       }
    }
 }
@@ -367,6 +371,10 @@ impl DbCacheConfig {
          auth_users,
          trust_auth,
          bus_path,
+         proxy_workers: env::var("FYRODB_DB_PROXY_WORKERS")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(0),
       }
    }
 }

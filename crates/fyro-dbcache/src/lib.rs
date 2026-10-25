@@ -18,7 +18,7 @@ pub use cache::{
 pub use config::{AuthUsers, DbCacheConfig, DbProxyMode, SslMode, UpstreamTarget};
 pub use pool::{PoolKey, PoolLimits, UpstreamPool};
 pub use protocol::{FrameReader, FrontendMessage};
-pub use proxy::start_proxy_listener;
+pub use proxy::{start_proxy_listener, start_proxy_listener_mio};
 pub use query::{
    ParsedQuery, ParsedQueryCache, QueryKind, SessionChange, compute_fingerprint,
    compute_fingerprint_with_params, compute_fingerprint_with_params_base, make_cache_key,

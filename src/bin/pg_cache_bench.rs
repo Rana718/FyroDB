@@ -253,7 +253,7 @@ fn bench_extended_protocol_tcp(scale: Scale, results: &mut Vec<BenchResult>) {
    let rs = sample_result_set();
    manager.store_cached_query("db:", &parsed.tables, fingerprint, &rs, 60_000);
 
-   let _handle = fyro_dbcache::start_proxy_listener(config, manager.clone()).expect("start proxy");
+   let _handles = fyro_dbcache::start_proxy_listener_mio(config, manager.clone()).expect("start proxy");
    std::thread::sleep(Duration::from_millis(50));
 
    let num_clients = scale.tcp_clients;
@@ -349,7 +349,7 @@ fn bench_tcp_wire_proxy(scale: Scale, results: &mut Vec<BenchResult>) {
    let rs = sample_result_set();
    manager.store_cached_query("db:", &parsed.tables, parsed.fingerprint, &rs, 60_000);
 
-   let _handle = fyro_dbcache::start_proxy_listener(config, manager.clone()).expect("start proxy");
+   let _handles = fyro_dbcache::start_proxy_listener_mio(config, manager.clone()).expect("start proxy");
    std::thread::sleep(Duration::from_millis(50));
 
    let num_clients = scale.tcp_clients;
