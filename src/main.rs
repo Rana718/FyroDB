@@ -318,9 +318,16 @@ impl Config {
                i += 1;
             }
             "--db-upstream" if i + 1 < args.len() => {
+               let target = fyro_dbcache::UpstreamTarget::parse(&args[i + 1]);
+               if let (Some(u), Some(p)) = (&target.user, &target.password) {
+                  dbcache.auth_users.insert(u, p);
+               }
                dbcache.enabled = true;
                dbcache.upstream_addr = Some(args[i + 1].clone());
                i += 1;
+            }
+            "--db-trust" => {
+               dbcache.trust_auth = true;
             }
             "--cache-only" => {
                dbcache.enabled = true;

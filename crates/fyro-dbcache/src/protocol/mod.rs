@@ -2,6 +2,7 @@ use crate::row::{ColumnInfo, DbValue};
 use std::io::{self, Read, Write};
 
 pub const SSL_REQUEST_CODE: i32 = 80877103;
+pub const SSL_REQUEST: [u8; 8] = [0, 0, 0, 8, 4, 210, 22, 47];
 pub const GSSENC_REQUEST_CODE: i32 = 80877104;
 pub const CANCEL_REQUEST_CODE: i32 = 80877102;
 pub const PROTOCOL_VERSION_3: i32 = 196608;
@@ -354,6 +355,23 @@ pub fn put_message(buf: &mut Vec<u8>, tag: u8, body: &[u8]) {
    buf.push(tag);
    buf.extend_from_slice(&((body.len() + 4) as i32).to_be_bytes());
    buf.extend_from_slice(body);
+}
+
+pub fn encode_startup(params: &[(String, String)]) -> Vec<u8> {
+   let mut body = Vec::new();
+   body.extend_from_slice(&PROTOCOL_VERSION_3.to_be_bytes());
+   for (k, v) in params {
+      body.extend_from_slice(k.as_bytes());
+      body.push(0);
+      body.extend_from_slice(v.as_bytes());
+      body.push(0);
+   }
+   body.push(0);
+   let len = (body.len() + 4) as i32;
+   let mut frame = Vec::with_capacity(body.len() + 4);
+   frame.extend_from_slice(&len.to_be_bytes());
+   frame.extend_from_slice(&body);
+   frame
 }
 
 pub fn encode_row_description(columns: &[ColumnInfo]) -> Vec<u8> {

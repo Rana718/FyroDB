@@ -5,7 +5,7 @@ use crate::query::{
 use crate::row::{ColumnInfo, DbResultSet, DbRow, DbValue};
 use foldhash::fast::FixedState;
 use parking_lot::{Condvar, Mutex, RwLock};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::{BuildHasher, Hasher};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -243,8 +243,8 @@ impl CatalogSnapshot {
    // nesting depth. Used for invalidation registration only, never for keys.
    pub fn expand(&self, tables: &[String]) -> Vec<String> {
       let mut out: Vec<String> = Vec::with_capacity(tables.len());
-      let mut queue: Vec<(String, usize)> = tables.iter().map(|t| (t.clone(), 0)).collect();
-      while let Some((table, depth)) = queue.pop() {
+      let mut queue: VecDeque<(String, usize)> = tables.iter().map(|t| (t.clone(), 0)).collect();
+      while let Some((table, depth)) = queue.pop_front() {
          if out.contains(&table) {
             continue;
          }
@@ -260,7 +260,7 @@ impl CatalogSnapshot {
          if let Some(bases) = bases {
             for base in bases {
                if !out.contains(base) {
-                  queue.push((base.clone(), depth + 1));
+                  queue.push_back((base.clone(), depth + 1));
                }
             }
          }
@@ -372,17 +372,36 @@ impl TableTracker {
    }
 
    fn remove_markers(&mut self, key: &str) -> Vec<String> {
-      self.markers.remove(key).unwrap_or_default()
+      let markers = self.markers.remove(key).unwrap_or_default();
+      for marker in &markers {
+         if let Some(table) = table_from_marker_any(marker)
+            && let Some(set) = self.tables.get_mut(table)
+         {
+            set.remove(key);
+            if set.is_empty() {
+               self.tables.remove(table);
+            }
+         }
+      }
+      markers
    }
 
    fn epoch(&self, table: &str) -> u64 {
-      *self.epochs.get(table).unwrap_or(&0)
+      self.epochs.get(table).copied().unwrap_or_else(|| {
+         let bare = normalize_table_name(table);
+         self.epochs.get(&bare).copied().unwrap_or(0)
+      })
    }
 
    fn bump(&mut self, tables: &[String]) {
       for table in tables {
          let epoch = self.epochs.entry(table.clone()).or_insert(0);
          *epoch = epoch.wrapping_add(1);
+         let bare = normalize_table_name(table);
+         if bare != *table {
+            let bare_epoch = self.epochs.entry(bare).or_insert(0);
+            *bare_epoch = bare_epoch.wrapping_add(1);
+         }
       }
    }
 
@@ -394,13 +413,12 @@ impl TableTracker {
          .unwrap_or_default()
    }
 
-   // Every tracked name whose bare table matches `name`.
    fn matching_tables(&self, name: &str) -> Vec<String> {
-      let bare = name.rsplit('.').next().unwrap_or(name);
+      let bare = normalize_table_name(name);
       self
          .tables
          .keys()
-         .filter(|tracked| tracked.rsplit('.').next().unwrap_or(tracked) == bare)
+         .filter(|tracked| normalize_table_name(tracked) == bare)
          .cloned()
          .collect()
    }
@@ -412,6 +430,19 @@ impl TableTracker {
 
    fn key_count(&self) -> usize {
       self.markers.len()
+   }
+
+   fn tracked_table_names(&self) -> Vec<String> {
+      let mut set = HashSet::new();
+      for table in self.tables.keys() {
+         let norm = normalize_table_name(table);
+         if !norm.is_empty() {
+            set.insert(norm);
+         }
+      }
+      let mut list: Vec<String> = set.into_iter().collect();
+      list.sort();
+      list
    }
 
    // Removes a key from the marker map and from every table set it belongs to.
@@ -863,6 +894,10 @@ impl DbCacheManager {
       self.tracker.read().key_count()
    }
 
+   pub fn tracked_table_names(&self) -> Vec<String> {
+      self.tracker.read().tracked_table_names()
+   }
+
    pub fn storage(&self) -> &Arc<dyn DbCacheStorage> {
       &self.storage
    }
@@ -1131,6 +1166,20 @@ fn table_from_marker<'a>(prefix: &str, marker: &'a str) -> Option<&'a str> {
       .strip_prefix(&index_prefix(prefix))?
       .rsplit_once(':')
       .map(|(table, _)| table)
+}
+
+fn table_from_marker_any<'a>(marker: &'a str) -> Option<&'a str> {
+   let idx_part = marker.split("idx:").nth(1)?;
+   idx_part.rsplit_once(':').map(|(table, _)| table)
+}
+
+fn normalize_table_name(name: &str) -> String {
+   name
+      .rsplit('.')
+      .next()
+      .unwrap_or(name)
+      .trim_matches('"')
+      .to_ascii_lowercase()
 }
 
 fn expiry_ms(ttl_ms: u64) -> u64 {

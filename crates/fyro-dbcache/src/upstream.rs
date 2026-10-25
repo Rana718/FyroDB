@@ -1,7 +1,10 @@
+use crate::config::{SslMode, UpstreamTarget};
 use crate::protocol::{self, FrameReader};
 use crate::row::{ColumnInfo, DbResultSet, DbRow, DbValue};
+use parking_lot::Mutex;
 use std::io::{self, BufReader, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
+use std::sync::Arc;
 use std::time::Duration;
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
@@ -11,9 +14,7 @@ const MAX_CAPTURE_BYTES: usize = 4 << 20;
 
 #[derive(Debug)]
 pub enum HandshakeError {
-   // The upstream could not be reached; nothing was sent to the client yet.
    Io(io::Error),
-   // The upstream rejected the session and its error was already relayed.
    Rejected,
 }
 
@@ -34,8 +35,6 @@ pub enum ReplyStop {
    FunctionCall,
 }
 
-// Result of relaying one backend message group. `data_rows` holds raw
-// DataRow frames so a cache fill does not re-encode anything.
 #[derive(Default)]
 pub struct RelayOutcome {
    pub error: bool,
@@ -50,20 +49,81 @@ pub struct RelayOutcome {
    pub suspended: bool,
 }
 
+pub enum TransportStream {
+   Plain(TcpStream),
+   Tls(native_tls::TlsStream<TcpStream>),
+}
+
+impl TransportStream {
+   pub fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
+      match self {
+         Self::Plain(s) => s.set_read_timeout(timeout),
+         Self::Tls(s) => s.get_ref().set_read_timeout(timeout),
+      }
+   }
+}
+
+impl Read for TransportStream {
+   fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+      match self {
+         Self::Plain(s) => s.read(buf),
+         Self::Tls(s) => s.read(buf),
+      }
+   }
+}
+
+impl Write for TransportStream {
+   fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+      match self {
+         Self::Plain(s) => s.write(buf),
+         Self::Tls(s) => s.write(buf),
+      }
+   }
+
+   fn flush(&mut self) -> io::Result<()> {
+      match self {
+         Self::Plain(s) => s.flush(),
+         Self::Tls(s) => s.flush(),
+      }
+   }
+}
+
+#[derive(Clone)]
+pub struct SharedTransport(Arc<Mutex<TransportStream>>);
+
+impl SharedTransport {
+   pub fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
+      self.0.lock().set_read_timeout(timeout)
+   }
+}
+
+impl Read for SharedTransport {
+   fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+      self.0.lock().read(buf)
+   }
+}
+
+impl Write for SharedTransport {
+   fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+      self.0.lock().write(buf)
+   }
+
+   fn flush(&mut self) -> io::Result<()> {
+      self.0.lock().flush()
+   }
+}
+
 pub struct UpstreamConnection {
-   writer: TcpStream,
-   reader: FrameReader<BufReader<TcpStream>>,
+   writer: SharedTransport,
+   reader: FrameReader<BufReader<SharedTransport>>,
    relay_buf: Vec<u8>,
-   // Startup frames a pooled connection must replay to a new client:
-   // AuthenticationOk and the ParameterStatus/BackendKeyData/ReadyForQuery
-   // tail. Cancellation keeps working because BackendKeyData is the origin's.
    auth_ok: Vec<u8>,
    post_auth: Vec<u8>,
    required_password: bool,
 }
 
 impl UpstreamConnection {
-   // Direct TCP connect without frontend auth relaying.
+   // Direct connect without frontend auth relaying.
    pub fn connect(target: &str) -> io::Result<Self> {
       let connection = Self::open(target)?;
       connection.writer.set_read_timeout(Some(QUERY_TIMEOUT))?;
@@ -71,17 +131,45 @@ impl UpstreamConnection {
    }
 
    fn open(target: &str) -> io::Result<Self> {
-      let addr = normalize_target(target);
-      let socket_addr = addr
+      let parsed = UpstreamTarget::parse(target);
+      let socket_addr = parsed
+         .addr()
          .to_socket_addrs()?
          .next()
          .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "target address not found"))?;
 
-      let writer = TcpStream::connect_timeout(&socket_addr, Duration::from_secs(5))?;
-      writer.set_nodelay(true)?;
-      let reader = FrameReader::new(BufReader::with_capacity(32 * 1024, writer.try_clone()?));
+      let mut tcp = TcpStream::connect_timeout(&socket_addr, Duration::from_secs(5))?;
+      tcp.set_nodelay(true)?;
+
+      let transport = if parsed.sslmode != SslMode::Disable {
+         tcp.write_all(&protocol::SSL_REQUEST)?;
+         tcp.flush()?;
+         let mut resp = [0u8; 1];
+         tcp.read_exact(&mut resp)?;
+         if resp[0] == b'S' {
+            let connector = native_tls::TlsConnector::builder()
+               .build()
+               .map_err(io::Error::other)?;
+            let tls = connector
+               .connect(&parsed.host, tcp)
+               .map_err(|e| io::Error::new(io::ErrorKind::ConnectionRefused, e))?;
+            TransportStream::Tls(tls)
+         } else if parsed.sslmode == SslMode::Require {
+            return Err(io::Error::new(
+               io::ErrorKind::ConnectionRefused,
+               "upstream rejected SSL connection (sslmode=require)",
+            ));
+         } else {
+            TransportStream::Plain(tcp)
+         }
+      } else {
+         TransportStream::Plain(tcp)
+      };
+
+      let shared = SharedTransport(Arc::new(Mutex::new(transport)));
+      let reader = FrameReader::new(BufReader::with_capacity(32 * 1024, shared.clone()));
       Ok(Self {
-         writer,
+         writer: shared,
          reader,
          relay_buf: Vec::with_capacity(16 * 1024),
          auth_ok: Vec::new(),
@@ -261,85 +349,69 @@ impl UpstreamConnection {
       Ok(())
    }
 
-   // Opens the upstream connection and relays startup/authentication traffic
-   // verbatim, so cleartext, MD5 and SCRAM auth all work unchanged.
+   // Relays startup and authentication frames verbatim upstream.
    pub fn handshake<R: Read>(
       target: &str,
       client: &mut TcpStream,
       client_reader: &mut FrameReader<R>,
       startup_frame: &[u8],
    ) -> Result<Self, HandshakeError> {
-      let addr = normalize_target(target);
-      let socket_addr = addr
-         .to_socket_addrs()?
-         .next()
-         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "target address not found"))?;
+      let mut connection = Self::open(target)?;
+      connection
+         .writer
+         .set_read_timeout(Some(HANDSHAKE_TIMEOUT))?;
+      connection.writer.write_all(startup_frame)?;
+      connection.writer.flush()?;
 
-      let mut writer = TcpStream::connect_timeout(&socket_addr, Duration::from_secs(5))?;
-      writer.set_nodelay(true)?;
-      writer.set_read_timeout(Some(HANDSHAKE_TIMEOUT))?;
-      writer.write_all(startup_frame)?;
-      writer.flush()?;
-
-      let mut reader = FrameReader::new(BufReader::with_capacity(32 * 1024, writer.try_clone()?));
       let mut auth_ok = Vec::new();
       let mut post_auth = Vec::new();
       let mut required_password = false;
       loop {
-         let tag = reader.read_raw()?;
+         let tag = connection.reader.read_raw()?;
          match tag {
             b'R' => {
-               let body = reader.last_body();
+               let body = connection.reader.last_body();
                let code = if body.len() >= 4 {
                   i32::from_be_bytes([body[0], body[1], body[2], body[3]])
                } else {
                   -1
                };
                if code == 0 {
-                  auth_ok.extend_from_slice(reader.last_frame());
+                  auth_ok.extend_from_slice(connection.reader.last_frame());
                }
-               client.write_all(reader.last_frame())?;
+               client.write_all(connection.reader.last_frame())?;
                client.flush()?;
-               // Only AuthenticationOk (0) and SASLFinal (12) are terminal for
-               // the client; every other AuthenticationRequest (cleartext,
-               // MD5, Kerberos, SCM, GSS/SSPI, SASL) expects a frontend
-               // PasswordMessage that the proxy relays untouched.
                if !matches!(code, 0 | 12) {
                   required_password = true;
-                  // Relay the client's password/SASL response untouched.
                   let client_tag = client_reader.read_raw()?;
                   if client_tag == b'X' {
                      return Err(HandshakeError::Rejected);
                   }
-                  writer.write_all(client_reader.last_frame())?;
-                  writer.flush()?;
+                  connection.writer.write_all(client_reader.last_frame())?;
+                  connection.writer.flush()?;
                }
             }
             b'E' => {
-               client.write_all(reader.last_frame())?;
+               client.write_all(connection.reader.last_frame())?;
                client.flush()?;
                return Err(HandshakeError::Rejected);
             }
             b'Z' => {
-               post_auth.extend_from_slice(reader.last_frame());
-               client.write_all(reader.last_frame())?;
+               post_auth.extend_from_slice(connection.reader.last_frame());
+               client.write_all(connection.reader.last_frame())?;
                client.flush()?;
-               writer.set_read_timeout(Some(QUERY_TIMEOUT))?;
-               return Ok(Self {
-                  writer,
-                  reader,
-                  relay_buf: Vec::with_capacity(16 * 1024),
-                  auth_ok,
-                  post_auth,
-                  required_password,
-               });
+               connection.writer.set_read_timeout(Some(QUERY_TIMEOUT))?;
+               connection.auth_ok = auth_ok;
+               connection.post_auth = post_auth;
+               connection.required_password = required_password;
+               return Ok(connection);
             }
             b'S' | b'K' => {
-               post_auth.extend_from_slice(reader.last_frame());
-               client.write_all(reader.last_frame())?;
+               post_auth.extend_from_slice(connection.reader.last_frame());
+               client.write_all(connection.reader.last_frame())?;
             }
             _ => {
-               client.write_all(reader.last_frame())?;
+               client.write_all(connection.reader.last_frame())?;
             }
          }
       }
@@ -541,22 +613,7 @@ pub fn send_cancel(target: &str, frame: &[u8]) {
 }
 
 fn normalize_target(target: &str) -> String {
-   if let Some(stripped) = target
-      .strip_prefix("postgres://")
-      .or_else(|| target.strip_prefix("postgresql://"))
-   {
-      let after_auth = stripped.rsplit('@').next().unwrap_or(stripped);
-      let host_port = after_auth.split('/').next().unwrap_or(after_auth);
-      if host_port.contains(':') {
-         host_port.to_string()
-      } else {
-         format!("{host_port}:5432")
-      }
-   } else if !target.contains(':') {
-      format!("{target}:5432")
-   } else {
-      target.to_string()
-   }
+   UpstreamTarget::parse(target).addr()
 }
 
 fn command_tag(body: &[u8]) -> String {
@@ -564,7 +621,7 @@ fn command_tag(body: &[u8]) -> String {
    String::from_utf8_lossy(tag).to_string()
 }
 
-fn put_frontend(writer: &mut TcpStream, tag: u8, body: &[u8]) -> io::Result<()> {
+fn put_frontend<W: Write>(writer: &mut W, tag: u8, body: &[u8]) -> io::Result<()> {
    writer.write_all(&[tag])?;
    writer.write_all(&((body.len() + 4) as i32).to_be_bytes())?;
    writer.write_all(body)?;

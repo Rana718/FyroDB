@@ -15,7 +15,7 @@ pub use cache::{
    CacheLimits, CatalogSnapshot, DbCacheManager, DbCacheMetrics, DbCacheStorage, EncodedResult,
    MemoryStorage, TableCounters,
 };
-pub use config::{AuthUsers, DbCacheConfig, DbProxyMode};
+pub use config::{AuthUsers, DbCacheConfig, DbProxyMode, SslMode, UpstreamTarget};
 pub use pool::{PoolKey, PoolLimits, UpstreamPool};
 pub use protocol::{FrameReader, FrontendMessage};
 pub use proxy::start_proxy_listener;

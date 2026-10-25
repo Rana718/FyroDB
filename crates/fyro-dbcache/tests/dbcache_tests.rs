@@ -760,6 +760,23 @@ fn test_external_write_detection_invalidates_changed_tables() {
 }
 
 #[test]
+fn test_tracked_table_names_reflects_active_cache() {
+   let storage = Arc::new(MemoryStorage::default());
+   let manager = DbCacheManager::new(storage);
+   assert!(manager.tracked_table_names().is_empty());
+
+   let parsed = parse_sql("SELECT u.id, o.total FROM users u JOIN orders o ON u.id = o.user_id");
+   let result = probe_result();
+   manager.store_cached_query("db:", &parsed.tables, parsed.fingerprint, &result, 60_000);
+
+   let tables = manager.tracked_table_names();
+   assert_eq!(tables, vec!["orders".to_string(), "users".to_string()]);
+
+   manager.invalidate_tables(&["users".to_string()]);
+   assert!(manager.tracked_table_names().is_empty());
+}
+
+#[test]
 fn test_capacity_limit_evicts_tracked_entries() {
    use std::sync::atomic::Ordering;
 

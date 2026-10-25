@@ -132,6 +132,107 @@ pub fn start_proxy_listener(
          });
    }
 
+   if config.sync_interval_ms > 0
+      && let Some(upstream_target) = config.upstream_addr.clone()
+   {
+      let sync_mgr = Arc::clone(&cache_mgr);
+      let sync_interval = Duration::from_millis(config.sync_interval_ms);
+      let sync_bus = bus.clone();
+      let _ = thread::Builder::new()
+         .name("fyrodb-dbsync".into())
+         .stack_size(128 * 1024)
+         .spawn(move || {
+            let parsed_target = crate::config::UpstreamTarget::parse(&upstream_target);
+            let startup = crate::protocol::encode_startup(&[
+               (
+                  "user".to_string(),
+                  parsed_target
+                     .user
+                     .clone()
+                     .unwrap_or_else(|| "postgres".to_string()),
+               ),
+               (
+                  "database".to_string(),
+                  parsed_target
+                     .database
+                     .clone()
+                     .unwrap_or_else(|| "postgres".to_string()),
+               ),
+            ]);
+            let user = parsed_target.user.as_deref().unwrap_or("postgres");
+            let password = parsed_target.password.as_deref().unwrap_or_default();
+            let mut conn: Option<crate::upstream::UpstreamConnection> = None;
+            let mut current_interval = sync_interval;
+            let max_interval = sync_interval.saturating_mul(3).min(Duration::from_secs(30));
+            loop {
+               thread::sleep(current_interval);
+               if sync_mgr.external_sync_due() {
+                  let active_conn = if let Some(c) = conn.as_mut() {
+                     if c.ping().is_ok() {
+                        Some(c)
+                     } else {
+                        conn = crate::upstream::UpstreamConnection::connect_authenticated(
+                           &upstream_target,
+                           &startup,
+                           user,
+                           password,
+                        )
+                        .ok();
+                        conn.as_mut()
+                     }
+                  } else {
+                     conn = crate::upstream::UpstreamConnection::connect_authenticated(
+                        &upstream_target,
+                        &startup,
+                        user,
+                        password,
+                     )
+                     .ok();
+                     conn.as_mut()
+                  };
+                  if let Some(c) = active_conn {
+                     let tables = sync_mgr.tracked_table_names();
+                     if tables.is_empty() {
+                        sync_mgr.abort_external_sync();
+                        current_interval = max_interval;
+                        continue;
+                     }
+                     let in_clause = tables
+                        .iter()
+                        .map(|t| format!("'{}'", t.replace('\'', "''")))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                     let targeted_sql = format!(
+                        "SELECT relname, n_tup_ins, n_tup_upd, n_tup_del FROM pg_stat_user_tables WHERE lower(relname) IN ({in_clause})"
+                     );
+                     let res = c.execute_select(&targeted_sql).or_else(|_| c.execute_select(EXTERNAL_SYNC_SQL));
+                     if let Ok(res) = res {
+                        let rows = res
+                           .rows
+                           .iter()
+                           .filter_map(table_counters)
+                           .collect::<Vec<_>>();
+                        let changed = sync_mgr.apply_external_counters(rows);
+                        if !changed.is_empty() {
+                           current_interval = sync_interval;
+                           if let Some(bus) = &sync_bus {
+                              bus.invalidate(&changed);
+                           }
+                        } else {
+                           current_interval = (current_interval + Duration::from_millis(2500)).min(max_interval);
+                        }
+                     } else {
+                        conn = None;
+                        sync_mgr.abort_external_sync();
+                     }
+                  } else {
+                     sync_mgr.abort_external_sync();
+                  }
+               }
+            }
+         });
+   }
+
    thread::Builder::new()
       .name("fyrodb-dbproxy".into())
       .stack_size(256 * 1024)
@@ -361,15 +462,46 @@ impl Session {
                   return Ok(false);
                }
 
-               let startup_frame = self.reader.last_frame().to_vec();
                match self.upstream_target().map(str::to_string) {
                   Some(target) => {
-                     let pool_key = PoolKey::from_startup(params, user, database);
+                     let parsed_target = crate::config::UpstreamTarget::parse(&target);
+                     let effective_db = if let Some(ref target_db) = parsed_target.database {
+                        if database.is_empty() || database == user {
+                           target_db.clone()
+                        } else {
+                           database.clone()
+                        }
+                     } else {
+                        database.clone()
+                     };
+                     let startup_frame = if effective_db != *database {
+                        let mut updated = params.clone();
+                        if let Some(db_entry) = updated
+                           .iter_mut()
+                           .find(|(k, _)| k.eq_ignore_ascii_case("database"))
+                        {
+                           db_entry.1 = effective_db.clone();
+                        } else {
+                           updated.push(("database".to_string(), effective_db.clone()));
+                        }
+                        protocol::encode_startup(&updated)
+                     } else {
+                        self.reader.last_frame().to_vec()
+                     };
+                     let pool_key = PoolKey::from_startup(params, user, &effective_db);
                      let pool_eligible = crate::pool::startup_allows_pooling(params);
                      let application_name = crate::pool::application_name(params);
-                     let password = self.config.auth_users.password(user).map(str::to_string);
+                     let password = self
+                        .config
+                        .auth_users
+                        .password(user)
+                        .map(str::to_string)
+                        .or_else(|| parsed_target.password.clone());
                      self.client_authenticated = password.is_some();
-                     if let Some(password) = password.as_deref() {
+                     if self.config.trust_auth && self.client_authenticated {
+                        self.client.write_all(&[b'R', 0, 0, 0, 8, 0, 0, 0, 0])?;
+                        self.client.flush()?;
+                     } else if let Some(password) = password.as_deref() {
                         match auth::authenticate_client(
                            &mut self.reader,
                            &mut self.client,
@@ -1449,6 +1581,14 @@ impl Session {
    }
 
    fn lookup_encoded(&self, parsed: &ParsedQuery, fingerprint: u64) -> Option<Arc<EncodedResult>> {
+      for table in &parsed.tables {
+         if let Some(entry) = self
+            .mgr
+            .get_encoded(&self.config.key_prefix, table, fingerprint)
+         {
+            return Some(entry);
+         }
+      }
       let table = parsed
          .tables
          .first()
@@ -1464,6 +1604,22 @@ impl Session {
       parsed: &ParsedQuery,
       fingerprint: u64,
    ) -> Option<crate::row::DbResultSet> {
+      for table in &parsed.tables {
+         if let Some(result) =
+            self
+               .mgr
+               .get_cached_query(&self.config.key_prefix, table, fingerprint)
+         {
+            self.mgr.remember_encoded(
+               &self.config.key_prefix,
+               table,
+               fingerprint,
+               &result,
+               self.config.default_ttl_ms,
+            );
+            return Some(result);
+         }
+      }
       let table = parsed
          .tables
          .first()
@@ -1691,9 +1847,6 @@ impl Session {
             std::sync::atomic::Ordering::Relaxed,
          );
       }
-      if self.mgr.external_sync_due() {
-         self.poll_external_writes();
-      }
    }
 
    fn refresh_catalog(&mut self) -> bool {
@@ -1720,31 +1873,6 @@ impl Session {
             self.mgr.catalog_refresh_failed();
             false
          }
-      }
-   }
-
-   // Detects writes that bypassed the proxy by diffing the server's per-table
-   // tuple counters, which every backend updates.
-   fn poll_external_writes(&mut self) {
-      let Some(upstream) = self.upstream.as_mut() else {
-         self.mgr.abort_external_sync();
-         return;
-      };
-      match upstream.execute_select(EXTERNAL_SYNC_SQL) {
-         Ok(result) => {
-            let rows = result
-               .rows
-               .iter()
-               .filter_map(table_counters)
-               .collect::<Vec<_>>();
-            let changed = self.mgr.apply_external_counters(rows);
-            if !changed.is_empty()
-               && let Some(bus) = &self.bus
-            {
-               bus.invalidate(&changed);
-            }
-         }
-         Err(_) => self.mgr.abort_external_sync(),
       }
    }
 

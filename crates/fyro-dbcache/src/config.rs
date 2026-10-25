@@ -42,7 +42,7 @@ impl AuthUsers {
       self.users.is_empty()
    }
 
-   fn insert(&mut self, user: &str, password: &str) {
+   pub fn insert(&mut self, user: &str, password: &str) {
       let user = user.trim();
       if !user.is_empty() {
          self
@@ -84,6 +84,138 @@ impl fmt::Debug for AuthUsers {
    }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SslMode {
+   #[default]
+   Disable,
+   Prefer,
+   Require,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpstreamTarget {
+   pub host: String,
+   pub port: u16,
+   pub user: Option<String>,
+   pub password: Option<String>,
+   pub database: Option<String>,
+   pub sslmode: SslMode,
+}
+
+impl UpstreamTarget {
+   pub fn parse(input: &str) -> Self {
+      let mut s = input.trim();
+      let has_scheme = if let Some(stripped) = s.strip_prefix("postgresql://") {
+         s = stripped;
+         true
+      } else if let Some(stripped) = s.strip_prefix("postgres://") {
+         s = stripped;
+         true
+      } else {
+         false
+      };
+
+      let mut sslmode = if has_scheme {
+         SslMode::Prefer
+      } else {
+         SslMode::Disable
+      };
+
+      let (base, query) = match s.split_once('?') {
+         Some((b, q)) => (b, Some(q)),
+         None => (s, None),
+      };
+
+      if let Some(query) = query {
+         for pair in query.split('&') {
+            if let Some((k, v)) = pair.split_once('=') {
+               if k.eq_ignore_ascii_case("sslmode") {
+                  sslmode = match v.to_ascii_lowercase().as_str() {
+                     "disable" => SslMode::Disable,
+                     "prefer" | "allow" => SslMode::Prefer,
+                     "require" | "verify-ca" | "verify-full" => SslMode::Require,
+                     _ => SslMode::Prefer,
+                  };
+               }
+            }
+         }
+      }
+
+      let (auth_host, database) = match base.split_once('/') {
+         Some((ah, db)) => {
+            let db = percent_decode(db.trim());
+            let db = if db.is_empty() { None } else { Some(db) };
+            (ah, db)
+         }
+         None => (base, None),
+      };
+
+      let (user, password, host_port) = match auth_host.rsplit_once('@') {
+         Some((user_pass, hp)) => {
+            let (u, p) = match user_pass.split_once(':') {
+               Some((u, p)) => (Some(percent_decode(u)), Some(percent_decode(p))),
+               None => (Some(percent_decode(user_pass)), None),
+            };
+            (u, p, hp)
+         }
+         None => (None, None, auth_host),
+      };
+
+      let (host, port) = if host_port.starts_with('[') && host_port.contains(']') {
+         let end = host_port.find(']').unwrap_or(host_port.len());
+         let h = &host_port[1..end];
+         let rest = &host_port[end + 1..];
+         let p = rest
+            .strip_prefix(':')
+            .and_then(|p| p.parse::<u16>().ok())
+            .unwrap_or(5432);
+         (h.to_string(), p)
+      } else if let Some((h, p)) = host_port.split_once(':') {
+         let p = p.parse::<u16>().unwrap_or(5432);
+         (h.to_string(), p)
+      } else {
+         let h = if host_port.is_empty() {
+            "127.0.0.1"
+         } else {
+            host_port
+         };
+         (h.to_string(), 5432)
+      };
+
+      Self {
+         host,
+         port,
+         user,
+         password,
+         database,
+         sslmode,
+      }
+   }
+
+   pub fn addr(&self) -> String {
+      format!("{}:{}", self.host, self.port)
+   }
+}
+
+fn percent_decode(s: &str) -> String {
+   let mut bytes = Vec::with_capacity(s.len());
+   let mut iter = s.as_bytes().iter();
+   while let Some(&b) = iter.next() {
+      if b == b'%' {
+         let h1 = iter.next().copied();
+         let h2 = iter.next().copied();
+         if let (Some(h1), Some(h2)) = (h1, h2)
+            && let Ok(val) = u8::from_str_radix(std::str::from_utf8(&[h1, h2]).unwrap_or(""), 16)
+         {
+            bytes.push(val);
+            continue;
+         }
+      }
+      bytes.push(b);
+   }
+   String::from_utf8_lossy(&bytes).into_owned()
+}
+
 #[derive(Debug, Clone)]
 pub struct DbCacheConfig {
    pub enabled: bool,
@@ -110,6 +242,7 @@ pub struct DbCacheConfig {
    // When non-empty, the proxy terminates frontend authentication with
    // SCRAM-SHA-256 and logs in to the origin with the same credentials.
    pub auth_users: AuthUsers,
+   pub trust_auth: bool,
    // Unix socket used to broadcast invalidations to sibling processes.
    pub bus_path: Option<String>,
 }
@@ -130,6 +263,7 @@ impl Default for DbCacheConfig {
          pool_max_idle: 8,
          pool_idle_timeout_ms: 30_000,
          auth_users: AuthUsers::default(),
+         trust_auth: false,
          bus_path: None,
       }
    }
@@ -186,6 +320,12 @@ impl DbCacheConfig {
          .unwrap_or(30_000);
 
       let mut auth_users = AuthUsers::default();
+      if let Some(ref target_str) = upstream {
+         let target = UpstreamTarget::parse(target_str);
+         if let (Some(u), Some(p)) = (&target.user, &target.password) {
+            auth_users.insert(u, p);
+         }
+      }
       if let Ok(spec) = env::var("FYRODB_DB_AUTH_USERS")
          && !spec.is_empty()
       {
@@ -196,6 +336,8 @@ impl DbCacheConfig {
       {
          auth_users.parse_file(&path);
       }
+      let trust_auth =
+         env::var("FYRODB_DB_TRUST").is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
 
       let bus_path = match env::var("FYRODB_DB_BUS") {
          Ok(value)
@@ -223,6 +365,7 @@ impl DbCacheConfig {
          pool_max_idle,
          pool_idle_timeout_ms,
          auth_users,
+         trust_auth,
          bus_path,
       }
    }
@@ -240,5 +383,46 @@ fn default_bus_path() -> Option<String> {
    #[cfg(not(unix))]
    {
       None
+   }
+}
+
+#[cfg(test)]
+mod tests {
+   use super::*;
+
+   #[test]
+   fn test_upstream_target_parsing_neon_url() {
+      let url = "postgresql://neondb_owner:npg_hVqDmCfj53rx@ep-solitary-water-b4uu6e7t.c-6.us-east-2.aws.neon.tech/neondb?sslmode=require&channel_binding=require";
+      let target = UpstreamTarget::parse(url);
+      assert_eq!(
+         target.host,
+         "ep-solitary-water-b4uu6e7t.c-6.us-east-2.aws.neon.tech"
+      );
+      assert_eq!(target.port, 5432);
+      assert_eq!(target.user.as_deref(), Some("neondb_owner"));
+      assert_eq!(target.password.as_deref(), Some("npg_hVqDmCfj53rx"));
+      assert_eq!(target.database.as_deref(), Some("neondb"));
+      assert_eq!(target.sslmode, SslMode::Require);
+      assert_eq!(
+         target.addr(),
+         "ep-solitary-water-b4uu6e7t.c-6.us-east-2.aws.neon.tech:5432"
+      );
+   }
+
+   #[test]
+   fn test_upstream_target_parsing_plain_and_encoded() {
+      let plain = UpstreamTarget::parse("127.0.0.1:5432");
+      assert_eq!(plain.host, "127.0.0.1");
+      assert_eq!(plain.port, 5432);
+      assert_eq!(plain.sslmode, SslMode::Disable);
+      assert!(plain.user.is_none());
+
+      let enc = UpstreamTarget::parse("postgresql://user%40domain:pass%3Aword@host:5433/db%20name");
+      assert_eq!(enc.host, "host");
+      assert_eq!(enc.port, 5433);
+      assert_eq!(enc.user.as_deref(), Some("user@domain"));
+      assert_eq!(enc.password.as_deref(), Some("pass:word"));
+      assert_eq!(enc.database.as_deref(), Some("db name"));
+      assert_eq!(enc.sslmode, SslMode::Prefer);
    }
 }
