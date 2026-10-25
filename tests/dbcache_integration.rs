@@ -47,7 +47,7 @@ fn test_cross_protocol_dbcache_and_store_sharing() {
 
    assert_eq!(
       redis_val,
-      r#"[{"id":42,"username":"rana","email":"rana@example.com"}]"#
+      r#"[{"email":"rana@example.com","id":42,"username":"rana"}]"#
    );
 
    // Write on users table triggers invalidation in Store

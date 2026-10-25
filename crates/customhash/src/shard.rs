@@ -559,13 +559,15 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
          if (word & RESERVED_MASK) == expected_tag {
             let p = (word & PTR_MASK) as *mut Entry<V>;
             let e = unsafe { &*p };
-            if stored_hash(e.state.load(Ordering::Relaxed)) == expected_hash && e.key.eq_str(key) {
+            let s = e.state.load(Ordering::Relaxed);
+            if (s & STATE_OCCUPIED) != 0 && stored_hash(s) == expected_hash && e.key.eq_str(key) {
                return Some(e);
             }
          } else if word & TAG_FLAG == 0 {
             let p = word as *mut Entry<V>;
             let e = unsafe { &*p };
-            if stored_hash(e.state.load(Ordering::Relaxed)) == expected_hash && e.key.eq_str(key) {
+            let s = e.state.load(Ordering::Relaxed);
+            if (s & STATE_OCCUPIED) != 0 && stored_hash(s) == expected_hash && e.key.eq_str(key) {
                return Some(e);
             }
          }
@@ -591,6 +593,15 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
          let word = slot.0.load(Ordering::Relaxed) as usize;
          if word == 0 {
             return None;
+         }
+         unsafe {
+            #[cfg(target_arch = "x86_64")]
+            std::arch::x86_64::_mm_prefetch(
+               (word & PTR_MASK) as *const i8,
+               std::arch::x86_64::_MM_HINT_T0,
+            );
+            #[cfg(target_arch = "aarch64")]
+            std::arch::aarch64::__pld((word & PTR_MASK) as *const u8);
          }
          if (word & RESERVED_MASK) == expected_tag {
             let p = (word & PTR_MASK) as *mut Entry<V>;
@@ -640,6 +651,18 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
          let word = slot.0.load(Ordering::Relaxed) as usize;
          if word == 0 {
             return None;
+         }
+         // Issue prefetch for the Entry before the tag comparison so the
+         // CPU can fetch the entry cache line while we compute the match.
+         // Free if already in L1; hides L2/L3 latency for probe hits.
+         unsafe {
+            #[cfg(target_arch = "x86_64")]
+            std::arch::x86_64::_mm_prefetch(
+               (word & PTR_MASK) as *const i8,
+               std::arch::x86_64::_MM_HINT_T0,
+            );
+            #[cfg(target_arch = "aarch64")]
+            std::arch::aarch64::__pld((word & PTR_MASK) as *const u8);
          }
          if (word & RESERVED_MASK) == expected_tag {
             let p = (word & PTR_MASK) as *mut Entry<V>;

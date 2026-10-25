@@ -257,6 +257,9 @@ impl Store {
          let state = e.state.load(std::sync::atomic::Ordering::Relaxed);
          let expected = ((hash as u32 as u64) << 32) | customhash::STATE_OCCUPIED;
          if (state & customhash::STATE_MATCH_MASK) == expected && e.key.eq_str(key) {
+            // Synchronize with the writer's Release store so the value bytes
+            // are visible. On x86 TSO this is a compiler barrier only.
+            std::sync::atomic::fence(std::sync::atomic::Ordering::Acquire);
             let val = unsafe { (*e.value.get()).assume_init_ref() };
             if val.expires_ms == 0 || !val.is_expired() {
                if let crate::storage::value::FyroDB::String(s) = &val.value {

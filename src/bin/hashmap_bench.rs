@@ -1,6 +1,6 @@
-/// Standalone benchmark: std HashMap (SipHash) vs foldhash FixedState vs CustomMap
-/// Simulates fyro-dbcache cache-key access patterns: prefixed 32-char hex string keys.
-/// Usage: cargo run --release --bin hashmap_bench
+//! Standalone benchmark: std HashMap (SipHash) vs foldhash FixedState vs CustomMap
+//! Simulates fyro-dbcache cache-key access patterns: prefixed 32-char hex string keys.
+//! Usage: cargo run --release --bin hashmap_bench
 
 use customhash::CustomMap;
 use foldhash::fast::FixedState;
@@ -81,7 +81,7 @@ fn main() {
       let mut sum = 0u64;
       let miss = &miss_keys;
       for k in miss.iter().cycle().take(LOOKUPS) {
-         sum = sum.wrapping_add(std_map.get(k.as_str()).map(|v| *v).unwrap_or(1));
+         sum = sum.wrapping_add(std_map.get(k.as_str()).copied().unwrap_or(1));
       }
       sum
    });
@@ -104,7 +104,7 @@ fn main() {
       let mut sum = 0u64;
       let miss = &miss_keys;
       for k in miss.iter().cycle().take(LOOKUPS) {
-         sum = sum.wrapping_add(fold_map.get(k.as_str()).map(|v| *v).unwrap_or(1));
+         sum = sum.wrapping_add(fold_map.get(k.as_str()).copied().unwrap_or(1));
       }
       sum
    });
@@ -112,7 +112,9 @@ fn main() {
    // Build helper so each variant gets its own independent map + warmup.
    let make_custom = || {
       let c: CustomMap<u64> = CustomMap::with_capacity(128, N);
-      for (i, k) in keys.iter().enumerate() { c.insert_str(k, i as u64); }
+      for (i, k) in keys.iter().enumerate() {
+         c.insert_str(k, i as u64);
+      }
       c
    };
 
@@ -162,7 +164,9 @@ fn main() {
    {
       let mut m: HashMap<String, u64> = HashMap::with_capacity(N);
       mem_kb("std HashMap (SipHash)", || {
-         for (i, k) in keys.iter().enumerate() { m.insert(k.clone(), i as u64); }
+         for (i, k) in keys.iter().enumerate() {
+            m.insert(k.clone(), i as u64);
+         }
          m.len()
       });
    }
@@ -170,14 +174,18 @@ fn main() {
       let mut m: HashMap<String, u64, FixedState> =
          HashMap::with_capacity_and_hasher(N, FixedState::with_seed(0));
       mem_kb("foldhash FixedState", || {
-         for (i, k) in keys.iter().enumerate() { m.insert(k.clone(), i as u64); }
+         for (i, k) in keys.iter().enumerate() {
+            m.insert(k.clone(), i as u64);
+         }
          m.len()
       });
    }
    {
       let cm: CustomMap<u64> = CustomMap::with_capacity(128, N);
       mem_kb("CustomMap (lock-free)", || {
-         for (i, k) in keys.iter().enumerate() { cm.insert_str(k, i as u64); }
+         for (i, k) in keys.iter().enumerate() {
+            cm.insert_str(k, i as u64);
+         }
          cm.len()
       });
    }

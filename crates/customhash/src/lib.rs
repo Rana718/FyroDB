@@ -628,9 +628,9 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
       f: impl FnOnce(&V) -> R,
    ) -> Option<R> {
       let entry = unsafe { self.shards.get_unchecked(idx) }.find(key, hash)?;
-      if !state_occupied(&entry.state, Ordering::Acquire) {
-         return None;
-      }
+      // find() already verified occupied+hash with a Relaxed load; one Acquire
+      // fence here is enough to synchronize the subsequent value read.
+      std::sync::atomic::fence(Ordering::Acquire);
       Some(f(unsafe { (*entry.value.get()).assume_init_ref() }))
    }
 
@@ -694,7 +694,11 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
    /// Like `get_ref` but zero-cost EBR — caller must hold a `Guard` for the
    /// lifetime of the returned reference.
    #[inline]
-   pub fn get_ref_pinned<'g>(&'g self, key: &str, _guard: &'g ebr::Guard) -> Option<ValueRef<'g, V>> {
+   pub fn get_ref_pinned<'g>(
+      &'g self,
+      key: &str,
+      _guard: &'g ebr::Guard,
+   ) -> Option<ValueRef<'g, V>> {
       let (h, idx) = self.locate(key);
       let e = unsafe { self.shards.get_unchecked(idx) }.find(key, h)?;
       if !state_occupied(&e.state, Ordering::Acquire) {

@@ -693,6 +693,7 @@ fn run_kv(store: &Arc<Store>, results: &mut Vec<BenchResult>) {
                   &mut entries[probe_idx][..lens[probe_idx]],
                );
                if exec_idx != usize::MAX {
+                  out.clear();
                   exec_pipelined_get(
                      &store,
                      &keys[exec_idx],
