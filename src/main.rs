@@ -199,9 +199,10 @@ fn main() {
          eprintln!("fyrodb: failed to start dbcache proxy: {e}");
       } else {
          println!(
-            "  dbcache=enabled listen={} upstream={:?} mode={:?}",
-            config.dbcache.listen_addr, config.dbcache.upstream_addr, config.dbcache.mode
+            "  dbcache=enabled listen={} mode={:?}",
+            config.dbcache.listen_addr, config.dbcache.mode
          );
+         println!("  dbcache proxy_url={}", config.dbcache.client_url());
          println!(
             "  dbcache default_ttl={}s pool_idle_max={} pool_idle={}ms auth_users={} bus={}",
             config.dbcache.default_ttl_ms / 1000,

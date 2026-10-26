@@ -274,6 +274,27 @@ impl Default for DbCacheConfig {
 }
 
 impl DbCacheConfig {
+   /// Returns a client-ready connection URL for this proxy instance.
+   pub fn client_url(&self) -> String {
+      let port = self
+         .listen_addr
+         .rsplit_once(':')
+         .map(|(_, p)| p)
+         .unwrap_or("5433");
+      if let Some(upstream) = &self.upstream_addr {
+         let target = UpstreamTarget::parse(upstream);
+         let user = target.user.as_deref().unwrap_or("postgres");
+         let db = target.database.as_deref().unwrap_or("postgres");
+         if let Some(pass) = &target.password {
+            format!("postgres://{user}:{pass}@127.0.0.1:{port}/{db}?sslmode=disable")
+         } else {
+            format!("postgres://{user}@127.0.0.1:{port}/{db}?sslmode=disable")
+         }
+      } else {
+         format!("postgres://postgres@127.0.0.1:{port}/postgres?sslmode=disable")
+      }
+   }
+
    // Builds configuration from environment variables.
    pub fn from_env() -> Self {
       let upstream = env::var("FYRODB_DB_UPSTREAM")
