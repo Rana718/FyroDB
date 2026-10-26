@@ -57,9 +57,7 @@ fn hashtag(key: &[u8]) -> &[u8] {
 
 #[inline]
 fn crc16(bytes: &[u8]) -> u16 {
-   // Slicing-by-8: `TABLES[n][i]` is the state after byte `i` followed by
-   // `n` zero bytes, so eight input bytes resolve as eight independent
-   // lookups instead of an eight-link dependency chain.
+   // Slicing-by-8 lookup table processing 8 bytes per iteration.
    let mut crc = 0u16;
    let (chunks, remainder) = bytes.as_chunks::<8>();
    for chunk in chunks {

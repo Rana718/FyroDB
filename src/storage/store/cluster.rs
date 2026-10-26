@@ -414,9 +414,7 @@ impl Store {
    }
 
 
-   /// Hot-path update: one atomic store. Callers checkpoint to disk with
-   /// [`Store::persist_replica_offset`]; replays are idempotent, so a shorter
-   /// checkpoint interval only costs re-application, not correctness.
+   /// Updates the replica applied offset in memory.
    #[inline]
    pub fn set_replica_applied_offset(&self, offset: u64) {
       self.replica_applied_offset.store(offset, Ordering::Release);

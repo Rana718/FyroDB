@@ -206,10 +206,7 @@ impl FrameCodec {
    }
 }
 
-/// Eight slicing tables: `TABLES[n][i]` is the state after feeding byte `i`
-/// followed by `n` zero bytes. Processing eight bytes then costs eight
-/// independent lookups whose latency overlaps, instead of an eight-step
-/// dependent chain.
+/// Eight slicing-by-8 tables for IEEE 802.3 CRC32 calculation.
 const CRC32_TABLES: [[u32; 256]; 8] = build_crc32_tables();
 
 const fn build_crc32_tables() -> [[u32; 256]; 8] {

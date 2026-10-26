@@ -1,5 +1,4 @@
-//! Cluster hot-path benchmarks: mutation-log lookup, command routing
-//! classification, frame checksumming, write fencing, and slot scans.
+//! Cluster hot-path benchmarks (mutation log, routing, frame codec, slot scans).
 //! Run with: cargo bench --bench cluster_perf
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};

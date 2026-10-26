@@ -169,9 +169,7 @@ fn resolve_slot(
    }
 }
 
-/// Avoids the RwLock + Arc clone per command: revalidate a cached snapshot
-/// with one relaxed load. Redirects carry a node index and resolve the
-/// address from that same snapshot only when a reply is written.
+/// Routes commands against a cached topology and routing table snapshot.
 pub fn route_command_with_snapshot(
    cluster: &ClusterConfig,
    state: &super::ClusterState,
@@ -218,14 +216,11 @@ impl KeyPattern {
    }
 }
 
-/// Dispatches on (length, first byte) so the common single-key commands reach
-/// `is_single_key`'s jump table instead of walking a chain of comparisons.
+/// Resolves command key pattern using command length and leading byte.
 #[inline]
 fn key_pattern(command: &[u8]) -> Option<KeyPattern> {
    let &first = command.first()?;
    let multi_key = match (command.len(), first.to_ascii_uppercase()) {
-      // Second byte picks the command, so mixed-case five-letter names do not
-      // pay a full comparison each.
       (4, b'M') => match command[1].to_ascii_uppercase() {
          b'G' if command.eq_ignore_ascii_case(b"MGET") => Some(KeyPattern::All),
          b'S' if command.eq_ignore_ascii_case(b"MSET") => Some(KeyPattern::EveryOther),

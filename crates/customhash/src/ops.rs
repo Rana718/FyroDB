@@ -17,9 +17,7 @@ fn prefetch(ptr: *const u8) {
    }
 }
 
-/// Sequential walk of one shard. The dependent load into each entry makes a
-/// keyspace scan memory-latency bound, so the entry line (and the value line,
-/// when the entry spans two) is prefetched `LOOKAHEAD` slots early.
+/// Sequential walk of one shard with lookahead cacheline prefetching.
 #[inline(always)]
 fn walk_shard<V: Clone + Send + Sync + 'static>(shard: &Shard<V>, f: &mut impl FnMut(&str, &V)) {
    const LOOKAHEAD: usize = 128;
@@ -31,8 +29,7 @@ fn walk_shard<V: Clone + Send + Sync + 'static>(shard: &Shard<V>, f: &mut impl F
          let entry = ahead.load(Ordering::Relaxed);
          if !entry.is_null() {
             prefetch(entry.cast::<u8>());
-            // Address-of computes a field offset without loading; the entry
-            // is EBR-pinned, so the derived address is always valid.
+            // EBR-pinned address-of computes field offset without dereferencing.
             let value = unsafe { std::ptr::addr_of!((*entry).value) };
             prefetch(value.cast::<u8>());
          }

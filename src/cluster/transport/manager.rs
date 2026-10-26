@@ -464,7 +464,6 @@ pub fn start_replication_streams(
                         for (request_id, _) in pending.drain(..) {
                             manager.cancel_request(&replica_id, request_id);
                         }
-// Pausing and surfacing beats skipping data and losing silently.
                         eprintln!(
                             "[cluster] replica {replica_id} requires snapshot catch-up (requested {}, retained from {})",
                             next_to_send,

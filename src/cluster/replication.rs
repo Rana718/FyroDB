@@ -295,8 +295,7 @@ pub struct MutationLog {
    next_offset: u64,
    capacity: usize,
    bytes: usize,
-   /// Entries are shared rather than cloned on read: replication reads the
-   /// tail on every mutation, and each entry can fan out to several replicas.
+   /// Shared records avoiding deep buffer copies on replication fan-out.
    records: VecDeque<Arc<MutationRecord>>,
 }
 
@@ -316,9 +315,7 @@ struct ReplicationJournal {
 /// Wire length of [`encode_mutation`]'s fixed prefix.
 const MUTATION_HEADER_LEN: usize = 27;
 
-/// Appends one journal record as `u32 length || mutation || key || value`.
-/// The mutation header is built on the stack and the key/value buffers are
-/// passed through as IoSlices, avoiding a per-append payload allocation.
+/// Appends journal record as `u32 length || mutation || key || value` via IoSlice.
 fn write_journal_entry(journal: &mut ReplicationJournal, record: &MutationRecord) {
    if record.key.len() > MAX_FIELD || record.value.len() > MAX_FIELD {
       return;
@@ -352,13 +349,8 @@ impl ReplicationCoordinator {
    pub fn append(&self, record: MutationRecord) -> Result<u64, LogError> {
       let mut log = self.log.lock().expect("replication log poisoned");
       let mut record = record;
-      // The offset is assigned from the log under its own lock, so the journal
-      // entry below always carries the same offset the running log will hold.
       record.offset = log.next_offset();
 
-      // One critical section covers encode-free journaling and the log push;
-      // the journal entry is built from the record's own buffers as IoSlice
-      // segments, so no intermediate payload Vec is allocated.
       if let Some(journal) = self.journal.lock().unwrap().as_mut() {
          write_journal_entry(journal, &record);
       }
@@ -512,8 +504,6 @@ impl MutationLog {
          next_offset: 1,
          capacity,
          bytes: 0,
-         // A 100k capacity would reserve MiB before the first write;
-         // VecDeque grows with retained data and stays bounded.
          records: VecDeque::new(),
       }
    }
@@ -561,10 +551,7 @@ impl MutationLog {
       if offset < first {
          return Ok(None);
       }
-      // Offsets are contiguous, so the slot index is arithmetic rather than
-      // a scan: replication reads the tail entry on every mutation. The
-      // returned handle shares the retained record, so this stays a
-      // refcount bump instead of copying key/value.
+      // O(1) arithmetic offset lookup sharing retained record Arc.
       Ok(self.records.get((offset - first) as usize).map(Arc::clone))
    }
    pub fn next_offset(&self) -> u64 {
@@ -640,9 +627,7 @@ pub fn decode_mutation_batch(input: &[u8]) -> Result<Vec<MutationRecord>, Replic
       return Err(ReplicationCodecError::Truncated);
    }
    let count = u32::from_be_bytes(input[..4].try_into().unwrap()) as usize;
-   // Each record costs at least a length prefix plus the fixed header, so a
-   // count larger than the frame allows is a corrupt or hostile batch, and
-   // pre-allocating from it would amplify a 16 MB frame into a huge Vec.
+   // Guard against corrupt or malicious batch length amplification.
    if count > (1 << 20) || count > (input.len() - 4) / (4 + MUTATION_HEADER_LEN) {
       return Err(ReplicationCodecError::Invalid);
    }
