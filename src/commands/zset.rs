@@ -57,7 +57,10 @@ pub fn zadd(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
          let score = parse_float!(out, score_members[j * 2]);
          stack[j] = (score, score_members[j * 2 + 1]);
       }
-      resp::write_integer(out, store_ok!(out, store.zadd(key, &stack[..n], opts)) as i64);
+      resp::write_integer(
+         out,
+         store_ok!(out, store.zadd(key, &stack[..n], opts)) as i64,
+      );
    } else {
       let mut members = Vec::with_capacity(n);
       for &[s_str, m_str] in score_members.as_chunks::<2>().0 {

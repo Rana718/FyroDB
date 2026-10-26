@@ -1,0 +1,111 @@
+---
+title: Changelog v0.3.0
+description: mio proxy event loop (+32% extended-protocol throughput), zero-allocation KV hot paths, cluster slot accelerations, CustomHash prefetch improvements, proxy e2e test suite, bug fixes.
+order: 24
+---
+
+# v0.3.0
+
+Released: October 2026
+
+v0.3.0 is a broad performance and stability release spanning all three layers of FyroDB: the DB cache proxy, the KV storage engine, and the cluster subsystem. The headline changes are a complete rewrite of the proxy's connection model from thread-per-connection to a mio event loop (matching the KV engine's architecture), a wave of zero-allocation improvements across KV hot paths, and accelerated cluster hash slotting contributed by the community.
+
+---
+
+## Highlights
+
+### DB Cache Proxy: mio Event Loop Rewrite
+
+The proxy previously spawned one OS thread per client connection. v0.3.0 replaces this with the same architecture used by the KV engine: N mio worker threads, each owning an `SO_REUSEPORT` `TcpListener` and a private `mio::Poll`, multiplexing thousands of connections without spawning threads.
+
+- **+32% extended-protocol throughput**: Extended protocol TCP cache hits jump from 3.80M to **5.0M ops/sec** on a 6-core i5-11400H with a 512-query pipeline.
+- **Simple query unchanged**: Simple query TCP cache hits stay at **~7.6M ops/sec** — the rewrite preserved this path exactly.
+- **Independent event loops**: KV workers and proxy workers have separate `Poll` instances. A slow upstream Postgres connection cannot delay a KV `GET`, and a large KV scan cannot delay proxy latency.
+- **`BlockingPool`**: Upstream connections (auth, cache misses) are handled by a bounded blocking thread pool separate from the mio threads. Cache-hit traffic — the dominant path — never enters the pool.
+- **`SO_REUSEPORT` per worker**: The kernel distributes incoming connections across all proxy worker threads with no userspace accept queue lock.
+- **`ProxyConn` state machine**: Each connection moves through `Startup → Active → Dead` (or `Offloaded` for upstream work), with boxed `ActiveState` holding all inline cache-hit logic.
+- **`FYRODB_PROXY_WORKERS`** env var controls the number of mio proxy threads (default: `num_cpus / 2`, minimum 1).
+
+### flush_out_batched: Coalesced Sync Flushing
+
+`handle_sync` in the proxy's upstream session path now uses `flush_out_batched` instead of flushing per-response. Responses accumulate in the write buffer until it reaches `RELAY_FLUSH_BYTES` (32KB) or the read buffer is drained — one `write(2)` syscall covers an entire pipeline batch.
+
+This change alone accounts for most of the extended-protocol throughput gain (previously masked a 60% overhead on pipelined pipelines).
+
+### Proxy: Bug Fix
+
+- **Wire cache invalidation on shared store deletions** — deleting proxy cache keys through the KV port (`DEL db:*`, `FLUSHALL`) now correctly invalidates wire-format cache entries. Previously, the proxy's invalidation path was skipped for deletions originating from the KV engine, leaving stale encoded results in memory until TTL expiry.
+
+---
+
+### KV Engine: Zero-Allocation Hot Path Wave
+
+A sustained series of allocation-elimination passes across the storage engine's hot paths:
+
+- **`hash`, `get`, `setnx` hot paths** — eliminated heap allocations in the most-called read/write functions; RESP replies now build directly into the output buffer without intermediate `String` or `Vec` allocation.
+- **`srandmember`, `zrevrange`, `zadd`, `lindex`** — removed per-call allocations; output written inline.
+- **Integer checks and member length** — eliminated heap allocations in canonical integer validation and member byte-length computation on the command parsing path.
+- **Buffer capacity check in SmallStr RESP formatting** — simplified the branch that checked available capacity before writing a bulk RESP header, removing a redundant branch and an occasional Vec resize.
+- **Global fence replaced with `Acquire` load on entry state** — `harden_resp_buffer_check` now uses a targeted `Acquire` load instead of a global seqcst fence, reducing memory barrier cost on every KV write path.
+- **ZSet chunk right-sizing** — `ZSetData` no longer over-allocates chunk capacity on initialization; idle shard table capacity is right-sized on compaction, reducing RSS for write-heavy workloads.
+
+### Cluster: Hot Path Accelerations (community PR #23)
+
+Contributed by [@ananddub](https://github.com/ananddub):
+
+- **Reduced RAM allocations in slot routing** — slot lookup and topology resolution no longer allocate on the fast path; the `RoutingTable` index computation avoids intermediate `Vec` construction.
+- **Accelerated hash slotting** — CRC16 computation path tightened to remove a redundant branch on single-key commands, the majority path.
+
+### CustomHash: Prefetch and Safety Improvements
+
+- **Entry line prefetch in probe loops** — `probe_occupied` and `probe_for_insert` now issue prefetch hints for the entry pointed to by each probed slot's pointer, overlapping the L2 latency of the entry load with the tag comparison of the next slot.
+- **`occupied` guard in `find()`** — `find()` now checks the occupied bit before handing back an entry reference, closing a narrow window where a concurrent removal could expose an uninitialized entry to a reader between the tag match and the epoch pin.
+- **`Acquire` fence in `get_to_buf_fast_entry`** — replaced a relaxed load with an `Acquire` fence at the start of the fast-path entry read to prevent the compiler from reordering the value read above the epoch pin.
+
+### Storage: walk_shard Prefetch
+
+- **`walk_shard` prefetch hint** — switched from `T2` to `T1` (shorter prefetch distance), improving L1 hit rate during expiry and defrag sweeps.
+
+### CI Stability
+
+- **aarch64 test fix** — resolved a test failure on ARM64 caused by a platform-specific integer comparison in the RESP parser test suite.
+- **Flaky ZSet timing test** — relaxed the timing threshold in the sorted-set concurrency test that was intermittently failing in CI under load.
+
+---
+
+## Upgrade
+
+Update your `docker-compose.yml`:
+
+```yaml
+image: rana718/fyrodb:0.3.0
+# or
+image: rana718/fyrodb:latest
+```
+
+New proxy env var in v0.3.0:
+
+| Variable | Default | Description |
+|---|---|---|
+| `FYRODB_PROXY_WORKERS` | `0` (num_cpus/2) | Number of mio event loop threads for the proxy |
+
+No breaking changes. All existing env vars, commands, and client connections continue to work unchanged.
+
+---
+
+## Summary
+
+| Area | Change |
+|---|---|
+| DB Cache Proxy | mio event loop rewrite — thread-per-connection → N mio worker threads |
+| DB Cache Proxy | flush_out_batched: coalesced Sync flushing, +32% extended-protocol throughput |
+| DB Cache Proxy | Wire cache invalidation fix — `DEL`/`FLUSHALL` via KV port now correctly invalidates wire-format entries |
+| KV Storage | Zero-allocation pass: hash, get, setnx, srandmember, zrevrange, zadd, lindex |
+| KV Storage | Zero-allocation pass: integer checks, member length, SmallStr RESP formatting |
+| KV Storage | Global fence → Acquire load on entry state (lower barrier cost per write) |
+| KV Storage | ZSet chunk right-sizing, idle shard right-sizing |
+| KV Storage | walk_shard T1 prefetch hint (better L1 hit rate on expiry/defrag sweeps) |
+| Cluster | Hot path: reduced allocations in slot routing and hash slotting (PR #23) |
+| CustomHash | Entry line prefetch in probe loops |
+| CustomHash | `occupied` guard in `find()`, `Acquire` load in `get_to_buf_fast_entry` |
+| CI | aarch64 test fix, flaky ZSet timing threshold relaxed |

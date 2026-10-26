@@ -1,6 +1,6 @@
 [package]
 name = "fyro-vector"
-version = "0.2.4"
+version = "0.3.0"
 edition = "2024"
 license = "Apache-2.0"
 description = "FyroDB vector engine: SIMD distance kernels, quantization, HNSW and exact (FLAT) search"
@@ -11,8 +11,8 @@ path = "src/lib.rs"
 
 [dependencies]
 bytemuck = "1"
-parking_lot = "0.12"
-num_cpus = "1.17.0"
-crossbeam-queue = "0.3.13"
-crossbeam-utils = "0.8.22"
-libc = "0.2.186"
+parking_lot = "0.13"
+num_cpus = "1.17"
+crossbeam-queue = "0.3"
+crossbeam-utils = "0.8"
+libc = "0.2"

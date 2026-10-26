@@ -17,8 +17,12 @@ pub fn hset(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
             }
             resp::write_integer(out, wt!(out, store.hset(key, &stack[..n])) as i64);
          } else {
-            let fields: Vec<(&str, &str)> =
-               pairs.as_chunks::<2>().0.iter().map(|&[k, v]| (k, v)).collect();
+            let fields: Vec<(&str, &str)> = pairs
+               .as_chunks::<2>()
+               .0
+               .iter()
+               .map(|&[k, v]| (k, v))
+               .collect();
             resp::write_integer(out, wt!(out, store.hset(key, &fields)) as i64);
          }
       }
@@ -28,9 +32,7 @@ pub fn hset(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
 
 pub fn hsetnx(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
    match parts {
-      [_, key, field, value] => {
-         resp::write_boolean(out, wt!(out, store.hsetnx(key, field, value)))
-      }
+      [_, key, field, value] => resp::write_boolean(out, wt!(out, store.hsetnx(key, field, value))),
       _ => resp::write_wrong_args(out, "hsetnx"),
    }
 }
@@ -70,8 +72,12 @@ pub fn hmset(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
             wt!(out, store.hset(key, &stack[..n]));
             resp::write_ok(out);
          } else {
-            let fields: Vec<(&str, &str)> =
-               pairs.as_chunks::<2>().0.iter().map(|&[k, v]| (k, v)).collect();
+            let fields: Vec<(&str, &str)> = pairs
+               .as_chunks::<2>()
+               .0
+               .iter()
+               .map(|&[k, v]| (k, v))
+               .collect();
             wt!(out, store.hset(key, &fields));
             resp::write_ok(out);
          }

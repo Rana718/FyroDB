@@ -37,6 +37,8 @@ FyroDB is a two-engine system in a single Rust binary:
 | Snapshots           | fork() + copy-on-write pages  | Forkless point-in-time snapshot: one state bit per entry, writers save pre-images            |
 | Lock contention     | Single-threaded, none         | Test-and-test-and-set with exponential backoff, then yield                                   |
 | Cluster slot lookup | Flat `slots[16384]` array     | Same: shared routing table, revalidated per connection with one atomic load                  |
+| Proxy connections   | Thread per connection         | mio event loop — N worker threads, `SO_REUSEPORT`, no thread spawning per client             |
+| Proxy cache hit     | N/A                           | `ActiveState` inline in mio thread, coalesced `flush_out_batched` (32 KB), ~1 µs, no blocking pool |
 | Memory accounting   | `zmalloc_used_memory` counter | Per-CPU striped counters, so `used_memory` is real and drives purge/defrag                   |
 
 ---
@@ -85,8 +87,13 @@ Entry<V>  (per key, heap-allocated, exactly 64 bytes for StoreValue)
 
 ```
 1. Find entry via lock-free linear probe
+   └─ find() checks the occupied bit before returning — prevents a
+      concurrent removal between tag-match and epoch-pin from exposing
+      an uninitialized entry to the caller
 2. Pin EBR epoch (thread-local atomic store)
-3. Validate the occupied bit (Acquire ordering)
+3. Load entry state with Acquire ordering — synchronizes with the
+   writer's Release store, replacing the previous Relaxed load +
+   explicit fence(Acquire) with a single Acquire load
 4. Read field directly — no lock, no seq check
 5. Unpin epoch
 ```
@@ -107,7 +114,7 @@ Entry<V>  (per key, heap-allocated, exactly 64 bytes for StoreValue)
 ### Safety Guarantees
 
 - **Writer vs Writer**: per-key spinlock serializes — no two mutations on same key simultaneously
-- **Reader vs Writer (single field)**: EBR keeps value alive, single lookup is atomic
+- **Reader vs Writer (single field)**: EBR keeps value alive, single lookup is atomic; `find()` occupied guard prevents exposure of an uninitialized entry between tag-match and epoch-pin
 - **Reader vs Writer (iteration)**: seqlock detects race, reader retries if write happened during iteration
 - **Different keys**: zero contention — separate entries, separate spinlocks
 - **No deadlock**: spinlock is per-entry, held for microseconds, no nesting
