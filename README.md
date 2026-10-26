@@ -1,5 +1,13 @@
 # FyroDB
 
+<p align="center">
+  <a href="https://github.com/Rana718/FyroDB/releases"><img src="https://img.shields.io/github/v/release/Rana718/FyroDB?style=flat-square&color=blue" alt="Latest Release"></a>
+  <a href="https://hub.docker.com/r/rana718/fyrodb"><img src="https://img.shields.io/docker/pulls/rana718/fyrodb?style=flat-square" alt="Docker Pulls"></a>
+  <img src="https://img.shields.io/badge/language-Rust-orange?style=flat-square&logo=rust" alt="Rust">
+  <a href="https://fyrodb.vercel.app/docs"><img src="https://img.shields.io/badge/docs-online-brightgreen?style=flat-square" alt="Docs"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-green?style=flat-square" alt="License"></a>
+</p>
+
 A Redis-compatible in-memory KV store **and** a PostgreSQL query caching proxy — both in one Rust binary. The KV engine speaks RESP2/RESP3; any Redis client works. The proxy speaks full PostgreSQL wire protocol; any Postgres driver works.
 
 **v0.3.0** — zero-allocation hot paths across the KV engine, cluster slot accelerations, mio proxy event loop, +32% extended-protocol throughput, deep proxy test coverage. → [Changelog](https://fyrodb.vercel.app/docs/changelog-0-3-0)
