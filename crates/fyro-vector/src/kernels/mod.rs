@@ -569,6 +569,7 @@ mod tests {
    }
 
    #[test]
+   #[cfg(target_arch = "x86_64")]
    fn dispatch_paths_agree() {
       for dims in [1usize, 7, 8, 9, 15, 16, 31, 64, 640, 768, 777, 1536] {
          let a = vecf(dims as u64 + 1, dims);
@@ -583,6 +584,7 @@ mod tests {
    }
 
    #[test]
+   #[cfg(target_arch = "x86_64")]
    fn int8_and_avx512_paths_agree() {
       for dims in [1usize, 15, 16, 31, 32, 33, 64, 127, 768, 1536] {
          let a: Vec<i8> = (0..dims)
