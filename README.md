@@ -1,7 +1,6 @@
 # FyroDB
 
 <p align="center">
-  <a href="https://github.com/Rana718/FyroDB/releases"><img src="https://img.shields.io/github/v/release/Rana718/FyroDB?style=flat-square&color=blue" alt="Latest Release"></a>
   <a href="https://hub.docker.com/r/rana718/fyrodb"><img src="https://img.shields.io/docker/pulls/rana718/fyrodb?style=flat-square" alt="Docker Pulls"></a>
   <img src="https://img.shields.io/badge/language-Rust-orange?style=flat-square&logo=rust" alt="Rust">
   <a href="https://fyrodb.vercel.app/docs"><img src="https://img.shields.io/badge/docs-online-brightgreen?style=flat-square" alt="Docs"></a>
