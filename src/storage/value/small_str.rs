@@ -234,12 +234,11 @@ impl SmallStr {
       let len = self.len as usize;
       if len < 10 {
          let old_len = out.len();
-         let total = 6 + len;
-         let needed = (old_len + 12).max(old_len + total);
-         if out.capacity() < needed {
+         if out.capacity() < old_len + 16 {
             crate::utils::resp::write_bulk(out, self.as_str());
             return;
          }
+         let total = 6 + len;
          unsafe {
             let p = out.as_mut_ptr().add(old_len);
             p.cast::<u32>().write_unaligned(u32::from_ne_bytes([
