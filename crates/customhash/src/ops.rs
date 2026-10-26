@@ -4,23 +4,58 @@ use super::CustomMap;
 use super::ebr;
 use super::shard::*;
 
+/// Cache-line hint; a no-op on targets without a stable prefetch intrinsic.
+#[inline(always)]
+fn prefetch(ptr: *const u8) {
+   #[cfg(target_arch = "x86_64")]
+   unsafe {
+      std::arch::x86_64::_mm_prefetch(ptr.cast::<i8>(), std::arch::x86_64::_MM_HINT_T0);
+   }
+   #[cfg(not(target_arch = "x86_64"))]
+   {
+      let _ = ptr;
+   }
+}
+
+/// Sequential walk of one shard. The dependent load into each entry makes a
+/// keyspace scan memory-latency bound, so the entry line (and the value line,
+/// when the entry spans two) is prefetched `LOOKAHEAD` slots early.
+#[inline(always)]
+fn walk_shard<V: Clone + Send + Sync + 'static>(shard: &Shard<V>, f: &mut impl FnMut(&str, &V)) {
+   const LOOKAHEAD: usize = 128;
+   let _guard = ebr::pin();
+   let slots = shard.table().slots();
+   let mut index = 0;
+   while index < slots.len() {
+      if let Some(ahead) = slots.get(index + LOOKAHEAD) {
+         let entry = ahead.load(Ordering::Acquire);
+         if !entry.is_null() {
+            prefetch(entry.cast::<u8>());
+            // Address-of computes a field offset without loading; the entry
+            // is EBR-pinned, so the derived address is always valid.
+            let value = unsafe { std::ptr::addr_of!((*entry).value) };
+            prefetch(value.cast::<u8>());
+         }
+      }
+      let slot = unsafe { slots.get_unchecked(index) };
+      index += 1;
+      let p = slot.load(Ordering::Acquire);
+      if p.is_null() {
+         continue;
+      }
+      let e = unsafe { &*p };
+      if state_occupied(&e.state, Ordering::Acquire) {
+         f(e.key.as_str(), unsafe {
+            (*e.value.get()).assume_init_ref()
+         });
+      }
+   }
+}
+
 impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
    pub fn for_each(&self, mut f: impl FnMut(&str, &V)) {
       for shard in self.shards.iter() {
-         let _guard = ebr::pin();
-         let t = shard.table();
-         for slot in t.slots().iter() {
-            let p = slot.load(Ordering::Acquire);
-            if p.is_null() {
-               continue;
-            }
-            let e = unsafe { &*p };
-            if state_occupied(&e.state, Ordering::Acquire) {
-               f(e.key.as_str(), unsafe {
-                  (*e.value.get()).assume_init_ref()
-               });
-            }
-         }
+         walk_shard(shard, &mut f);
       }
    }
 
@@ -28,20 +63,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
    /// Disjoint shard ranges may run concurrently on separate threads.
    pub fn for_each_shard_range(&self, from: usize, to: usize, mut f: impl FnMut(&str, &V)) {
       for shard_idx in from..to.min(self.shards.len()) {
-         let _guard = ebr::pin();
-         let t = self.shards[shard_idx].table();
-         for slot in t.slots().iter() {
-            let p = slot.load(Ordering::Acquire);
-            if p.is_null() {
-               continue;
-            }
-            let e = unsafe { &*p };
-            if state_occupied(&e.state, Ordering::Acquire) {
-               f(e.key.as_str(), unsafe {
-                  (*e.value.get()).assume_init_ref()
-               });
-            }
-         }
+         walk_shard(&self.shards[shard_idx], &mut f);
       }
    }
 

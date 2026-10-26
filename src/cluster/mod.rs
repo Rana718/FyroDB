@@ -14,8 +14,8 @@ pub use hash::{HASH_SLOTS, Slot, SlotRange, hash_slot};
 pub use replication::{
    ApplyError, LogError, MutationKind, MutationLog, MutationRecord, ReplicaApplier,
    ReplicationCodecError, ReplicationCoordinator, ReplicationMessage, ReplicationStream,
-   StreamError, decode_mutation, decode_replication_message, encode_mutation,
-   encode_replication_message,
+   StreamError, decode_mutation, decode_mutation_batch, decode_replication_message,
+   encode_mutation, encode_mutation_batch, encode_replication_message, encode_snapshot,
 };
 pub use routing::{
    RouteDecision, RoutingScope, is_write_command, route_command, route_command_with_snapshot,
