@@ -105,14 +105,6 @@ services:
       POSTGRES_DB: mydb
 ```
 
-**Proxy numbers (cache hits, no upstream):**
-
-| Benchmark | Throughput |
-|---|---|
-| Simple query TCP | ~7.6M ops/sec |
-| Extended protocol TCP | ~5M ops/sec |
-| In-memory cache lookup | ~10M ops/sec |
-
 → [DB Cache Proxy docs](https://fyrodb.vercel.app/docs/db-cache-proxy)
 
 ---
