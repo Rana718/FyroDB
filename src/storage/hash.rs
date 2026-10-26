@@ -123,6 +123,57 @@ impl Store {
       }
    }
 
+   pub fn hset_flat(&self, key: &str, pairs: &[&str]) -> Result<usize, &'static str> {
+      let (chunks, _) = pairs.as_chunks::<2>();
+      let result = self.data.update_with(key, |val| {
+         if val.is_expired() {
+            let mut h = HashInner::with_capacity(chunks.len());
+            let mut added = 0;
+            for &[f, v] in chunks {
+               if h.insert_ref(f, v) {
+                  added += 1;
+               }
+            }
+            val.value = FyroDB::Hash(Box::new(h));
+            val.expires_ms = 0;
+            return Ok(added);
+         }
+         match val.value.as_hash_mut() {
+            Some(h) => {
+               let mut added = 0;
+               for &[f, v] in chunks {
+                  if h.insert_ref(f, v) {
+                     added += 1;
+                  }
+               }
+               Ok(added)
+            }
+            None => Err("WRONGTYPE"),
+         }
+      });
+
+      match result {
+         Some(r) => r,
+         None => {
+            let mut h = HashInner::with_capacity(chunks.len());
+            let mut added = 0;
+            for &[f, v] in chunks {
+               if h.insert_ref(f, v) {
+                  added += 1;
+               }
+            }
+            self.data.insert_str(
+               key,
+               StoreValue {
+                  value: FyroDB::Hash(Box::new(h)),
+                  expires_ms: 0,
+               },
+            );
+            Ok(added)
+         }
+      }
+   }
+
    pub fn hset(&self, key: &str, fields: &[(&str, &str)]) -> Result<usize, &'static str> {
       let result = self.data.update_with(key, |val| {
          if val.is_expired() {

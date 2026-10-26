@@ -9,22 +9,7 @@ pub fn hset(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
          resp::write_integer(out, wt!(out, store.hset(key, &[(*f, *v)])) as i64);
       }
       [_, key, pairs @ ..] if !pairs.is_empty() && pairs.len() % 2 == 0 => {
-         let n = pairs.len() / 2;
-         if n <= 4 {
-            let mut stack = [("", ""); 4];
-            for i in 0..n {
-               stack[i] = (pairs[i * 2], pairs[i * 2 + 1]);
-            }
-            resp::write_integer(out, wt!(out, store.hset(key, &stack[..n])) as i64);
-         } else {
-            let fields: Vec<(&str, &str)> = pairs
-               .as_chunks::<2>()
-               .0
-               .iter()
-               .map(|&[k, v]| (k, v))
-               .collect();
-            resp::write_integer(out, wt!(out, store.hset(key, &fields)) as i64);
-         }
+         resp::write_integer(out, wt!(out, store.hset_flat(key, pairs)) as i64);
       }
       _ => resp::write_wrong_args(out, "hset"),
    }
@@ -63,24 +48,8 @@ pub fn hmset(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
          resp::write_ok(out);
       }
       [_, key, pairs @ ..] if !pairs.is_empty() && pairs.len() % 2 == 0 => {
-         let n = pairs.len() / 2;
-         if n <= 4 {
-            let mut stack = [("", ""); 4];
-            for i in 0..n {
-               stack[i] = (pairs[i * 2], pairs[i * 2 + 1]);
-            }
-            wt!(out, store.hset(key, &stack[..n]));
-            resp::write_ok(out);
-         } else {
-            let fields: Vec<(&str, &str)> = pairs
-               .as_chunks::<2>()
-               .0
-               .iter()
-               .map(|&[k, v]| (k, v))
-               .collect();
-            wt!(out, store.hset(key, &fields));
-            resp::write_ok(out);
-         }
+         wt!(out, store.hset_flat(key, pairs));
+         resp::write_ok(out);
       }
       _ => resp::write_wrong_args(out, "hmset"),
    }
