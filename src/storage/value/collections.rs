@@ -19,6 +19,18 @@ pub enum SetInner {
 #[inline]
 fn compact_find(v: &[SmallStr], field: &str) -> Result<usize, usize> {
    let n = v.len() / 2;
+   if n <= 4 {
+      for i in 0..n {
+         let f = unsafe { v.get_unchecked(i * 2).as_str() };
+         if f == field {
+            return Ok(i);
+         }
+         if f > field {
+            return Err(i);
+         }
+      }
+      return Err(n);
+   }
    let mut lo = 0usize;
    let mut hi = n;
    while lo < hi {
@@ -42,6 +54,18 @@ impl HashInner {
    #[inline]
    pub fn new() -> Self {
       Self::Compact(Vec::new())
+   }
+
+   #[inline]
+   pub fn with_capacity(field_count: usize) -> Self {
+      if field_count <= COMPACT_THRESHOLD {
+         Self::Compact(Vec::with_capacity(field_count * 2))
+      } else {
+         Self::Full(Box::new(HashMap::with_capacity_and_hasher(
+            field_count,
+            Default::default(),
+         )))
+      }
    }
 
    #[inline]
@@ -77,8 +101,13 @@ impl HashInner {
             }
             Err(pos) => {
                let idx = pos * 2;
-               v.insert(idx, SmallStr::new(field));
-               v.insert(idx + 1, value);
+               if idx == v.len() {
+                  v.push(SmallStr::new(field));
+                  v.push(value);
+               } else {
+                  v.insert(idx, SmallStr::new(field));
+                  v.insert(idx + 1, value);
+               }
                if v.len() / 2 > COMPACT_THRESHOLD {
                   self.promote_hash();
                }

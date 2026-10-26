@@ -119,7 +119,7 @@ pub fn set(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
 
 pub fn setnx(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
    match parts {
-      [_, key, value] => resp::write_boolean(out, store.setnx(key.to_string(), value.to_string())),
+      [_, key, value] => resp::write_boolean(out, store.setnx(key, value)),
       _ => resp::write_wrong_args(out, "setnx"),
    }
 }
@@ -279,6 +279,7 @@ pub fn msetnx(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
 pub fn mget(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
    match parts {
       [_, keys @ ..] if !keys.is_empty() => {
+         out.reserve(keys.len() * 32);
          resp::write_array_header(out, keys.len());
          for &k in keys.iter() {
             if !store.get_to_buf(k, out) {

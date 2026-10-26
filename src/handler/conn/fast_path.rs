@@ -193,6 +193,9 @@ pub(super) fn dispatch_get_run(conn: &mut Conn<'_>, first_key: (*const u8, usize
    if count == 1 {
       let (hint, entry) = conn.hint_for(first_key);
       let out = &mut conn.parser.wbuf;
+      if out.capacity().saturating_sub(out.len()) < 32 {
+         out.reserve(32);
+      }
       let Some(key) = part_str(out, first_key) else {
          return;
       };

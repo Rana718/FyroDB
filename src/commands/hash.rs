@@ -5,9 +5,22 @@ use crate::{parse_float, parse_int, store_ok, wt};
 
 pub fn hset(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
    match parts {
+      [_, key, f, v] => {
+         resp::write_integer(out, wt!(out, store.hset(key, &[(*f, *v)])) as i64);
+      }
       [_, key, pairs @ ..] if !pairs.is_empty() && pairs.len() % 2 == 0 => {
-         let fields: Vec<(&str, &str)> = pairs.chunks(2).map(|c| (c[0], c[1])).collect();
-         resp::write_integer(out, wt!(out, store.hset(key, &fields)) as i64);
+         let n = pairs.len() / 2;
+         if n <= 4 {
+            let mut stack = [("", ""); 4];
+            for i in 0..n {
+               stack[i] = (pairs[i * 2], pairs[i * 2 + 1]);
+            }
+            resp::write_integer(out, wt!(out, store.hset(key, &stack[..n])) as i64);
+         } else {
+            let fields: Vec<(&str, &str)> =
+               pairs.as_chunks::<2>().0.iter().map(|&[k, v]| (k, v)).collect();
+            resp::write_integer(out, wt!(out, store.hset(key, &fields)) as i64);
+         }
       }
       _ => resp::write_wrong_args(out, "hset"),
    }
@@ -16,7 +29,7 @@ pub fn hset(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
 pub fn hsetnx(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
    match parts {
       [_, key, field, value] => {
-         resp::write_boolean(out, wt!(out, store.hsetnx(key, field, value.to_string())))
+         resp::write_boolean(out, wt!(out, store.hsetnx(key, field, value)))
       }
       _ => resp::write_wrong_args(out, "hsetnx"),
    }
@@ -43,10 +56,25 @@ pub fn hmget(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
 
 pub fn hmset(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
    match parts {
-      [_, key, pairs @ ..] if !pairs.is_empty() && pairs.len() % 2 == 0 => {
-         let fields: Vec<(&str, &str)> = pairs.chunks(2).map(|c| (c[0], c[1])).collect();
-         wt!(out, store.hset(key, &fields));
+      [_, key, f, v] => {
+         wt!(out, store.hset(key, &[(*f, *v)]));
          resp::write_ok(out);
+      }
+      [_, key, pairs @ ..] if !pairs.is_empty() && pairs.len() % 2 == 0 => {
+         let n = pairs.len() / 2;
+         if n <= 4 {
+            let mut stack = [("", ""); 4];
+            for i in 0..n {
+               stack[i] = (pairs[i * 2], pairs[i * 2 + 1]);
+            }
+            wt!(out, store.hset(key, &stack[..n]));
+            resp::write_ok(out);
+         } else {
+            let fields: Vec<(&str, &str)> =
+               pairs.as_chunks::<2>().0.iter().map(|&[k, v]| (k, v)).collect();
+            wt!(out, store.hset(key, &fields));
+            resp::write_ok(out);
+         }
       }
       _ => resp::write_wrong_args(out, "hmset"),
    }
@@ -56,14 +84,28 @@ pub fn hset_raw(conn_key: &str, raw_pairs: &[(&[u8], &[u8])], store: &Store, out
    if raw_pairs.is_empty() {
       return resp::write_wrong_args(out, "hset");
    }
-   let mut fields: Vec<(&str, &[u8])> = Vec::with_capacity(raw_pairs.len());
-   for &(f, v) in raw_pairs {
-      let Some(name) = std::str::from_utf8(f).ok() else {
-         return resp::write_err(out, "invalid field name encoding");
-      };
-      fields.push((name, v));
+   if raw_pairs.len() <= 4 {
+      let mut stack = [("", &[][..]); 4];
+      for (i, &(f, v)) in raw_pairs.iter().enumerate() {
+         let Some(name) = std::str::from_utf8(f).ok() else {
+            return resp::write_err(out, "invalid field name encoding");
+         };
+         stack[i] = (name, v);
+      }
+      resp::write_integer(
+         out,
+         wt!(out, store.hset_bytes(conn_key, &stack[..raw_pairs.len()])) as i64,
+      );
+   } else {
+      let mut fields: Vec<(&str, &[u8])> = Vec::with_capacity(raw_pairs.len());
+      for &(f, v) in raw_pairs {
+         let Some(name) = std::str::from_utf8(f).ok() else {
+            return resp::write_err(out, "invalid field name encoding");
+         };
+         fields.push((name, v));
+      }
+      resp::write_integer(out, wt!(out, store.hset_bytes(conn_key, &fields)) as i64);
    }
-   resp::write_integer(out, wt!(out, store.hset_bytes(conn_key, &fields)) as i64);
 }
 
 pub fn hgetall(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
@@ -98,14 +140,18 @@ pub fn hlen(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
 
 pub fn hkeys(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
    match parts {
-      [_, key] => resp::write_array(out, &wt!(out, store.hkeys(key))),
+      [_, key] => {
+         wt!(out, store.hkeys_to_buf(key, out));
+      }
       _ => resp::write_wrong_args(out, "hkeys"),
    }
 }
 
 pub fn hvals(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
    match parts {
-      [_, key] => resp::write_array(out, &wt!(out, store.hvals(key))),
+      [_, key] => {
+         wt!(out, store.hvals_to_buf(key, out));
+      }
       _ => resp::write_wrong_args(out, "hvals"),
    }
 }
