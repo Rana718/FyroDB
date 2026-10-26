@@ -279,7 +279,11 @@ impl SetInner {
                }
             } else {
                let mut strings = Vec::with_capacity(v.len() + 1);
-               strings.extend(v.drain(..).map(|n| SmallStr::from_string(n.to_string())));
+               strings.extend(v.drain(..).map(|n| {
+                  let mut buf = [0u8; 20];
+                  let s = crate::storage::value::write_int_to(&mut buf, n);
+                  SmallStr::new(s)
+               }));
                strings.push(member);
                strings.sort_by(|a, b| a.as_str().cmp(b.as_str()));
                *self = Self::Compact(strings);
@@ -408,7 +412,13 @@ pub enum SetMemberRef<'a> {
 
 impl SetMemberRef<'_> {
    pub fn len(self) -> usize {
-      self.to_string().len()
+      match self {
+         Self::String(s) => s.len(),
+         Self::Integer(n) => {
+            let mut buf = [0u8; 20];
+            crate::storage::value::write_int_to(&mut buf, n).len()
+         }
+      }
    }
    pub fn is_empty(self) -> bool {
       self.len() == 0
@@ -443,7 +453,20 @@ impl std::fmt::Display for SetMemberRef<'_> {
    }
 }
 
+#[inline]
 pub fn canonical_i64(value: &str) -> Option<i64> {
-   let n = value.parse::<i64>().ok()?;
-   (n.to_string() == value).then_some(n)
+   let bytes = value.as_bytes();
+   if bytes.is_empty() {
+      return None;
+   }
+   if bytes[0] == b'0' && bytes.len() > 1 {
+      return None;
+   }
+   if bytes.len() >= 2 && bytes[0] == b'-' && bytes[1] == b'0' {
+      return None;
+   }
+   if bytes[0] == b'+' {
+      return None;
+   }
+   value.parse::<i64>().ok()
 }

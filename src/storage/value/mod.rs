@@ -5,7 +5,7 @@ mod quicklist;
 mod small_str;
 mod zset_data;
 
-pub use collections::{HashInner, HashIter, SetInner, SetIter, SetMemberRef};
+pub use collections::{HashInner, HashIter, SetInner, SetIter, SetMemberRef, canonical_i64};
 pub use list::ListValue;
 pub use quicklist::QuickList;
 pub type ListInner = ListValue;
