@@ -29,7 +29,7 @@ pub(crate) fn stored_hash(state: u64) -> u64 {
 pub(crate) const LOAD_NUM: usize = 2;
 pub(crate) const LOAD_DEN: usize = 3;
 // Keep idle shards tiny; tables grow lock-free as keys arrive.
-pub(crate) const INITIAL_SHARD_CAPACITY: usize = 65_536;
+pub(crate) const INITIAL_SHARD_CAPACITY: usize = 16_384;
 pub(crate) const GROWING: usize = 1usize << (usize::BITS - 1);
 
 /// Smallest power-of-two capacity holding `live + 1` entries below load factor.

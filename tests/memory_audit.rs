@@ -290,6 +290,27 @@ fn audit_zset_members() {
 }
 
 #[test]
+fn audit_small_zsets() {
+   let store = Store::with_config(4, 20_000);
+   let zsets = 10_000usize;
+   let delta = measure("10K small zsets (2 members each)", || {
+      for z in 0..zsets {
+         let key = format!("sz:{z}");
+         let _ = store.zadd(
+            &key,
+            &[(1.0, "m1"), (2.0, "m2")],
+            fyro_db::storage::zset::ZAddOptions::default(),
+         );
+      }
+   });
+   println!(
+      "\n  Per-zset cost: {:.1} bytes (total: {:.2} MB)",
+      delta as f64 / zsets as f64,
+      mb(delta)
+   );
+}
+
+#[test]
 fn audit_json_keys() {
    println!("\n═══════════════════════════════════════════════════════════════");
    println!("  PHASE 6 — JSON Keys (27-byte value exceeds 23-byte SmallStr inline cap)");
