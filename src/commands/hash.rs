@@ -59,28 +59,7 @@ pub fn hset_raw(conn_key: &str, raw_pairs: &[(&[u8], &[u8])], store: &Store, out
    if raw_pairs.is_empty() {
       return resp::write_wrong_args(out, "hset");
    }
-   if raw_pairs.len() <= 4 {
-      let mut stack = [("", &[][..]); 4];
-      for (i, &(f, v)) in raw_pairs.iter().enumerate() {
-         let Some(name) = std::str::from_utf8(f).ok() else {
-            return resp::write_err(out, "invalid field name encoding");
-         };
-         stack[i] = (name, v);
-      }
-      resp::write_integer(
-         out,
-         wt!(out, store.hset_bytes(conn_key, &stack[..raw_pairs.len()])) as i64,
-      );
-   } else {
-      let mut fields: Vec<(&str, &[u8])> = Vec::with_capacity(raw_pairs.len());
-      for &(f, v) in raw_pairs {
-         let Some(name) = std::str::from_utf8(f).ok() else {
-            return resp::write_err(out, "invalid field name encoding");
-         };
-         fields.push((name, v));
-      }
-      resp::write_integer(out, wt!(out, store.hset_bytes(conn_key, &fields)) as i64);
-   }
+   resp::write_integer(out, wt!(out, store.hset_bytes_raw(conn_key, raw_pairs)) as i64);
 }
 
 pub fn hgetall(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
@@ -189,14 +168,18 @@ pub fn hrandfield(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
                }
                return;
             }
+            if parts.len() == 2 {
+               if let Some((f, _)) = h.iter().next() {
+                  resp::write_bulk(out, f);
+               } else {
+                  resp::write_nil(out);
+               }
+               return;
+            }
             let fields: Vec<(
                &crate::storage::value::SmallStr,
                &crate::storage::value::SmallStr,
             )> = h.iter().collect();
-            if parts.len() == 2 {
-               resp::write_bulk(out, fields[0].0);
-               return;
-            }
             if count >= 0 {
                let n = (count as usize).min(fields.len());
                if withvalues {
@@ -278,6 +261,16 @@ pub fn hscan(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
       }
       Some(e) => match e.value.as_hash() {
          Some(h) => {
+            if pattern.is_none() {
+               out.extend_from_slice(b"*2\r\n");
+               resp::write_bulk(out, "0");
+               resp::write_array_header(out, h.len() * 2);
+               for (f, v) in h.iter() {
+                  resp::write_bulk(out, f);
+                  resp::write_bulk(out, v);
+               }
+               return;
+            }
             let pairs: Vec<(
                &crate::storage::value::SmallStr,
                &crate::storage::value::SmallStr,

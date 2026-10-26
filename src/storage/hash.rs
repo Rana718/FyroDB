@@ -41,6 +41,70 @@ impl Store {
       }
    }
 
+   pub fn hset_bytes_raw(
+      &self,
+      key: &str,
+      fields: &[(&[u8], &[u8])],
+   ) -> Result<usize, &'static str> {
+      for &(f, _) in fields {
+         if std::str::from_utf8(f).is_err() {
+            return Err("invalid field name encoding");
+         }
+      }
+
+      let result = self.data.update_with(key, |val| {
+         if val.is_expired() {
+            let mut h = HashInner::with_capacity(fields.len());
+            let mut added = 0;
+            for &(f, v) in fields {
+               // SAFETY: validated above
+               let name = unsafe { std::str::from_utf8_unchecked(f) };
+               if h.insert_bytes(name, v) {
+                  added += 1;
+               }
+            }
+            val.value = FyroDB::Hash(Box::new(h));
+            val.expires_ms = 0;
+            return Ok(added);
+         }
+         match val.value.as_hash_mut() {
+            Some(h) => {
+               let mut added = 0;
+               for &(f, v) in fields {
+                  let name = unsafe { std::str::from_utf8_unchecked(f) };
+                  if h.insert_bytes(name, v) {
+                     added += 1;
+                  }
+               }
+               Ok(added)
+            }
+            None => Err("WRONGTYPE"),
+         }
+      });
+
+      match result {
+         Some(r) => r,
+         None => {
+            let mut h = HashInner::with_capacity(fields.len());
+            let mut added = 0;
+            for &(f, v) in fields {
+               let name = unsafe { std::str::from_utf8_unchecked(f) };
+               if h.insert_bytes(name, v) {
+                  added += 1;
+               }
+            }
+            self.data.insert_str(
+               key,
+               StoreValue {
+                  value: FyroDB::Hash(Box::new(h)),
+                  expires_ms: 0,
+               },
+            );
+            Ok(added)
+         }
+      }
+   }
+
    pub fn hset_bytes(&self, key: &str, fields: &[(&str, &[u8])]) -> Result<usize, &'static str> {
       let result = self.data.update_with(key, |val| {
          if val.is_expired() {

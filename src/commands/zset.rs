@@ -51,11 +51,12 @@ pub fn zadd(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
 
    let n = score_members.len() / 2;
    let opts = crate::storage::zset::ZAddOptions { nx, xx, gt, lt, ch };
-   if n <= 4 {
-      let mut stack = [(0.0f64, ""); 4];
-      for j in 0..n {
-         let score = parse_float!(out, score_members[j * 2]);
-         stack[j] = (score, score_members[j * 2 + 1]);
+   const STACK_MEMBERS: usize = 16;
+   if n <= STACK_MEMBERS {
+      let mut stack = [(0.0f64, ""); STACK_MEMBERS];
+      for (j, &[s_str, m_str]) in score_members.as_chunks::<2>().0.iter().enumerate() {
+         let score = parse_float!(out, s_str);
+         stack[j] = (score, m_str);
       }
       resp::write_integer(
          out,

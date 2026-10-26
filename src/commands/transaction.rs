@@ -16,9 +16,18 @@ pub fn exec_empty(out: &mut Vec<u8>) {
 
 pub fn exec(queue: &[Vec<String>], store: &Arc<Store>, out: &mut Vec<u8>) {
    resp::write_array_header(out, queue.len());
+   const STACK_ARGS: usize = 8;
    for cmd_parts in queue {
-      let refs: Vec<&str> = cmd_parts.iter().map(|s| s.as_str()).collect();
-      crate::commands::execute(&refs, store, out);
+      if cmd_parts.len() <= STACK_ARGS {
+         let mut stack = [""; STACK_ARGS];
+         for (i, s) in cmd_parts.iter().enumerate() {
+            stack[i] = s.as_str();
+         }
+         crate::commands::execute(&stack[..cmd_parts.len()], store, out);
+      } else {
+         let refs: Vec<&str> = cmd_parts.iter().map(|s| s.as_str()).collect();
+         crate::commands::execute(&refs, store, out);
+      }
    }
 }
 
