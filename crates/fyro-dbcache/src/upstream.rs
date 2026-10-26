@@ -145,17 +145,29 @@ impl UpstreamConnection {
          let mut resp = [0u8; 1];
          tcp.read_exact(&mut resp)?;
          if resp[0] == b'S' {
-            let connector = native_tls::TlsConnector::builder()
-               .build()
-               .map_err(io::Error::other)?;
+            let mut builder = native_tls::TlsConnector::builder();
+            match parsed.sslmode {
+               SslMode::Require | SslMode::Prefer => {
+                  builder.danger_accept_invalid_certs(true);
+                  builder.danger_accept_invalid_hostnames(true);
+               }
+               SslMode::VerifyCa => {
+                  builder.danger_accept_invalid_hostnames(true);
+               }
+               _ => {}
+            }
+            let connector = builder.build().map_err(io::Error::other)?;
             let tls = connector
                .connect(&parsed.host, tcp)
                .map_err(|e| io::Error::new(io::ErrorKind::ConnectionRefused, e))?;
             TransportStream::Tls(tls)
-         } else if parsed.sslmode == SslMode::Require {
+         } else if matches!(
+            parsed.sslmode,
+            SslMode::Require | SslMode::VerifyCa | SslMode::VerifyFull
+         ) {
             return Err(io::Error::new(
                io::ErrorKind::ConnectionRefused,
-               "upstream rejected SSL connection (sslmode=require)",
+               "upstream rejected SSL connection",
             ));
          } else {
             TransportStream::Plain(tcp)

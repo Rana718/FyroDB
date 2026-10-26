@@ -90,6 +90,8 @@ pub enum SslMode {
    Disable,
    Prefer,
    Require,
+   VerifyCa,
+   VerifyFull,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -134,7 +136,9 @@ impl UpstreamTarget {
                sslmode = match v.to_ascii_lowercase().as_str() {
                   "disable" => SslMode::Disable,
                   "prefer" | "allow" => SslMode::Prefer,
-                  "require" | "verify-ca" | "verify-full" => SslMode::Require,
+                  "require" => SslMode::Require,
+                  "verify-ca" => SslMode::VerifyCa,
+                  "verify-full" => SslMode::VerifyFull,
                   _ => SslMode::Prefer,
                };
             }
