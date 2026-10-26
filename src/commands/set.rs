@@ -72,24 +72,15 @@ pub fn spop(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
 }
 
 pub fn srandmember(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
-   let (key, count) = match parts {
-      [_, key] => (*key, 1i64),
+   let (key, count, single) = match parts {
+      [_, key] => (*key, 1i64, true),
       [_, key, cnt] => {
          let c = parse_int!(out, cnt);
-         (*key, c)
+         (*key, c, false)
       }
       _ => return resp::write_wrong_args(out, "srandmember"),
    };
-   let items = wt!(out, store.srandmember(key, count));
-   if parts.len() == 2 {
-      if items.is_empty() {
-         resp::write_nil(out);
-      } else {
-         resp::write_bulk(out, &items[0]);
-      }
-   } else {
-      resp::write_array(out, &items);
-   }
+   wt!(out, store.srandmember_to_buf(key, count, single, out));
 }
 
 pub fn smove(parts: &[&str], store: &Store, out: &mut Vec<u8>) {

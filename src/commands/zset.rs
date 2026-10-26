@@ -49,23 +49,23 @@ pub fn zadd(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
       return resp::write_wrong_args(out, "zadd");
    }
 
-   let mut members = Vec::with_capacity(score_members.len() / 2);
-   for chunk in score_members.chunks(2) {
-      let score = parse_float!(out, chunk[0]);
-      members.push((score, chunk[1]));
+   let n = score_members.len() / 2;
+   let opts = crate::storage::zset::ZAddOptions { nx, xx, gt, lt, ch };
+   if n <= 4 {
+      let mut stack = [(0.0f64, ""); 4];
+      for j in 0..n {
+         let score = parse_float!(out, score_members[j * 2]);
+         stack[j] = (score, score_members[j * 2 + 1]);
+      }
+      resp::write_integer(out, store_ok!(out, store.zadd(key, &stack[..n], opts)) as i64);
+   } else {
+      let mut members = Vec::with_capacity(n);
+      for &[s_str, m_str] in score_members.as_chunks::<2>().0 {
+         let score = parse_float!(out, s_str);
+         members.push((score, m_str));
+      }
+      resp::write_integer(out, store_ok!(out, store.zadd(key, &members, opts)) as i64);
    }
-
-   resp::write_integer(
-      out,
-      store_ok!(
-         out,
-         store.zadd(
-            key,
-            &members,
-            crate::storage::zset::ZAddOptions { nx, xx, gt, lt, ch }
-         )
-      ) as i64,
-   );
 }
 
 pub fn zrem(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
@@ -160,8 +160,7 @@ pub fn zrevrange(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
    let s = parse_int!(out, start);
    let e = parse_int!(out, stop);
    let withscores = rest.iter().any(|r| r.eq_ignore_ascii_case("WITHSCORES"));
-   let items = wt!(out, store.zrevrange(key, s, e));
-   write_zset_result(out, &items, withscores);
+   wt!(out, store.zrevrange_to_buf(key, s, e, withscores, out));
 }
 
 pub fn zrangebyscore(parts: &[&str], store: &Store, out: &mut Vec<u8>) {

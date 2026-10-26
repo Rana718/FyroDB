@@ -179,6 +179,24 @@ impl Store {
       })
    }
 
+   pub fn lindex_to_buf(
+      &self,
+      key: &str,
+      index: i64,
+      out: &mut Vec<u8>,
+   ) -> Result<bool, &'static str> {
+      self.list_read(key, |l| {
+         if let Some(i) = normalize_index(index, l.len())
+            && let Some(s) = l.get(i)
+         {
+            crate::utils::resp::write_bulk(out, s);
+            return true;
+         }
+         crate::utils::resp::write_nil(out);
+         false
+      })
+   }
+
    pub fn lset(&self, key: &str, index: i64, value: &str) -> Result<bool, &'static str> {
       let result = self.data.update_with(key, |val| {
          if val.is_expired() {
@@ -231,6 +249,7 @@ impl Store {
                   crate::utils::resp::write_array_header(out, 0);
                   return Ok(0);
                };
+               out.reserve(n * 20);
                crate::utils::resp::write_array_header(out, n);
                for v in l.range(s, n) {
                   crate::utils::resp::write_bulk(out, v);

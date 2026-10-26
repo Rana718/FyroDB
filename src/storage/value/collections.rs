@@ -463,7 +463,7 @@ impl SetMemberRef<'_> {
    /// a stack buffer so no String temporary is needed.
    pub fn write_bulk_to(self, out: &mut Vec<u8>) {
       match self {
-         Self::String(s) => crate::utils::resp::write_bulk(out, s.as_str()),
+         Self::String(s) => s.write_resp(out),
          Self::Integer(n) => {
             let mut buf = [0u8; 20];
             let s = crate::storage::value::write_int_to(&mut buf, n);
