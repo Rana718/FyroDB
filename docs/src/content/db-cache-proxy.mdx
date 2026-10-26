@@ -1,0 +1,409 @@
+---
+title: DB Cache Proxy
+description: PostgreSQL query caching proxy — cache SELECT results, serve hits at 5M+ ops/sec without touching the database.
+order: 6
+---
+
+## Overview
+
+FyroDB includes a built-in PostgreSQL query caching proxy. Your application connects to FyroDB's proxy port instead of directly to PostgreSQL — using identical PostgreSQL wire protocol, so no driver, ORM, or code changes are needed. When a SELECT query arrives, FyroDB checks its in-memory cache. A cache hit returns in microseconds with no database involvement. A miss forwards to the real PostgreSQL upstream, caches the result, and returns normally.
+
+Both the KV engine and the proxy run in the same process with independent mio event loops — neither can block the other.
+
+## How It Works
+
+```
+App ──► FyroDB Proxy (port 5432, PostgreSQL wire protocol)
+              │
+              ▼
+        Cache lookup (fingerprint = SQL + params + session context)
+              │
+       ┌──────┴──────────────────────┐
+       │ HIT                         │ MISS
+       ▼                             ▼
+  Serve from memory            Forward to upstream PostgreSQL
+  (~1 µs, no DB call)          Cache result, return to app
+                                (normal DB latency — once only)
+```
+
+After the first query for a given SQL + parameter combination, every subsequent identical query is served from cache with no database involvement.
+
+## Connection Setup
+
+Change one environment variable in your application — that is the entire migration:
+
+```bash
+# Before — direct to Postgres
+DATABASE_URL=postgres://appuser:secret@postgres-host:5432/mydb
+
+# After — through FyroDB proxy (identical wire protocol)
+DATABASE_URL=postgres://appuser:secret@fyrodb-host:5432/mydb
+```
+
+Every PostgreSQL driver, ORM, and tool works without any code changes:
+
+```python
+# Python — SQLAlchemy, psycopg2, asyncpg — no changes needed
+engine = create_engine("postgresql://appuser:secret@fyrodb:5432/mydb")
+```
+
+```typescript
+// Node.js — pg, Prisma, Drizzle, Sequelize — no changes needed
+const pool = new Pool({ connectionString: "postgres://appuser:secret@fyrodb:5432/mydb" })
+```
+
+```go
+// Go — pgx, database/sql — no changes needed
+db, _ := sql.Open("pgx", "postgres://appuser:secret@fyrodb:5432/mydb")
+```
+
+```java
+// Java — JDBC — no changes needed
+DataSource ds = new PGSimpleDataSource();
+ds.setUrl("jdbc:postgresql://fyrodb:5432/mydb");
+```
+
+## Cache Invalidation
+
+FyroDB parses every query and tracks which tables it touches. When a write reaches the database — INSERT, UPDATE, DELETE, or DDL on table `users` — FyroDB atomically invalidates every cached result that involved `users`. No manual cache busting, no stale reads after writes.
+
+```sql
+-- First SELECT: cache miss, forwarded to Postgres, result cached
+SELECT id, name, email FROM users WHERE id = 42;
+
+-- Write: FyroDB invalidates all cached results that touched "users"
+UPDATE users SET name = 'Alice' WHERE id = 42;
+
+-- Next SELECT: cache miss again (invalidated), goes to Postgres, re-cached
+SELECT id, name, email FROM users WHERE id = 42;
+
+-- All subsequent calls: cache hit, served from memory in ~1 µs
+SELECT id, name, email FROM users WHERE id = 42;
+```
+
+Multi-table queries (JOINs, CTEs) are invalidated when **any** of their referenced tables receive a write:
+
+```sql
+-- This cached result is invalidated by writes to orders OR users
+SELECT u.name, COUNT(o.id) AS order_count
+FROM users u JOIN orders o ON o.user_id = u.id
+WHERE u.id = $1
+GROUP BY u.name;
+```
+
+## Extended Protocol and Prepared Statements
+
+FyroDB fully supports the PostgreSQL extended protocol — the binary protocol used by prepared statements and parameterized queries. Parameters are part of the cache key fingerprint, so each unique combination is cached independently:
+
+```sql
+-- Cached as two separate entries — different parameter values
+PREPARE get_user AS SELECT id, name FROM users WHERE id = $1;
+EXECUTE get_user(42);   -- cached under fingerprint for param=42
+EXECUTE get_user(43);   -- cached under fingerprint for param=43
+EXECUTE get_user(42);   -- cache hit — no DB call
+```
+
+Batch pipelines (sending many `Parse → Bind → Execute → Sync` cycles in one TCP write) are coalesced by the proxy's mio event loop — pipeline throughput is fully preserved.
+
+## Dual Mode vs Cache-Only
+
+**Dual mode** (default) — the proxy auto-populates the cache on the first miss. No warm-up logic needed; cold apps just work.
+
+```bash
+FYRODB_PROXY_MODE=dual
+FYRODB_PROXY_UPSTREAM_URL=postgres://user:pass@db:5432/mydb
+```
+
+**Cache-only mode** — misses return an explicit error instead of going to the database. Use this when your application pre-warms the cache at startup and you need completely predictable latency with no surprise database calls.
+
+```bash
+FYRODB_PROXY_MODE=cache-only
+# No FYRODB_PROXY_UPSTREAM_URL needed — any miss is an immediate error
+```
+
+Cache-only is also the right choice when FyroDB is your primary database (backed by the KV engine) and you use the proxy purely as a query-result serving layer.
+
+## Proxy-Only Mode
+
+If you only need the PostgreSQL query caching proxy — no Redis KV, no RESP port — you can run FyroDB in proxy-only mode. The KV engine still starts internally (the proxy cache uses the same store), but you simply don't expose or use the KV port.
+
+### Minimal proxy-only config
+
+```bash
+docker run -d \
+  -p 5432:5432 \
+  -e FYRODB_PROXY_ENABLED=true \
+  -e FYRODB_PROXY_PORT=5432 \
+  -e FYRODB_PROXY_UPSTREAM_URL=postgres://user:pass@db:5432/mydb \
+  -e FYRODB_PROXY_TRUST_AUTH=true \
+  -e FYRODB_PROXY_WORKERS=4 \
+  -e FYRODB_PROXY_CACHE_TTL_MS=60000 \
+  -e FYRODB_PROXY_CACHE_MAX_KEYS=500000 \
+  rana718/fyrodb:latest
+# KV port 8000 is running but not exposed — ignore it
+```
+
+### Docker Compose — proxy only
+
+```yaml
+services:
+  app:
+    build: .
+    environment:
+      DATABASE_URL: postgres://appuser:secret@fyrodb:5432/mydb
+
+  fyrodb:
+    image: rana718/fyrodb:latest
+    ports:
+      - "5432:5432"    # only expose the proxy port
+    environment:
+      FYRODB_PROXY_ENABLED: "true"
+      FYRODB_PROXY_PORT: "5432"
+      FYRODB_PROXY_UPSTREAM_URL: postgres://appuser:secret@postgres:5432/mydb
+      FYRODB_PROXY_TRUST_AUTH: "true"
+      FYRODB_PROXY_WORKERS: "4"
+      FYRODB_PROXY_CACHE_TTL_MS: "60000"
+      FYRODB_PROXY_CACHE_MAX_KEYS: "500000"
+      FYRODB_PROXY_BLOCKING_POOL: "16"
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: appuser
+      POSTGRES_PASSWORD: secret
+      POSTGRES_DB: mydb
+```
+
+### Docker Compose — proxy only, cache-only (no upstream, pre-warmed)
+
+Use this when your app populates the cache via the FyroDB API and queries only ever come from cache — no database needed at all:
+
+```yaml
+services:
+  fyrodb:
+    image: rana718/fyrodb:latest
+    ports:
+      - "5432:5432"
+    environment:
+      FYRODB_PROXY_ENABLED: "true"
+      FYRODB_PROXY_PORT: "5432"
+      FYRODB_PROXY_MODE: "cache-only"
+      FYRODB_PROXY_TRUST_AUTH: "true"
+      FYRODB_PROXY_WORKERS: "4"
+      FYRODB_PROXY_CACHE_MAX_KEYS: "1000000"
+      FYRODB_PROXY_CACHE_TTL_MS: "0"        # 0 = never expire, app controls TTL
+      FYRODB_PROXY_FLUSH_ON_START: "false"  # keep cache across restarts
+    volumes:
+      - fyrodb-data:/data
+    restart: unless-stopped
+
+volumes:
+  fyrodb-data:
+```
+
+### Proxy-only env var reference
+
+The minimal set of variables for a production proxy-only deployment:
+
+| Variable | Recommended value | Why |
+|---|---|---|
+| `FYRODB_PROXY_ENABLED` | `true` | enables the proxy |
+| `FYRODB_PROXY_PORT` | `5432` | standard Postgres port |
+| `FYRODB_PROXY_UPSTREAM_URL` | your DB URL | omit for cache-only mode |
+| `FYRODB_PROXY_TRUST_AUTH` | `true` | skip SCRAM on internal networks |
+| `FYRODB_PROXY_WORKERS` | `num_cpus / 2` | mio event loop threads |
+| `FYRODB_PROXY_CACHE_TTL_MS` | `30000`–`60000` | result freshness window |
+| `FYRODB_PROXY_CACHE_MAX_KEYS` | `100000`–`1000000` | tune to your query surface |
+| `FYRODB_PROXY_BLOCKING_POOL` | `16` | upstream / miss thread pool |
+| `FYRODB_PROXY_MODE` | `dual` or `cache-only` | fallback behaviour on miss |
+
+## Per-Session Context Fingerprinting
+
+Session-level settings — `search_path`, `timezone`, `datestyle`, `client_encoding`, and others — are probed on connection and mixed into every cache key for that session. A query under `search_path = myschema` and the same query under `search_path = public` produce different fingerprints and are cached separately. Changing `SET search_path` mid-session is handled correctly — the fingerprint updates and the next query is treated as a miss against the new context.
+
+## Cache Purge
+
+FyroDB's proxy cache and KV engine share the same in-memory store. Proxy results are stored under the key prefix `db:` (configurable via `FYRODB_PROXY_KEY_PREFIX`). This means you have precise control over what you purge.
+
+### Purge only the proxy cache (keep KV data)
+
+Use standard Redis commands targeting the proxy key prefix:
+
+```bash
+# Scan and delete all proxy-cached query results
+redis-cli -p 8000 --scan --pattern "db:*" | xargs redis-cli -p 8000 DEL
+
+# Or with a pipeline for speed on large caches
+redis-cli -p 8000 --scan --pattern "db:*" | \
+  xargs -L 100 redis-cli -p 8000 DEL
+```
+
+### Purge everything — both KV and proxy cache
+
+`FLUSHALL` clears the entire shared store in one command:
+
+```bash
+# Wipes all KV keys AND all proxy-cached query results
+redis-cli -p 8000 FLUSHALL
+```
+
+Or via the `FYRODB_PROXY_FLUSH_ON_START` env var — proxy cache is cleared automatically every time FyroDB starts:
+
+```bash
+FYRODB_PROXY_FLUSH_ON_START=true
+```
+
+### Purge a specific table's cached results
+
+When you need to manually invalidate results for a specific table (e.g. after a bulk load outside of FyroDB):
+
+```bash
+# Invalidate everything that touched the "users" table
+redis-cli -p 8000 --scan --pattern "db:*users*" | xargs redis-cli -p 8000 DEL
+```
+
+### Purge from application code
+
+Since the proxy cache is accessible via the standard Redis protocol, any Redis client can purge it:
+
+```python
+import redis
+
+r = redis.Redis(host="fyrodb", port=8000)
+
+# Purge all proxy cache
+for key in r.scan_iter("db:*"):
+    r.delete(key)
+
+# Purge single table
+for key in r.scan_iter("db:*users*"):
+    r.delete(key)
+
+# Purge everything (KV + proxy)
+r.flushall()
+```
+
+```typescript
+import { createClient } from "redis"
+
+const r = createClient({ url: "redis://fyrodb:8000" })
+
+// Purge all proxy cache
+for await (const key of r.scanIterator({ MATCH: "db:*" })) {
+  await r.del(key)
+}
+
+// Purge everything (KV + proxy)
+await r.flushAll()
+```
+
+## Verifying the Cache Is Working
+
+Connect with `psql` directly through the proxy and run `EXPLAIN`:
+
+```bash
+psql postgres://appuser:secret@localhost:5432/mydb
+```
+
+```sql
+-- First call: goes to Postgres (you'll see normal query latency)
+SELECT id, name FROM users WHERE id = 42;
+
+-- Second call: served from cache — latency drops to ~1 µs
+SELECT id, name FROM users WHERE id = 42;
+```
+
+Check hit/miss counters via the KV engine's `INFO` command:
+
+```bash
+redis-cli -p 8000 INFO stats
+# proxy_cache_hits: 1842301
+# proxy_cache_misses: 4102
+```
+
+## Quick Start
+
+### Docker Compose
+
+```yaml
+services:
+  app:
+    build: .
+    depends_on: [fyrodb, postgres]
+    environment:
+      REDIS_URL: redis://fyrodb:8000          # KV / sessions / queues
+      DATABASE_URL: postgres://appuser:secret@fyrodb:5432/mydb   # proxied Postgres
+
+  fyrodb:
+    image: rana718/fyrodb:latest
+    ports:
+      - "8000:8000"    # KV / Redis-compatible
+      - "5432:5432"    # DB Cache Proxy (PostgreSQL wire protocol)
+    environment:
+      # KV engine
+      FYRODB_PORT: "8000"
+      FYRODB_MAX_KEYS: "5000000"
+      FYRODB_RDB_PATH: /data/fyrodb.rdb
+      # DB Cache Proxy
+      FYRODB_PROXY_ENABLED: "true"
+      FYRODB_PROXY_PORT: "5432"
+      FYRODB_PROXY_UPSTREAM_URL: postgres://appuser:secret@postgres:5432/mydb
+      FYRODB_PROXY_CACHE_TTL_MS: "30000"
+      FYRODB_PROXY_TRUST_AUTH: "true"
+      FYRODB_PROXY_WORKERS: "2"
+    volumes:
+      - fyrodb-data:/data
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: appuser
+      POSTGRES_PASSWORD: secret
+      POSTGRES_DB: mydb
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+
+volumes:
+  fyrodb-data:
+  pg-data:
+```
+
+### Bare Docker
+
+```bash
+docker run -d \
+  -p 8000:8000 \
+  -p 5432:5432 \
+  -e FYRODB_PROXY_ENABLED=true \
+  -e FYRODB_PROXY_UPSTREAM_URL=postgres://user:pass@your-db:5432/mydb \
+  -e FYRODB_PROXY_TRUST_AUTH=true \
+  -e FYRODB_PROXY_CACHE_TTL_MS=30000 \
+  rana718/fyrodb:latest
+```
+
+Point your app at port `5432`. The proxy starts caching immediately. No warm-up, no code changes, no schema changes.
+
+## Performance
+
+All numbers on a 6-core Intel i5-11400H (12 hardware threads), no upstream database involved for cache-hit benchmarks.
+
+| Benchmark                         | Throughput        |
+| --------------------------------- | ----------------- |
+| In-memory cache lookup            | ~10M ops/sec      |
+| Encoded cache (wire-format)       | ~7.6M ops/sec     |
+| Simple query TCP (cache hit)      | ~7.6M ops/sec     |
+| Extended protocol TCP (cache hit) | ~5M ops/sec       |
+
+The mio event loop multiplexes thousands of connections on a fixed thread count (`FYRODB_PROXY_WORKERS`). Adding more concurrent clients does not add threads.
+
+## Architecture
+
+The proxy runs as a set of independent mio worker threads, each owning a private epoll instance. The KV engine's worker threads have their own epoll instances. The two never share an event loop — a slow upstream connection in the proxy cannot delay a KV GET, and a large KV scan cannot delay proxy latency.
+
+For upstream operations (initial authentication, cache misses) the proxy uses a bounded blocking thread pool separate from the event loop threads. Cache-hit traffic — the dominant steady-state workload — is handled entirely within the mio threads with no blocking and no thread handoff.
+
+## Configuration Reference
+
+See the [Configuration](/docs/configuration) page for the full list of `FYRODB_PROXY_*` environment variables and sizing guidance.

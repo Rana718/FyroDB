@@ -2,7 +2,7 @@
 
 Thank you for your interest in contributing to FyroDB! 🎉
 
-FyroDB is a high-performance, Redis-compatible in-memory key-value database built in Rust. Performance, low latency, lock-free concurrency, and minimal resource footprints are core project goals.
+FyroDB is a high-performance system combining two engines: a Redis-compatible in-memory key-value store (RESP2/RESP3) and a PostgreSQL query caching proxy (full wire protocol). Both run in the same Rust binary. Performance, low latency, lock-free concurrency, and minimal resource footprints are core project goals.
 
 Please review this guide before submitting issues or pull requests.
 
@@ -169,7 +169,7 @@ FyroDB is designed to outperform standard Redis instances by 2× to 16×. When t
 - For internal associative collections (e.g. within stored values, sets, stream groups, connection maps), use `foldhash::HashMap` / `foldhash::HashSet` rather than `std::collections::HashMap` with SipHash.
 - `foldhash` provides 20–40% faster hashing for trusted keys and avoids duplicate hash machinery monomorphisation.
 
-### Adding a New Command
+### Adding a New KV Command
 
 When adding or expanding Redis commands:
 1. **Define the command enum**: Add the variant and uppercase string to `string_enum!` in `src/commands/mod.rs`. (Command resolution is $O(1)$ via a static `foldhash` map).
@@ -177,6 +177,21 @@ When adding or expanding Redis commands:
 3. **Implement command handler**: Add the parameter parsing and response generation in `src/commands/<type>.rs`.
 4. **Hot-path dispatch (optional)**: If the command is high-frequency, add a first-byte fast-path check in `src/handler/dispatch.rs`.
 5. **Add tests**: Create comprehensive test cases under `tests/<type>.rs`.
+
+### Working on the DB Cache Proxy
+
+The proxy lives entirely in `crates/fyro-dbcache/`. Key files:
+
+- `src/proxy/mio_worker.rs` — the mio event loop: `ReadBuf`/`WriteBuf`, `ProxyConn` state machine, `BlockingPool`, `run_proxy_worker()`
+- `src/proxy/session.rs` — upstream connection handling and `handle_sync` with `flush_out_batched`
+- `src/cache/encoded.rs` — PostgreSQL wire-format cache hit serving
+- `src/query.rs` — SQL fingerprinting and table extraction
+
+Guidelines:
+- Cache-hit traffic must stay inline inside the mio event loop — never hand a hit to the blocking pool.
+- `flush_out_batched` in `session.rs` must coalesce writes up to `RELAY_FLUSH_BYTES` (32KB) — do not replace it with a direct `flush_out()` call on any hot path.
+- Tests live in `tests/dbcache_proxy_e2e.rs`. Tests that use pre-stored cache entries must use `start_with(DbProxyMode::Dual, None)` (no upstream) so `context_hash = 0` and fingerprints match stored entries.
+- Extended-protocol tests: do not call `read_until_ready()` after `client.parse()` — `ParseComplete` coalesces with the first `Sync` response.
 
 ### Binary Size Discipline
 

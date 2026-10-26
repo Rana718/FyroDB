@@ -6,11 +6,17 @@ order: 1
 
 ## What is FyroDB?
 
-FyroDB is a Redis-compatible in-memory key-value store written in Rust. It speaks the RESP protocol — any Redis client, SDK, or CLI tool works without modification.
+FyroDB is two things in one binary:
 
-Unlike Redis (single-threaded), FyroDB uses **all CPU cores** via a thread-per-core architecture with a fully lock-free concurrent hash map and per-key seqlock. A single FyroDB node outperforms a 6-node Redis Cluster on every workload while consuming lower memory and less CPU.
+1. **A Redis-compatible in-memory KV store** — speaks RESP, works with every Redis client, SDK, and CLI tool without modification. Uses all CPU cores via a thread-per-core mio event loop and a fully lock-free concurrent hash map. A single FyroDB node outperforms a 6-node Redis Cluster on every workload.
+
+2. **A PostgreSQL query caching proxy** — sits in front of any PostgreSQL database and intercepts SELECT queries. Cache hits are served directly from memory over the PostgreSQL wire protocol at 5M+ ops/sec, completely bypassing the database. The proxy speaks full PostgreSQL wire protocol (simple query + extended protocol / prepared statements), so your existing drivers and ORMs connect without any code changes.
+
+Both engines run in the same process with independent event loops — the KV engine never blocks the proxy and vice versa.
 
 ## Key Features
+
+### KV Engine
 
 - **Redis-compatible** — drop-in replacement, supports all major data types and 150+ commands
 - **Lock-free reads** — epoch-based reclamation, seqlock validation for iteration safety
@@ -22,7 +28,18 @@ Unlike Redis (single-threaded), FyroDB uses **all CPU cores** via a thread-per-c
 - **RDB persistence** — automatic snapshots, atomic saves, crash-safe
 - **Pub/Sub** — 113.98M msg/sec delivery with lock-free Arc snapshots
 
+### DB Cache Proxy
+
+- **PostgreSQL query cache** — proxy mode sits between your app and Postgres, caches SELECT results, serves hits at 5M+ ops/sec without touching the database
+- **Table-aware invalidation** — cached results are invalidated automatically when the underlying tables change; INSERT/UPDATE/DELETE/DDL on `users` immediately drops all cached results that touched `users`
+- **Extended protocol support** — prepared statements and parameterized queries are fully cached; parameters become part of the cache key fingerprint
+- **mio event loop per proxy thread** — thousands of connections multiplexed on a fixed number of threads, no thread-per-connection overhead
+- **Per-session context fingerprinting** — `search_path`, timezone, and other session settings are mixed into cache keys, preventing cross-session cache confusion
+- **SCRAM auth + connection pool** — authenticates against upstream PostgreSQL and reuses connections across clients
+
 ## Performance
+
+### KV Engine
 
 | Benchmark | FyroDB (1 node) | Redis Cluster (12 nodes) | Speedup |
 | ------------------------- | ------------------- | ------------------------ | ------- |
@@ -55,6 +72,17 @@ Unlike Redis (single-threaded), FyroDB uses **all CPU cores** via a thread-per-c
 Tested on a 6-core Intel i5-11400H (12 hardware threads): one FyroDB node against a 12-node Redis Cluster (13 containers).
 
 † Redis Cluster does not distribute vector or graph operations across nodes — those benchmarks ran against a single Redis node.
+
+### DB Cache Proxy
+
+| Benchmark                        | Throughput       |
+| -------------------------------- | ---------------- |
+| In-memory cache lookup           | ~10M ops/sec     |
+| Encoded cache (wire-format)      | ~7.6M ops/sec    |
+| Simple query TCP (cache hit)     | ~7.6M ops/sec    |
+| Extended protocol TCP (cache hit)| ~5M ops/sec      |
+
+Cache hits never touch the upstream database. Numbers measured on a 6-core Intel i5-11400H.
 
 ## Links
 

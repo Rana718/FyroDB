@@ -2,7 +2,11 @@
 
 ## Overview
 
-FyroDB is a Redis-compatible in-memory key-value store written in Rust. It speaks the RESP wire protocol so any Redis client works out of the box. It uses a thread-per-core event loop architecture, a lock-free concurrent hash map with epoch-based reclamation and per-key seqlock, zero-copy RESP parsing, and direct-write response building. Vector, full-text and hybrid search (the `FT.*` family) run on a separate persistent thread pool so heavy queries never stall the network workers.
+FyroDB is a two-engine system in a single Rust binary:
+
+**KV Engine** — Redis-compatible in-memory key-value store. Speaks RESP2/RESP3 so any Redis client works unchanged. Uses a thread-per-core mio event loop, a lock-free concurrent hash map with epoch-based reclamation and per-key seqlock, zero-copy RESP parsing, and direct-write response building. Vector, full-text and hybrid search (`FT.*`) run on a separate persistent thread pool so heavy queries never stall the network workers.
+
+**DB Cache Proxy** — PostgreSQL wire-protocol caching proxy. Applications connect to it exactly as they would to PostgreSQL (no driver or code changes). The proxy serves `SELECT` results from the shared in-memory store in ~1 µs. Misses are forwarded to the real upstream, results cached, and served instantly on every subsequent call. Both engines run with fully independent mio event loops — neither can block the other.
 
 ---
 
@@ -524,7 +528,137 @@ if the process dies between those steps.
 
 ---
 
-## Source Layout
+## DB Cache Proxy
+
+### Two-Engine Independence
+
+The KV workers (RESP engine) and the proxy workers each have their own `mio::Poll` instance running on independent OS threads. There is no shared epoll fd. A slow upstream PostgreSQL connection in the proxy cannot delay a KV `GET`, and a large KV scan cannot delay proxy latency. The only resource they share is the `CustomMap` store where proxy-cached query results live (under the `db:` key prefix).
+
+```
+┌─────────────────────────────────────────────────────┐
+│ FyroDB process                                       │
+│                                                      │
+│  KV Worker 0  KV Worker 1  …  KV Worker N           │
+│  [mio::Poll]  [mio::Poll]     [mio::Poll]            │
+│        │              │                              │
+│        └──────────────┼──────────────────────────┐  │
+│                       │                           │  │
+│                  CustomMap (shared)                │  │
+│                       │                           │  │
+│        ┌──────────────┘                           │  │
+│  Proxy Worker 0  Proxy Worker 1  …  Proxy Worker M │  │
+│  [mio::Poll]     [mio::Poll]        [mio::Poll]    │  │
+└─────────────────────────────────────────────────────┘
+```
+
+### mio Event Loop per Proxy Worker
+
+Each proxy worker thread calls `run_proxy_worker()`, which owns:
+
+- One `TcpListener` bound with `SO_REUSEPORT` — the kernel distributes accepted connections across all workers with no userspace coordination.
+- One `mio::Poll` driving all connections on that thread.
+- One `BlockingPool` reference for upstream/miss work.
+
+Token layout:
+
+```
+Token(0) = LISTENER_TK   — new accept events
+Token(1) = WAKER_TK      — wakeup from BlockingPool completions
+Token(id + 2) = connection slot id (CONN_BASE = 2)
+```
+
+The event loop reads all ready events in one batch, drains all readable frames per connection, then does one coalescing flush per connection. A write buffer is flushed when `wbuf.len() >= RELAY_FLUSH_BYTES` (32KB) or when the read buffer is empty (pipeline drained). This keeps the flush inside L2 cache (~128KB/2 threads per core = 64KB headroom per thread).
+
+### ProxyConn State Machine
+
+Each accepted connection moves through four states:
+
+```
+Startup ──► Active ──► Dead
+   │
+   └──► Offloaded ──► (BlockingPool owns the socket) ──► Dead
+```
+
+| State | Description |
+|---|---|
+| `Startup` | Initial state. The worker reads the PostgreSQL startup message, checks credentials, and probes session context (`search_path`, `timezone`, etc.) to build `context_hash`. |
+| `Active(Box<ActiveState>)` | Normal operation. The mio thread handles all I/O inline. Cache hits are served without leaving the event loop thread. |
+| `Offloaded` | On the first connection or any cache miss, the TCP socket is converted to blocking (`into_std()` + `set_nonblocking(false)`) and handed to `BlockingPool` which calls `session::handle_client`. The mio slot remains registered; a `Waker` notifies the event loop when the blocking thread completes. |
+| `Dead` | Connection closed or errored. The mio slot is deregistered and the slot freed. |
+
+### ReadBuf / WriteBuf
+
+Non-blocking I/O requires buffering partial reads and partial writes:
+
+- **`ReadBuf`**: staging area for incoming bytes. Supports compaction (`consume(n)` shifts remaining bytes to front with `copy_within`) so the frame parser always sees a contiguous buffer.
+- **`WriteBuf`**: output staging. Accumulates encoded PostgreSQL frames. `flush_pending()` calls `write()` and tracks how many bytes were actually sent, allowing resumption on the next writable event without retransmission.
+
+### Fast Path vs Slow Path
+
+```
+Incoming query
+       │
+       ▼
+fingerprint = normalize(SQL) ^ encode(params) ^ context_hash
+       │
+  cache probe (CustomMap, lock-free tag-filtered)
+       │
+  ┌────┴──────────────────────────────────┐
+  │ HIT                                   │ MISS (or Startup)
+  ▼                                       ▼
+encoded.rs: serialize wire frames    BlockingPool thread:
+into WriteBuf directly                  connect upstream (blocking)
+                                        execute query
+No thread handoff.                      cache result in CustomMap
+No blocking pool.                       return socket to mio via Waker
+~1 µs, stays on mio thread.
+```
+
+Cache-hit traffic — the dominant steady-state path — is handled entirely inline in the mio worker. No thread pool, no mutex, no context switch.
+
+### Session Context Fingerprinting
+
+PostgreSQL session settings (`search_path`, `timezone`, `datestyle`, `client_encoding`) affect query semantics. On every new connection the proxy probes these settings from the upstream, computes `context_hash = mix64(settings)`, and XORs it into every cache key fingerprint for that session.
+
+```
+effective_fingerprint = mix64(base_fingerprint ^ context_hash)
+```
+
+When `context_hash = 0` (no upstream, or settings are default), `effective_fingerprint = base_fingerprint`. This lets test code with no upstream store and retrieve entries using bare fingerprints.
+
+### Cache Key Structure and Invalidation
+
+Proxy results are stored in the shared `CustomMap` under:
+
+```
+db:<fingerprint_hex>
+```
+
+The default prefix `db:` is configurable via `FYRODB_PROXY_KEY_PREFIX`. Each cached entry also carries a set of table names extracted from the SQL at fingerprint time.
+
+**Table-aware invalidation**: When the proxy forwards a write (INSERT, UPDATE, DELETE, DDL) to the upstream, it parses the affected table name(s) and atomically deletes every cached entry whose table set intersects. This keeps reads consistent after writes without manual cache invalidation by the application.
+
+Multi-table queries (JOINs, CTEs) are invalidated when any of their referenced tables receive a write.
+
+### flush_out_batched
+
+`session.rs` exposes two flush functions:
+
+- `flush_out()` — flush immediately (used only for error replies and initial handshake).
+- `flush_out_batched()` — flush only when `out.len() >= RELAY_FLUSH_BYTES` or when the read buffer is exhausted. Used by `handle_sync` on every response path.
+
+**Invariant**: `flush_out_batched` must be used on every hot-path `handle_sync` call. Replacing it with `flush_out()` cuts extended-protocol throughput by ~60% (3.89M → 1.57M ops/sec) because each reply triggers a separate syscall.
+
+### Performance Characteristics
+
+| Path | Throughput | What happens |
+|---|---|---|
+| Cache hit (simple query) | ~7.6M ops/sec | mio thread, inline, no blocking |
+| Cache hit (extended protocol) | ~5M ops/sec | mio thread, inline, coalesced Sync flush |
+| Cache miss (first query) | upstream latency + ~1 µs store | BlockingPool, one time per SQL pattern |
+| In-memory lookup (no TCP) | ~10M ops/sec | raw CustomMap probe |
+
+---
 
 ```
 src/
@@ -566,6 +700,22 @@ src/
 ├── pubsub/                 Arc-snapshot registry, per-subscriber queues, frames
 ├── cluster/                Slot routing, topology, replication, cluster bus
 └── utils/                  RESP parser (resumable), RESP builders, affinity, glob/float utils
+
+crates/fyro-dbcache/src/
+├── lib.rs                  start_proxy_listener / start_proxy_listener_mio, public re-exports
+├── config.rs               DbCacheConfig: proxy_port, upstream_url, workers, ttl, trust_auth, etc.
+├── query.rs                SQL fingerprinting (normalize, params, context_hash → u64), table extraction
+├── cache/
+│   ├── mod.rs              Cache lookup/store, key prefix (db:), TTL, table invalidation
+│   ├── encoded.rs          Serialize cached result rows directly into PostgreSQL wire frames
+│   └── util.rs             Fingerprint mixing, effective_fingerprint, context_hash helpers
+└── proxy/
+    ├── mod.rs              start_proxy_listener (thread-per-connection), start_proxy_listener_mio (SO_REUSEPORT N-worker)
+    ├── mio_worker.rs       ReadBuf, WriteBuf, ProxyConn (Startup/Active/Offloaded/Dead), BlockingPool,
+    │                       ActiveState (inline cache-hit handler for Q/P/B/E/S/D/C/X frames),
+    │                       run_proxy_worker() — one mio event loop per thread
+    └── session.rs          handle_client (blocking, used by BlockingPool for upstream path),
+                            handle_sync, flush_out / flush_out_batched (RELAY_FLUSH_BYTES = 32KB)
 
 crates/customhash/src/
 ├── lib.rs                  Public CustomMap API, write observer, prefetch_batch
@@ -677,7 +827,14 @@ Direct benchmark execution and latency profile on a 6-core Intel i5-11400H (12 h
    - **Lock-Free Arc Snapshots**: Subscribers are stored in copy-on-write `Arc` vectors. A publisher clones the `Arc` pointer with a single atomic increment (zero locks).
    - **Batched Crossbeam SegQueues**: Delivered messages are wrapped in a single shared `Arc<Frame>` and enqueued into lock-free worker queues, avoiding per-subscriber message payload copying.
 
-7. **Vector Search & AI Engine (4.9k KNN queries/sec, ~205 µs)**:
+7. **DB Cache Proxy Fast Path (~7.6M simple / ~5M extended, ~1 µs)**:
+   - **mio multiplexing**: Each proxy worker thread owns one `mio::Poll` and drives thousands of connections. No thread spawning per connection; N worker threads handle the entire concurrent connection pool.
+   - **Inline cache-hit serving**: `ActiveState` handles all PostgreSQL wire-protocol message types (simple `Q`, extended `P/B/E/S`, `D/C/X`) inside the mio event loop thread — no blocking pool involvement, no context switch.
+   - **Coalescing flush (`flush_out_batched`)**: `handle_sync` accumulates response frames in `WriteBuf` and flushes only when `wbuf.len() >= 32KB` or the read buffer is drained. One `write(2)` syscall covers an entire pipeline batch instead of one per response, giving a 2.5× throughput improvement on extended-protocol pipelines vs per-response flush.
+   - **SO_REUSEPORT**: Each proxy worker thread binds its own `TcpListener` to the same port. The kernel distributes accepted connections across workers with no userspace accept queue lock — same pattern as the KV engine.
+   - **ParseComplete coalescing**: In the extended protocol, `ParseComplete` is buffered without flushing. It reaches the client bundled with the first `ReadyForQuery` from the following `Sync`, eliminating a round-trip latency between `Parse` and `Execute`.
+
+8. **Vector Search & AI Engine (4.9k KNN queries/sec, ~205 µs)**:
    - **Persistent Pinned Pool**: CPU-heavy vector searches are offloaded to dedicated pool threads via lock-free `crossbeam::SegQueue<Job>` priority tiers.
    - **Thread-Local Scratch**: Traversal visited bitsets, candidate priority queues, and Int8 quantized query codes use pre-allocated thread-local `Scratch` memory, completely eliminating allocations on the query path.
    - **Arena Milestone Shrinking**: The graph arena releases excess memory at power-of-two milestones, keeping the graph nodes dense in L2/L3 cache.
@@ -747,6 +904,12 @@ Direct benchmark execution and latency profile on a 6-core Intel i5-11400H (12 h
 | Index maintenance per write   | O(1) + O(fields) at query | Write hook marks the key dirty; the next query applies exactly the dirty keys                      |
 | Value defragmentation         | O(budget)                                                                                                  | Cursor walks one shard per tick and rebuilds at most `budget` values                                                              |
 | `used_memory`                 | O(S)                                                                                                       | Sums S per-CPU allocation stripes                                                                                                 |
+| Proxy cache hit (simple Q)    | O(1) lookup + O(R) encode | R = result rows; tag-filtered CustomMap probe + serialize wire frames into WriteBuf inline on mio thread  |
+| Proxy cache hit (extended)    | O(1) lookup + O(R) encode | Parse/Bind/Execute/Sync handled by `ActiveState`; `ParseComplete` coalesces with first `Sync` flush       |
+| Proxy cache miss              | O(1) store after upstream | `BlockingPool` thread forwards to upstream, receives rows, stores under `db:<fingerprint>`; subsequent calls are O(1) hits        |
+| Proxy SQL fingerprint         | O(B)                      | B = query bytes; normalize whitespace, lowercase, extract table names, mix params + context_hash into u64 |
+| Proxy table invalidation      | O(E_t)                    | E_t = cached entries that reference the written table; deleted atomically via key prefix scan on write     |
+| Proxy session context probe   | O(1) per connection       | Probes `search_path`, `timezone`, etc. once at startup; mixed into context_hash, valid for connection lifetime |
 
 ### Data Structures Used
 
@@ -775,3 +938,8 @@ Direct benchmark execution and latency profile on a 6-core Intel i5-11400H (12 h
 | Search dirty sets      | 16 sharded `HashSet` stripes per index                                    | Write hook stays cheap under concurrency; overflow falls back to a rebuild                                |
 | Blocked clients        | `HashMap<key, Vec<Waiter>>` + per-worker deadline heap                    | Wake only the waiters of the written key; timeouts bound the poll                                         |
 | AOF                    | Per-thread append files, sequence-numbered state records                  | No cross-thread contention; replay is a k-way merge                                                       |
+| Proxy cached results   | CustomMap under `db:<fingerprint>` key prefix                             | Reuses the KV engine's lock-free store; purge via SCAN + DEL or FLUSHALL                                  |
+| Proxy conn state       | `ProxyConn` enum (Startup / Active / Offloaded / Dead) per mio token      | Zero-allocation state transitions; `Active` holds a boxed `ActiveState` only while the connection is live  |
+| Proxy read/write bufs  | `ReadBuf` / `WriteBuf` (heap-allocated, per-connection)                   | Contiguous staging for partial reads and partial writes; compacted with `copy_within` on consume           |
+| Proxy blocking pool    | `Arc<BlockingPool>` — bounded OS thread pool                              | Reuses existing `session::handle_client`; cache-hit traffic never enters the pool                          |
+| Proxy token map        | Slab-style `Vec<Option<ProxyConn>>` indexed by `token.0 - CONN_BASE`     | O(1) connection lookup on every mio event; no HashMap                                                     |
