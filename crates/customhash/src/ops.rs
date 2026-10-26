@@ -28,7 +28,7 @@ fn walk_shard<V: Clone + Send + Sync + 'static>(shard: &Shard<V>, f: &mut impl F
    let mut index = 0;
    while index < slots.len() {
       if let Some(ahead) = slots.get(index + LOOKAHEAD) {
-         let entry = ahead.load(Ordering::Acquire);
+         let entry = ahead.load(Ordering::Relaxed);
          if !entry.is_null() {
             prefetch(entry.cast::<u8>());
             // Address-of computes a field offset without loading; the entry
