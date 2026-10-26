@@ -1,7 +1,7 @@
 # Build stage
 FROM rust:alpine AS builder
 
-RUN apk add --no-cache musl-dev make
+RUN apk add --no-cache musl-dev make pkgconfig openssl-dev openssl-libs-static
 
 WORKDIR /app
 
@@ -29,7 +29,7 @@ RUN touch src/main.rs src/lib.rs && \
 # Runtime stage
 FROM alpine:latest
 
-RUN apk add --no-cache ca-certificates netcat-openbsd redis \
+RUN apk add --no-cache ca-certificates netcat-openbsd redis libssl3 libcrypto3 \
     && addgroup -S fyrodb && adduser -S fyrodb -G fyrodb \
     && mkdir -p /data && chown fyrodb:fyrodb /data
 
