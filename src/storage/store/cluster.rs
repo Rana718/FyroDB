@@ -340,7 +340,8 @@ impl Store {
             handles.push(scope.spawn(move || {
                let mut local = 0usize;
                data.for_each_shard_range(from, to, |key, value| {
-                  if !value.is_expired_at(now) && crate::cluster::hash_slot(key.as_bytes()) == slot {
+                  if !value.is_expired_at(now) && crate::cluster::hash_slot(key.as_bytes()) == slot
+                  {
                      local += 1;
                   }
                });
@@ -396,7 +397,8 @@ impl Store {
                   if global.load(Ordering::Relaxed) >= limit {
                      return;
                   }
-                  if !value.is_expired_at(now) && crate::cluster::hash_slot(key.as_bytes()) == slot {
+                  if !value.is_expired_at(now) && crate::cluster::hash_slot(key.as_bytes()) == slot
+                  {
                      found.push(key.to_owned());
                      global.fetch_add(1, Ordering::Relaxed);
                   }
@@ -412,7 +414,6 @@ impl Store {
       keys.truncate(limit);
       keys
    }
-
 
    /// Updates the replica applied offset in memory.
    #[inline]
