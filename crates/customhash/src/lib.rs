@@ -1289,7 +1289,7 @@ fn prefetch_line<T>(p: *const T) {
 fn prefetch_line_write<T>(p: *const T) {
    #[cfg(target_arch = "x86_64")]
    unsafe {
-      std::arch::x86_64::_mm_prefetch::<{ std::arch::x86_64::_MM_HINT_ET0 }>(p.cast());
+      std::arch::x86_64::_mm_prefetch::<{ std::arch::x86_64::_MM_HINT_T0 }>(p.cast());
    }
    #[cfg(target_arch = "aarch64")]
    unsafe {
