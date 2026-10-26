@@ -235,7 +235,8 @@ impl SmallStr {
       if len < 10 {
          let old_len = out.len();
          let total = 6 + len;
-         if out.capacity() < old_len + total {
+         let needed = (old_len + 12).max(old_len + total);
+         if out.capacity() < needed {
             crate::utils::resp::write_bulk(out, self.as_str());
             return;
          }

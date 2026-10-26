@@ -217,7 +217,7 @@ pub(super) fn dispatch_get_run(conn: &mut Conn<'_>, first_key: (*const u8, usize
       let p = entries[i];
       if !p.is_null() {
          let e = unsafe { &*p.cast::<customhash::Entry<crate::storage::value::StoreValue>>() };
-         let state = e.state.load(std::sync::atomic::Ordering::Relaxed);
+         let state = e.state.load(std::sync::atomic::Ordering::Acquire);
          let expected = ((hashes[i] as u32 as u64) << 32) | customhash::STATE_OCCUPIED;
          if (state & customhash::STATE_MATCH_MASK) == expected && e.key.eq_bytes(keys[i]) {
             let val = unsafe { (*e.value.get()).assume_init_ref() };
