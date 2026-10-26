@@ -47,7 +47,6 @@ struct L1Entry {
 thread_local! {
    static L1_CACHE: std::cell::RefCell<[Option<L1Entry>; 256]> = const { std::cell::RefCell::new([const { None }; 256]) };
    static HIT_BATCH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
-   static LAST_ANALYZED: std::cell::RefCell<(*const u8, usize, Option<Arc<ParsedQuery>>)> = const { std::cell::RefCell::new((std::ptr::null(), 0, None)) };
 }
 
 #[inline(always)]
@@ -127,25 +126,7 @@ impl DbCacheManager {
 
    // Parses a statement at most once per process, regardless of client count.
    pub fn analyze(&self, sql: &str) -> Arc<ParsedQuery> {
-      let ptr = sql.as_ptr();
-      let len = sql.len();
-      if let Some(p) = LAST_ANALYZED.with(|cell| {
-         let b = cell.borrow();
-         if b.0 == ptr
-            && b.1 == len
-            && let Some(ref p) = b.2
-         {
-            return Some(Arc::clone(p));
-         }
-         None
-      }) {
-         return p;
-      }
-      let parsed = self.parsed.get_or_parse(sql);
-      LAST_ANALYZED.with(|cell| {
-         *cell.borrow_mut() = (ptr, len, Some(Arc::clone(&parsed)));
-      });
-      parsed
+      self.parsed.get_or_parse(sql)
    }
 
    // Prepared-statement fingerprint combining SQL text and bound values.
@@ -319,20 +300,23 @@ impl DbCacheManager {
       let mgr_id = self as *const _ as usize;
       let epoch = self.generation.load(Ordering::Relaxed);
       let idx = (fingerprint as usize) & 255;
-      if let Some(cached) = L1_CACHE.with(|c| {
-         let b = c.borrow();
-         if let Some(slot) = &b[idx]
-            && slot.manager_id == mgr_id
-            && slot.epoch == epoch
-            && slot.fp == fingerprint
-         {
-            let now = coarse_now_ms();
-            if slot.entry.expires_at_ms == 0 || slot.entry.expires_at_ms >= now {
-               return Some(Arc::clone(&slot.entry));
+      let is_local = self.storage.is_local();
+      if is_local
+         && let Some(cached) = L1_CACHE.with(|c| {
+            let b = c.borrow();
+            if let Some(slot) = &b[idx]
+               && slot.manager_id == mgr_id
+               && slot.epoch == epoch
+               && slot.fp == fingerprint
+            {
+               let now = coarse_now_ms();
+               if slot.entry.expires_at_ms == 0 || slot.entry.expires_at_ms >= now {
+                  return Some(Arc::clone(&slot.entry));
+               }
             }
-         }
-         None
-      }) {
+            None
+         })
+      {
          record_hit(&self.metrics);
          return Some(cached);
       }
@@ -384,20 +368,23 @@ impl DbCacheManager {
       let mgr_id = self as *const _ as usize;
       let epoch = self.generation.load(Ordering::Relaxed);
       let idx = (fingerprint as usize) & 255;
-      if let Some(res) = L1_CACHE.with(|c| {
-         let b = c.borrow();
-         if let Some(slot) = &b[idx]
-            && slot.manager_id == mgr_id
-            && slot.epoch == epoch
-            && slot.fp == fingerprint
-         {
-            let now = coarse_now_ms();
-            if slot.entry.expires_at_ms == 0 || slot.entry.expires_at_ms >= now {
-               return Some(Arc::clone(&slot.result));
+      let is_local = self.storage.is_local();
+      if is_local
+         && let Some(res) = L1_CACHE.with(|c| {
+            let b = c.borrow();
+            if let Some(slot) = &b[idx]
+               && slot.manager_id == mgr_id
+               && slot.epoch == epoch
+               && slot.fp == fingerprint
+            {
+               let now = coarse_now_ms();
+               if slot.entry.expires_at_ms == 0 || slot.entry.expires_at_ms >= now {
+                  return Some(Arc::clone(&slot.result));
+               }
             }
-         }
-         None
-      }) {
+            None
+         })
+      {
          record_hit(&self.metrics);
          return Some(res);
       }
