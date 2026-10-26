@@ -75,13 +75,12 @@ pub fn route_command_with_state_import<'a>(
    args: &[&[u8]],
    allow_import: bool,
 ) -> RouteDecision<'a> {
-   let topology = state.topology_arc();
-   let routing = super::RoutingTable::build(topology.as_ref());
+   let (topology, routing) = state.topology_and_routing_arc();
    route_command_with_snapshot(
       cluster,
       state,
       topology.as_ref(),
-      &routing,
+      routing.as_ref(),
       command,
       args,
       allow_import,

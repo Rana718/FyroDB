@@ -311,50 +311,17 @@ impl Store {
 
    pub fn count_keys_in_slot(&self, slot: crate::cluster::Slot) -> usize {
       let now = crate::storage::value::approx_now_ms();
-      self
-         .scan_slot_parallel(usize::MAX, |key, value| {
-            (!value.is_expired_at(now) && crate::cluster::hash_slot(key.as_bytes()) == slot)
-               .then_some(())
-         })
-         .len()
-   }
-
-   pub fn keys_in_slot(&self, slot: crate::cluster::Slot, limit: usize) -> Vec<String> {
-      let now = crate::storage::value::approx_now_ms();
-      let mut keys = self.scan_slot_parallel(limit, |key, value| {
-         if value.is_expired_at(now) || crate::cluster::hash_slot(key.as_bytes()) != slot {
-            return None;
-         }
-         Some(key.to_owned())
-      });
-      keys.truncate(limit);
-      keys
-   }
-
-   /// Shards are independent, so admin slot scans fan out across them instead
-   /// of walking the whole keyspace on one thread. Each thread stops
-   /// materializing items past `cap`, so a hot slot cannot blow up a bounded
-   /// GETKEYSINSLOT into a full copy of the slot.
-   fn scan_slot_parallel<T, F>(&self, cap: usize, scan: F) -> Vec<T>
-   where
-      T: Send,
-      F: Fn(&str, &StoreValue) -> Option<T> + Sync,
-   {
-      // A shard is the unit of work; more threads than shards only adds
-      // spawn cost, since a single shard's table is scanned sequentially.
-      const MAX_SCAN_THREADS: usize = 16;
       let shards = self.data.shard_count();
-      if shards < 2 || cap == 0 {
-         let mut found = Vec::new();
+      if shards < 2 {
+         let mut count = 0usize;
          self.data.for_each(|key, value| {
-            if found.len() < cap
-               && let Some(item) = scan(key, value)
-            {
-               found.push(item);
+            if !value.is_expired_at(now) && crate::cluster::hash_slot(key.as_bytes()) == slot {
+               count += 1;
             }
          });
-         return found;
+         return count;
       }
+      const MAX_SCAN_THREADS: usize = 16;
       let threads = std::thread::available_parallelism()
          .map_or(1, |count| count.get())
          .min(MAX_SCAN_THREADS)
@@ -370,14 +337,68 @@ impl Store {
                continue;
             }
             let data = &self.data;
-            let scan = &scan;
+            handles.push(scope.spawn(move || {
+               let mut local = 0usize;
+               data.for_each_shard_range(from, to, |key, value| {
+                  if !value.is_expired_at(now) && crate::cluster::hash_slot(key.as_bytes()) == slot {
+                     local += 1;
+                  }
+               });
+               local
+            }));
+         }
+         handles
+            .into_iter()
+            .map(|handle| handle.join().expect("slot count thread panicked"))
+            .sum()
+      })
+   }
+
+   pub fn keys_in_slot(&self, slot: crate::cluster::Slot, limit: usize) -> Vec<String> {
+      if limit == 0 {
+         return Vec::new();
+      }
+      let now = crate::storage::value::approx_now_ms();
+      let shards = self.data.shard_count();
+      if shards < 2 {
+         let mut keys = Vec::with_capacity(limit.min(1024));
+         self.data.for_each(|key, value| {
+            if keys.len() < limit
+               && !value.is_expired_at(now)
+               && crate::cluster::hash_slot(key.as_bytes()) == slot
+            {
+               keys.push(key.to_owned());
+            }
+         });
+         return keys;
+      }
+      const MAX_SCAN_THREADS: usize = 16;
+      let threads = std::thread::available_parallelism()
+         .map_or(1, |count| count.get())
+         .min(MAX_SCAN_THREADS)
+         .min(shards)
+         .max(1);
+      let per = shards.div_ceil(threads);
+      let global_found = std::sync::atomic::AtomicUsize::new(0);
+      let mut keys = std::thread::scope(|scope| {
+         let mut handles = Vec::with_capacity(threads);
+         for index in 0..threads {
+            let from = index * per;
+            let to = (from + per).min(shards);
+            if from >= to {
+               continue;
+            }
+            let data = &self.data;
+            let global = &global_found;
             handles.push(scope.spawn(move || {
                let mut found = Vec::new();
                data.for_each_shard_range(from, to, |key, value| {
-                  if found.len() < cap
-                     && let Some(item) = scan(key, value)
-                  {
-                     found.push(item);
+                  if global.load(Ordering::Relaxed) >= limit {
+                     return;
+                  }
+                  if !value.is_expired_at(now) && crate::cluster::hash_slot(key.as_bytes()) == slot {
+                     found.push(key.to_owned());
+                     global.fetch_add(1, Ordering::Relaxed);
                   }
                });
                found
@@ -386,9 +407,12 @@ impl Store {
          handles
             .into_iter()
             .flat_map(|handle| handle.join().expect("slot scan thread panicked"))
-            .collect()
-      })
+            .collect::<Vec<String>>()
+      });
+      keys.truncate(limit);
+      keys
    }
+
 
    /// Hot-path update: one atomic store. Callers checkpoint to disk with
    /// [`Store::persist_replica_offset`]; replays are idempotent, so a shorter

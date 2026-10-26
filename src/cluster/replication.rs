@@ -191,7 +191,7 @@ pub fn encode_replication_message(
       }
       ReplicationMessage::Entry(record) => {
          out.push(2);
-         out.extend_from_slice(&encode_mutation(record)?);
+         encode_mutation_to_buf(record, &mut out)?;
       }
       ReplicationMessage::Ack { applied_offset } => {
          out.push(3);
@@ -590,11 +590,15 @@ fn record_memory_bytes(record: &MutationRecord) -> usize {
       .saturating_add(std::mem::size_of::<MutationRecord>())
 }
 
-pub fn encode_mutation(record: &MutationRecord) -> Result<Vec<u8>, ReplicationCodecError> {
+#[inline]
+pub fn encode_mutation_to_buf(
+   record: &MutationRecord,
+   out: &mut Vec<u8>,
+) -> Result<(), ReplicationCodecError> {
    if record.key.len() > MAX_FIELD || record.value.len() > MAX_FIELD {
       return Err(ReplicationCodecError::TooLarge);
    }
-   let mut out = Vec::with_capacity(32 + record.key.len() + record.value.len());
+   out.reserve(MUTATION_HEADER_LEN + record.key.len() + record.value.len());
    out.extend_from_slice(&record.offset.to_be_bytes());
    out.extend_from_slice(&record.slot.value().to_be_bytes());
    out.push(record.kind as u8);
@@ -603,18 +607,30 @@ pub fn encode_mutation(record: &MutationRecord) -> Result<Vec<u8>, ReplicationCo
    out.extend_from_slice(&record.expire_at_ms.unwrap_or(0).to_be_bytes());
    out.extend_from_slice(&record.key);
    out.extend_from_slice(&record.value);
+   Ok(())
+}
+
+pub fn encode_mutation(record: &MutationRecord) -> Result<Vec<u8>, ReplicationCodecError> {
+   if record.key.len() > MAX_FIELD || record.value.len() > MAX_FIELD {
+      return Err(ReplicationCodecError::TooLarge);
+   }
+   let mut out = Vec::with_capacity(MUTATION_HEADER_LEN + record.key.len() + record.value.len());
+   encode_mutation_to_buf(record, &mut out)?;
    Ok(out)
 }
 
 /// Migration chunks carry a count followed by length-prefixed mutations, so a
 /// whole batch costs one network round trip instead of one per key.
 pub fn encode_mutation_batch(records: &[MutationRecord]) -> Result<Vec<u8>, ReplicationCodecError> {
-   let mut out = Vec::with_capacity(64 + records.len() * 32);
+   let total_len = records.iter().fold(4usize, |acc, r| {
+      acc + 4 + MUTATION_HEADER_LEN + r.key.len() + r.value.len()
+   });
+   let mut out = Vec::with_capacity(total_len);
    out.extend_from_slice(&(records.len() as u32).to_be_bytes());
    for record in records {
-      let encoded = encode_mutation(record)?;
-      out.extend_from_slice(&(encoded.len() as u32).to_be_bytes());
-      out.extend_from_slice(&encoded);
+      let record_len = MUTATION_HEADER_LEN + record.key.len() + record.value.len();
+      out.extend_from_slice(&(record_len as u32).to_be_bytes());
+      encode_mutation_to_buf(record, &mut out)?;
    }
    Ok(out)
 }

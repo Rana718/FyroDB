@@ -44,11 +44,11 @@ pub fn hash_slot(key: &[u8]) -> Slot {
 
 #[inline]
 fn hashtag(key: &[u8]) -> &[u8] {
-   let Some(open) = key.iter().position(|&byte| byte == b'{') else {
+   let Some(open) = memchr::memchr(b'{', key) else {
       return key;
    };
    let start = open + 1;
-   let Some(relative_end) = key[start..].iter().position(|&byte| byte == b'}') else {
+   let Some(relative_end) = memchr::memchr(b'}', &key[start..]) else {
       return key;
    };
    let end = start + relative_end;
