@@ -73,7 +73,7 @@ fn getset_on_missing_returns_none() {
 #[test]
 fn setnx_sets_when_absent() {
    let s = store();
-   assert!(s.setnx("k".into(), "v".into()));
+   assert!(s.setnx("k", "v"));
    assert_eq!(s.get("k"), Some("v".into()));
 }
 
@@ -81,7 +81,7 @@ fn setnx_sets_when_absent() {
 fn setnx_does_not_overwrite() {
    let s = store();
    set_str(&s, "k", "original");
-   assert!(!s.setnx("k".into(), "new".into()));
+   assert!(!s.setnx("k", "new"));
    assert_eq!(s.get("k"), Some("original".into()));
 }
 

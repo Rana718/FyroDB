@@ -41,7 +41,8 @@ pub fn scan(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
 
    let (next_cursor, keys) = store.scan(cursor, pattern, count);
    out.extend_from_slice(b"*2\r\n");
-   let cursor_str = next_cursor.to_string();
-   resp::write_bulk(out, &cursor_str);
+   let mut c_buf = [0u8; 20];
+   let cursor_str = crate::storage::value::write_int_to(&mut c_buf, next_cursor as i64);
+   resp::write_bulk(out, cursor_str);
    resp::write_array(out, &keys);
 }

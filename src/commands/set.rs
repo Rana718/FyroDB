@@ -72,24 +72,15 @@ pub fn spop(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
 }
 
 pub fn srandmember(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
-   let (key, count) = match parts {
-      [_, key] => (*key, 1i64),
+   let (key, count, single) = match parts {
+      [_, key] => (*key, 1i64, true),
       [_, key, cnt] => {
          let c = parse_int!(out, cnt);
-         (*key, c)
+         (*key, c, false)
       }
       _ => return resp::write_wrong_args(out, "srandmember"),
    };
-   let items = wt!(out, store.srandmember(key, count));
-   if parts.len() == 2 {
-      if items.is_empty() {
-         resp::write_nil(out);
-      } else {
-         resp::write_bulk(out, &items[0]);
-      }
-   } else {
-      resp::write_array(out, &items);
-   }
+   wt!(out, store.srandmember_to_buf(key, count, single, out));
 }
 
 pub fn smove(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
@@ -213,16 +204,37 @@ pub fn sscan(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
       }
       Some(e) => match e.value.as_set() {
          Some(s) => {
-            let members: Vec<String> = s
-               .iter()
-               .map(|m| m.to_string())
-               .filter(|m| pattern.is_none_or(|p| crate::utils::util::glob_match(p, m)))
-               .collect();
+            if pattern.is_none() {
+               out.extend_from_slice(b"*2\r\n");
+               resp::write_bulk(out, "0");
+               resp::write_array_header(out, s.len());
+               for m in s.iter() {
+                  m.write_bulk_to(out);
+               }
+               return;
+            }
+            let pat = pattern.unwrap();
+            let mut matching = Vec::new();
+            for m in s.iter() {
+               let matches = match m {
+                  crate::storage::value::SetMemberRef::String(str_ref) => {
+                     crate::utils::util::glob_match(pat, str_ref.as_str())
+                  }
+                  crate::storage::value::SetMemberRef::Integer(n) => {
+                     let mut buf = [0u8; 20];
+                     let str_n = crate::storage::value::write_int_to(&mut buf, n);
+                     crate::utils::util::glob_match(pat, str_n)
+                  }
+               };
+               if matches {
+                  matching.push(m);
+               }
+            }
             out.extend_from_slice(b"*2\r\n");
             resp::write_bulk(out, "0");
-            resp::write_array_header(out, members.len());
-            for m in members {
-               resp::write_bulk(out, &m);
+            resp::write_array_header(out, matching.len());
+            for m in matching {
+               m.write_bulk_to(out);
             }
          }
          None => resp::write_wrong_type(out),

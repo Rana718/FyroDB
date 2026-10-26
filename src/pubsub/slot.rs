@@ -1,4 +1,5 @@
 use crossbeam_queue::SegQueue;
+use foldhash::fast::FixedState;
 use mio::Waker;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -27,7 +28,7 @@ pub struct WorkerNotifier {
    pub fanout: SegQueue<FanEntry>,
    pub completions: SegQueue<Completion>,
    completion_pending: AtomicBool,
-   local_subs: Mutex<HashMap<String, Vec<usize>>>,
+   local_subs: Mutex<HashMap<String, Vec<usize>, FixedState>>,
    pub waker: Arc<Waker>,
    worker_index: usize,
    wake_pending: AtomicBool,
@@ -41,7 +42,7 @@ impl WorkerNotifier {
          fanout: SegQueue::new(),
          completions: SegQueue::new(),
          completion_pending: AtomicBool::new(false),
-         local_subs: Mutex::new(HashMap::new()),
+         local_subs: Mutex::new(HashMap::with_hasher(FixedState::with_seed(0))),
          waker,
          worker_index,
          wake_pending: AtomicBool::new(false),
@@ -128,7 +129,10 @@ impl WorkerNotifier {
          .cloned()
    }
 
-   pub fn with_local_subs<R>(&self, f: impl FnOnce(&HashMap<String, Vec<usize>>) -> R) -> R {
+   pub fn with_local_subs<R>(
+      &self,
+      f: impl FnOnce(&HashMap<String, Vec<usize>, FixedState>) -> R,
+   ) -> R {
       f(&self.local_subs.lock().unwrap_or_else(|e| e.into_inner()))
    }
 

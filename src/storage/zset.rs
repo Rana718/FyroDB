@@ -467,9 +467,48 @@ impl Store {
                   return Ok(0);
                }
                let n = e_idx - s + 1;
+               out.reserve(n * if withscores { 32 } else { 20 });
                crate::utils::resp::write_array_header(out, if withscores { n * 2 } else { n });
                for entry in z.range_by_rank(s, e_idx + 1) {
-                  crate::utils::resp::write_bulk(out, entry.member.as_str());
+                  entry.member.write_resp(out);
+                  if withscores {
+                     crate::utils::resp::write_bulk(
+                        out,
+                        &crate::utils::util::format_float(entry.score),
+                     );
+                  }
+               }
+               Ok(n)
+            }
+            None => Err("WRONGTYPE"),
+         },
+      }
+   }
+
+   pub fn zrevrange_to_buf(
+      &self,
+      key: &str,
+      start: i64,
+      stop: i64,
+      withscores: bool,
+      out: &mut Vec<u8>,
+   ) -> Result<usize, &'static str> {
+      match self.data.get_ref(key) {
+         None => Ok(0),
+         Some(e) if e.is_expired() => Ok(0),
+         Some(e) => match e.value.as_zset() {
+            Some(z) => {
+               let len = z.len() as i64;
+               let s = normalize_zset_index(start, len);
+               let e_idx = normalize_zset_index(stop, len);
+               if s > e_idx {
+                  return Ok(0);
+               }
+               let n = e_idx - s + 1;
+               out.reserve(n * if withscores { 32 } else { 20 });
+               crate::utils::resp::write_array_header(out, if withscores { n * 2 } else { n });
+               for entry in z.iter_rev().skip(s).take(n) {
+                  entry.member.write_resp(out);
                   if withscores {
                      crate::utils::resp::write_bulk(
                         out,

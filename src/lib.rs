@@ -1,5 +1,6 @@
 pub mod cluster;
 pub mod commands;
+pub use fyro_dbcache as dbcache;
 pub mod handler;
 pub mod macros;
 pub mod pubsub;

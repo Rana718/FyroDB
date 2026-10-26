@@ -26,6 +26,52 @@ pub fn info(store: &Store, out: &mut Vec<u8>) {
    resp::write_bulk(out, &store.info());
 }
 
+// DBCACHE STATS exposes the PostgreSQL proxy's cache counters over RESP.
+// DBCACHE PURGE drops all cached database query entries and index markers.
+pub fn dbcache_cmd(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
+   let Some(manager) = store.dbcache_manager() else {
+      resp::write_err(out, "dbcache is not enabled");
+      return;
+   };
+   match parts.get(1).map(|sub| sub.to_ascii_uppercase()).as_deref() {
+      Some("STATS") if parts.len() == 2 => {
+         let stats = manager.stats();
+         resp::write_array_header(out, stats.len() * 2);
+         for (name, value) in stats {
+            resp::write_bulk(out, name);
+            resp::write_integer(out, i64::try_from(value).unwrap_or(i64::MAX));
+         }
+      }
+      Some("STATS") => resp::write_wrong_args(out, "dbcache stats"),
+      Some("PURGE") | Some("FLUSH") => {
+         let flushed = manager.flush_all("db:");
+         resp::write_integer(out, flushed as i64);
+      }
+      _ => resp::write_err(out, "unknown DBCACHE subcommand"),
+   }
+}
+
+// PURGE DB purges all database query cache entries without affecting normal keys.
+pub fn purge_cmd(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
+   let Some(manager) = store.dbcache_manager() else {
+      resp::write_err(out, "dbcache is not enabled");
+      return;
+   };
+   match parts {
+      [_, target]
+         if target.eq_ignore_ascii_case("DB") || target.eq_ignore_ascii_case("DBCACHE") =>
+      {
+         let flushed = manager.flush_all("db:");
+         resp::write_integer(out, flushed as i64);
+      }
+      [_] => {
+         let flushed = manager.flush_all("db:");
+         resp::write_integer(out, flushed as i64);
+      }
+      _ => resp::write_wrong_args(out, "purge db"),
+   }
+}
+
 pub fn flush(store: &Store, out: &mut Vec<u8>) {
    store.flush();
    resp::write_ok(out);
@@ -664,8 +710,12 @@ pub fn select(parts: &[&str], out: &mut Vec<u8>) {
    }
 }
 
-pub fn auth(_parts: &[&str], out: &mut Vec<u8>) {
-   resp::write_ok(out);
+pub fn auth(parts: &[&str], out: &mut Vec<u8>) {
+   if parts.len() == 2 || parts.len() == 3 {
+      resp::write_ok(out);
+   } else {
+      resp::write_wrong_args(out, "auth");
+   }
 }
 
 pub fn reset(out: &mut Vec<u8>) {

@@ -4,7 +4,7 @@ use crate::search::{IndexDef, Resolved};
 use crate::storage::store::Store;
 use crate::storage::value::StoreValue;
 use crate::utils::resp;
-use std::collections::{HashMap, HashSet};
+use foldhash::{HashMap, HashMapExt, HashSet, HashSetExt};
 
 type Row = Vec<(String, Option<Vec<u8>>)>;
 type ListMap = HashMap<usize, Vec<(String, Vec<Vec<u8>>)>>;

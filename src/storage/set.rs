@@ -187,6 +187,7 @@ impl Store {
          match val.value.as_set() {
             Some(s) => {
                let n = s.len();
+               out.reserve(n * 20);
                crate::utils::resp::write_array_header(out, n);
                for m in s.iter() {
                   m.write_bulk_to(out);
@@ -270,6 +271,75 @@ impl Store {
                   }
                   Ok(out)
                }
+            }
+            None => Err("WRONGTYPE"),
+         },
+      }
+   }
+
+   pub fn srandmember_to_buf(
+      &self,
+      key: &str,
+      count: i64,
+      single: bool,
+      out: &mut Vec<u8>,
+   ) -> Result<(), &'static str> {
+      match self.data.get_ref(key) {
+         None => {
+            if single {
+               crate::utils::resp::write_nil(out);
+            } else {
+               crate::utils::resp::write_array_header(out, 0);
+            }
+            Ok(())
+         }
+         Some(e) if e.is_expired() => {
+            if single {
+               crate::utils::resp::write_nil(out);
+            } else {
+               crate::utils::resp::write_array_header(out, 0);
+            }
+            Ok(())
+         }
+         Some(e) => match e.value.as_set() {
+            Some(s) => {
+               if s.is_empty() {
+                  if single {
+                     crate::utils::resp::write_nil(out);
+                  } else {
+                     crate::utils::resp::write_array_header(out, 0);
+                  }
+                  return Ok(());
+               }
+               if single {
+                  let seed = crate::storage::value::now_ms() as usize;
+                  let idx = seed % s.len();
+                  if let Some(m) = s.iter().nth(idx) {
+                     m.write_bulk_to(out);
+                  }
+                  return Ok(());
+               }
+               if count >= 0 {
+                  let n = (count as usize).min(s.len());
+                  out.reserve(n * 20);
+                  crate::utils::resp::write_array_header(out, n);
+                  for m in s.iter().take(n) {
+                     m.write_bulk_to(out);
+                  }
+               } else {
+                  let n = (-count) as usize;
+                  out.reserve(n * 20);
+                  crate::utils::resp::write_array_header(out, n);
+                  let seed = crate::storage::value::now_ms();
+                  let members: Vec<_> = s.iter().collect();
+                  for i in 0..n {
+                     let idx = ((seed.wrapping_add(i as u64)).wrapping_mul(0x9e3779b97f4a7c15))
+                        as usize
+                        % members.len();
+                     members[idx].write_bulk_to(out);
+                  }
+               }
+               Ok(())
             }
             None => Err("WRONGTYPE"),
          },

@@ -46,15 +46,26 @@ pub fn tokens(text: &str) -> impl Iterator<Item = String> + '_ {
       .filter(|t| !is_stopword(t))
 }
 
-/// Size the vector pool from the environment before first use:
-/// `FYRODB_SEARCH_THREADS` (thread count) and `FYRODB_SEARCH_CORES` (CPU affinity).
-pub fn configure_pool(cores: Option<Vec<usize>>) {
-   let threads = std::env::var("FYRODB_SEARCH_THREADS")
+// Configures vector search pool threads and core pinning respecting worker/CPU limits.
+pub fn configure_pool(workers: Option<usize>, cores: Option<Vec<usize>>) {
+   let env_threads = std::env::var("FYRODB_SEARCH_THREADS")
+      .or_else(|_| std::env::var("FYRODB_WORKERS"))
       .ok()
       .and_then(|v| v.parse::<usize>().ok())
       .filter(|&t| t > 0)
+      .or(workers);
+
+   let cores = cores.or_else(|| {
+      std::env::var("FYRODB_SEARCH_CORES")
+         .or_else(|_| std::env::var("FYRODB_WORKER_CORES"))
+         .ok()
+         .map(|v| crate::utils::affinity::parse_cpu_list(&v))
+         .filter(|v| !v.is_empty())
+   });
+
+   let threads = env_threads
       .or_else(|| cores.as_ref().map(Vec::len))
-      .unwrap_or_else(num_cpus::get);
+      .unwrap_or_else(|| fyro_vector::pool::allowed_cores().len().max(1));
    fyro_vector::pool::configure(threads, cores);
 }
 

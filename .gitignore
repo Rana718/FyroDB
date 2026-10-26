@@ -4,3 +4,4 @@ temp/
 **/target/
 .claude/
 fyrodb_*
+bench/fyrodb-test

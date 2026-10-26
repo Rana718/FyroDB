@@ -139,3 +139,97 @@ Key metrics:
 - `mem_fragmentation_ratio` — RSS / allocated (close to 1.0 is ideal)
 - `connected_clients` — active connections
 - `total_keys` — live key count
+
+---
+
+## DB Cache Proxy in Production
+
+### Proxy Workers
+
+Set `FYRODB_PROXY_WORKERS` to the number of physical CPU cores you want dedicated to proxy traffic. The default (num_cpus / 2) is a sensible split between the KV engine and the proxy. Each worker is a mio event loop thread that multiplexes thousands of connections — you rarely need more than 4 even under heavy load.
+
+```bash
+FYRODB_PROXY_WORKERS=4   # on an 8-core machine, leave 4 for the KV engine
+```
+
+### TTL Tuning
+
+Start conservative and tighten based on your staleness tolerance:
+
+```bash
+FYRODB_PROXY_CACHE_TTL_MS=30000     # 30 s — good default
+FYRODB_PROXY_CACHE_TTL_MS=5000      # 5 s — for fast-changing tables
+FYRODB_PROXY_CACHE_TTL_JITTER=10    # 10% jitter to spread expiry
+```
+
+`FYRODB_PROXY_CACHE_TTL_JITTER` spreads cache entry expiry across a ±10% window so a large cohort of entries doesn't expire simultaneously and hammer the database (thundering herd).
+
+### Trust Auth
+
+Set `FYRODB_PROXY_TRUST_AUTH=true` on internal container networks where network-level isolation is already in place. This eliminates the SCRAM round-trip on every new connection, reducing connection setup latency from ~5 ms to under 1 ms.
+
+```bash
+FYRODB_PROXY_TRUST_AUTH=true   # safe inside Docker Compose / Kubernetes pod network
+```
+
+### Upstream Pool
+
+Cache hits never touch the upstream pool — only cache misses and new connections use it. The default of 4 idle connections per proxy worker is enough for most workloads. Increase only if you see upstream connection wait times in your query logs.
+
+```bash
+FYRODB_PROXY_UPSTREAM_POOL=8   # for workloads with sustained high miss rates
+```
+
+### Health Checks
+
+The proxy speaks full PostgreSQL wire protocol. Use standard PostgreSQL health tools:
+
+```bash
+pg_isready -h fyrodb-host -p 5432
+# or from psql
+psql -h fyrodb-host -p 5432 -c "SELECT 1"
+```
+
+### Cache-Only vs Dual Mode
+
+| Mode | When to use |
+| ---- | ----------- |
+| `dual` (default) | App connects cold; first query per pattern goes to Postgres, results are cached automatically |
+| `cache-only` | App pre-warms the cache at startup; misses return an explicit error — predictable latency, no surprise database calls |
+
+```bash
+FYRODB_PROXY_MODE=dual        # default — automatic cache population
+FYRODB_PROXY_MODE=cache-only  # app controls what is cached; misses are errors
+```
+
+### Recommended Proxy Configuration
+
+#### High-throughput (8+ core server)
+
+```bash
+FYRODB_PROXY_WORKERS=4
+FYRODB_PROXY_UPSTREAM_POOL=8
+FYRODB_PROXY_BLOCKING_POOL=32
+FYRODB_PROXY_CACHE_MAX_KEYS=500000
+FYRODB_PROXY_CACHE_TTL_MS=60000
+FYRODB_PROXY_TRUST_AUTH=true
+```
+
+#### Low-latency reads (small dataset, sub-ms response target)
+
+```bash
+FYRODB_PROXY_WORKERS=2
+FYRODB_PROXY_CACHE_TTL_MS=5000
+FYRODB_PROXY_CACHE_TTL_JITTER=5
+FYRODB_PROXY_MODE=cache-only
+FYRODB_PROXY_TRUST_AUTH=true
+```
+
+#### Memory-constrained container
+
+```bash
+FYRODB_PROXY_WORKERS=1
+FYRODB_PROXY_CACHE_MAX_KEYS=10000
+FYRODB_PROXY_UPSTREAM_POOL=2
+FYRODB_PROXY_BLOCKING_POOL=4
+```

@@ -28,7 +28,9 @@ pub use key::CompactKey;
 use std::hash::BuildHasher;
 
 use shard::*;
-pub use shard::{Entry, STATE_LOCK, STATE_MATCH_MASK, STATE_OCCUPIED, bump_seq, unlock_write};
+pub use shard::{
+   Entry, FastSet, STATE_LOCK, STATE_MATCH_MASK, STATE_OCCUPIED, bump_seq, unlock_write,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Full;
@@ -150,8 +152,8 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
       let per_shard = if expected_keys == usize::MAX || expected_keys == 0 {
          INITIAL_SHARD_CAPACITY
       } else {
-         let target = (expected_keys.saturating_mul(LOAD_DEN) / LOAD_NUM) / n;
-         target.next_power_of_two().max(INITIAL_SHARD_CAPACITY)
+         let target = expected_keys.saturating_mul(LOAD_DEN) / LOAD_NUM / n;
+         target.next_power_of_two().max(8)
       };
       Self::build(n, per_shard, expected_keys)
    }
@@ -625,10 +627,12 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
       idx: usize,
       f: impl FnOnce(&V) -> R,
    ) -> Option<R> {
-      let entry = unsafe { self.shards.get_unchecked(idx) }.find(key, hash)?;
-      if !state_occupied(&entry.state, Ordering::Acquire) {
-         return None;
-      }
+      let sf = unsafe { &*self.shard_fast.as_ptr().add(idx) };
+      let slots = sf.slots.load(Ordering::Relaxed);
+      let mask = sf.mask.load(Ordering::Relaxed);
+      let entry = Shard::find_fast(slots, mask, key, hash)?;
+      // Synchronize subsequent value read.
+      std::sync::atomic::fence(Ordering::Acquire);
       Some(f(unsafe { (*entry.value.get()).assume_init_ref() }))
    }
 
@@ -664,12 +668,14 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
       ebr::with_pin(|_| self.with_entry_pinned(key, hash, idx, f))
    }
 
-   #[inline]
+   #[inline(always)]
    pub fn contains_key(&self, key: &str) -> bool {
       let (h, idx) = self.locate(key);
+      let sf = unsafe { &*self.shard_fast.as_ptr().add(idx) };
+      let slots = sf.slots.load(Ordering::Relaxed);
+      let mask = sf.mask.load(Ordering::Relaxed);
       ebr::with_pin(|_| {
-         unsafe { self.shards.get_unchecked(idx) }
-            .find(key, h)
+         Shard::find_fast(slots, mask, key, h)
             .is_some_and(|e| state_occupied(&e.state, Ordering::Acquire))
       })
    }
@@ -677,14 +683,52 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
    #[inline(always)]
    pub fn get(&self, key: &str) -> Option<V> {
       let (h, idx) = self.locate(key);
-      ebr::with_pin(|_| unsafe { self.shards.get_unchecked(idx) }.get(key, h))
+      let sf = unsafe { &*self.shard_fast.as_ptr().add(idx) };
+      let slots = sf.slots.load(Ordering::Relaxed);
+      let mask = sf.mask.load(Ordering::Relaxed);
+      ebr::with_pin(|_| Shard::get_pinned_fast(slots, mask, key, h))
+   }
+
+   /// Like `get` without re-pinning EBR when caller already holds a Guard.
+   #[inline(always)]
+   pub fn get_pinned(&self, key: &str, _guard: &ebr::Guard) -> Option<V> {
+      let (h, idx) = self.locate(key);
+      let sf = unsafe { &*self.shard_fast.as_ptr().add(idx) };
+      let slots = sf.slots.load(Ordering::Relaxed);
+      let mask = sf.mask.load(Ordering::Relaxed);
+      Shard::get_pinned_fast(slots, mask, key, h)
+   }
+
+   /// Like `get_ref` when caller holds an EBR Guard for returned reference lifetime.
+   #[inline]
+   pub fn get_ref_pinned<'g>(
+      &'g self,
+      key: &str,
+      _guard: &'g ebr::Guard,
+   ) -> Option<ValueRef<'g, V>> {
+      let (h, idx) = self.locate(key);
+      let sf = unsafe { &*self.shard_fast.as_ptr().add(idx) };
+      let slots = sf.slots.load(Ordering::Relaxed);
+      let mask = sf.mask.load(Ordering::Relaxed);
+      let e = Shard::find_fast(slots, mask, key, h)?;
+      if !state_occupied(&e.state, Ordering::Acquire) {
+         return None;
+      }
+      Some(ValueRef {
+         ptr: unsafe { (*e.value.get()).as_ptr() },
+         _guard: ebr::pin(),
+         _map: PhantomData,
+      })
    }
 
    #[inline]
    pub fn get_ref(&self, key: &str) -> Option<ValueRef<'_, V>> {
       let (h, idx) = self.locate(key);
       let guard = ebr::pin();
-      let e = unsafe { self.shards.get_unchecked(idx) }.find(key, h)?;
+      let sf = unsafe { &*self.shard_fast.as_ptr().add(idx) };
+      let slots = sf.slots.load(Ordering::Relaxed);
+      let mask = sf.mask.load(Ordering::Relaxed);
+      let e = Shard::find_fast(slots, mask, key, h)?;
       if !state_occupied(&e.state, Ordering::Acquire) {
          return None;
       }
@@ -786,6 +830,21 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
          return true;
       }
       false
+   }
+
+   /// Probes for key; inserts make_value() on miss or returns existing entry.
+   #[inline(always)]
+   pub fn probe_or_insert_fast<F>(&self, hash: u64, key: &str, make_value: F) -> FastSet<V>
+   where
+      F: FnOnce() -> V,
+   {
+      let idx = self.shard_of(hash);
+      let shard = unsafe { self.shards.get_unchecked(idx) };
+      let outcome = shard.probe_or_insert(hash, key, make_value);
+      if matches!(outcome, FastSet::Inserted) {
+         self.bump(idx, true);
+      }
+      outcome
    }
 
    #[inline(always)]
@@ -1247,7 +1306,7 @@ fn prefetch_line<T>(p: *const T) {
 fn prefetch_line_write<T>(p: *const T) {
    #[cfg(target_arch = "x86_64")]
    unsafe {
-      std::arch::x86_64::_mm_prefetch::<{ std::arch::x86_64::_MM_HINT_ET0 }>(p.cast());
+      std::arch::x86_64::_mm_prefetch::<{ std::arch::x86_64::_MM_HINT_T0 }>(p.cast());
    }
    #[cfg(target_arch = "aarch64")]
    unsafe {
@@ -1527,5 +1586,82 @@ mod tests {
          }
       }
       assert_eq!(map.len(), 0);
+   }
+
+   /// Churn rebuilds table in place without expanding capacity.
+   #[test]
+   fn churn_rebuilds_in_place_instead_of_growing() {
+      let map = CustomMap::<u64>::build(1, 32, usize::MAX);
+      assert_eq!(map.shard_slot_count(0), 32);
+      for round in 0..6u64 {
+         for i in 0..10u64 {
+            let key = format!("key-{i}");
+            map.set(&key, round * 10 + i, || key.clone());
+         }
+         assert_eq!(map.len(), 10, "round {round}");
+         for i in 0..10u64 {
+            assert!(map.remove_no_clone(&format!("key-{i}")));
+         }
+         assert_eq!(map.len(), 0, "round {round}");
+         assert_eq!(
+            map.shard_slot_count(0),
+            32,
+            "round {round}: tombstone churn must not grow the table"
+         );
+      }
+      map.set("fresh", 7, || "fresh".to_owned());
+      assert_eq!(map.get("fresh"), Some(7));
+      assert_eq!(map.shard_slot_count(0), 32);
+   }
+
+   /// Compaction still shrinks genuinely sparse shards, and a no-op pass
+   /// must not rebuild anything.
+   #[test]
+   fn compact_shard_reclaims_sparse_shards_only() {
+      let map = CustomMap::<u64>::build(1, 32, usize::MAX);
+      map.set("a", 1, || "a".to_owned());
+      map.compact_shard(0);
+      assert_eq!(map.shard_slot_count(0), 8);
+      assert_eq!(map.get("a"), Some(1));
+
+      map.compact_shard(0);
+      assert_eq!(map.shard_slot_count(0), 8);
+
+      assert!(map.remove_no_clone("a"));
+      map.compact_shard(0);
+      assert_eq!(map.shard_slot_count(0), 8);
+   }
+
+   #[test]
+   fn fused_probe_or_insert_reports_both_outcomes() {
+      use crate::FastSet;
+      let map = CustomMap::<u64>::build(1, 1024, usize::MAX);
+      let (hash, _) = map.locate_key("alpha");
+
+      match map.probe_or_insert_fast(hash, "alpha", || 1) {
+         FastSet::Inserted => {}
+         _ => panic!("first probe must insert"),
+      }
+      assert_eq!(map.get("alpha"), Some(1));
+      assert_eq!(map.len(), 1);
+
+      match map.probe_or_insert_fast(hash, "alpha", || 2) {
+         FastSet::Existing(_) => {}
+         _ => panic!("second probe must find the existing entry"),
+      }
+      assert_eq!(map.get("alpha"), Some(1));
+      assert_eq!(map.len(), 1);
+
+      assert!(map.remove_no_clone("alpha"));
+      match map.probe_or_insert_fast(hash, "alpha", || 3) {
+         FastSet::Inserted => {}
+         // The tombstone is revived by the general path.
+         FastSet::Retry => {
+            map.set("alpha", 3, || "alpha".to_owned());
+         }
+         FastSet::Existing(_) => panic!("removed entry must not be reported as live"),
+      }
+      assert_eq!(map.get("alpha"), Some(3));
+      assert_eq!(map.len(), 1);
    }
 }

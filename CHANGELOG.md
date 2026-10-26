@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.3.0] - 2026-10-26
+
+### Added
+- **DB Cache Proxy: mio event loop** — replaced thread-per-connection with N mio worker threads, each owning an `SO_REUSEPORT` `TcpListener` and a private `mio::Poll`. Thousands of connections are multiplexed on a fixed thread count with no thread spawning per client. `FYRODB_PROXY_WORKERS` controls the thread count (default: `num_cpus / 2`).
+- **`ProxyConn` state machine** — connections move through `Startup → Active → Dead` (or `Offloaded` for upstream/miss work). Cache-hit traffic is handled inline in `ActiveState` with no blocking pool involvement.
+- **`BlockingPool`** — bounded OS thread pool for upstream connections and cache misses. Cache-hit traffic — the dominant steady-state path — never enters the pool.
+- **`flush_out_batched`** — `handle_sync` accumulates response frames until `RELAY_FLUSH_BYTES` (32 KB) or the read buffer is drained, issuing one `write(2)` per pipeline batch instead of one per response. Extended-protocol throughput: **3.80M → 5.0M ops/sec** (+32%).
+- **CustomHash `occupied` guard in `find()`** — closes a narrow race where a concurrent removal between a tag match and an epoch pin could expose an uninitialized entry to a reader.
+
+### Optimized
+- **`Acquire` load on entry state** — replaced `Relaxed` load + explicit `fence(Acquire)` with a single `Acquire` load on the entry state word in the fast string read path, providing the same happens-before guarantee with one fewer memory barrier.
+- **CustomHash entry-line prefetch in probe loops** — `probe_occupied` and `probe_for_insert` prefetch the entry pointed to by each slot during the tag comparison of the next slot, overlapping L2 latency across the probe sequence.
+- **`walk_shard` prefetch hint** — switched from `T2` to `T1` (shorter prefetch distance), improving L1 hit rate during expiry and defrag sweeps.
+- **Zero-allocation KV hot paths** — eliminated heap allocations across `hash`, `get`, `setnx`, `srandmember`, `zrevrange`, `zadd`, `lindex`, canonical integer checks, member byte-length computation, and SmallStr RESP bulk header formatting. RESP replies now build directly into the output buffer on all these paths.
+- **ZSet right-sizing** — `ZSetData` no longer over-allocates chunk capacity on init; idle shard tables are right-sized on compaction, reducing RSS under write-heavy workloads.
+- **Cluster hot paths** (PR #23 by [@ananddub](https://github.com/ananddub)) — slot routing and topology resolution no longer allocate on the fast path; CRC16 single-key path drops a redundant branch.
+
+### Fixed
+- **Proxy wire cache invalidation** — deleting proxy cache keys through the KV port (`DEL db:*`, `FLUSHALL`) now correctly invalidates wire-format cache entries. Previously, the proxy's invalidation path was skipped for deletions originating from the KV engine, leaving stale encoded results in memory.
+- **aarch64 CI** — resolved integer comparison failure in the RESP parser test suite on ARM64.
+- **ZSet CI stability** — relaxed an overly tight timing threshold in the sorted-set concurrency test that intermittently failed under CI load.
+
+---
+
 ## [0.2.4] - 2026-10-20
 
 ### Added

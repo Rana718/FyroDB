@@ -40,7 +40,7 @@ fn hget_missing_key_returns_none() {
 #[test]
 fn hsetnx_sets_new_field() {
    let s = store();
-   assert_eq!(s.hsetnx("k", "f", "v".into()), Ok(true));
+   assert_eq!(s.hsetnx("k", "f", "v"), Ok(true));
    assert_eq!(s.hget("k", "f"), Ok(Some("v".into())));
 }
 
@@ -48,7 +48,7 @@ fn hsetnx_sets_new_field() {
 fn hsetnx_does_not_overwrite() {
    let s = store();
    hset(&s, "k", &[("f", "original")]);
-   assert_eq!(s.hsetnx("k", "f", "new".into()), Ok(false));
+   assert_eq!(s.hsetnx("k", "f", "new"), Ok(false));
    assert_eq!(s.hget("k", "f"), Ok(Some("original".into())));
 }
 
@@ -216,7 +216,7 @@ fn all_hash_ops_wrongtype_on_string_key() {
    s.set("k".into(), StoreValue::string("hello".into()));
 
    assert!(s.hset("k", &[("f", "v")]).is_err());
-   assert!(s.hsetnx("k", "f", "v".into()).is_err());
+   assert!(s.hsetnx("k", "f", "v").is_err());
    assert!(s.hget("k", "f").is_err());
    assert!(s.hmget("k", &["f"]).is_err());
    assert!(s.hgetall("k").is_err());

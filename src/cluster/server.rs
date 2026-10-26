@@ -5,6 +5,7 @@ use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use super::{
    ClusterConfig, ClusterState, Frame, FrameCodec, MessageType, PeerConnection, ReplicaApplier,
@@ -102,6 +103,19 @@ struct PeerContext<'a> {
    peer_timeout: std::time::Duration,
 }
 
+/// Applied-offset checkpoints are rare: the offset is replayed idempotently
+/// from the primary's log, so losing the last second costs a re-apply, not data.
+const REPLICA_OFFSET_CHECKPOINT: Duration = Duration::from_secs(1);
+
+fn is_replication_source(topology: &super::Topology, local_id: &str, remote_id: &str) -> bool {
+   topology
+      .nodes
+      .iter()
+      .find(|node| node.id == local_id)
+      .and_then(|node| node.replica_of.as_deref())
+      == Some(remote_id)
+}
+
 fn handle_peer(
    stream: TcpStream,
    codec: FrameCodec,
@@ -164,8 +178,22 @@ fn handle_peer(
    let snapshot_path =
       std::env::temp_dir().join(format!("fyrodb-replica-{}-{remote_id}.rdb", ctx.local_id));
    let mut snapshot_file: Option<std::fs::File> = None;
+   // One Arc + version per connection; a topology clone only happens when the
+   // generation actually changes, not on every inbound frame.
+   let Some((mut topology_version, mut current_topology, _)) = state.topology_if_newer(0) else {
+      return;
+   };
+   let mut source_allowed = is_replication_source(&current_topology, ctx.local_id, remote_id);
+   let mut offset_dirty = false;
+   let mut last_offset_checkpoint = Instant::now();
    while let Ok(frame) = peer.receive() {
-      let current_epoch = state.topology().epoch.max(ctx.epoch);
+      if let Some((version, topology, _)) = state.topology_if_newer(topology_version) {
+         topology_version = version;
+         source_allowed = is_replication_source(&topology, ctx.local_id, remote_id);
+         current_topology = topology;
+      }
+      let topology = current_topology.as_ref();
+      let current_epoch = topology.epoch.max(ctx.epoch);
       if frame.epoch < current_epoch {
          continue;
       }
@@ -216,32 +244,30 @@ fn handle_peer(
          MessageType::ReplicationEntry => {
             if let Ok(super::ReplicationMessage::Entry(record)) =
                decode_replication_message(&frame.payload)
+               && source_allowed
+               && replica_applier
+                  .try_apply(&record, |record| store.apply_replica_mutation(record))
+                  .is_ok()
             {
-               let source_allowed = topology
-                  .nodes
-                  .iter()
-                  .find(|node| node.id == ctx.local_id)
-                  .and_then(|node| node.replica_of.as_deref())
-                  == Some(remote_id);
-               if source_allowed
-                  && replica_applier
-                     .try_apply(&record, |record| store.apply_replica_mutation(record))
-                     .is_ok()
-               {
-                  store.set_replica_applied_offset(replica_applier.applied_offset());
-                  if let Ok(payload) = encode_replication_message(&super::ReplicationMessage::Ack {
-                     applied_offset: replica_applier.applied_offset(),
-                  }) {
-                     let _ = peer.send(&Frame {
-                        message_type: MessageType::ReplicationAck,
-                        flags: 0,
-                        request_id: frame.request_id,
-                        source_id: stable_id(ctx.local_id),
-                        target_id: frame.source_id,
-                        epoch: ctx.epoch,
-                        payload,
-                     });
-                  }
+               store.set_replica_applied_offset(replica_applier.applied_offset());
+               offset_dirty = true;
+               if last_offset_checkpoint.elapsed() >= REPLICA_OFFSET_CHECKPOINT {
+                  store.persist_replica_offset();
+                  offset_dirty = false;
+                  last_offset_checkpoint = Instant::now();
+               }
+               if let Ok(payload) = encode_replication_message(&super::ReplicationMessage::Ack {
+                  applied_offset: replica_applier.applied_offset(),
+               }) {
+                  let _ = peer.send(&Frame {
+                     message_type: MessageType::ReplicationAck,
+                     flags: 0,
+                     request_id: frame.request_id,
+                     source_id: stable_id(ctx.local_id),
+                     target_id: frame.source_id,
+                     epoch: ctx.epoch,
+                     payload,
+                  });
                }
             }
          }
@@ -268,21 +294,29 @@ fn handle_peer(
             });
          }
          MessageType::MigrateChunk => {
-            if let Ok(record) = super::decode_mutation(&frame.payload) {
+            let Ok(records) = super::decode_mutation_batch(&frame.payload) else {
+               continue;
+            };
+            let mut applied = true;
+            for record in &records {
                let source_ok = state
                   .import_source(record.slot)
                   .is_some_and(|source| stable_id(&source) == frame.source_id);
-               if source_ok && store.apply_replica_mutation(&record).is_ok() {
-                  let _ = peer.send(&Frame {
-                     message_type: MessageType::ReplicationAck,
-                     flags: 0,
-                     request_id: frame.request_id,
-                     source_id: stable_id(ctx.local_id),
-                     target_id: frame.source_id,
-                     epoch: current_epoch,
-                     payload: Vec::new(),
-                  });
+               if !source_ok || store.apply_replica_mutation(record).is_err() {
+                  applied = false;
+                  break;
                }
+            }
+            if applied {
+               let _ = peer.send(&Frame {
+                  message_type: MessageType::ReplicationAck,
+                  flags: 0,
+                  request_id: frame.request_id,
+                  source_id: stable_id(ctx.local_id),
+                  target_id: frame.source_id,
+                  epoch: current_epoch,
+                  payload: Vec::new(),
+               });
             }
          }
          MessageType::MigrateFinish => {
@@ -305,12 +339,6 @@ fn handle_peer(
             });
          }
          MessageType::ReplicationSnapshot => {
-            let source_allowed = topology
-               .nodes
-               .iter()
-               .find(|node| node.id == ctx.local_id)
-               .and_then(|node| node.replica_of.as_deref())
-               == Some(remote_id);
             if !source_allowed {
                continue;
             }
@@ -354,6 +382,9 @@ fn handle_peer(
                if result.is_ok() {
                   replica_applier.reset(offset);
                   store.set_replica_applied_offset(offset);
+                  store.persist_replica_offset();
+                  offset_dirty = false;
+                  last_offset_checkpoint = Instant::now();
                   store.set_replica_installing(false);
                   ack_offset = offset;
                } else {
@@ -410,6 +441,9 @@ fn handle_peer(
    if snapshot_file.is_some() {
       store.set_replica_installing(false);
       let _ = std::fs::remove_file(snapshot_path);
+   }
+   if offset_dirty {
+      store.persist_replica_offset();
    }
 }
 

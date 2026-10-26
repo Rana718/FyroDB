@@ -2,9 +2,11 @@ use super::value::StoreValue;
 use crossbeam_utils::CachePadded;
 use customhash::CustomMap;
 use std::sync::Mutex;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 mod cluster;
+mod dbcache;
 mod fence;
 mod memory;
 mod ttl;
@@ -34,6 +36,7 @@ pub struct Store {
    replica_identity: Mutex<Option<[u8; 16]>>,
    cluster_meta_path: Mutex<Option<String>>,
    metrics: Box<ClusterMetrics>,
+   dbcache_manager: OnceLock<std::sync::Arc<fyro_dbcache::DbCacheManager>>,
 }
 
 impl Default for Store {
@@ -103,7 +106,18 @@ impl Store {
          cluster_write_fence: WriteFence::new(workers),
          metrics: Box::new(ClusterMetrics::new()),
          blocking: Default::default(),
+         dbcache_manager: OnceLock::new(),
       }
+   }
+
+   // Exposes the PostgreSQL proxy's cache manager to the RESP port so stats
+   // can be inspected without a separate admin channel.
+   pub fn install_dbcache_manager(&self, manager: std::sync::Arc<fyro_dbcache::DbCacheManager>) {
+      let _ = self.dbcache_manager.set(manager);
+   }
+
+   pub fn dbcache_manager(&self) -> Option<&std::sync::Arc<fyro_dbcache::DbCacheManager>> {
+      self.dbcache_manager.get()
    }
 
    pub fn client_connected(&self) {

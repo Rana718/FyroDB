@@ -38,20 +38,37 @@ pub fn geoadd(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
       return resp::write_wrong_args(out, "geoadd");
    }
 
-   let mut items = Vec::with_capacity(coords.len() / 3);
-   for chunk in coords.chunks(3) {
-      let lon = parse_float!(out, chunk[0]);
-      let lat = parse_float!(out, chunk[1]);
-      if !(-180.0..=180.0).contains(&lon) || !(-85.05112878..=85.05112878).contains(&lat) {
-         return resp::write_err(out, "invalid longitude,latitude pair");
+   const STACK_ITEMS: usize = 16;
+   let n_items = coords.len() / 3;
+   if n_items <= STACK_ITEMS {
+      let mut stack_items = [(0.0f64, 0.0f64, ""); STACK_ITEMS];
+      for (idx, &[lon_str, lat_str, member]) in coords.as_chunks::<3>().0.iter().enumerate() {
+         let lon = parse_float!(out, lon_str);
+         let lat = parse_float!(out, lat_str);
+         if !(-180.0..=180.0).contains(&lon) || !(-85.05112878..=85.05112878).contains(&lat) {
+            return resp::write_err(out, "invalid longitude,latitude pair");
+         }
+         stack_items[idx] = (lon, lat, member);
       }
-      items.push((lon, lat, chunk[2]));
+      resp::write_integer(
+         out,
+         store_ok!(out, store.geoadd(key, &stack_items[..n_items], nx, xx, ch)) as i64,
+      );
+   } else {
+      let mut items = Vec::with_capacity(n_items);
+      for &[lon_str, lat_str, member] in coords.as_chunks::<3>().0 {
+         let lon = parse_float!(out, lon_str);
+         let lat = parse_float!(out, lat_str);
+         if !(-180.0..=180.0).contains(&lon) || !(-85.05112878..=85.05112878).contains(&lat) {
+            return resp::write_err(out, "invalid longitude,latitude pair");
+         }
+         items.push((lon, lat, member));
+      }
+      resp::write_integer(
+         out,
+         store_ok!(out, store.geoadd(key, &items, nx, xx, ch)) as i64,
+      );
    }
-
-   resp::write_integer(
-      out,
-      store_ok!(out, store.geoadd(key, &items, nx, xx, ch)) as i64,
-   );
 }
 
 pub fn geopos(parts: &[&str], store: &Store, out: &mut Vec<u8>) {

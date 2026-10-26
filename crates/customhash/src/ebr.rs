@@ -40,7 +40,6 @@ struct Local {
    depth: usize,
    retires: usize,
    collect_on_unpin: bool,
-   initialized: bool,
 }
 
 impl Local {
@@ -51,7 +50,6 @@ impl Local {
          depth: 0,
          retires: 0,
          collect_on_unpin: false,
-         initialized: false,
       }
    }
 
@@ -69,7 +67,6 @@ impl Local {
          {
             self.participant = candidate;
             self.garbage = Vec::with_capacity(COLLECT_INTERVAL * 2);
-            self.initialized = true;
             return;
          }
          candidate = node.next;
@@ -91,12 +88,11 @@ impl Local {
       }
       self.participant = p;
       self.garbage = Vec::with_capacity(COLLECT_INTERVAL * 2);
-      self.initialized = true;
    }
 
    #[inline(always)]
    fn ensure_init(&mut self) {
-      if !self.initialized {
+      if self.participant.is_null() {
          self.initialize();
       }
    }
@@ -119,7 +115,6 @@ impl Local {
    #[inline(never)]
    fn unpin_slow(&mut self) {
       self.collect();
-      self.collect();
       self.collect_on_unpin = !self.garbage.is_empty();
    }
 
@@ -128,7 +123,7 @@ impl Local {
       let d = self.depth;
       self.depth = d + 1;
       if d == 0 {
-         if !self.initialized {
+         if self.participant.is_null() {
             self.initialize();
          }
          let participant = unsafe { &*self.participant };
@@ -171,21 +166,31 @@ impl Local {
          self.garbage.sort_unstable_by_key(|g| g.epoch);
       }
 
-      let global = GLOBAL_EPOCH.load(Ordering::Acquire);
-      let mut all_caught_up = true;
-      let mut p = PARTICIPANTS.load(Ordering::Acquire);
-      while !p.is_null() {
-         let node = unsafe { &*p };
-         let e = node.local.load(Ordering::Acquire);
-         if e != INACTIVE && e < global {
-            all_caught_up = false;
+      let mut global = GLOBAL_EPOCH.load(Ordering::Acquire);
+      for _ in 0..2 {
+         let mut all_caught_up = true;
+         let mut p = PARTICIPANTS.load(Ordering::Acquire);
+         while !p.is_null() {
+            let node = unsafe { &*p };
+            let e = node.local.load(Ordering::Acquire);
+            if e != INACTIVE && e < global {
+               all_caught_up = false;
+               break;
+            }
+            p = node.next;
+         }
+         if all_caught_up {
+            if GLOBAL_EPOCH
+               .compare_exchange(global, global + 1, Ordering::AcqRel, Ordering::Relaxed)
+               .is_ok()
+            {
+               global += 1;
+            } else {
+               break;
+            }
+         } else {
             break;
          }
-         p = node.next;
-      }
-      if all_caught_up {
-         let _ =
-            GLOBAL_EPOCH.compare_exchange(global, global + 1, Ordering::AcqRel, Ordering::Relaxed);
       }
 
       let safe = GLOBAL_EPOCH.load(Ordering::Acquire);
@@ -212,7 +217,7 @@ impl Local {
    }
 
    fn drop_local(&mut self) {
-      if !self.initialized {
+      if self.participant.is_null() {
          return;
       }
       unsafe { &*self.participant }
@@ -263,12 +268,10 @@ pub fn force_collect() {
       l.ensure_init();
       l.collect();
       l.collect();
-      l.collect();
    });
 }
 
-/// Demand-driven quiescence used by destructive commands.  It never frees an
-/// object while a reader is pinned; it simply gives concurrent readers a short
+/// Repeatedly runs garbage collection and yields to allow readers to quiesce.
 pub fn force_collect_quiescent() {
    for _ in 0..64 {
       force_collect();

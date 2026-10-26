@@ -41,10 +41,74 @@ impl Store {
       }
    }
 
+   pub fn hset_bytes_raw(
+      &self,
+      key: &str,
+      fields: &[(&[u8], &[u8])],
+   ) -> Result<usize, &'static str> {
+      for &(f, _) in fields {
+         if std::str::from_utf8(f).is_err() {
+            return Err("invalid field name encoding");
+         }
+      }
+
+      let result = self.data.update_with(key, |val| {
+         if val.is_expired() {
+            let mut h = HashInner::with_capacity(fields.len());
+            let mut added = 0;
+            for &(f, v) in fields {
+               // SAFETY: validated above
+               let name = unsafe { std::str::from_utf8_unchecked(f) };
+               if h.insert_bytes(name, v) {
+                  added += 1;
+               }
+            }
+            val.value = FyroDB::Hash(Box::new(h));
+            val.expires_ms = 0;
+            return Ok(added);
+         }
+         match val.value.as_hash_mut() {
+            Some(h) => {
+               let mut added = 0;
+               for &(f, v) in fields {
+                  let name = unsafe { std::str::from_utf8_unchecked(f) };
+                  if h.insert_bytes(name, v) {
+                     added += 1;
+                  }
+               }
+               Ok(added)
+            }
+            None => Err("WRONGTYPE"),
+         }
+      });
+
+      match result {
+         Some(r) => r,
+         None => {
+            let mut h = HashInner::with_capacity(fields.len());
+            let mut added = 0;
+            for &(f, v) in fields {
+               let name = unsafe { std::str::from_utf8_unchecked(f) };
+               if h.insert_bytes(name, v) {
+                  added += 1;
+               }
+            }
+            self.data.insert_str(
+               key,
+               StoreValue {
+                  value: FyroDB::Hash(Box::new(h)),
+                  expires_ms: 0,
+               },
+            );
+            Ok(added)
+         }
+      }
+   }
+
    pub fn hset_bytes(&self, key: &str, fields: &[(&str, &[u8])]) -> Result<usize, &'static str> {
       let result = self.data.update_with(key, |val| {
          if val.is_expired() {
-            let mut h = HashInner::new();
+            let mut h = HashInner::with_capacity(fields.len());
             let added = fields.len();
             for (f, v) in fields {
                h.insert_bytes(f, v);
@@ -70,7 +134,7 @@ impl Store {
       match result {
          Some(r) => r,
          None => {
-            let mut h = HashInner::new();
+            let mut h = HashInner::with_capacity(fields.len());
             let added = fields.len();
             for (f, v) in fields {
                h.insert_bytes(f, v);
@@ -123,16 +187,68 @@ impl Store {
       }
    }
 
+   pub fn hset_flat(&self, key: &str, pairs: &[&str]) -> Result<usize, &'static str> {
+      let (chunks, _) = pairs.as_chunks::<2>();
+      let result = self.data.update_with(key, |val| {
+         if val.is_expired() {
+            let mut h = HashInner::with_capacity(chunks.len());
+            let mut added = 0;
+            for &[f, v] in chunks {
+               if h.insert_ref(f, v) {
+                  added += 1;
+               }
+            }
+            val.value = FyroDB::Hash(Box::new(h));
+            val.expires_ms = 0;
+            return Ok(added);
+         }
+         match val.value.as_hash_mut() {
+            Some(h) => {
+               let mut added = 0;
+               for &[f, v] in chunks {
+                  if h.insert_ref(f, v) {
+                     added += 1;
+                  }
+               }
+               Ok(added)
+            }
+            None => Err("WRONGTYPE"),
+         }
+      });
+
+      match result {
+         Some(r) => r,
+         None => {
+            let mut h = HashInner::with_capacity(chunks.len());
+            let mut added = 0;
+            for &[f, v] in chunks {
+               if h.insert_ref(f, v) {
+                  added += 1;
+               }
+            }
+            self.data.insert_str(
+               key,
+               StoreValue {
+                  value: FyroDB::Hash(Box::new(h)),
+                  expires_ms: 0,
+               },
+            );
+            Ok(added)
+         }
+      }
+   }
+
    pub fn hset(&self, key: &str, fields: &[(&str, &str)]) -> Result<usize, &'static str> {
       let result = self.data.update_with(key, |val| {
          if val.is_expired() {
-            let added = fields.len();
-            let mut v = Vec::with_capacity(fields.len() * 2);
-            for (f, val) in fields.iter() {
-               v.push(SmallStr::new(f));
-               v.push(SmallStr::new(val));
+            let mut h = HashInner::with_capacity(fields.len());
+            let mut added = 0;
+            for (f, v) in fields {
+               if h.insert_ref(f, v) {
+                  added += 1;
+               }
             }
-            val.value = FyroDB::Hash(Box::new(HashInner::Compact(v)));
+            val.value = FyroDB::Hash(Box::new(h));
             val.expires_ms = 0;
             return Ok(added);
          }
@@ -153,16 +269,17 @@ impl Store {
       match result {
          Some(r) => r,
          None => {
-            let added = fields.len();
-            let mut v = Vec::with_capacity(fields.len() * 2);
-            for (f, val) in fields {
-               v.push(SmallStr::new(f));
-               v.push(SmallStr::new(val));
+            let mut h = HashInner::with_capacity(fields.len());
+            let mut added = 0;
+            for (f, v) in fields {
+               if h.insert_ref(f, v) {
+                  added += 1;
+               }
             }
             self.data.insert_str(
                key,
                StoreValue {
-                  value: FyroDB::Hash(Box::new(HashInner::Compact(v))),
+                  value: FyroDB::Hash(Box::new(h)),
                   expires_ms: 0,
                },
             );
@@ -171,11 +288,12 @@ impl Store {
       }
    }
 
-   pub fn hsetnx(&self, key: &str, field: &str, value: String) -> Result<bool, &'static str> {
+   pub fn hsetnx(&self, key: &str, field: &str, value: &str) -> Result<bool, &'static str> {
       let result = self.data.update_with(key, |val| {
          if val.is_expired() {
-            let v = vec![SmallStr::new(field), SmallStr::new(value.as_str())];
-            val.value = FyroDB::Hash(Box::new(HashInner::Compact(v)));
+            let mut h = HashInner::with_capacity(1);
+            h.insert_ref(field, value);
+            val.value = FyroDB::Hash(Box::new(h));
             val.expires_ms = 0;
             return Ok(true);
          }
@@ -184,7 +302,7 @@ impl Store {
                if h.contains_key(field) {
                   Ok(false)
                } else {
-                  h.insert_ref(field, &value);
+                  h.insert_ref(field, value);
                   Ok(true)
                }
             }
@@ -195,11 +313,12 @@ impl Store {
       match result {
          Some(r) => r,
          None => {
-            let v = vec![SmallStr::new(field), SmallStr::from_string(value)];
+            let mut h = HashInner::with_capacity(1);
+            h.insert_ref(field, value);
             self.data.insert_str(
                key,
                StoreValue {
-                  value: FyroDB::Hash(Box::new(HashInner::Compact(v))),
+                  value: FyroDB::Hash(Box::new(h)),
                   expires_ms: 0,
                },
             );
@@ -232,7 +351,7 @@ impl Store {
          Some(e) => match e.value.as_hash() {
             Some(h) => match h.get(field) {
                Some(v) => {
-                  crate::utils::resp::write_bulk(out, v.as_str());
+                  v.write_resp(out);
                   Ok(true)
                }
                None => Ok(false),
@@ -275,10 +394,11 @@ impl Store {
          }
          match val.value.as_hash() {
             Some(h) => {
+               out.reserve(fields.len() * 32);
                crate::utils::resp::write_array_header(out, fields.len());
                for f in fields {
                   match h.get(f) {
-                     Some(v) => crate::utils::resp::write_bulk(out, v.as_str()),
+                     Some(v) => v.write_resp(out),
                      None => crate::utils::resp::write_nil(out),
                   }
                }
@@ -330,10 +450,11 @@ impl Store {
          match val.value.as_hash() {
             Some(h) => {
                let n = h.len();
+               out.reserve(n * 32);
                crate::utils::resp::write_array_header(out, n * 2);
                for (k, v) in h.iter() {
-                  crate::utils::resp::write_bulk(out, k.as_str());
-                  crate::utils::resp::write_bulk(out, v.as_str());
+                  k.write_resp(out);
+                  v.write_resp(out);
                }
                Ok(n)
             }
@@ -408,6 +529,37 @@ impl Store {
       }
    }
 
+   pub fn hkeys_to_buf(&self, key: &str, out: &mut Vec<u8>) -> Result<usize, &'static str> {
+      let start_len = out.len();
+      let result = self.data.read_consistent(key, |val| {
+         out.truncate(start_len);
+         if val.is_expired() {
+            crate::utils::resp::write_array_header(out, 0);
+            return Ok(0);
+         }
+         match val.value.as_hash() {
+            Some(h) => {
+               let n = h.len();
+               out.reserve(n * 20);
+               crate::utils::resp::write_array_header(out, n);
+               for (k, _) in h.iter() {
+                  k.write_resp(out);
+               }
+               Ok(n)
+            }
+            None => Err("WRONGTYPE"),
+         }
+      });
+      match result {
+         Some(r) => r,
+         None => {
+            out.truncate(start_len);
+            crate::utils::resp::write_array_header(out, 0);
+            Ok(0)
+         }
+      }
+   }
+
    pub fn hvals(&self, key: &str) -> Result<Vec<String>, &'static str> {
       let result = self.data.read_consistent(key, |val| {
          if val.is_expired() {
@@ -421,6 +573,37 @@ impl Store {
       match result {
          Some(r) => r,
          None => Ok(vec![]),
+      }
+   }
+
+   pub fn hvals_to_buf(&self, key: &str, out: &mut Vec<u8>) -> Result<usize, &'static str> {
+      let start_len = out.len();
+      let result = self.data.read_consistent(key, |val| {
+         out.truncate(start_len);
+         if val.is_expired() {
+            crate::utils::resp::write_array_header(out, 0);
+            return Ok(0);
+         }
+         match val.value.as_hash() {
+            Some(h) => {
+               let n = h.len();
+               out.reserve(n * 20);
+               crate::utils::resp::write_array_header(out, n);
+               for (_, v) in h.iter() {
+                  v.write_resp(out);
+               }
+               Ok(n)
+            }
+            None => Err("WRONGTYPE"),
+         }
+      });
+      match result {
+         Some(r) => r,
+         None => {
+            out.truncate(start_len);
+            crate::utils::resp::write_array_header(out, 0);
+            Ok(0)
+         }
       }
    }
 

@@ -1,6 +1,6 @@
 ---
 title: Docker
-description: Run FyroDB with Docker and Docker Compose.
+description: Run FyroDB with Docker and Docker Compose — KV engine and DB cache proxy.
 order: 3
 ---
 
@@ -20,53 +20,102 @@ docker run -d --name fyrodb \
   rana718/fyrodb:latest
 ```
 
-## Docker Compose
+## Docker Compose (KV Only)
 
 ```yaml
 services:
-   fyrodb:
-      image: rana718/fyrodb:latest
-      ports:
-         - "8000:8000"
-      environment:
-         FYRODB_PORT: "8000"
-         FYRODB_MAX_KEYS: "5000000"
-         FYRODB_RDB_INTERVAL: "60"
-         FYRODB_RDB_PATH: "/data/fyrodb.rdb"
-      volumes:
-         - fyrodb-data:/data
-      restart: unless-stopped
-      deploy:
-         resources:
-            limits:
-               memory: 512M
+  fyrodb:
+    image: rana718/fyrodb:latest
+    ports:
+      - "8000:8000"
+    environment:
+      FYRODB_PORT: "8000"
+      FYRODB_MAX_KEYS: "5000000"
+      FYRODB_RDB_INTERVAL: "60"
+      FYRODB_RDB_PATH: "/data/fyrodb.rdb"
+    volumes:
+      - fyrodb-data:/data
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
 
 volumes:
-   fyrodb-data:
+  fyrodb-data:
 ```
 
-## Docker Compose with Your App
+## Docker Compose with DB Cache Proxy
+
+Point your app at FyroDB's proxy port instead of directly at PostgreSQL. The first query for each pattern goes to Postgres; every subsequent identical query is served from memory — no database involved.
 
 ```yaml
 services:
-   app:
-      build: .
-      depends_on:
-         - fyrodb
-      environment:
-         REDIS_URL: "redis://fyrodb:8000"
+  app:
+    build: .
+    depends_on:
+      - fyrodb
+      - postgres
+    environment:
+      # KV / Redis-compatible port for sessions, queues, rate limits
+      REDIS_URL: redis://fyrodb:8000
+      # Proxy port — identical PostgreSQL wire protocol, cached automatically
+      DATABASE_URL: postgres://appuser:secret@fyrodb:5432/mydb
 
-   fyrodb:
-      image: rana718/fyrodb:latest
-      ports:
-         - "8000:8000"
-      volumes:
-         - fyrodb-data:/data
-      environment:
-         FYRODB_RDB_PATH: "/data/fyrodb.rdb"
+  fyrodb:
+    image: rana718/fyrodb:latest
+    ports:
+      - "8000:8000"    # KV / Redis-compatible
+      - "5432:5432"    # DB Cache Proxy (PostgreSQL wire protocol)
+    environment:
+      # KV engine
+      FYRODB_PORT: "8000"
+      FYRODB_MAX_KEYS: "5000000"
+      FYRODB_RDB_PATH: /data/fyrodb.rdb
+      # DB Cache Proxy
+      FYRODB_PROXY_ENABLED: "true"
+      FYRODB_PROXY_PORT: "5432"
+      FYRODB_PROXY_UPSTREAM_URL: postgres://appuser:secret@postgres:5432/mydb
+      FYRODB_PROXY_CACHE_TTL_MS: "30000"
+      FYRODB_PROXY_TRUST_AUTH: "true"
+      FYRODB_PROXY_WORKERS: "2"
+    volumes:
+      - fyrodb-data:/data
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: appuser
+      POSTGRES_PASSWORD: secret
+      POSTGRES_DB: mydb
+    volumes:
+      - pg-data:/var/lib/postgresql/data
 
 volumes:
-   fyrodb-data:
+  fyrodb-data:
+  pg-data:
+```
+
+Your app's `DATABASE_URL` changes from `postgres://appuser:secret@postgres:5432/mydb` to `postgres://appuser:secret@fyrodb:5432/mydb`. That is the entire migration — no code changes.
+
+## Cache-Only Mode (no upstream)
+
+Use this when your application pre-warms the cache at startup and you want cache misses to be explicit errors rather than slow upstream fallbacks:
+
+```yaml
+services:
+  fyrodb:
+    image: rana718/fyrodb:latest
+    ports:
+      - "8000:8000"
+      - "5432:5432"
+    environment:
+      FYRODB_PROXY_ENABLED: "true"
+      FYRODB_PROXY_PORT: "5432"
+      FYRODB_PROXY_MODE: "cache-only"
+      FYRODB_PROXY_TRUST_AUTH: "true"
+      FYRODB_PROXY_CACHE_TTL_MS: "0"   # never expire — app controls invalidation
 ```
 
 ## Custom Port (Redis-compatible 6379)
@@ -75,10 +124,49 @@ volumes:
 docker run -p 6379:6379 -e FYRODB_PORT=6379 rana718/fyrodb:latest
 ```
 
-Now standard Redis clients connect without specifying a port:
+Standard Redis clients connect without specifying a port:
 
 ```bash
 redis-cli
 127.0.0.1:6379> SET key value
 OK
+```
+
+## Docker Compose with Your App (KV Only)
+
+```yaml
+services:
+  app:
+    build: .
+    depends_on:
+      - fyrodb
+    environment:
+      REDIS_URL: "redis://fyrodb:8000"
+
+  fyrodb:
+    image: rana718/fyrodb:latest
+    ports:
+      - "8000:8000"
+    volumes:
+      - fyrodb-data:/data
+    environment:
+      FYRODB_RDB_PATH: "/data/fyrodb.rdb"
+
+volumes:
+  fyrodb-data:
+```
+
+## Health Check
+
+Both engines respond to standard health probes:
+
+```yaml
+healthcheck:
+  # KV engine
+  test: ["CMD", "redis-cli", "-p", "8000", "PING"]
+  # Or proxy engine (requires psql or pg_isready in the image)
+  # test: ["CMD", "pg_isready", "-h", "localhost", "-p", "5432"]
+  interval: 10s
+  timeout: 5s
+  retries: 3
 ```

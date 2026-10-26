@@ -200,12 +200,12 @@ impl Store {
          if val.is_expired() {
             return Err(());
          }
-         match val.value.as_string() {
-            Some(s) => {
-               crate::utils::resp::write_bulk(out, s);
+         match &val.value {
+            crate::storage::value::FyroDB::String(s) => {
+               s.write_resp(out);
                Ok(true)
             }
-            None => Ok(false),
+            _ => Ok(false),
          }
       });
       match found {
@@ -229,7 +229,7 @@ impl Store {
             return false;
          }
          if let crate::storage::value::FyroDB::String(s) = &val.value {
-            crate::utils::resp::write_bulk_bytes(out, s.as_bytes());
+            s.write_resp(out);
             return true;
          }
          false
@@ -254,7 +254,7 @@ impl Store {
    ) -> bool {
       if !p.is_null() {
          let e = unsafe { &*p };
-         let state = e.state.load(std::sync::atomic::Ordering::Relaxed);
+         let state = e.state.load(std::sync::atomic::Ordering::Acquire);
          let expected = ((hash as u32 as u64) << 32) | customhash::STATE_OCCUPIED;
          if (state & customhash::STATE_MATCH_MASK) == expected && e.key.eq_str(key) {
             let val = unsafe { (*e.value.get()).assume_init_ref() };
@@ -346,28 +346,25 @@ impl Store {
          }
          return;
       }
-      let (hash, idx) = match hash_hint {
-         Some(h) => (h, self.data.shard_of(h)),
-         None => self.data.locate_key(key),
+      let hash = match hash_hint {
+         Some(h) => h,
+         None => self.data.locate_key(key).0,
       };
-      if let Some(entry) = self.data.probe_entry_fast(key, hash, idx) {
-         unsafe {
-            self.set_string_fast_entry(key, hash, entry, value, expires_ms);
-         }
-         return;
-      }
-      let store_val = StoreValue {
+      match self.data.probe_or_insert_fast(hash, key, || StoreValue {
          value: crate::storage::value::FyroDB::String(SmallStr::new(value)),
          expires_ms,
-      };
-      if self.data.insert_slot_fast(hash, key, store_val) {
-         self.data.touched(key);
-         if expires_ms != 0 {
-            self.add_ttl();
+      }) {
+         customhash::FastSet::Existing(entry) => unsafe {
+            self.set_string_fast_entry(key, hash, entry, value, expires_ms);
+         },
+         customhash::FastSet::Inserted => {
+            self.data.touched(key);
+            if expires_ms != 0 {
+               self.add_ttl();
+            }
          }
-         return;
+         customhash::FastSet::Retry => self.set_string_fallback(key, hash, value, expires_ms),
       }
-      self.set_string_fallback(key, hash, value, expires_ms);
    }
 
    #[inline(always)]
@@ -490,24 +487,35 @@ impl Store {
       result
    }
 
-   pub fn setnx(&self, key: String, value: String) -> bool {
-      if let Some(replaced) = self.data.try_update(&key, |current| {
+   pub fn setnx(&self, key: &str, value: &str) -> bool {
+      let result = self.data.update_with(key, |current| {
          if current.is_expired() {
-            Some((StoreValue::string(value.clone()), true))
+            current.value = crate::storage::value::FyroDB::String(SmallStr::new(value));
+            current.expires_ms = 0;
+            true
          } else {
-            Some((current.clone(), false))
+            false
          }
-      }) {
-         return replaced;
+      });
+      match result {
+         Some(did_set) => did_set,
+         None => {
+            self.data.insert_str(
+               key,
+               StoreValue {
+                  value: crate::storage::value::FyroDB::String(SmallStr::new(value)),
+                  expires_ms: 0,
+               },
+            );
+            true
+         }
       }
-      self.data.insert_if_absent(key, StoreValue::string(value))
    }
 
    pub fn append(&self, key: &str, suffix: &str) -> Result<usize, &'static str> {
       let result = self.data.update_with(key, |val| {
          if val.is_expired() {
-            val.value =
-               crate::storage::value::FyroDB::String(SmallStr::from_string(suffix.to_string()));
+            val.value = crate::storage::value::FyroDB::String(SmallStr::new(suffix));
             val.expires_ms = 0;
             return Ok(suffix.len());
          }
@@ -524,9 +532,13 @@ impl Store {
          Some(r) => r,
          None => {
             let len = suffix.len();
-            self
-               .data
-               .insert_str(key, StoreValue::string(suffix.to_string()));
+            self.data.insert_str(
+               key,
+               StoreValue {
+                  value: crate::storage::value::FyroDB::String(SmallStr::new(suffix)),
+                  expires_ms: 0,
+               },
+            );
             Ok(len)
          }
       }

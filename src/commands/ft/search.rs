@@ -142,9 +142,9 @@ const PARALLEL_SCAN_MIN_KEYS: usize = 20_000;
 // Budget threads per filtered scan: lone client gets the box, many clients share.
 // Unfiltered KNN bypasses this entirely via brute_search on the contiguous index.
 fn scan_threads(store: &Store, shards: usize) -> usize {
-   let cpus = num_cpus::get();
+   let cpus = fyro_vector::pool::global().threads().max(1);
    let busy = store.connected_clients().saturating_sub(1).min(cpus);
-   (cpus / (busy + 1)).clamp(1, 8).min(shards).max(1)
+   (cpus / (busy + 1)).clamp(1, cpus).min(shards).max(1)
 }
 
 fn parallel_scan<F>(store: &Store, scan: F) -> (Vec<(f32, String)>, usize)
@@ -410,26 +410,33 @@ where
    if keys < PARALLEL_SCAN_MIN_KEYS || shards < 2 {
       return scan(0, shards);
    }
-   let threads = num_cpus::get().clamp(2, 8).min(shards);
+   let pool_threads = fyro_vector::pool::global().threads().max(1);
+   let threads = pool_threads.min(shards).max(1);
+   if threads <= 1 {
+      return scan(0, shards);
+   }
    let per = shards.div_ceil(threads);
-   let mut all: Vec<DocHit> = Vec::new();
-   std::thread::scope(|s| {
-      let mut handles = Vec::with_capacity(threads);
-      for t in 0..threads {
-         let from = t * per;
-         let to = ((t + 1) * per).min(shards);
-         if from >= to {
-            continue;
-         }
-         let sf = &scan;
-         handles.push(s.spawn(move || sf(from, to)));
-      }
-      for h in handles {
-         if let Ok(mut hits) = h.join() {
-            all.append(&mut hits);
+   type HitResult = Vec<DocHit>;
+   let mut chunks: Vec<Option<HitResult>> = (0..threads).map(|_| None).collect();
+   let sf = &scan;
+   let chunks_ptr = chunks.as_mut_ptr() as usize;
+
+   fyro_vector::pool::global().parallel(threads, |t| {
+      let from = t * per;
+      let to = ((t + 1) * per).min(shards);
+      if from < to {
+         let r = sf(from, to);
+         unsafe {
+            let ptr = chunks_ptr as *mut Option<HitResult>;
+            *ptr.add(t) = Some(r);
          }
       }
    });
+
+   let mut all: Vec<DocHit> = Vec::new();
+   for hit_chunk in chunks.into_iter().flatten() {
+      all.extend(hit_chunk);
+   }
    all
 }
 

@@ -87,8 +87,12 @@ impl ZSetData {
    }
 
    pub fn with_capacity(cap: usize) -> Self {
+      let mut chunks = Vec::with_capacity(cap / CHUNK_MAX + 1);
+      if cap > 0 {
+         chunks.push(Vec::with_capacity(cap.clamp(4, CHUNK_MAX)));
+      }
       Self {
-         chunks: Vec::with_capacity(cap / CHUNK_MAX + 1),
+         chunks,
          index: None,
          len: 0,
       }
@@ -220,12 +224,12 @@ impl ZSetData {
    fn place(&mut self, entry: ZEntry) {
       let (score, member) = (entry.score, entry.member.as_str());
       let Some(last) = self.chunks.last_mut() else {
-         let mut c = Vec::with_capacity(CHUNK_MAX);
+         let mut c = Vec::with_capacity(4);
          c.push(entry);
          self.chunks.push(c);
          return;
       };
-      let ci = if last.last().is_some_and(|e| before(e, score, member)) {
+      let ci = if last.is_empty() || last.last().is_some_and(|e| before(e, score, member)) {
          last.push(entry);
          self.chunks.len() - 1
       } else {
@@ -239,7 +243,7 @@ impl ZSetData {
       };
       if self.chunks[ci].len() > CHUNK_MAX {
          if ci + 1 == self.chunks.len() {
-            let mut new_chunk = Vec::with_capacity(CHUNK_MAX);
+            let mut new_chunk = Vec::with_capacity(CHUNK_MAX / 2);
             new_chunk.push(self.chunks[ci].pop().unwrap());
             self.chunks.push(new_chunk);
          } else {

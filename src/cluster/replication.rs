@@ -67,7 +67,9 @@ pub enum ReplicationMessage {
       from_offset: u64,
       identity: [u8; 16],
    },
-   Entry(MutationRecord),
+   /// Shared with the mutation log so fan-out to a replica does not clone the
+   /// key/value buffers of a retained entry.
+   Entry(Arc<MutationRecord>),
    Ack {
       applied_offset: u64,
    },
@@ -189,7 +191,7 @@ pub fn encode_replication_message(
       }
       ReplicationMessage::Entry(record) => {
          out.push(2);
-         out.extend_from_slice(&encode_mutation(record)?);
+         encode_mutation_to_buf(record, &mut out)?;
       }
       ReplicationMessage::Ack { applied_offset } => {
          out.push(3);
@@ -229,7 +231,9 @@ pub fn decode_replication_message(
          from_offset: u64::from_be_bytes(input[9..17].try_into().unwrap()),
          identity: input[17..33].try_into().unwrap(),
       }),
-      2 => Ok(ReplicationMessage::Entry(decode_mutation(&input[1..])?)),
+      2 => Ok(ReplicationMessage::Entry(Arc::new(decode_mutation(
+         &input[1..],
+      )?))),
       3 if input.len() == 9 => Ok(ReplicationMessage::Ack {
          applied_offset: u64::from_be_bytes(input[1..9].try_into().unwrap()),
       }),
@@ -291,7 +295,8 @@ pub struct MutationLog {
    next_offset: u64,
    capacity: usize,
    bytes: usize,
-   records: VecDeque<MutationRecord>,
+   /// Shared records avoiding deep buffer copies on replication fan-out.
+   records: VecDeque<Arc<MutationRecord>>,
 }
 
 #[derive(Clone)]
@@ -307,6 +312,31 @@ struct ReplicationJournal {
    identity: [u8; 16],
 }
 
+/// Wire length of [`encode_mutation`]'s fixed prefix.
+const MUTATION_HEADER_LEN: usize = 27;
+
+/// Appends journal record as `u32 length || mutation || key || value` via IoSlice.
+fn write_journal_entry(journal: &mut ReplicationJournal, record: &MutationRecord) {
+   if record.key.len() > MAX_FIELD || record.value.len() > MAX_FIELD {
+      return;
+   }
+   let encoded_len = MUTATION_HEADER_LEN + record.key.len() + record.value.len();
+   let mut prefix = [0u8; 4 + MUTATION_HEADER_LEN];
+   prefix[..4].copy_from_slice(&(encoded_len as u32).to_le_bytes());
+   prefix[4..12].copy_from_slice(&record.offset.to_be_bytes());
+   prefix[12..14].copy_from_slice(&record.slot.value().to_be_bytes());
+   prefix[14] = record.kind as u8;
+   prefix[15..19].copy_from_slice(&(record.key.len() as u32).to_be_bytes());
+   prefix[19..23].copy_from_slice(&(record.value.len() as u32).to_be_bytes());
+   prefix[23..31].copy_from_slice(&record.expire_at_ms.unwrap_or(0).to_be_bytes());
+   let mut slices = [
+      std::io::IoSlice::new(&prefix),
+      std::io::IoSlice::new(&record.key),
+      std::io::IoSlice::new(&record.value),
+   ];
+   let _ = super::transport::codec::write_all_slices(&mut journal.file, &mut slices);
+}
+
 impl ReplicationCoordinator {
    pub fn new(capacity: usize) -> Self {
       Self {
@@ -317,34 +347,18 @@ impl ReplicationCoordinator {
       }
    }
    pub fn append(&self, record: MutationRecord) -> Result<u64, LogError> {
-      let offset = self.next_offset.fetch_add(1, Ordering::Relaxed);
+      let mut log = self.log.lock().expect("replication log poisoned");
       let mut record = record;
-      record.offset = offset;
+      record.offset = log.next_offset();
 
-      let journal_payload = if self.journal.lock().unwrap().is_some() {
-         encode_mutation(&record).ok()
-      } else {
-         None
-      };
+      if let Some(journal) = self.journal.lock().unwrap().as_mut() {
+         write_journal_entry(journal, &record);
+      }
 
-      let result = self
-         .log
-         .lock()
-         .expect("replication log poisoned")
-         .append(record);
-
+      let result = log.append(record);
       if result.is_ok() {
+         self.next_offset.store(log.next_offset(), Ordering::Relaxed);
          self.appended.fetch_add(1, Ordering::Relaxed);
-         if let Some(payload) = journal_payload
-            && let Some(journal) = self.journal.lock().unwrap().as_mut()
-         {
-            let len_bytes = (payload.len() as u32).to_le_bytes();
-            let mut slices = [
-               std::io::IoSlice::new(&len_bytes),
-               std::io::IoSlice::new(&payload),
-            ];
-            let _ = super::transport::codec::write_all_slices(&mut journal.file, &mut slices);
-         }
       }
       result
    }
@@ -355,7 +369,7 @@ impl ReplicationCoordinator {
          .expect("replication log poisoned")
          .replay_from(offset)
    }
-   pub fn record_at(&self, offset: u64) -> Result<Option<MutationRecord>, LogError> {
+   pub fn record_at(&self, offset: u64) -> Result<Option<Arc<MutationRecord>>, LogError> {
       self
          .log
          .lock()
@@ -444,7 +458,7 @@ impl ReplicationCoordinator {
                Err(error) => return Err(error),
             }
             let length = u32::from_le_bytes(length) as usize;
-            if length > MAX_FIELD {
+            if length > MAX_FIELD.saturating_mul(2).saturating_add(64) {
                return Err(std::io::Error::new(
                   std::io::ErrorKind::InvalidData,
                   "oversized replication journal record",
@@ -490,8 +504,6 @@ impl MutationLog {
          next_offset: 1,
          capacity,
          bytes: 0,
-         // A 100k capacity would reserve MiB before the first write;
-         // VecDeque grows with retained data and stays bounded.
          records: VecDeque::new(),
       }
    }
@@ -502,7 +514,7 @@ impl MutationLog {
       record.offset = self.next_offset;
       self.next_offset = self.next_offset.saturating_add(1);
       self.bytes = self.bytes.saturating_add(record_memory_bytes(&record));
-      self.records.push_back(record);
+      self.records.push_back(Arc::new(record));
       while self.records.len() > self.capacity || self.bytes > MAX_LOG_BYTES {
          if let Some(old) = self.records.pop_front() {
             self.bytes = self.bytes.saturating_sub(record_memory_bytes(&old));
@@ -524,22 +536,23 @@ impl MutationLog {
          .records
          .iter()
          .filter(|record| record.offset >= offset.max(1))
-         .cloned()
+         .map(|record| MutationRecord::clone(record))
          .collect())
    }
-   pub fn record_at(&self, offset: u64) -> Result<Option<MutationRecord>, LogError> {
-      let first = self
-         .records
-         .front()
-         .map_or(self.next_offset, |record| record.offset);
+   pub fn record_at(&self, offset: u64) -> Result<Option<Arc<MutationRecord>>, LogError> {
+      let Some(front) = self.records.front() else {
+         return Ok(None);
+      };
+      let first = front.offset;
       if offset != 0 && offset < first {
          return Err(LogError::OffsetGap);
       }
-      Ok(self
-         .records
-         .iter()
-         .find(|record| record.offset == offset.max(1))
-         .cloned())
+      let offset = offset.max(1);
+      if offset < first {
+         return Ok(None);
+      }
+      // O(1) arithmetic offset lookup sharing retained record Arc.
+      Ok(self.records.get((offset - first) as usize).map(Arc::clone))
    }
    pub fn next_offset(&self) -> u64 {
       self.next_offset
@@ -564,11 +577,15 @@ fn record_memory_bytes(record: &MutationRecord) -> usize {
       .saturating_add(std::mem::size_of::<MutationRecord>())
 }
 
-pub fn encode_mutation(record: &MutationRecord) -> Result<Vec<u8>, ReplicationCodecError> {
+#[inline]
+pub fn encode_mutation_to_buf(
+   record: &MutationRecord,
+   out: &mut Vec<u8>,
+) -> Result<(), ReplicationCodecError> {
    if record.key.len() > MAX_FIELD || record.value.len() > MAX_FIELD {
       return Err(ReplicationCodecError::TooLarge);
    }
-   let mut out = Vec::with_capacity(32 + record.key.len() + record.value.len());
+   out.reserve(MUTATION_HEADER_LEN + record.key.len() + record.value.len());
    out.extend_from_slice(&record.offset.to_be_bytes());
    out.extend_from_slice(&record.slot.value().to_be_bytes());
    out.push(record.kind as u8);
@@ -577,6 +594,74 @@ pub fn encode_mutation(record: &MutationRecord) -> Result<Vec<u8>, ReplicationCo
    out.extend_from_slice(&record.expire_at_ms.unwrap_or(0).to_be_bytes());
    out.extend_from_slice(&record.key);
    out.extend_from_slice(&record.value);
+   Ok(())
+}
+
+pub fn encode_mutation(record: &MutationRecord) -> Result<Vec<u8>, ReplicationCodecError> {
+   if record.key.len() > MAX_FIELD || record.value.len() > MAX_FIELD {
+      return Err(ReplicationCodecError::TooLarge);
+   }
+   let mut out = Vec::with_capacity(MUTATION_HEADER_LEN + record.key.len() + record.value.len());
+   encode_mutation_to_buf(record, &mut out)?;
+   Ok(out)
+}
+
+/// Migration chunks carry a count followed by length-prefixed mutations, so a
+/// whole batch costs one network round trip instead of one per key.
+pub fn encode_mutation_batch(records: &[MutationRecord]) -> Result<Vec<u8>, ReplicationCodecError> {
+   let total_len = records.iter().fold(4usize, |acc, r| {
+      acc + 4 + MUTATION_HEADER_LEN + r.key.len() + r.value.len()
+   });
+   let mut out = Vec::with_capacity(total_len);
+   out.extend_from_slice(&(records.len() as u32).to_be_bytes());
+   for record in records {
+      let record_len = MUTATION_HEADER_LEN + record.key.len() + record.value.len();
+      out.extend_from_slice(&(record_len as u32).to_be_bytes());
+      encode_mutation_to_buf(record, &mut out)?;
+   }
+   Ok(out)
+}
+
+pub fn decode_mutation_batch(input: &[u8]) -> Result<Vec<MutationRecord>, ReplicationCodecError> {
+   if input.len() < 4 {
+      return Err(ReplicationCodecError::Truncated);
+   }
+   let count = u32::from_be_bytes(input[..4].try_into().unwrap()) as usize;
+   // Guard against corrupt or malicious batch length amplification.
+   if count > (1 << 20) || count > (input.len() - 4) / (4 + MUTATION_HEADER_LEN) {
+      return Err(ReplicationCodecError::Invalid);
+   }
+   let mut rest = &input[4..];
+   let mut records = Vec::with_capacity(count);
+   for _ in 0..count {
+      let length = u32::from_be_bytes(take(&mut rest, 4)?.try_into().unwrap()) as usize;
+      if length > MAX_FIELD.saturating_mul(2).saturating_add(64) {
+         return Err(ReplicationCodecError::TooLarge);
+      }
+      records.push(decode_mutation(take(&mut rest, length)?)?);
+   }
+   if !rest.is_empty() {
+      return Err(ReplicationCodecError::Invalid);
+   }
+   Ok(records)
+}
+
+/// Snapshot chunks are built directly into their wire form to avoid copying
+/// the payload twice (message body, then frame).
+pub fn encode_snapshot(
+   epoch: u64,
+   offset: u64,
+   payload: &[u8],
+) -> Result<Vec<u8>, ReplicationCodecError> {
+   if payload.len() > MAX_FIELD {
+      return Err(ReplicationCodecError::TooLarge);
+   }
+   let mut out = Vec::with_capacity(21 + payload.len());
+   out.push(4);
+   out.extend_from_slice(&epoch.to_be_bytes());
+   out.extend_from_slice(&offset.to_be_bytes());
+   out.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+   out.extend_from_slice(payload);
    Ok(out)
 }
 
@@ -646,6 +731,86 @@ mod tests {
    }
 
    #[test]
+   fn mutation_batches_round_trip_and_reject_impossible_counts() {
+      let records: Vec<MutationRecord> = (0..3)
+         .map(|index| MutationRecord {
+            offset: index + 1,
+            slot: Slot(1),
+            kind: MutationKind::Replace,
+            key: format!("k{index}").into_bytes(),
+            value: vec![index as u8; 64],
+            expire_at_ms: None,
+         })
+         .collect();
+      let batch = encode_mutation_batch(&records).unwrap();
+      assert_eq!(decode_mutation_batch(&batch).unwrap(), records);
+
+      // A count that cannot fit in the frame must be rejected before the
+      // decoder reserves any memory for it.
+      let mut bogus = 1_000_000u32.to_be_bytes().to_vec();
+      assert!(matches!(
+         decode_mutation_batch(&bogus),
+         Err(ReplicationCodecError::Invalid)
+      ));
+      bogus.extend_from_slice(&batch[4..]);
+      assert!(matches!(
+         decode_mutation_batch(&bogus),
+         Err(ReplicationCodecError::Invalid)
+      ));
+   }
+
+   #[test]
+   fn journal_entries_use_the_replication_wire_format_and_replay() {
+      let path = std::env::temp_dir().join(format!(
+         "fyrodb-journal-{}-{}.log",
+         std::process::id(),
+         std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+      ));
+      let path_str = path.to_str().unwrap().to_owned();
+      let record = MutationRecord {
+         offset: 0,
+         slot: Slot(42),
+         kind: MutationKind::Replace,
+         key: b"key".to_vec(),
+         value: b"value".to_vec(),
+         expire_at_ms: Some(123),
+      };
+      let expected = {
+         let coordinator = ReplicationCoordinator::new(16);
+         coordinator.open_journal(&path_str, [9; 16]).unwrap();
+         assert_eq!(coordinator.append(record.clone()).unwrap(), 1);
+         coordinator.flush_journal();
+         let mut expected = record;
+         expected.offset = 1;
+         encode_mutation(&expected).unwrap()
+      };
+      // The journal is the 21-byte header followed by one length-prefixed
+      // mutation that must match the replication wire encoding byte for byte.
+      let bytes = std::fs::read(&path).unwrap();
+      let body = &bytes[21..];
+      assert_eq!(
+         u32::from_le_bytes(body[..4].try_into().unwrap()) as usize,
+         expected.len()
+      );
+      assert_eq!(&body[4..], &expected[..]);
+
+      let reopened = ReplicationCoordinator::new(16);
+      reopened.open_journal(&path_str, [9; 16]).unwrap();
+      assert_eq!(reopened.next_offset(), 2);
+      let replayed = reopened.replay_from(1).unwrap();
+      assert_eq!(replayed.len(), 1);
+      assert_eq!(replayed[0].offset, 1);
+      assert_eq!(replayed[0].slot, Slot(42));
+      assert_eq!(replayed[0].key, b"key");
+      assert_eq!(replayed[0].value, b"value");
+      assert_eq!(replayed[0].expire_at_ms, Some(123));
+      let _ = std::fs::remove_file(path);
+   }
+
+   #[test]
    fn log_assigns_offsets_and_reports_retention_gaps() {
       let mut log = MutationLog::new(2);
       let record = || MutationRecord {
@@ -661,6 +826,13 @@ mod tests {
       assert_eq!(log.append(record()).unwrap(), 3);
       assert_eq!(log.replay_from(2).unwrap().len(), 2);
       assert_eq!(log.replay_from(1), Err(LogError::OffsetGap));
+      // Retained entries resolve by arithmetic; evicted and future ones do not.
+      assert_eq!(log.record_at(2).unwrap().unwrap().offset, 2);
+      assert_eq!(log.record_at(3).unwrap().unwrap().offset, 3);
+      assert!(log.record_at(4).unwrap().is_none());
+      // Offset 0 means "from the beginning"; the first retained entry is 2.
+      assert!(log.record_at(0).unwrap().is_none());
+      assert_eq!(log.record_at(1), Err(LogError::OffsetGap));
    }
 
    #[test]
@@ -706,14 +878,14 @@ mod tests {
    fn stream_enforces_order_and_offsets() {
       let mut stream = ReplicationStream::new();
       assert_eq!(
-         stream.apply(&ReplicationMessage::Entry(MutationRecord {
+         stream.apply(&ReplicationMessage::Entry(Arc::new(MutationRecord {
             offset: 1,
             slot: Slot(1),
             kind: MutationKind::Delete,
             key: b"k".to_vec(),
             value: Vec::new(),
             expire_at_ms: None
-         })),
+         }))),
          Err(StreamError::NotStarted)
       );
       stream.begin(3, 1).unwrap();

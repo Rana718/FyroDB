@@ -5,7 +5,7 @@ mod quicklist;
 mod small_str;
 mod zset_data;
 
-pub use collections::{HashInner, HashIter, SetInner, SetIter, SetMemberRef};
+pub use collections::{HashInner, HashIter, SetInner, SetIter, SetMemberRef, canonical_i64};
 pub use list::ListValue;
 pub use quicklist::QuickList;
 pub type ListInner = ListValue;
@@ -364,6 +364,13 @@ impl StoreValue {
    #[inline(always)]
    pub fn is_expired(&self) -> bool {
       self.expires_ms != 0 && approx_now_ms() >= self.expires_ms
+   }
+
+   /// Same test with a caller-supplied clock, so bulk scans pay one clock
+   /// read instead of one per key.
+   #[inline(always)]
+   pub fn is_expired_at(&self, now_ms: u64) -> bool {
+      self.expires_ms != 0 && now_ms >= self.expires_ms
    }
 
    #[inline]

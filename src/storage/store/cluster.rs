@@ -56,10 +56,11 @@ impl Store {
    pub fn record_current_value(&self, key: &str) {
       self.aof_capture(key);
       let Some(log) = &self.replication else { return };
-      let Some(value) = self.data.get_ref(key) else {
+      let slot = crate::cluster::hash_slot(key.as_bytes());
+      let Some(value) = self.data.get_ref(key).filter(|value| !value.is_expired()) else {
          let _ = log.append(crate::cluster::MutationRecord {
             offset: 0,
-            slot: crate::cluster::hash_slot(key.as_bytes()),
+            slot,
             kind: crate::cluster::MutationKind::Delete,
             key: key.as_bytes().to_vec(),
             value: Vec::new(),
@@ -67,22 +68,11 @@ impl Store {
          });
          return;
       };
-      if value.is_expired() {
-         let _ = log.append(crate::cluster::MutationRecord {
-            offset: 0,
-            slot: crate::cluster::hash_slot(key.as_bytes()),
-            kind: crate::cluster::MutationKind::Delete,
-            key: key.as_bytes().to_vec(),
-            value: Vec::new(),
-            expire_at_ms: None,
-         });
-         return;
-      }
       let Ok(encoded) = crate::storage::rdb::encode_single_value(&value) else {
          return;
       };
       let _ = log.append(crate::cluster::MutationRecord::replace(
-         crate::cluster::hash_slot(key.as_bytes()),
+         slot,
          key.as_bytes().to_vec(),
          encoded,
          Some(value.expires_ms).filter(|expiry| *expiry != 0),
@@ -320,34 +310,123 @@ impl Store {
    }
 
    pub fn count_keys_in_slot(&self, slot: crate::cluster::Slot) -> usize {
-      let mut count = 0usize;
-      self.data.for_each(|key, value| {
-         if !value.is_expired() && crate::cluster::hash_slot(key.as_bytes()) == slot {
-            count += 1;
+      let now = crate::storage::value::approx_now_ms();
+      let shards = self.data.shard_count();
+      if shards < 2 {
+         let mut count = 0usize;
+         self.data.for_each(|key, value| {
+            if !value.is_expired_at(now) && crate::cluster::hash_slot(key.as_bytes()) == slot {
+               count += 1;
+            }
+         });
+         return count;
+      }
+      const MAX_SCAN_THREADS: usize = 16;
+      let threads = std::thread::available_parallelism()
+         .map_or(1, |count| count.get())
+         .min(MAX_SCAN_THREADS)
+         .min(shards)
+         .max(1);
+      let per = shards.div_ceil(threads);
+      std::thread::scope(|scope| {
+         let mut handles = Vec::with_capacity(threads);
+         for index in 0..threads {
+            let from = index * per;
+            let to = (from + per).min(shards);
+            if from >= to {
+               continue;
+            }
+            let data = &self.data;
+            handles.push(scope.spawn(move || {
+               let mut local = 0usize;
+               data.for_each_shard_range(from, to, |key, value| {
+                  if !value.is_expired_at(now) && crate::cluster::hash_slot(key.as_bytes()) == slot
+                  {
+                     local += 1;
+                  }
+               });
+               local
+            }));
          }
-      });
-      count
+         handles
+            .into_iter()
+            .map(|handle| handle.join().expect("slot count thread panicked"))
+            .sum()
+      })
    }
 
    pub fn keys_in_slot(&self, slot: crate::cluster::Slot, limit: usize) -> Vec<String> {
-      let mut keys = Vec::new();
-      self.data.for_each(|key, value| {
-         if keys.len() >= limit {
-            return;
+      if limit == 0 {
+         return Vec::new();
+      }
+      let now = crate::storage::value::approx_now_ms();
+      let shards = self.data.shard_count();
+      if shards < 2 {
+         let mut keys = Vec::with_capacity(limit.min(1024));
+         self.data.for_each(|key, value| {
+            if keys.len() < limit
+               && !value.is_expired_at(now)
+               && crate::cluster::hash_slot(key.as_bytes()) == slot
+            {
+               keys.push(key.to_owned());
+            }
+         });
+         return keys;
+      }
+      const MAX_SCAN_THREADS: usize = 16;
+      let threads = std::thread::available_parallelism()
+         .map_or(1, |count| count.get())
+         .min(MAX_SCAN_THREADS)
+         .min(shards)
+         .max(1);
+      let per = shards.div_ceil(threads);
+      let global_found = std::sync::atomic::AtomicUsize::new(0);
+      let mut keys = std::thread::scope(|scope| {
+         let mut handles = Vec::with_capacity(threads);
+         for index in 0..threads {
+            let from = index * per;
+            let to = (from + per).min(shards);
+            if from >= to {
+               continue;
+            }
+            let data = &self.data;
+            let global = &global_found;
+            handles.push(scope.spawn(move || {
+               let mut found = Vec::new();
+               data.for_each_shard_range(from, to, |key, value| {
+                  if global.load(Ordering::Relaxed) >= limit {
+                     return;
+                  }
+                  if !value.is_expired_at(now) && crate::cluster::hash_slot(key.as_bytes()) == slot
+                  {
+                     found.push(key.to_owned());
+                     global.fetch_add(1, Ordering::Relaxed);
+                  }
+               });
+               found
+            }));
          }
-         if !value.is_expired() && crate::cluster::hash_slot(key.as_bytes()) == slot {
-            keys.push(key.to_owned());
-         }
+         handles
+            .into_iter()
+            .flat_map(|handle| handle.join().expect("slot scan thread panicked"))
+            .collect::<Vec<String>>()
       });
+      keys.truncate(limit);
       keys
    }
 
+   /// Updates the replica applied offset in memory.
+   #[inline]
    pub fn set_replica_applied_offset(&self, offset: u64) {
       self.replica_applied_offset.store(offset, Ordering::Release);
+   }
+
+   pub fn persist_replica_offset(&self) {
+      let offset = self.replica_applied_offset();
       if let Some(path) = self.replica_meta_path.lock().unwrap().as_deref() {
          let _ = crate::storage::rdb::save_replication_metadata(
             path,
-            self.cluster.topology.epoch,
+            self.cluster_state.topology_arc().epoch,
             offset,
          );
       }

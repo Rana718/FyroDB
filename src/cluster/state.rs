@@ -51,6 +51,12 @@ impl ClusterState {
       Arc::clone(&*self.topology.read().unwrap())
    }
 
+   pub fn topology_and_routing_arc(&self) -> (Arc<super::Topology>, Arc<super::RoutingTable>) {
+      let topology = self.topology.read().unwrap();
+      let routing = self.routing.read().unwrap();
+      (Arc::clone(&topology), Arc::clone(&routing))
+   }
+
    /// Version of the currently installed topology.
    #[inline(always)]
    pub fn topology_version(&self) -> u64 {

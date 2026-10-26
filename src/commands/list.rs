@@ -76,7 +76,7 @@ pub fn lindex(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
       return resp::write_wrong_args(out, "lindex");
    };
    let i = parse_int!(out, idx);
-   resp::write_opt_bulk(out, wt!(out, store.lindex(key, i)));
+   wt!(out, store.lindex_to_buf(key, i, out));
 }
 
 pub fn lset(parts: &[&str], store: &Store, out: &mut Vec<u8>) {

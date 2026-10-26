@@ -119,7 +119,7 @@ pub fn set(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
 
 pub fn setnx(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
    match parts {
-      [_, key, value] => resp::write_boolean(out, store.setnx(key.to_string(), value.to_string())),
+      [_, key, value] => resp::write_boolean(out, store.setnx(key, value)),
       _ => resp::write_wrong_args(out, "setnx"),
    }
 }
@@ -231,11 +231,8 @@ pub fn getex(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
 pub fn mset(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
    match parts {
       [_, items @ ..] if !items.is_empty() && items.len() % 2 == 0 => {
-         for chunk in items.chunks(2) {
-            store.set(
-               chunk[0].to_string(),
-               StoreValue::string(chunk[1].to_string()),
-            );
+         for &[key, val] in items.as_chunks::<2>().0 {
+            store.set_string(key, val, 0);
          }
          resp::write_ok(out);
       }
@@ -246,25 +243,24 @@ pub fn mset(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
 pub fn msetnx(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
    match parts {
       [_, items @ ..] if !items.is_empty() && items.len() % 2 == 0 => {
-         let mut inserted: Vec<&str> = Vec::with_capacity(items.len() / 2);
-         let mut all_ok = true;
+         let pairs = items.as_chunks::<2>().0;
+         let mut failed_idx = None;
 
-         for chunk in items.chunks(2) {
-            let key = chunk[0];
-            let val = chunk[1];
-            if store
-               .data
-               .insert_if_absent(key.to_string(), StoreValue::string(val.to_string()))
-            {
-               inserted.push(key);
-            } else {
-               all_ok = false;
+         for (i, &[key, val]) in pairs.iter().enumerate() {
+            let store_val = StoreValue {
+               value: crate::storage::value::FyroDB::String(
+                  crate::storage::value::SmallStr::new(val),
+               ),
+               expires_ms: 0,
+            };
+            if !store.data.insert_if_absent_str(key, store_val) {
+               failed_idx = Some(i);
                break;
             }
          }
 
-         if !all_ok {
-            for key in inserted {
+         if let Some(failed) = failed_idx {
+            for &[key, _] in &pairs[..failed] {
                store.data.remove(key);
             }
             out.extend_from_slice(resp::ZERO);
@@ -279,6 +275,7 @@ pub fn msetnx(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
 pub fn mget(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
    match parts {
       [_, keys @ ..] if !keys.is_empty() => {
+         out.reserve(keys.len() * 32);
          resp::write_array_header(out, keys.len());
          for &k in keys.iter() {
             if !store.get_to_buf(k, out) {

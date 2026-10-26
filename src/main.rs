@@ -90,7 +90,8 @@ fn main() {
 
    let workers = config.workers;
    let affinity = fyro_db::utils::affinity::from_env(workers);
-   fyro_db::search::configure_pool(affinity.search.clone());
+   let search_cores = affinity.search.clone().or_else(|| affinity.workers.clone());
+   fyro_db::search::configure_pool(Some(workers), search_cores);
    let store = Arc::new(Store::with_config_workers(
       config.shards,
       config.max_keys,
@@ -172,6 +173,47 @@ fn main() {
       println!("  auth=enabled");
    }
 
+   if config.dbcache.enabled {
+      let storage: Arc<dyn fyro_dbcache::DbCacheStorage> = store.clone();
+      let cache_mgr = Arc::new(fyro_dbcache::DbCacheManager::with_limits(
+         storage,
+         fyro_dbcache::CacheLimits {
+            max_keys: config.dbcache.cache_max_keys,
+            ttl_jitter_pct: config.dbcache.ttl_jitter_pct,
+            sync_interval_ms: config.dbcache.sync_interval_ms,
+         },
+      ));
+      store.install_dbcache_manager(Arc::clone(&cache_mgr));
+      if config.dbcache.flush_on_start {
+         let dropped = cache_mgr.flush_all(&config.dbcache.key_prefix);
+         if dropped > 0 {
+            println!("  dbcache=flushed {dropped} persisted entries");
+         }
+      } else {
+         let rebuilt = cache_mgr.rebuild_tracker(&config.dbcache.key_prefix);
+         if rebuilt > 0 {
+            println!("  dbcache=rebuilt invalidation index ({rebuilt} entries)");
+         }
+      }
+      if let Err(e) = fyro_dbcache::start_proxy_listener(config.dbcache.clone(), cache_mgr) {
+         eprintln!("fyrodb: failed to start dbcache proxy: {e}");
+      } else {
+         println!(
+            "  dbcache=enabled listen={} mode={:?}",
+            config.dbcache.listen_addr, config.dbcache.mode
+         );
+         println!("  dbcache proxy_url={}", config.dbcache.client_url());
+         println!(
+            "  dbcache default_ttl={}s pool_idle_max={} pool_idle={}ms auth_users={} bus={}",
+            config.dbcache.default_ttl_ms / 1000,
+            config.dbcache.pool_max_idle,
+            config.dbcache.pool_idle_timeout_ms,
+            config.dbcache.auth_users.len(),
+            config.dbcache.bus_path.as_deref().unwrap_or("off"),
+         );
+      }
+   }
+
    std::thread::scope(|scope| {
       let store_ref: &Arc<Store> = &store;
       let pubsub_ref: &PubSub = &pubsub;
@@ -194,6 +236,16 @@ fn main() {
          .spawn_scoped(scope, || signal_loop(store_ref, &config.rdb_path))
          .expect("failed to spawn signal thread");
 
+      if config.dbcache.mode == fyro_dbcache::DbProxyMode::CacheOnly {
+         println!(
+            "  cache_only=enabled (Redis port {} suspended)",
+            config.port
+         );
+         loop {
+            std::thread::sleep(Duration::from_secs(3600));
+         }
+      }
+
       let auth: Option<&str> = config.auth.as_deref();
       let port = config.port;
       let bind: &str = &config.bind;
@@ -203,9 +255,20 @@ fn main() {
       }
       for worker_index in 0..workers {
          let core = worker_cores.as_ref().map(|c| c[worker_index % c.len()]);
+         // Debug builds use much larger frames than release, so keep a safety
+         // margin unless the operator sizes the stack explicitly.
+         let stack_size = env::var("FYRODB_WORKER_STACK_KB")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .map(|kb| kb.saturating_mul(1024))
+            .unwrap_or(if cfg!(debug_assertions) {
+               1024 * 1024
+            } else {
+               128 * 1024
+            });
          std::thread::Builder::new()
             .name("fyrodb-worker".into())
-            .stack_size(128 * 1024)
+            .stack_size(stack_size)
             .spawn_scoped(scope, move || {
                if let Some(core) = core {
                   fyro_db::utils::affinity::pin_current(core);
@@ -227,13 +290,71 @@ struct Config {
    rdb_interval: Duration,
    auth: Option<String>,
    bind: String,
+   dbcache: fyro_dbcache::DbCacheConfig,
 }
 
 impl Config {
    fn from_env() -> Self {
-      let workers = env_usize("FYRODB_WORKERS", 0);
+      let mut workers = env_usize("FYRODB_WORKERS", 0);
+      let mut port = env_u16("FYRODB_PORT", 8000);
+      let mut auth = env::var("FYRODB_AUTH").ok().filter(|s| !s.is_empty());
+      let mut dbcache = fyro_dbcache::DbCacheConfig::from_env();
+      let args: Vec<String> = env::args().collect();
+      let mut i = 1;
+      while i < args.len() {
+         match args[i].as_str() {
+            "--workers" | "-w" if i + 1 < args.len() => {
+               if let Ok(w) = args[i + 1].parse::<usize>() {
+                  workers = w;
+               }
+               i += 1;
+            }
+            "--port" | "-p" if i + 1 < args.len() => {
+               if let Ok(p) = args[i + 1].parse::<u16>() {
+                  port = p;
+               }
+               i += 1;
+            }
+            "--requirepass" | "--auth" | "-a" if i + 1 < args.len() => {
+               auth = Some(args[i + 1].clone());
+               i += 1;
+            }
+            "--db-upstream" if i + 1 < args.len() => {
+               let target = fyro_dbcache::UpstreamTarget::parse(&args[i + 1]);
+               if let (Some(u), Some(p)) = (&target.user, &target.password) {
+                  dbcache.auth_users.insert(u, p);
+               }
+               dbcache.enabled = true;
+               dbcache.upstream_addr = Some(args[i + 1].clone());
+               i += 1;
+            }
+            "--db-trust" => {
+               dbcache.trust_auth = true;
+            }
+            "--cache-only" => {
+               dbcache.enabled = true;
+               dbcache.mode = fyro_dbcache::DbProxyMode::CacheOnly;
+            }
+            "--db-port" if i + 1 < args.len() => {
+               dbcache.enabled = true;
+               if let Ok(p) = args[i + 1].parse::<u16>() {
+                  let bind = env::var("FYRODB_DB_BIND").unwrap_or_else(|_| "0.0.0.0".to_string());
+                  dbcache.listen_addr = format!("{bind}:{p}");
+               }
+               i += 1;
+            }
+            "--db-ttl" | "--db-cache-ttl" if i + 1 < args.len() => {
+               if let Some(ttl) = parse_ttl_duration(&args[i + 1]) {
+                  dbcache.default_ttl_ms = ttl;
+               }
+               i += 1;
+            }
+            _ => {}
+         }
+         i += 1;
+      }
       let workers = if workers == 0 {
-         num_cpus::get()
+         fyro_vector::pool::allowed_cores().len().max(1)
       } else {
          workers
       };
@@ -247,16 +368,18 @@ impl Config {
          0 => usize::MAX,
          configured => configured,
       };
+
       Config {
-         port: env_u16("FYRODB_PORT", 8000),
+         port,
          workers,
          shards,
          max_keys,
          max_clients: env_usize("FYRODB_MAX_CLIENTS", 10_000),
          rdb_path: env::var("FYRODB_RDB_PATH").unwrap_or_else(|_| "fyrodb.rdb".to_string()),
          rdb_interval: Duration::from_secs(env_u64("FYRODB_RDB_INTERVAL", 300)),
-         auth: env::var("FYRODB_AUTH").ok().filter(|s| !s.is_empty()),
+         auth,
          bind: env::var("FYRODB_BIND").unwrap_or_else(|_| "0.0.0.0".to_string()),
+         dbcache,
       }
    }
 }
@@ -466,6 +589,23 @@ fn signal_loop(store: &Arc<Store>, rdb_path: &str) {
    }
    eprintln!("fyrodb: shutdown complete");
    std::process::exit(0);
+}
+
+fn parse_ttl_duration(val: &str) -> Option<u64> {
+   let trimmed = val.trim();
+   if let Some(s) = trimmed.strip_suffix("ms") {
+      s.trim().parse::<u64>().ok()
+   } else if let Some(s) = trimmed.strip_suffix('s') {
+      s.trim().parse::<u64>().ok().map(|v| v * 1000)
+   } else if let Some(s) = trimmed.strip_suffix('m') {
+      s.trim().parse::<u64>().ok().map(|v| v * 60 * 1000)
+   } else if let Some(s) = trimmed.strip_suffix('h') {
+      s.trim().parse::<u64>().ok().map(|v| v * 3600 * 1000)
+   } else if let Ok(v) = trimmed.parse::<u64>() {
+      if v >= 10_000 { Some(v) } else { Some(v * 1000) }
+   } else {
+      None
+   }
 }
 
 mod libc {

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -27,7 +27,9 @@ const SNAPSHOT_CHUNK: usize = 1024 * 1024;
 /// Owns exactly one bounded outbound queue and connection worker per peer.
 /// Dropping the manager closes the queues and lets the workers exit.
 pub struct PeerManager {
-   peers: HashMap<String, PeerHandle>,
+   /// Keyed by `stable_id` so a per-mutation send hashes a short numeric key
+   /// instead of the peer's string id.
+   peers: HashMap<u64, PeerHandle>,
    next_request_id: AtomicU64,
    _workers: Vec<thread::JoinHandle<()>>,
    state: ClusterState,
@@ -36,11 +38,17 @@ pub struct PeerManager {
 }
 
 struct PeerHandle {
+   id: String,
    sender: SyncSender<Frame>,
    requests: RequestRegistry,
    health: PeerHealth,
    replication_lag: Arc<AtomicU64>,
 }
+
+const SNAPSHOT_WINDOW: usize = 8;
+const REPLICATION_WINDOW: usize = 64;
+const MIGRATE_BATCH_RECORDS: usize = 128;
+const MIGRATE_BATCH_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PeerSendError {
@@ -61,16 +69,17 @@ pub enum PeerRequestError {
    UnknownPeer,
    QueueFull,
    Disconnected,
+   Codec,
    Registry(RequestError),
 }
 
 impl PeerManager {
+   fn peer(&self, peer_id: &str) -> Option<&PeerHandle> {
+      self.peers.get(&stable_id(peer_id))
+   }
+
    pub fn try_send(&self, peer_id: &str, frame: Frame) -> Result<(), PeerSendError> {
-      let sender = &self
-         .peers
-         .get(peer_id)
-         .ok_or(PeerSendError::UnknownPeer)?
-         .sender;
+      let sender = &self.peer(peer_id).ok_or(PeerSendError::UnknownPeer)?.sender;
       sender.try_send(frame).map_err(|error| match error {
          TrySendError::Full(_) => {
             self.queue_full_count.fetch_add(1, Ordering::Relaxed);
@@ -92,16 +101,10 @@ impl PeerManager {
       })
    }
 
-   pub fn request(
-      &self,
-      peer_id: &str,
-      mut frame: Frame,
-      timeout: Duration,
-   ) -> Result<Frame, PeerRequestError> {
-      let peer = self
-         .peers
-         .get(peer_id)
-         .ok_or(PeerRequestError::UnknownPeer)?;
+   /// Register and queue a request without waiting for its reply. Pipelined
+   /// callers pair this with [`PeerManager::wait_request`].
+   pub fn send_request(&self, peer_id: &str, mut frame: Frame) -> Result<u64, PeerRequestError> {
+      let peer = self.peer(peer_id).ok_or(PeerRequestError::UnknownPeer)?;
       let request_id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
       frame.request_id = request_id;
       peer
@@ -118,10 +121,36 @@ impl PeerManager {
             TrySendError::Disconnected(_) => PeerRequestError::Disconnected,
          });
       }
+      Ok(request_id)
+   }
+
+   pub fn wait_request(
+      &self,
+      peer_id: &str,
+      request_id: u64,
+      timeout: Duration,
+   ) -> Result<Frame, PeerRequestError> {
+      let peer = self.peer(peer_id).ok_or(PeerRequestError::UnknownPeer)?;
       peer
          .requests
          .wait(request_id, timeout)
          .map_err(PeerRequestError::Registry)
+   }
+
+   pub fn cancel_request(&self, peer_id: &str, request_id: u64) {
+      if let Some(peer) = self.peer(peer_id) {
+         let _ = peer.requests.cancel(request_id);
+      }
+   }
+
+   pub fn request(
+      &self,
+      peer_id: &str,
+      frame: Frame,
+      timeout: Duration,
+   ) -> Result<Frame, PeerRequestError> {
+      let request_id = self.send_request(peer_id, frame)?;
+      self.wait_request(peer_id, request_id, timeout)
    }
 
    pub fn peer_count(&self) -> usize {
@@ -129,11 +158,11 @@ impl PeerManager {
    }
 
    pub fn peer_ids(&self) -> Vec<String> {
-      self.peers.keys().cloned().collect()
+      self.peers.values().map(|peer| peer.id.clone()).collect()
    }
 
    pub fn health(&self, peer_id: &str) -> Option<PeerHealthSnapshot> {
-      self.peers.get(peer_id).map(|peer| peer.health.snapshot())
+      self.peer(peer_id).map(|peer| peer.health.snapshot())
    }
 
    pub fn record_failure_report(&self, payload: &[u8]) -> bool {
@@ -143,9 +172,9 @@ impl PeerManager {
    pub fn suspect_peers(&self, timeout: Duration) -> Vec<String> {
       self
          .peers
-         .iter()
-         .filter(|(_, peer)| peer.health.is_suspect(timeout))
-         .map(|(id, _)| id.clone())
+         .values()
+         .filter(|peer| peer.health.is_suspect(timeout))
+         .map(|peer| peer.id.clone())
          .collect()
    }
 
@@ -192,25 +221,50 @@ impl PeerManager {
          ),
          timeout,
       )?;
-      let _guard = store.cluster_write_guard();
+      // One drain is enough: once the slot is marked migrating, new writes to
+      // it are ASK-redirected, so the scan below cannot race a local write.
+      store.drain_writes();
       let mut sent = 0usize;
-      let mut failed = None;
-      store.for_each_slot_record(slot, |record| {
-         if failed.is_some() {
-            return;
-         }
-         let Ok(payload) = crate::cluster::encode_mutation(&record) else {
-            return;
+      let mut failed: Option<PeerRequestError> = None;
+      let mut batch: Vec<crate::cluster::MutationRecord> =
+         Vec::with_capacity(MIGRATE_BATCH_RECORDS);
+      let mut batch_bytes = 0usize;
+      {
+         let flush = |batch: &mut Vec<crate::cluster::MutationRecord>,
+                      batch_bytes: &mut usize,
+                      sent: &mut usize,
+                      failed: &mut Option<PeerRequestError>| {
+            if batch.is_empty() {
+               return;
+            }
+            let result = crate::cluster::encode_mutation_batch(batch)
+               .map_err(|_| PeerRequestError::Codec)
+               .and_then(|payload| {
+                  self.request(
+                     target_id,
+                     frame(MessageType::MigrateChunk, payload),
+                     timeout,
+                  )
+               });
+            match result {
+               Ok(_) => *sent += batch.len(),
+               Err(error) => *failed = Some(error),
+            }
+            batch.clear();
+            *batch_bytes = 0;
          };
-         match self.request(
-            target_id,
-            frame(MessageType::MigrateChunk, payload),
-            timeout,
-         ) {
-            Ok(_) => sent += 1,
-            Err(error) => failed = Some(error),
-         }
-      });
+         store.for_each_slot_record(slot, |record| {
+            if failed.is_some() {
+               return;
+            }
+            batch_bytes = batch_bytes.saturating_add(record.key.len() + record.value.len());
+            batch.push(record);
+            if batch.len() >= MIGRATE_BATCH_RECORDS || batch_bytes >= MIGRATE_BATCH_BYTES {
+               flush(&mut batch, &mut batch_bytes, &mut sent, &mut failed);
+            }
+         });
+         flush(&mut batch, &mut batch_bytes, &mut sent, &mut failed);
+      }
       if let Some(error) = failed {
          return Err(error);
       }
@@ -263,8 +317,9 @@ pub fn start_peer_manager(config: &ClusterConfig, state: ClusterState) -> PeerMa
       let health = PeerHealth::new();
       let replication_lag = Arc::new(AtomicU64::new(0));
       peers.insert(
-         node.id.clone(),
+         stable_id(&node.id),
          PeerHandle {
+            id: node.id.clone(),
             sender,
             requests: requests.clone(),
             health: health.clone(),
@@ -334,10 +389,15 @@ pub fn start_replication_streams(
             .name(format!("fyrodb-repl-{replica_id}"))
             .stack_size(64 * 1024)
             .spawn(move || {
-                let mut next_offset = 0u64;
                 let identity = log.identity().unwrap_or([0; 16]);
+                // A window of in-flight entries keeps the socket busy instead
+                // of paying a full request/reply round trip per mutation.
+                let mut next_to_send = 0u64;
+                let mut next_to_ack = 0u64;
+                let mut pending: VecDeque<(u64, u64)> = VecDeque::new();
                 loop {
-                    if next_offset == 0 {
+                    if next_to_send == 0 {
+                        pending.clear();
                         let mut begin = Vec::with_capacity(33);
                         begin.push(1);
                         begin.extend_from_slice(&epoch.to_be_bytes());
@@ -352,78 +412,109 @@ pub fn start_replication_streams(
                             .filter(|offset| *offset == 0 || log.record_at(offset.saturating_add(1)).is_ok())
                             .map(|offset| offset.saturating_add(1));
                         if let Some(offset) = resumed {
-                            next_offset = offset.max(1);
+                            next_to_send = offset.max(1);
+                            next_to_ack = next_to_send;
                         } else if let Some(snapshot_offset) = send_snapshot(&manager, &replica_id, &local_id, epoch, timeout, &store, &log) {
-                            next_offset = snapshot_offset.saturating_add(1);
+                            next_to_send = snapshot_offset.saturating_add(1);
+                            next_to_ack = next_to_send;
                         } else {
                             thread::sleep(Duration::from_millis(100));
                         }
                         continue;
                     }
-                    let record = match log.record_at(next_offset) {
-                        Ok(Some(record)) => record,
-                        Ok(None) => {
-                            thread::sleep(Duration::from_millis(10));
-                            continue;
+
+                    let mut fell_behind = false;
+                    while pending.len() < REPLICATION_WINDOW {
+                        let record = match log.record_at(next_to_send) {
+                            Ok(Some(record)) => record,
+                            Ok(None) => break,
+                            Err(_) => {
+                                fell_behind = true;
+                                break;
+                            }
+                        };
+                        let offset = record.offset;
+                        let Ok(payload) =
+                            encode_replication_message(&ReplicationMessage::Entry(record))
+                        else {
+                            break;
+                        };
+                        match manager.send_request(
+                            &replica_id,
+                            Frame {
+                                message_type: MessageType::ReplicationEntry,
+                                flags: 0,
+                                request_id: 0,
+                                source_id: stable_id(&local_id),
+                                target_id: stable_id(&replica_id),
+                                epoch,
+                                payload,
+                            },
+                        ) {
+                            Ok(request_id) => {
+                                pending.push_back((request_id, offset));
+                                next_to_send = offset.saturating_add(1);
+                            }
+                            Err(PeerRequestError::QueueFull) => break,
+                            Err(_) => break,
+                        }
+                    }
+
+                    if fell_behind {
+                        for (request_id, _) in pending.drain(..) {
+                            manager.cancel_request(&replica_id, request_id);
+                        }
+                        eprintln!(
+                            "[cluster] replica {replica_id} requires snapshot catch-up (requested {}, retained from {})",
+                            next_to_send,
+                            log.first_retained_offset()
+                        );
+                        if let Some(snapshot_offset) = send_snapshot(
+                            &manager,
+                            &replica_id,
+                            &local_id,
+                            epoch,
+                            timeout,
+                            &store,
+                            &log,
+                        ) {
+                            next_to_send = snapshot_offset.saturating_add(1);
+                            next_to_ack = next_to_send;
+                        }
+                        thread::sleep(Duration::from_millis(100));
+                        continue;
+                    }
+
+                    let Some(&(request_id, record_offset)) = pending.front() else {
+                        thread::sleep(Duration::from_millis(10));
+                        continue;
+                    };
+                    match manager.wait_request(&replica_id, request_id, timeout) {
+                        Ok(response) => {
+                            pending.pop_front();
+                            if let Ok(ReplicationMessage::Ack { applied_offset }) =
+                                decode_replication_message(&response.payload)
+                                && applied_offset >= record_offset
+                            {
+                                if let Some(peer) = manager.peer(&replica_id) {
+                                    peer.replication_lag.store(
+                                        log.next_offset()
+                                            .saturating_sub(applied_offset.saturating_add(1)),
+                                        Ordering::Relaxed,
+                                    );
+                                }
+                                next_to_ack = applied_offset.saturating_add(1);
+                            }
                         }
                         Err(_) => {
-// Pausing and surfacing beats skipping data and losing silently.
-                            eprintln!(
-                                "[cluster] replica {replica_id} requires snapshot catch-up (requested {}, retained from {})",
-                                next_offset,
-                                log.first_retained_offset()
-                            );
-                            if let Some(snapshot_offset) = send_snapshot(
-                                &manager,
-                                &replica_id,
-                                &local_id,
-                                epoch,
-                                timeout,
-                                &store,
-                                &log,
-                            ) {
-                                next_offset = snapshot_offset.saturating_add(1);
+                            // Rewind to the last applied offset; the replica is
+                            // idempotent, so re-sending is safe.
+                            for (request_id, _) in pending.drain(..) {
+                                manager.cancel_request(&replica_id, request_id);
                             }
+                            next_to_send = next_to_ack.max(1);
                             thread::sleep(Duration::from_millis(100));
-                            continue;
                         }
-                    };
-                    let Ok(payload) =
-                        encode_replication_message(&ReplicationMessage::Entry(record.clone()))
-                    else {
-                        thread::sleep(Duration::from_millis(100));
-                        continue;
-                    };
-                    let response = manager.request(
-                        &replica_id,
-                        Frame {
-                            message_type: MessageType::ReplicationEntry,
-                            flags: 0,
-                            request_id: 0,
-                            source_id: stable_id(&local_id),
-                            target_id: stable_id(&replica_id),
-                            epoch,
-                            payload,
-                        },
-                        timeout,
-                    );
-                    let Ok(response) = response else {
-                        thread::sleep(Duration::from_millis(100));
-                        continue;
-                    };
-                    let Ok(ReplicationMessage::Ack { applied_offset }) =
-                        decode_replication_message(&response.payload)
-                    else {
-                        continue;
-                    };
-                    if applied_offset >= record.offset {
-                        if let Some(peer) = manager.peers.get(&replica_id) {
-                            peer.replication_lag.store(
-                                log.next_offset().saturating_sub(applied_offset.saturating_add(1)),
-                                Ordering::Relaxed,
-                            );
-                        }
-                        next_offset = applied_offset.saturating_add(1);
                     }
                 }
             });
@@ -454,50 +545,67 @@ fn send_snapshot(
       return None;
    };
    let mut chunk = vec![0u8; SNAPSHOT_CHUNK];
+   let mut pending: VecDeque<u64> = VecDeque::new();
    let mut first = true;
    let mut sent = 0u64;
-   loop {
-      let Ok(read) = std::io::Read::read(&mut file, &mut chunk) else {
-         return None;
-      };
-      if read == 0 {
-         break;
+   let mut ended = false;
+   // Keep several chunks in flight; a 1 MB bootstrap used to pay one round
+   // trip per chunk.
+   let mut stream = || -> Option<()> {
+      loop {
+         while !ended && pending.len() < SNAPSHOT_WINDOW {
+            let read = std::io::Read::read(&mut file, &mut chunk).ok()?;
+            if read == 0 {
+               break;
+            }
+            sent = sent.saturating_add(read as u64);
+            let end = sent == file_len;
+            let payload =
+               crate::cluster::encode_snapshot(epoch, snapshot_offset, &chunk[..read]).ok()?;
+            let request_id = manager
+               .send_request(
+                  replica_id,
+                  Frame {
+                     message_type: MessageType::ReplicationSnapshot,
+                     flags: (if first { SNAPSHOT_START } else { 0 })
+                        | (if end { SNAPSHOT_END } else { 0 }),
+                     request_id: 0,
+                     source_id: stable_id(local_id),
+                     target_id: stable_id(replica_id),
+                     epoch,
+                     payload,
+                  },
+               )
+               .ok()?;
+            pending.push_back(request_id);
+            first = false;
+            if end {
+               ended = true;
+            }
+         }
+         let Some(request_id) = pending.pop_front() else {
+            break;
+         };
+         let response = manager.wait_request(replica_id, request_id, timeout).ok()?;
+         let ReplicationMessage::Ack { applied_offset } =
+            decode_replication_message(&response.payload).ok()?
+         else {
+            return None;
+         };
+         if ended && pending.is_empty() && applied_offset != snapshot_offset {
+            return None;
+         }
       }
-      sent = sent.saturating_add(read as u64);
-      let end = sent == file_len;
-      let Ok(payload) = encode_replication_message(&ReplicationMessage::Snapshot {
-         epoch,
-         offset: snapshot_offset,
-         payload: chunk[..read].to_vec(),
-      }) else {
-         return None;
-      };
-      let response = manager.request(
-         replica_id,
-         Frame {
-            message_type: MessageType::ReplicationSnapshot,
-            flags: (if first { SNAPSHOT_START } else { 0 }) | (if end { SNAPSHOT_END } else { 0 }),
-            request_id: 0,
-            source_id: stable_id(local_id),
-            target_id: stable_id(replica_id),
-            epoch,
-            payload,
-         },
-         timeout,
-      );
-      let Ok(response) = response else { return None };
-      let Ok(ReplicationMessage::Ack { applied_offset }) =
-         decode_replication_message(&response.payload)
-      else {
-         return None;
-      };
-      if end && applied_offset != snapshot_offset {
-         return None;
+      ended.then_some(())
+   };
+   if stream().is_none() {
+      // Un-waited requests would otherwise sit in the registry until the peer
+      // times them out, starving later snapshot and replication requests.
+      for request_id in pending.drain(..) {
+         manager.cancel_request(replica_id, request_id);
       }
-      first = false;
-      if end {
-         break;
-      }
+      let _ = std::fs::remove_file(&path);
+      return None;
    }
    let _ = std::fs::remove_file(path);
    Some(snapshot_offset)
