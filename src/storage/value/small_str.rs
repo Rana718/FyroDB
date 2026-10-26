@@ -48,15 +48,16 @@ pub struct SmallStr {
 impl SmallStr {
    #[inline]
    fn store_heap_len(data: &mut [u8; SMALL_STR_CAP], len: usize) {
-      let lb = (len as u64).to_ne_bytes();
+      let lb = (len as u64).to_le_bytes();
       data[8..15].copy_from_slice(&lb[..7]);
    }
 
    #[inline(always)]
    fn read_heap_len(data: &[u8; SMALL_STR_CAP]) -> usize {
-      let mut lb = [0u8; 8];
-      lb[..7].copy_from_slice(&data[8..15]);
-      u64::from_ne_bytes(lb) as usize
+      unsafe {
+         let word = std::ptr::read_unaligned(data.as_ptr().add(8).cast::<u64>());
+         (word.to_le() & 0x00FF_FFFF_FFFF_FFFF) as usize
+      }
    }
 
    /// Formats an integer into the inline buffer. i64 never exceeds 20 ASCII
@@ -122,10 +123,10 @@ impl SmallStr {
       if self.len != Tag::Heap {
          unsafe { std::str::from_utf8_unchecked(&self.data[..self.len as usize]) }
       } else {
-         let ptr_val = usize::from_ne_bytes(self.data[..8].try_into().unwrap());
+         let ptr_val = unsafe { std::ptr::read_unaligned(self.data.as_ptr().cast::<*const u8>()) };
          let len_val = Self::read_heap_len(&self.data);
          unsafe {
-            let slice = std::slice::from_raw_parts(ptr_val as *const u8, len_val);
+            let slice = std::slice::from_raw_parts(ptr_val, len_val);
             std::str::from_utf8_unchecked(slice)
          }
       }
@@ -152,11 +153,11 @@ impl SmallStr {
          std::mem::forget(self);
          s
       } else {
-         let ptr_val = usize::from_ne_bytes(self.data[..8].try_into().unwrap());
+         let ptr_val = unsafe { std::ptr::read_unaligned(self.data.as_ptr().cast::<*mut u8>()) };
          let len_val = Self::read_heap_len(&self.data);
          let boxed = unsafe {
             Box::from_raw(
-               std::ptr::slice_from_raw_parts_mut(ptr_val as *mut u8, len_val) as *mut str,
+               std::ptr::slice_from_raw_parts_mut(ptr_val, len_val) as *mut str,
             )
          };
          std::mem::forget(self);
@@ -213,9 +214,9 @@ impl SmallStr {
       if self.len != Tag::Heap {
          &mut self.data[..self.len as usize]
       } else {
-         let ptr_val = usize::from_ne_bytes(self.data[..8].try_into().unwrap());
+         let ptr_val = unsafe { std::ptr::read_unaligned(self.data.as_ptr().cast::<*mut u8>()) };
          let len_val = Self::read_heap_len(&self.data);
-         unsafe { std::slice::from_raw_parts_mut(ptr_val as *mut u8, len_val) }
+         unsafe { std::slice::from_raw_parts_mut(ptr_val, len_val) }
       }
    }
 
@@ -224,7 +225,7 @@ impl SmallStr {
       if self.len != Tag::Heap {
          &self.data[..self.len as usize]
       } else {
-         let ptr = usize::from_ne_bytes(self.data[..8].try_into().unwrap()) as *const u8;
+         let ptr = unsafe { std::ptr::read_unaligned(self.data.as_ptr().cast::<*const u8>()) };
          unsafe { std::slice::from_raw_parts(ptr, Self::read_heap_len(&self.data)) }
       }
    }
@@ -348,11 +349,11 @@ impl SmallStr {
 impl Drop for SmallStr {
    fn drop(&mut self) {
       if self.len == Tag::Heap {
-         let ptr_val = usize::from_ne_bytes(self.data[..8].try_into().unwrap());
+         let ptr_val = unsafe { std::ptr::read_unaligned(self.data.as_ptr().cast::<*mut u8>()) };
          let len_val = Self::read_heap_len(&self.data);
          unsafe {
             drop(Box::from_raw(std::ptr::slice_from_raw_parts_mut(
-               ptr_val as *mut u8,
+               ptr_val,
                len_val,
             )));
          }

@@ -627,7 +627,10 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
       idx: usize,
       f: impl FnOnce(&V) -> R,
    ) -> Option<R> {
-      let entry = unsafe { self.shards.get_unchecked(idx) }.find(key, hash)?;
+      let sf = unsafe { &*self.shard_fast.as_ptr().add(idx) };
+      let slots = sf.slots.load(Ordering::Relaxed);
+      let mask = sf.mask.load(Ordering::Relaxed);
+      let entry = Shard::find_fast(slots, mask, key, hash)?;
       // Synchronize subsequent value read.
       std::sync::atomic::fence(Ordering::Acquire);
       Some(f(unsafe { (*entry.value.get()).assume_init_ref() }))
@@ -665,12 +668,14 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
       ebr::with_pin(|_| self.with_entry_pinned(key, hash, idx, f))
    }
 
-   #[inline]
+   #[inline(always)]
    pub fn contains_key(&self, key: &str) -> bool {
       let (h, idx) = self.locate(key);
+      let sf = unsafe { &*self.shard_fast.as_ptr().add(idx) };
+      let slots = sf.slots.load(Ordering::Relaxed);
+      let mask = sf.mask.load(Ordering::Relaxed);
       ebr::with_pin(|_| {
-         unsafe { self.shards.get_unchecked(idx) }
-            .find(key, h)
+         Shard::find_fast(slots, mask, key, h)
             .is_some_and(|e| state_occupied(&e.state, Ordering::Acquire))
       })
    }
@@ -678,14 +683,20 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
    #[inline(always)]
    pub fn get(&self, key: &str) -> Option<V> {
       let (h, idx) = self.locate(key);
-      ebr::with_pin(|_| unsafe { self.shards.get_unchecked(idx) }.get(key, h))
+      let sf = unsafe { &*self.shard_fast.as_ptr().add(idx) };
+      let slots = sf.slots.load(Ordering::Relaxed);
+      let mask = sf.mask.load(Ordering::Relaxed);
+      ebr::with_pin(|_| Shard::get_pinned_fast(slots, mask, key, h))
    }
 
    /// Like `get` without re-pinning EBR when caller already holds a Guard.
    #[inline(always)]
    pub fn get_pinned(&self, key: &str, _guard: &ebr::Guard) -> Option<V> {
       let (h, idx) = self.locate(key);
-      unsafe { self.shards.get_unchecked(idx) }.get_pinned(key, h)
+      let sf = unsafe { &*self.shard_fast.as_ptr().add(idx) };
+      let slots = sf.slots.load(Ordering::Relaxed);
+      let mask = sf.mask.load(Ordering::Relaxed);
+      Shard::get_pinned_fast(slots, mask, key, h)
    }
 
    /// Like `get_ref` when caller holds an EBR Guard for returned reference lifetime.
@@ -696,7 +707,10 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
       _guard: &'g ebr::Guard,
    ) -> Option<ValueRef<'g, V>> {
       let (h, idx) = self.locate(key);
-      let e = unsafe { self.shards.get_unchecked(idx) }.find(key, h)?;
+      let sf = unsafe { &*self.shard_fast.as_ptr().add(idx) };
+      let slots = sf.slots.load(Ordering::Relaxed);
+      let mask = sf.mask.load(Ordering::Relaxed);
+      let e = Shard::find_fast(slots, mask, key, h)?;
       if !state_occupied(&e.state, Ordering::Acquire) {
          return None;
       }
@@ -711,7 +725,10 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
    pub fn get_ref(&self, key: &str) -> Option<ValueRef<'_, V>> {
       let (h, idx) = self.locate(key);
       let guard = ebr::pin();
-      let e = unsafe { self.shards.get_unchecked(idx) }.find(key, h)?;
+      let sf = unsafe { &*self.shard_fast.as_ptr().add(idx) };
+      let slots = sf.slots.load(Ordering::Relaxed);
+      let mask = sf.mask.load(Ordering::Relaxed);
+      let e = Shard::find_fast(slots, mask, key, h)?;
       if !state_occupied(&e.state, Ordering::Acquire) {
          return None;
       }

@@ -40,15 +40,16 @@ pub struct CompactKey {
 impl CompactKey {
    #[inline]
    fn store_heap_len(data: &mut [u8; INLINE_CAP], len: usize) {
-      let lb = (len as u64).to_ne_bytes();
+      let lb = (len as u64).to_le_bytes();
       data[8..15].copy_from_slice(&lb[..7]);
    }
 
    #[inline(always)]
    fn read_heap_len(data: &[u8; INLINE_CAP]) -> usize {
-      let mut lb = [0u8; 8];
-      lb[..7].copy_from_slice(&data[8..15]);
-      u64::from_ne_bytes(lb) as usize
+      unsafe {
+         let word = std::ptr::read_unaligned(data.as_ptr().add(8).cast::<u64>());
+         (word.to_le() & 0x00FF_FFFF_FFFF_FFFF) as usize
+      }
    }
 
    pub(crate) fn from_string(s: String) -> Self {
@@ -96,10 +97,10 @@ impl CompactKey {
       if self.tag != Tag::Heap {
          unsafe { std::str::from_utf8_unchecked(&self.data[..self.tag as usize]) }
       } else {
-         let ptr_val = usize::from_ne_bytes(self.data[..8].try_into().unwrap());
+         let ptr_val = unsafe { std::ptr::read_unaligned(self.data.as_ptr().cast::<*const u8>()) };
          let len_val = Self::read_heap_len(&self.data);
          unsafe {
-            std::str::from_utf8_unchecked(std::slice::from_raw_parts(ptr_val as *const u8, len_val))
+            std::str::from_utf8_unchecked(std::slice::from_raw_parts(ptr_val, len_val))
          }
       }
    }
@@ -142,8 +143,27 @@ impl CompactKey {
          if len_val != other_len {
             return false;
          }
-         let ptr_val = usize::from_ne_bytes(self.data[..8].try_into().unwrap()) as *const u8;
-         unsafe { std::slice::from_raw_parts(ptr_val, len_val) == other }
+         let a = unsafe { std::ptr::read_unaligned(self.data.as_ptr().cast::<*const u8>()) };
+         let b = other.as_ptr();
+         unsafe {
+            if other_len <= 32 {
+               let d1 = std::ptr::read_unaligned(a.cast::<u64>())
+                  ^ std::ptr::read_unaligned(b.cast::<u64>());
+               let d2 = std::ptr::read_unaligned(a.add(8).cast::<u64>())
+                  ^ std::ptr::read_unaligned(b.add(8).cast::<u64>());
+               let d3 = std::ptr::read_unaligned(a.add(other_len - 8).cast::<u64>())
+                  ^ std::ptr::read_unaligned(b.add(other_len - 8).cast::<u64>());
+               let d4 = if other_len > 24 {
+                  std::ptr::read_unaligned(a.add(16).cast::<u64>())
+                     ^ std::ptr::read_unaligned(b.add(16).cast::<u64>())
+               } else {
+                  0
+               };
+               (d1 | d2 | d3 | d4) == 0
+            } else {
+               std::slice::from_raw_parts(a, len_val) == other
+            }
+         }
       } else {
          false
       }
