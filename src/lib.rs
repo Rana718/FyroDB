@@ -4,6 +4,7 @@ pub use fyro_dbcache as dbcache;
 pub mod handler;
 pub mod macros;
 pub mod pubsub;
+pub mod scripting;
 pub mod search;
 pub mod storage;
 pub mod utils;

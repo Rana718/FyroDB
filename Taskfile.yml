@@ -202,20 +202,19 @@ tasks:
    without-tcp:
       desc: "Full in-memory suite against FyroDB without TCP/network bottleneck, plus a PG cache-path smoke run"
       cmds:
-         - cargo run --release --features bench-tools --bin pg_cache_bench -- --smoke
-         - cargo run --release --features bench-tools --bin without_tcp -- {{.CLI_ARGS}}
+         - cargo bench --bench pg_cache_bench -- --smoke
+         - cargo bench --bench without_tcp -- {{.CLI_ARGS}}
 
    without-tcp-v:
       desc: "In-memory suite skipping the slow vector/KNN phase, plus a PG cache-path smoke run"
       cmds:
-         - cargo run --release --features bench-tools --bin pg_cache_bench -- --smoke
-         - cargo run --release --features bench-tools --bin without_tcp -- bench {{.CLI_ARGS}}
+         - cargo bench --bench pg_cache_bench -- --smoke
+         - cargo bench --bench without_tcp -- bench {{.CLI_ARGS}}
 
    bench-all-v:
       desc: "Combined FyroDB RESP (Go TCP, KV+pub/sub+mix, no vectors) + dbcache proxy benchmark — starts its own throwaway server"
       cmds:
          - task: build
-         - cargo build --release --features bench-tools --bin pg_cache_bench
          - echo ""
          - echo "══════════════════════════════════════════════════════════════════════"
          - echo "  bench-all-v  ▶  Section 1 — FyroDB RESP  (Go goroutine TCP clients)"
@@ -225,7 +224,7 @@ tasks:
          - echo "══════════════════════════════════════════════════════════════════════"
          - echo "  bench-all-v  ▶  Section 2 — dbcache PostgreSQL proxy"
          - echo "══════════════════════════════════════════════════════════════════════"
-         - ./target/release/pg_cache_bench {{.CLI_ARGS}}
+         - cargo bench --bench pg_cache_bench -- {{.CLI_ARGS}}
 
    bench-all-v-live:
       desc: "dbcache proxy benchmark (Go goroutine TCP clients) against a running proxy — use -pgport to specify port (default 15433)"
@@ -233,24 +232,24 @@ tasks:
          - cd bench && go run . -m pgcache {{.CLI_ARGS}}
 
    bench-all-v-rs:
-      desc: "Combined Rust in-process RESP + dbcache proxy benchmark (src/bin/bench_all_v.rs)"
+      desc: "Combined Rust in-process RESP + dbcache proxy benchmark (benches/bench_all_v.rs)"
       cmds:
-         - cargo run --release --features bench-tools --bin bench_all_v -- {{.CLI_ARGS}}
+         - cargo bench --bench bench_all_v -- {{.CLI_ARGS}}
 
    bench-hashmap:
-      desc: "Benchmark std HashMap vs foldhash vs CustomMap cache lookup (src/bin/hashmap_bench.rs)"
+      desc: "Benchmark std HashMap vs foldhash vs CustomMap cache lookup (benches/hashmap_bench.rs)"
       cmds:
-         - cargo run --release --features bench-tools --bin hashmap_bench
+         - cargo bench --bench hashmap_bench
 
    bench-pg:
       desc: "PostgreSQL cache-path benchmark: in-memory lookup, encoded multithread, joins, proxy TCP"
       cmds:
-         - cargo run --release --features bench-tools --bin pg_cache_bench -- {{.CLI_ARGS}}
+         - cargo bench --bench pg_cache_bench -- {{.CLI_ARGS}}
 
    bench-pg-smoke:
       desc: "Reduced-iteration PG cache-path smoke run (same checks, short runtime)"
       cmds:
-         - cargo run --release --features bench-tools --bin pg_cache_bench -- --smoke {{.CLI_ARGS}}
+         - cargo bench --bench pg_cache_bench -- --smoke {{.CLI_ARGS}}
 
    bench-full:
       desc: "Full FyroDB suite skipping the slow vector/KNN phase: KV, Pub/Sub, mixed types"

@@ -1,6 +1,7 @@
 use super::value::StoreValue;
 use crossbeam_utils::CachePadded;
 use customhash::CustomMap;
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -37,6 +38,8 @@ pub struct Store {
    cluster_meta_path: Mutex<Option<String>>,
    metrics: Box<ClusterMetrics>,
    dbcache_manager: OnceLock<std::sync::Arc<fyro_dbcache::DbCacheManager>>,
+   pub(crate) script_cache: parking_lot::RwLock<foldhash::HashMap<Arc<str>, Arc<str>>>,
+   pub(crate) script_epoch: std::sync::atomic::AtomicU64,
 }
 
 impl Default for Store {
@@ -107,7 +110,49 @@ impl Store {
          metrics: Box::new(ClusterMetrics::new()),
          blocking: Default::default(),
          dbcache_manager: OnceLock::new(),
+         script_cache: Default::default(),
+         script_epoch: std::sync::atomic::AtomicU64::new(0),
       }
+   }
+
+   pub fn load_script(&self, script: &str) -> String {
+      let sha1 = crate::scripting::compute_sha1_hex(script.as_bytes());
+      self.ensure_script_cached(&sha1, script);
+      sha1
+   }
+
+   pub fn ensure_script_cached(&self, sha1: &str, script: &str) {
+      {
+         let read = self.script_cache.read();
+         if read.contains_key(sha1) {
+            return;
+         }
+      }
+      self.script_cache
+         .write()
+         .insert(Arc::from(sha1), Arc::from(script));
+   }
+
+   pub fn with_script<R>(&self, sha1: &str, f: impl FnOnce(&str) -> R) -> Option<R> {
+      let mut buf = [0u8; 40];
+      let norm = crate::scripting::normalize_sha1(sha1, &mut buf);
+      let read = self.script_cache.read();
+      read.get(norm).map(|s| f(s.as_ref()))
+   }
+
+   pub fn get_script(&self, sha1: &str) -> Option<String> {
+      self.with_script(sha1, |s| s.to_string())
+   }
+
+   pub fn script_exists(&self, sha1: &str) -> bool {
+      let mut buf = [0u8; 40];
+      let norm = crate::scripting::normalize_sha1(sha1, &mut buf);
+      self.script_cache.read().contains_key(norm)
+   }
+
+   pub fn flush_scripts(&self) {
+      self.script_cache.write().clear();
+      self.script_epoch.fetch_add(1, std::sync::atomic::Ordering::Release);
    }
 
    // Exposes the PostgreSQL proxy's cache manager to the RESP port so stats

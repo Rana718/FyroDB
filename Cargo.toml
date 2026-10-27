@@ -37,56 +37,39 @@ customhash = { path = "crates/customhash" }
 fyro-vector = { path = "crates/fyro-vector" }
 fyro-dbcache = { path = "crates/fyro-dbcache" }
 rust-zmalloc = { path = "crates/rust-zmalloc" }
+
+libc = "0.2"
+mio = { version = "1.2", features = ["net", "os-poll"] }
 num_cpus = "1.17"
 socket2 = { version = "0.6", features = ["all"] }
-mio = { version = "1.2", features = ["net", "os-poll"] }
-memchr = "2.8"
-libc = "0.2"
+
 crossbeam-queue = "0.3"
 crossbeam-utils = "0.8"
 foldhash = "0.2"
 parking_lot = { version = "0.13", features = ["arc_lock"] }
+
 bytemuck = "1"
+memchr = "2.8"
+
+mlua = { version = "0.12.2", features = ["lua54", "vendored", "serde"] }
+serde_json = "1.0.154"
+sha1 = "0.11.0"
+
 io-uring = { version = "0.7", optional = true }
 pprof = { version = "0.15", optional = true, default-features = false, features = ["frame-pointer"] }
-bbtree = { version = "0.1.5", optional = true }
 
 [[bin]]
 name = "fyro_db"
 path = "src/main.rs"
 
-[[bin]]
-name = "without_tcp"
-path = "src/bin/without_tcp.rs"
-required-features = ["bench-tools"]
-
-[[bin]]
-name = "tcp_proto_bench"
-path = "src/bin/tcp_proto_bench.rs"
-required-features = ["bench-tools"]
-
-[[bin]]
-name = "pg_cache_bench"
-path = "src/bin/pg_cache_bench.rs"
-required-features = ["bench-tools"]
-
-[[bin]]
-name = "bench_all_v"
-path = "src/bin/bench_all_v.rs"
-required-features = ["bench-tools"]
-
-[[bin]]
-name = "hashmap_bench"
-path = "src/bin/hashmap_bench.rs"
-required-features = ["bench-tools"]
-
 [features]
 io-uring = ["dep:io-uring"]
 profiling = ["dep:pprof"]
-bench-tools = ["dep:bbtree"]
+bench-tools = []
 
 [dev-dependencies]
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+bbtree = "0.1.5"
 
 [[bench]]
 name = "core"
@@ -94,6 +77,31 @@ harness = false
 
 [[bench]]
 name = "cluster_perf"
+harness = false
+
+[[bench]]
+name = "hashmap_bench"
+harness = false
+
+[[bench]]
+name = "without_tcp"
+harness = false
+
+[[bench]]
+name = "tcp_proto_bench"
+harness = false
+required-features = ["bench-tools"]
+
+[[bench]]
+name = "pg_cache_bench"
+harness = false
+
+[[bench]]
+name = "bench_all_v"
+harness = false
+
+[[bench]]
+name = "script_bench"
 harness = false
 
 [profile.bench]
