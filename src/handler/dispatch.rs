@@ -112,10 +112,7 @@ pub fn dispatch(conn: &mut Conn<'_>, parts: &[&str]) {
          } else if cmd_eq(cmd, b"PSUBSCRIBE") {
             handle_psubscribe(conn, parts);
          } else if cmd_eq(cmd, b"UNSUBSCRIBE") || cmd_eq(cmd, b"PUNSUBSCRIBE") {
-            conn
-               .parser
-               .wbuf
-               .extend_from_slice(&encode_sub_reply("unsubscribe", "", 0));
+            encode_sub_reply("unsubscribe", "", 0, &mut conn.parser.wbuf);
          } else if cmd_eq(cmd, b"PUBLISH") {
             match parts {
                [_, channel, message] => {

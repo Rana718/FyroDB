@@ -252,15 +252,14 @@ pub fn encode_pmessage(pattern: &str, channel: &str, message: &str) -> Arc<[u8]>
    out.into()
 }
 
-pub fn encode_sub_reply(kind: &str, channel: &str, count: usize) -> Vec<u8> {
-   let mut out = Vec::with_capacity(32 + kind.len() + channel.len());
+pub fn encode_sub_reply(kind: &str, channel: &str, count: usize, out: &mut Vec<u8>) {
+   out.reserve(32 + kind.len() + channel.len());
    out.extend_from_slice(b"*3\r\n");
-   bulk_into(&mut out, kind.as_bytes());
-   bulk_into(&mut out, channel.as_bytes());
+   bulk_into(out, kind.as_bytes());
+   bulk_into(out, channel.as_bytes());
    out.push(b':');
-   push_usize(&mut out, count);
+   push_usize(out, count);
    out.extend_from_slice(b"\r\n");
-   out
 }
 
 #[inline(always)]
