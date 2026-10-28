@@ -267,8 +267,8 @@ impl Default for DbCacheConfig {
          sync_interval_ms: 5_000,
          cache_max_keys: 100_000,
          ttl_jitter_pct: 10,
-         pool_max_idle: 8,
-         pool_idle_timeout_ms: 30_000,
+         pool_max_idle: 10,
+         pool_idle_timeout_ms: 60_000,
          auth_users: AuthUsers::default(),
          trust_auth: false,
          bus_path: None,
@@ -342,11 +342,11 @@ impl DbCacheConfig {
       let pool_max_idle = env::var("FYRODB_DB_POOL_MAX_IDLE")
          .ok()
          .and_then(|v| v.parse::<usize>().ok())
-         .unwrap_or(8);
+         .unwrap_or(10);
       let pool_idle_timeout_ms = env::var("FYRODB_DB_POOL_IDLE_MS")
          .ok()
          .and_then(|v| v.parse::<u64>().ok())
-         .unwrap_or(30_000);
+         .unwrap_or(60_000);
 
       let mut auth_users = AuthUsers::default();
       if let Some(ref target_str) = upstream {
