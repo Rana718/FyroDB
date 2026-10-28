@@ -52,30 +52,29 @@ impl Store {
          }
       }
 
+      let insert_and_count = |h: &mut HashInner| {
+         let mut added = 0;
+         for &(f, v) in fields {
+            // SAFETY: validated above
+            let name = unsafe { std::str::from_utf8_unchecked(f) };
+            if h.insert_bytes(name, v) {
+               added += 1;
+            }
+         }
+         added
+      };
+
       let result = self.data.update_with(key, |val| {
          if val.is_expired() {
             let mut h = HashInner::with_capacity(fields.len());
-            let mut added = 0;
-            for &(f, v) in fields {
-               // SAFETY: validated above
-               let name = unsafe { std::str::from_utf8_unchecked(f) };
-               if h.insert_bytes(name, v) {
-                  added += 1;
-               }
-            }
+            let added = insert_and_count(&mut h);
             val.value = FyroDB::Hash(Box::new(h));
             val.expires_ms = 0;
             return Ok(added);
          }
          match val.value.as_hash_mut() {
             Some(h) => {
-               let mut added = 0;
-               for &(f, v) in fields {
-                  let name = unsafe { std::str::from_utf8_unchecked(f) };
-                  if h.insert_bytes(name, v) {
-                     added += 1;
-                  }
-               }
+               let added = insert_and_count(h);
                Ok(added)
             }
             None => Err("WRONGTYPE"),
@@ -86,13 +85,7 @@ impl Store {
          Some(r) => r,
          None => {
             let mut h = HashInner::with_capacity(fields.len());
-            let mut added = 0;
-            for &(f, v) in fields {
-               let name = unsafe { std::str::from_utf8_unchecked(f) };
-               if h.insert_bytes(name, v) {
-                  added += 1;
-               }
-            }
+            let added = insert_and_count(&mut h);
             self.data.insert_str(
                key,
                StoreValue {
@@ -106,25 +99,26 @@ impl Store {
    }
 
    pub fn hset_bytes(&self, key: &str, fields: &[(&str, &[u8])]) -> Result<usize, &'static str> {
+      let insert_and_count = |h: &mut HashInner| {
+         let mut added = 0;
+         for &(f, v) in fields {
+            if h.insert_bytes(f, v) {
+               added += 1;
+            }
+         }
+         added
+      };
       let result = self.data.update_with(key, |val| {
          if val.is_expired() {
             let mut h = HashInner::with_capacity(fields.len());
-            let added = fields.len();
-            for (f, v) in fields {
-               h.insert_bytes(f, v);
-            }
+            let added = insert_and_count(&mut h);
             val.value = FyroDB::Hash(Box::new(h));
             val.expires_ms = 0;
             return Ok(added);
          }
          match val.value.as_hash_mut() {
             Some(h) => {
-               let mut added = 0;
-               for (f, v) in fields {
-                  if h.insert_bytes(f, v) {
-                     added += 1;
-                  }
-               }
+               let added = insert_and_count(h);
                Ok(added)
             }
             None => Err("WRONGTYPE"),
@@ -135,10 +129,7 @@ impl Store {
          Some(r) => r,
          None => {
             let mut h = HashInner::with_capacity(fields.len());
-            let added = fields.len();
-            for (f, v) in fields {
-               h.insert_bytes(f, v);
-            }
+            let added = insert_and_count(&mut h);
             self.data.insert_str(
                key,
                StoreValue {
@@ -186,30 +177,29 @@ impl Store {
          }
       }
    }
-
    pub fn hset_flat(&self, key: &str, pairs: &[&str]) -> Result<usize, &'static str> {
       let (chunks, _) = pairs.as_chunks::<2>();
+      let insert_and_count = |h: &mut HashInner| {
+         let mut added = 0;
+         for &[f, v] in chunks {
+            if h.insert_ref(f, v) {
+               added += 1;
+            }
+         }
+         added
+      };
+
       let result = self.data.update_with(key, |val| {
          if val.is_expired() {
             let mut h = HashInner::with_capacity(chunks.len());
-            let mut added = 0;
-            for &[f, v] in chunks {
-               if h.insert_ref(f, v) {
-                  added += 1;
-               }
-            }
+            let added = insert_and_count(&mut h);
             val.value = FyroDB::Hash(Box::new(h));
             val.expires_ms = 0;
             return Ok(added);
          }
          match val.value.as_hash_mut() {
             Some(h) => {
-               let mut added = 0;
-               for &[f, v] in chunks {
-                  if h.insert_ref(f, v) {
-                     added += 1;
-                  }
-               }
+               let added = insert_and_count(h);
                Ok(added)
             }
             None => Err("WRONGTYPE"),
@@ -220,12 +210,7 @@ impl Store {
          Some(r) => r,
          None => {
             let mut h = HashInner::with_capacity(chunks.len());
-            let mut added = 0;
-            for &[f, v] in chunks {
-               if h.insert_ref(f, v) {
-                  added += 1;
-               }
-            }
+            let added = insert_and_count(&mut h);
             self.data.insert_str(
                key,
                StoreValue {
@@ -239,27 +224,26 @@ impl Store {
    }
 
    pub fn hset(&self, key: &str, fields: &[(&str, &str)]) -> Result<usize, &'static str> {
+      let insert_and_count = |h: &mut HashInner| {
+         let mut added = 0;
+         for &(f, v) in fields {
+            if h.insert_ref(f, v) {
+               added += 1;
+            }
+         }
+         added
+      };
       let result = self.data.update_with(key, |val| {
          if val.is_expired() {
             let mut h = HashInner::with_capacity(fields.len());
-            let mut added = 0;
-            for (f, v) in fields {
-               if h.insert_ref(f, v) {
-                  added += 1;
-               }
-            }
+            let added = insert_and_count(&mut h);
             val.value = FyroDB::Hash(Box::new(h));
             val.expires_ms = 0;
             return Ok(added);
          }
          match val.value.as_hash_mut() {
             Some(h) => {
-               let mut added = 0;
-               for (f, v) in fields.iter() {
-                  if h.insert_ref(f, v) {
-                     added += 1;
-                  }
-               }
+               let added = insert_and_count(h);
                Ok(added)
             }
             None => Err("WRONGTYPE"),
@@ -270,12 +254,7 @@ impl Store {
          Some(r) => r,
          None => {
             let mut h = HashInner::with_capacity(fields.len());
-            let mut added = 0;
-            for (f, v) in fields {
-               if h.insert_ref(f, v) {
-                  added += 1;
-               }
-            }
+            let added = insert_and_count(&mut h);
             self.data.insert_str(
                key,
                StoreValue {

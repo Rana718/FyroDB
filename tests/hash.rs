@@ -1,4 +1,6 @@
 mod common;
+
+use std::time::{Duration, Instant};
 use common::*;
 use fyro_db::storage::value::StoreValue;
 
@@ -13,6 +15,42 @@ fn hset_returns_new_field_count() {
    let s = store();
    assert_eq!(s.hset("k", &[("a", "1"), ("b", "2")]), Ok(2));
    assert_eq!(s.hset("k", &[("a", "updated"), ("c", "3")]), Ok(1));
+}
+
+#[test]
+fn hset_number_of_added_fields() {
+   let s = store();
+   assert_eq!(s.hset("k", &[("a", "1"), ("b", "2")]), Ok(2)); // fresh insert, no duplicates
+   assert_eq!(s.hset("l", &[("a", "1"), ("a", "3")]), Ok(1)); // fresh insert, one duplicate
+   assert_eq!(s.hset("k", &[("a", "2"), ("b", "3"), ("c", "4")]), Ok(1)); // one field added
+   s.expire("k", Duration::from_millis(5));
+   let deadline = Instant::now() + Duration::from_millis(10);
+   while Instant::now() < deadline { std::thread::yield_now(); }
+   assert_eq!(s.hset("k", &[("a", "1"), ("b", "2")]), Ok(2)); // fresh insert, no duplicates
+}
+
+#[test]
+fn hset_bytes_number_of_added_fields() {
+   let s = store();
+   assert_eq!(s.hset_bytes("k", &[("a", b"1"), ("b", b"2")]), Ok(2)); // fresh insert, no duplicates
+   assert_eq!(s.hset_bytes("l", &[("a", b"1"), ("a", b"3")]), Ok(1)); // fresh insert, one duplicate
+   assert_eq!(s.hset_bytes("k", &[("a", b"2"), ("b", b"3"), ("c", b"4")]), Ok(1)); // one field added
+   s.expire("k", Duration::from_millis(5));
+   let deadline = Instant::now() + Duration::from_millis(10);
+   while Instant::now() < deadline { std::thread::yield_now(); }
+   assert_eq!(s.hset_bytes("k", &[("a", b"1"), ("b", b"2")]), Ok(2)); // fresh insert, no duplicates
+}
+
+#[test]
+fn hset_fat_number_of_added_fields() {
+   let s = store();
+   assert_eq!(s.hset_flat("k", &["a", "1", "b", "2"]), Ok(2)); // fresh insert, no duplicates
+   assert_eq!(s.hset_flat("l", &["a", "1", "a", "3"]), Ok(1)); // fresh insert, one duplicate
+   assert_eq!(s.hset_flat("k", &["a", "2", "b", "3", "c", "4"]), Ok(1)); // one field added
+   s.expire("k", Duration::from_millis(5));
+   let deadline = Instant::now() + Duration::from_millis(10);
+   while Instant::now() < deadline { std::thread::yield_now(); }
+   assert_eq!(s.hset_flat("k", &["a", "1", "b", "2"]), Ok(2)); // fresh insert after expiration
 }
 
 #[test]
