@@ -222,7 +222,7 @@ pub fn sscan(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
                   }
                   crate::storage::value::SetMemberRef::Integer(n) => {
                      let mut buf = [0u8; 20];
-                     let str_n = crate::storage::value::write_int_to(&mut buf, n);
+                     let str_n = crate::utils::int_format::write_i64_to(&mut buf, n);
                      crate::utils::util::glob_match(pat, str_n)
                   }
                };
