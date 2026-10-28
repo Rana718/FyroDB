@@ -411,10 +411,7 @@ impl Store {
             None => Err("WRONGTYPE"),
          }
       });
-      match result {
-         Some(r) => r,
-         None => Ok(vec![]),
-      }
+      result.unwrap_or_else(|| Ok(vec![]))
    }
 
    /// Bulk elements stream into `out`; truncation keeps retries idempotent.
@@ -464,10 +461,7 @@ impl Store {
          }
       });
 
-      match result {
-         Some(r) => r,
-         None => Ok(0),
-      }
+      result.unwrap_or_else(|| Ok(0))
    }
 
    pub fn hexists(&self, key: &str, field: &str) -> Result<bool, &'static str> {
@@ -502,10 +496,7 @@ impl Store {
             None => Err("WRONGTYPE"),
          }
       });
-      match result {
-         Some(r) => r,
-         None => Ok(vec![]),
-      }
+      result.unwrap_or_else(|| Ok(vec![]))
    }
 
    pub fn hkeys_to_buf(&self, key: &str, out: &mut Vec<u8>) -> Result<usize, &'static str> {
@@ -576,23 +567,19 @@ impl Store {
             None => Err("WRONGTYPE"),
          }
       });
-      match result {
-         Some(r) => r,
-         None => {
-            out.truncate(start_len);
-            crate::utils::resp::write_array_header(out, 0);
-            Ok(0)
-         }
-      }
+      result.unwrap_or_else(|| {
+         out.truncate(start_len);
+         crate::utils::resp::write_array_header(out, 0);
+         Ok(0)
+      })
    }
 
    pub fn hincrby(&self, key: &str, field: &str, by: i64) -> Result<i64, &'static str> {
       let result = self.data.update_with(key, |val| {
          if val.is_expired() {
-            let mut nb = [0u8; 20];
             let v = vec![
                SmallStr::new(field),
-               SmallStr::new(crate::storage::value::write_int_to(&mut nb, by)),
+               SmallStr::from_int(by),
             ];
             val.value = FyroDB::Hash(Box::new(HashInner::Compact(v)));
             val.expires_ms = 0;
@@ -611,7 +598,7 @@ impl Store {
                         return Err("increment or decrement would overflow");
                      };
                      let mut nb = [0u8; 20];
-                     let rendered = crate::storage::value::write_int_to(&mut nb, new);
+                     let rendered = crate::utils::int_format::write_i64_to(&mut nb, new);
                      h.insert_ref(field, rendered);
                      Ok(new)
                   }
@@ -622,27 +609,23 @@ impl Store {
          }
       });
 
-      match result {
-         Some(r) => r,
-         None => {
-            let mut nb = [0u8; 20];
-            let v = vec![
-               SmallStr::new(field),
-               SmallStr::new(crate::storage::value::write_int_to(&mut nb, by)),
-            ];
-            if self.data.insert_if_absent_str(
-               key,
-               StoreValue {
-                  value: FyroDB::Hash(Box::new(HashInner::Compact(v))),
-                  expires_ms: 0,
+      result.unwrap_or_else(|| {
+         let v = vec![
+            SmallStr::new(field),
+            SmallStr::from_int(by),
+         ];
+         if self.data.insert_if_absent_str(
+            key,
+            StoreValue {
+               value: FyroDB::Hash(Box::new(HashInner::Compact(v))),
+               expires_ms: 0,
                },
             ) {
                Ok(by)
             } else {
                self.hincrby(key, field, by)
             }
-         }
-      }
+      })
    }
 
    pub fn hincrbyfloat(&self, key: &str, field: &str, by: f64) -> Result<f64, &'static str> {
@@ -673,20 +656,17 @@ impl Store {
          }
       });
 
-      match result {
-         Some(r) => r,
-         None => {
-            let v = vec![SmallStr::new(field), SmallStr::new(&format_float(by))];
-            self.data.insert_str(
-               key,
-               StoreValue {
-                  value: FyroDB::Hash(Box::new(HashInner::Compact(v))),
-                  expires_ms: 0,
-               },
-            );
-            Ok(by)
-         }
-      }
+      result.unwrap_or_else(|| {
+         let v = vec![SmallStr::new(field), SmallStr::new(&format_float(by))];
+         self.data.insert_str(
+            key,
+            StoreValue {
+               value: FyroDB::Hash(Box::new(HashInner::Compact(v))),
+               expires_ms: 0,
+            },
+         );
+         Ok(by)
+      })
    }
 }
 

@@ -73,30 +73,26 @@ pub fn run_worker(
 
    loop {
       if SHUTDOWN.load(Ordering::Acquire) {
-         for id in 0..conns.len() {
-            if let Some(Some(conn)) = conns.get_mut(id) {
+         for oconn in conns.iter_mut() {
+            if let Some(conn) = oconn {
                let _ = conn.do_write();
             }
          }
          return;
       }
 
-      let mut timeout = if sub_dirty.is_empty() {
-         None
+      let timeout = if let Some(window) = busy_window
+         && last_active.elapsed() < window {
+         Some(std::time::Duration::ZERO)
       } else {
-         Some(std::time::Duration::from_micros(50))
+         let mut timeout = (!sub_dirty.is_empty()).then_some(std::time::Duration::from_micros(50));
+         // Wake for the earliest blocked-command deadline.
+         if let Some(deadline) = crate::handler::conn::park::next_deadline() {
+            let until = deadline.saturating_duration_since(std::time::Instant::now());
+            timeout = Some(timeout.map_or(until, |t| t.min(until)));
+         }
+         timeout
       };
-      // Wake for the earliest blocked-command deadline.
-      if let Some(deadline) = crate::handler::conn::park::next_deadline() {
-         let until = deadline.saturating_duration_since(std::time::Instant::now());
-         timeout = Some(timeout.map_or(until, |t| t.min(until)));
-      }
-
-      if let Some(window) = busy_window
-         && last_active.elapsed() < window
-      {
-         timeout = Some(std::time::Duration::ZERO);
-      }
 
       match poll.poll(&mut events, timeout) {
          Ok(_) => {}
@@ -167,9 +163,7 @@ pub fn run_worker(
                   }
                }
                fanout_seen.resize(conns.len(), false);
-               for seen in fanout_seen.iter_mut() {
-                  *seen = false;
-               }
+               fanout_seen.fill(false);
                for &id in &sub_dirty {
                   if id < fanout_seen.len() {
                      fanout_seen[id] = true;
@@ -200,15 +194,9 @@ pub fn run_worker(
 
             token => {
                let id = token.0;
-               let mut close = false;
                if let Some(conn) = conns.get_mut(id).and_then(|s| s.as_mut()) {
-                  if event.is_readable() && !conn.do_read() {
-                     close = true;
-                  }
-                  // Retry WouldBlock writes when writable
-                  if !close && event.is_writable() && !conn.do_write() {
-                     close = true;
-                  }
+                  let close = (event.is_readable() && !conn.do_read())
+                     || (event.is_writable() && !conn.do_write());
                   if !close {
                      let wants_writable = conn.has_pending_write();
                      if wants_writable {
@@ -217,14 +205,12 @@ pub fn run_worker(
                         && poll
                            .registry()
                            .reregister(&mut conn.stream, Token(id), Interest::READABLE)
-                           .is_ok()
-                     {
+                           .is_ok() {
                         conn.writable_registered = false;
                      }
+                  } else {
+                     close_conn(&mut conns, &mut poll, &mut free, id);
                   }
-               }
-               if close {
-                  close_conn(&mut conns, &mut poll, &mut free, id);
                }
             }
          }
@@ -316,31 +302,42 @@ pub fn run_worker(
          }
       }
 
-      let mut i = 0;
-      while i < sub_dirty.len() {
-         let id = sub_dirty[i];
-         if let Some(Some(conn)) = conns.get_mut(id) {
-            if is_slow_subscriber(conn) {
-               close_conn(&mut conns, &mut poll, &mut free, id);
-               sub_dirty.swap_remove(i);
-               continue;
-            }
-            if !conn.do_write() {
-               close_conn(&mut conns, &mut poll, &mut free, id);
-               sub_dirty.swap_remove(i);
-               continue;
-            }
-            if !conn.has_pending_write() {
-               sync_write_interest(&mut conns, &mut poll, id);
-               sub_dirty.swap_remove(i);
-               continue;
-            }
-            sync_write_interest(&mut conns, &mut poll, id);
-            i += 1;
-         } else {
-            sub_dirty.swap_remove(i);
+      sub_dirty.retain(|&id| {
+         enum Action {
+            Keep,
+            Remove,
+            Close,
          }
-      }
+
+         let action = {
+            let Some(conn) = conns.get_mut(id).and_then(|s| s.as_mut()) else {
+               return false;
+            };
+
+            if is_slow_subscriber(conn) || !conn.do_write() {
+               Action::Close
+            } else if conn.has_pending_write() {
+               Action::Keep
+            } else {
+               Action::Remove
+            }
+         };
+
+         match action {
+            Action::Keep => {
+               sync_write_interest(&mut conns, &mut poll, id);
+               true
+            }
+            Action::Remove => {
+               sync_write_interest(&mut conns, &mut poll, id);
+               false
+            }
+            Action::Close => {
+               close_conn(&mut conns, &mut poll, &mut free, id);
+               false
+            }
+         }
+      });
 
       if free.len() > conns.len() / 2 && conns.len() > 1024 {
          while conns.last().is_some_and(|s| s.is_none()) {
@@ -365,7 +362,7 @@ fn is_slow_subscriber(conn: &Conn) -> bool {
 /// Frames append straight to wbuf (memcpy); a connection past the batch
 /// cap spills into its slot queue (backlog drain, shedding intact).
 fn deliver_fanout(
-   notifier: &Arc<crate::pubsub::WorkerNotifier>,
+   notifier: &WorkerNotifier,
    conns: &mut [Option<Conn>],
    sub_dirty: &mut Vec<usize>,
    scratch: &mut Vec<crate::pubsub::FanEntry>,
