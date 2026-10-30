@@ -93,6 +93,12 @@ impl SmallStr {
    }
 
    #[inline]
+   pub fn from_float(f: f64) -> Self {
+      let mut buffer = ryu::Buffer::new();
+      Self::new(buffer.format(f))
+   }
+
+   #[inline]
    pub fn new(s: &str) -> Self {
       Self::from_slice(s.as_bytes())
    }

@@ -2,7 +2,6 @@ use crate::storage::{
    store::Store,
    value::{SmallStr, StoreValue},
 };
-use crate::utils::util::format_float;
 use customhash::Full;
 
 const MAX_STRING_BYTES: usize = 512 * 1024 * 1024;
@@ -721,7 +720,7 @@ impl Store {
                };
                let new = n + by;
                val.value =
-                  crate::storage::value::FyroDB::String(SmallStr::from_string(format_float(new)));
+                  crate::storage::value::FyroDB::String(SmallStr::from_float(new));
                Ok(new)
             }
             None => Err("WRONGTYPE"),
@@ -732,7 +731,7 @@ impl Store {
          None => {
             self
                .data
-               .insert_str(key, StoreValue::string(format_float(by)));
+               .insert_str(key, StoreValue::string_small(SmallStr::from_float(by)));
             Ok(by)
          }
       }

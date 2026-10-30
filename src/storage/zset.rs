@@ -312,10 +312,7 @@ impl Store {
                crate::utils::resp::write_array_header(out, members.len());
                for m in members {
                   match z.get_score(m) {
-                     Some(score) => crate::utils::resp::write_bulk(
-                        out,
-                        &crate::utils::util::format_float(score),
-                     ),
+                     Some(score) => crate::utils::resp::write_float(out, score),
                      None => crate::utils::resp::write_nil(out),
                   }
                }
@@ -472,10 +469,7 @@ impl Store {
                for entry in z.range_by_rank(s, e_idx + 1) {
                   entry.member.write_resp(out);
                   if withscores {
-                     crate::utils::resp::write_bulk(
-                        out,
-                        &crate::utils::util::format_float(entry.score),
-                     );
+                     crate::utils::resp::write_float(out, entry.score);
                   }
                }
                Ok(n)
@@ -510,10 +504,7 @@ impl Store {
                for entry in z.iter_rev().skip(s).take(n) {
                   entry.member.write_resp(out);
                   if withscores {
-                     crate::utils::resp::write_bulk(
-                        out,
-                        &crate::utils::util::format_float(entry.score),
-                     );
+                     crate::utils::resp::write_float(out, entry.score);
                   }
                }
                Ok(n)

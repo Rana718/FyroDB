@@ -90,6 +90,12 @@ pub fn write_bulk(out: &mut Vec<u8>, s: &str) {
    write_bulk_bytes(out, s.as_bytes());
 }
 
+#[inline]
+pub fn write_float(out: &mut Vec<u8>, f: f64) {
+   let mut buffer = ryu::Buffer::new();
+   write_bulk(out, buffer.format(f));
+}
+
 #[cold]
 #[inline(never)]
 fn reserve_resp(out: &mut Vec<u8>, total: usize) {
