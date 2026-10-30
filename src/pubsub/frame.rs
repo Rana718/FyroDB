@@ -40,8 +40,9 @@ pub fn encode_message(channel: &str, message: &str) -> Arc<[u8]> {
    let msg_bytes = message.as_bytes();
    let ch_len = ch_bytes.len();
    let msg_len = msg_bytes.len();
-   let total =
-      15 + 1 + resp_int_len(ch_len) + 2 + ch_len + 2 + 1 + resp_int_len(msg_len) + 2 + msg_len + 2;
+   let total = b"*3\r\n$7\r\nmessage\r\n".len()
+      + 1 + resp_int_len(ch_len) + 2 + ch_len + 2
+      + 1 + resp_int_len(msg_len) + 2 + msg_len + 2;
    let mut out = Vec::with_capacity(total);
    out.extend_from_slice(b"*3\r\n$7\r\nmessage\r\n");
    bulk_into(&mut out, ch_bytes);
@@ -239,22 +240,10 @@ pub fn encode_pmessage(pattern: &str, channel: &str, message: &str) -> Arc<[u8]>
    let pat_len = pattern.len();
    let ch_len = channel.len();
    let msg_len = message.len();
-   let total = 17
-      + 1
-      + resp_int_len(pat_len)
-      + 2
-      + pat_len
-      + 2
-      + 1
-      + resp_int_len(ch_len)
-      + 2
-      + ch_len
-      + 2
-      + 1
-      + resp_int_len(msg_len)
-      + 2
-      + msg_len
-      + 2;
+   let total = "*4\r\n$8\r\npmessage\r\n".len()
+      + 1 + resp_int_len(pat_len) + 2 + pat_len + 2
+      + 1 + resp_int_len(ch_len) + 2 + ch_len + 2
+      + 1 + resp_int_len(msg_len) + 2 + msg_len + 2;
    let mut out = Vec::with_capacity(total);
    out.extend_from_slice(b"*4\r\n$8\r\npmessage\r\n");
    bulk_into(&mut out, pattern.as_bytes());
@@ -263,15 +252,14 @@ pub fn encode_pmessage(pattern: &str, channel: &str, message: &str) -> Arc<[u8]>
    out.into()
 }
 
-pub fn encode_sub_reply(kind: &str, channel: &str, count: usize) -> Vec<u8> {
-   let mut out = Vec::with_capacity(32 + kind.len() + channel.len());
+pub fn encode_sub_reply(kind: &str, channel: &str, count: usize, out: &mut Vec<u8>) {
+   out.reserve(32 + kind.len() + channel.len());
    out.extend_from_slice(b"*3\r\n");
-   bulk_into(&mut out, kind.as_bytes());
-   bulk_into(&mut out, channel.as_bytes());
+   bulk_into(out, kind.as_bytes());
+   bulk_into(out, channel.as_bytes());
    out.push(b':');
-   push_usize(&mut out, count);
+   push_usize(out, count);
    out.extend_from_slice(b"\r\n");
-   out
 }
 
 #[inline(always)]
