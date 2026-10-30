@@ -350,7 +350,7 @@ fn emit_search_results(
 
    let total = hits.len();
    let start = opts.limit_offset.min(total);
-   let end = (start.saturating_add(opts.limit_num)).min(total);
+   let end = start.saturating_add(opts.limit_num).min(total);
    emit_search_page(&hits[start..end], total, opts, out, store, def);
 }
 
@@ -373,7 +373,7 @@ fn emit_search_page(
    for hit in hits {
       resp::write_bulk_bytes(out, hit.key.as_bytes());
       if opts.with_scores {
-         resp::write_bulk(out, &crate::utils::util::format_float(hit.score));
+         resp::write_float(out, hit.score);
       }
       if opts.with_payloads {
          resp::write_nil(out);

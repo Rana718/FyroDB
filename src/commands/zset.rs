@@ -1,7 +1,6 @@
 use crate::storage::store::Store;
 use crate::storage::zset::ZAggregate;
 use crate::utils::resp;
-use crate::utils::util::format_float;
 use crate::{parse_float, parse_int, store_ok, wt};
 
 pub fn zadd(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
@@ -84,7 +83,7 @@ pub fn zrem(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
 pub fn zscore(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
    match parts {
       [_, key, member] => match wt!(out, store.zscore(key, member)) {
-         Some(s) => resp::write_bulk(out, &format_float(s)),
+         Some(s) => resp::write_float(out, s),
          None => resp::write_nil(out),
       },
       _ => resp::write_wrong_args(out, "zscore"),
@@ -141,10 +140,7 @@ pub fn zincrby(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
       return resp::write_wrong_args(out, "zincrby");
    };
    let by = parse_float!(out, incr);
-   resp::write_bulk(
-      out,
-      &format_float(store_ok!(out, store.zincrby(key, by, member))),
-   );
+   resp::write_float(out, store_ok!(out, store.zincrby(key, by, member)));
 }
 
 pub fn zrange(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
@@ -307,7 +303,7 @@ fn write_zset_result(out: &mut Vec<u8>, items: &[(String, f64)], withscores: boo
       resp::write_array_header(out, items.len() * 2);
       for (member, score) in items {
          resp::write_bulk(out, member);
-         resp::write_bulk(out, &format_float(*score));
+         resp::write_float(out, *score);
       }
    } else {
       resp::write_array_header(out, items.len());
@@ -525,7 +521,7 @@ pub fn zscan(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
             resp::write_array_header(out, pairs.len() * 2);
             for (m, s) in pairs {
                resp::write_bulk(out, m);
-               resp::write_bulk(out, &format_float(s));
+               resp::write_float(out, s);
             }
          }
          None => resp::write_wrong_type(out),
@@ -565,7 +561,7 @@ pub fn bzpopmin(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
          resp::write_array_header(out, 3);
          resp::write_bulk(out, k);
          resp::write_bulk(out, &items[0].0);
-         resp::write_bulk(out, &format_float(items[0].1));
+         resp::write_float(out, items[0].1);
          return;
       }
    }
@@ -586,7 +582,7 @@ pub fn bzpopmax(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
          resp::write_array_header(out, 3);
          resp::write_bulk(out, k);
          resp::write_bulk(out, &items[0].0);
-         resp::write_bulk(out, &format_float(items[0].1));
+         resp::write_float(out, items[0].1);
          return;
       }
    }
