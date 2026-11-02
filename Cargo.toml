@@ -66,6 +66,9 @@ path = "src/main.rs"
 io-uring = ["dep:io-uring"]
 profiling = ["dep:pprof"]
 bench-tools = []
+unix-sockets = []
+unix = ["unix-sockets"]
+unix-socket = ["unix-sockets"]
 
 [dev-dependencies]
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }

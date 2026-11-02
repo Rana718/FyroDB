@@ -1,7 +1,8 @@
 use foldhash::HashSet;
-use mio::net::TcpStream;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::sync::Arc;
+
+use crate::handler::net::Stream;
 
 use crate::pubsub::{PubSub, SubSlot, WorkerNotifier};
 use crate::storage::store::Store;
@@ -77,7 +78,7 @@ pub enum ConnMode {
 }
 
 pub struct Conn<'a> {
-   pub stream: TcpStream,
+   pub stream: Stream,
    pub parser: RespParser,
    pub store: &'a Arc<Store>,
    pub pubsub: &'a PubSub,
@@ -111,7 +112,7 @@ pub struct Conn<'a> {
 
 impl<'a> Conn<'a> {
    pub fn new(
-      stream: TcpStream,
+      stream: Stream,
       store: &'a Arc<Store>,
       pubsub: &'a PubSub,
       token: usize,

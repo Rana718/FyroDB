@@ -1,4 +1,6 @@
 use mio::net::TcpListener;
+#[cfg(feature = "unix-sockets")]
+use mio::net::UnixListener;
 use mio::{Events, Interest, Poll, Token, Waker};
 use socket2::{Domain, Protocol, Socket, Type};
 use std::net::SocketAddr;
@@ -7,6 +9,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use crate::handler::Conn;
 use crate::handler::conn::ConnMode;
+use crate::handler::net::{Listener, Stream};
 use crate::pubsub::{PubSub, WorkerNotifier};
 use crate::storage::store::Store;
 use crate::storage::value::tick_clock;
@@ -35,8 +38,7 @@ pub fn run_worker(
    auth: Option<&str>,
    worker_index: usize,
 ) {
-   let addr: SocketAddr = format!("{}:{}", bind, port).parse().unwrap();
-   let mut listener = make_listener(addr);
+   let mut listener = make_listener(port, bind);
 
    let mut poll = Poll::new().unwrap();
    let mut events = Events::with_capacity(512);
@@ -113,7 +115,7 @@ pub fn run_worker(
          match event.token() {
             LISTENER_TOKEN => loop {
                match listener.accept() {
-                  Ok((mut stream, _)) => {
+                  Ok(mut stream) => {
                      let current = store.connected_clients();
                      let max = MAX_CLIENTS.load(Ordering::Relaxed);
                      if current >= max {
@@ -125,10 +127,16 @@ pub fn run_worker(
                         continue;
                      }
 
-                     let sock_ref = socket2::SockRef::from(&stream);
-                     let _ = sock_ref.set_tcp_nodelay(true);
-                     #[cfg(target_os = "linux")]
-                     let _ = sock_ref.set_tcp_quickack(true);
+                     match stream {
+                        Stream::Tcp(ref tcp) => {
+                           let sock_ref = socket2::SockRef::from(tcp);
+                           let _ = sock_ref.set_tcp_nodelay(true);
+                           #[cfg(target_os = "linux")]
+                           let _ = sock_ref.set_tcp_quickack(true);
+                        }
+                        #[cfg(feature = "unix-sockets")]
+                        Stream::Unix(_) => {}
+                     }
                      let id = alloc_slot(&mut free, &mut next_token, &mut conns);
                      poll
                         .registry()
@@ -413,7 +421,22 @@ fn deliver_fanout(
    });
 }
 
-fn make_listener(addr: SocketAddr) -> TcpListener {
+fn make_listener(port: u16, bind: &str) -> Listener {
+   #[cfg(not(feature = "unix-sockets"))]
+   if bind.starts_with("unix") {
+      panic!("Unix socket support is disabled; enable with feature 'unix-sockets'");
+   }
+
+   #[cfg(feature = "unix-sockets")]
+   if bind.starts_with("unix") {
+      return Listener::Unix(make_unix_listener(bind));
+   }
+
+   let addr: SocketAddr = format!("{}:{}", bind, port).parse().unwrap();
+   Listener::Tcp(make_tcp_listener(addr))
+}
+
+fn make_tcp_listener(addr: SocketAddr) -> TcpListener {
    let socket = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP)).unwrap();
    socket.set_reuse_address(true).unwrap();
    socket.set_reuse_port(true).unwrap();
@@ -421,6 +444,26 @@ fn make_listener(addr: SocketAddr) -> TcpListener {
    socket.bind(&addr.into()).unwrap();
    socket.listen(8192).unwrap();
    TcpListener::from_std(std::net::TcpListener::from(socket))
+}
+
+#[cfg(feature = "unix-sockets")]
+fn parse_unix_path(bind: &str) -> &str {
+   if let Some(path) = bind.strip_prefix("unix://") {
+      path
+   } else if let Some(path) = bind.strip_prefix("unix:") {
+      path
+   } else if let Some(path) = bind.strip_prefix("unix") {
+      path
+   } else {
+      bind
+   }
+}
+
+#[cfg(feature = "unix-sockets")]
+fn make_unix_listener(bind: &str) -> UnixListener {
+   let path = parse_unix_path(bind);
+   let _ = std::fs::remove_file(path);
+   UnixListener::bind(path).expect("failed to bind unix socket")
 }
 
 fn alloc_slot(
