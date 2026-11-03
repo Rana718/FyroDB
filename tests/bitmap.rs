@@ -98,12 +98,12 @@ fn bitpos_not_found() {
 
 #[test]
 fn bitop_and_wrong_type() {
-  let s = store();
-  s.setbit("a", 0, true).unwrap();
-  s.setbit("a", 3, true).unwrap();
-  s.lpush("b", &[&"hello"]).unwrap();
-  let r = s.bitop(BitOp::And, "dst", &["a", "b"]);
-  assert_eq!(r, Err("WRONGTYPE"));
+   let s = store();
+   s.setbit("a", 0, true).unwrap();
+   s.setbit("a", 3, true).unwrap();
+   s.lpush("b", &[&"hello"]).unwrap();
+   let r = s.bitop(BitOp::And, "dst", &["a", "b"]);
+   assert_eq!(r, Err("WRONGTYPE"));
 }
 
 #[test]
@@ -267,14 +267,6 @@ fn bitop_sources_grow_result() {
       ],
    );
 
-   assert_eq!(s.bitop(BitOp::Or, "dst", &["long", "short"]), Ok(11));
-   assert_bytes(
-      "dst",
-      &[
-         0xF0, 0x2F, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80, 0x90, 0xA0, 0xB0,
-      ],
-   );
-
    assert_eq!(s.bitop(BitOp::And, "dst", &["missing", "long"]), Ok(11));
    assert_bytes("dst", &[0; 11]);
 
@@ -283,14 +275,108 @@ fn bitop_sources_grow_result() {
 
    assert_eq!(s.bitop(BitOp::Xor, "dst", &["missing", "long"]), Ok(11));
    assert_bytes("dst", &long);
+}
 
-   assert_eq!(s.bitop(BitOp::Xor, "long", &["long", "short"]), Ok(11));
-   assert_bytes(
-      "long",
-      &[
-         0xE0, 0x2F, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80, 0x90, 0xA0, 0xB0,
-      ],
-   );
+#[test]
+fn bitop_vector_sized_sources_and_destination_aliases() {
+   let a: Vec<u8> = (0..81).map(|i| (i as u8).wrapping_mul(37) ^ 0xA5).collect();
+   let b: Vec<u8> = (0..65).map(|i| (i as u8).wrapping_mul(53) ^ 0x5A).collect();
+   let c: Vec<u8> = (0..43).map(|i| (i as u8).wrapping_mul(19) ^ 0xC3).collect();
+   let fixtures = [("a", &a[..]), ("b", &b[..]), ("c", &c[..])];
+
+   for (name, op) in [
+      ("AND", BitOp::And),
+      ("OR", BitOp::Or),
+      ("XOR", BitOp::Xor),
+      ("NOT", BitOp::Not),
+   ] {
+      let source_cases: &[&[&str]] = if matches!(op, BitOp::Not) {
+         &[&["a"]]
+      } else {
+         &[
+            &["a", "b", "c"],
+            &["c", "a", "b"],
+            &["a", "b", "a", "c"],
+            &["a", "missing", "b", "c"],
+         ]
+      };
+      let destinations: &[&str] = if matches!(op, BitOp::Not) {
+         &["dst", "a"]
+      } else {
+         &["dst", "a", "b", "c"]
+      };
+
+      for &sources in source_cases {
+         for &dest in destinations {
+            let s = store();
+            let set_bytes = |key: &str, bytes: &[u8]| {
+               for (byte_idx, byte) in bytes.iter().enumerate() {
+                  for bit_idx in 0..8 {
+                     s.setbit(
+                        key,
+                        (byte_idx * 8 + bit_idx) as u64,
+                        *byte & (1 << (7 - bit_idx)) != 0,
+                     )
+                     .unwrap();
+                  }
+               }
+            };
+            let assert_bytes = |key: &str, expected: &[u8]| {
+               for (byte_idx, byte) in expected.iter().enumerate() {
+                  for bit_idx in 0..8 {
+                     assert_eq!(
+                        s.getbit(key, (byte_idx * 8 + bit_idx) as u64),
+                        Ok((byte >> (7 - bit_idx)) & 1),
+                        "{name} sources {sources:?}, destination {dest}, key {key}, byte {byte_idx}, bit {bit_idx}"
+                     );
+                  }
+               }
+            };
+
+            for &(key, bytes) in &fixtures {
+               set_bytes(key, bytes);
+            }
+            if dest == "dst" {
+               s.setbit("dst", 97 * 8 - 1, true).unwrap();
+            }
+
+            let expected: Vec<u8> = (0..a.len())
+               .map(|index| {
+                  let initial = if matches!(op, BitOp::And) { 0xFF } else { 0 };
+                  sources.iter().fold(initial, |result, key| {
+                     let byte = fixtures
+                        .iter()
+                        .find(|(fixture, _)| fixture == key)
+                        .and_then(|(_, bytes)| bytes.get(index))
+                        .copied()
+                        .unwrap_or(0);
+                     match op {
+                        BitOp::And => result & byte,
+                        BitOp::Or => result | byte,
+                        BitOp::Xor => result ^ byte,
+                        BitOp::Not => !byte,
+                     }
+                  })
+               })
+               .collect();
+
+            assert_eq!(
+               s.bitop(op, dest, sources),
+               Ok(expected.len()),
+               "{name} {sources:?} {dest}"
+            );
+            assert_bytes(dest, &expected);
+            assert_eq!(s.getbit(dest, 97 * 8 - 1), Ok(0));
+            assert_eq!(s.bitop(BitOp::Or, "check", &[dest]), Ok(expected.len()));
+            for &(key, bytes) in &fixtures {
+               if key != dest {
+                  assert_bytes(key, bytes);
+                  assert_eq!(s.bitop(BitOp::Or, "check", &[key]), Ok(bytes.len()));
+               }
+            }
+         }
+      }
+   }
 }
 
 #[test]

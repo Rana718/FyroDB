@@ -1,6 +1,6 @@
 //! Micro-benchmarks for bitmap and bitfield paths. Run with: cargo bench --bench bitmap_bench
 
-use fyro_db::commands::bitmap::{bf_get, bf_set, bitfield};
+use fyro_db::commands::bitmap::bitfield;
 use fyro_db::storage::bitmap::BitOp;
 use fyro_db::storage::store::Store;
 use std::hint::black_box;
@@ -97,24 +97,24 @@ fn bench_bitfield_store() {
       for (alignment, offset) in [("aligned", 0), ("unaligned", 1)] {
          let key = format!("bf:{label}:{alignment}");
          let store = Store::new();
-         bf_set(&store, &key, offset, bits, 123);
+         store.bf_set(&key, offset, bits, 123).unwrap();
 
          let start = Instant::now();
          for _ in 0..OPS {
-            black_box(bf_get(&store, black_box(&key), offset, bits, signed));
+            black_box(store.bf_get(&key, offset, bits, signed).unwrap());
          }
          print_bench(
-            &format!("BITFIELD bf_get {label} {alignment}"),
+            &format!("BITFIELD GET {label} {alignment}"),
             OPS,
             start.elapsed(),
          );
 
          let start = Instant::now();
          for i in 0..OPS {
-            bf_set(&store, black_box(&key), offset, bits, (i & 0x7f) as i64);
+            black_box(store.bf_set(&key, offset, bits, (i & 0x7f) as i64).unwrap());
          }
          print_bench(
-            &format!("BITFIELD bf_set {label} {alignment}"),
+            &format!("BITFIELD SET {label} {alignment}"),
             OPS,
             start.elapsed(),
          );
