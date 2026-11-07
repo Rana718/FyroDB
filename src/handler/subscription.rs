@@ -1,7 +1,6 @@
 use super::conn::{Conn, ConnMode};
 use crate::pubsub::{SubSlot, encode_sub_reply};
 use crate::utils::resp;
-use crate::{write_sub_replies, write_unsub_replies};
 use foldhash::{HashSet, HashSetExt};
 use std::sync::Arc;
 
@@ -10,24 +9,23 @@ pub fn handle_subscribe(conn: &mut Conn<'_>, parts: &[&str]) {
       resp::write_wrong_args(&mut conn.parser.wbuf, "subscribe");
       return;
    }
-   let new_items: Vec<String> = parts[1..].iter().map(|s| s.to_string()).collect();
    let slot = ensure_slot(conn);
+   let pubsub = conn.pubsub;
+   let token = conn.token;
+   let notifier = conn.notifier.as_ref();
 
-   let to_register: Vec<String> = {
-      let (ch_set, _) = sub_sets_mut(conn);
-      new_items
-         .iter()
-         .filter(|ch| ch_set.insert((*ch).clone()))
-         .cloned()
-         .collect()
-   };
-   for ch in &to_register {
-      conn.pubsub.subscribe(ch, Arc::clone(&slot));
-      conn.notifier.register_local(ch, conn.token);
+   for &ch in &parts[1..] {
+      let total = {
+         let (ch_set, pat_set) = sub_sets_mut(conn);
+         if ch_set.insert(ch.to_string()) {
+            pubsub.subscribe(ch, Arc::clone(&slot));
+            notifier.register_local(ch, token);
+         }
+         ch_set.len() + pat_set.len()
+      };
+
+      encode_sub_reply("subscribe", ch, total, &mut conn.parser.wbuf);
    }
-
-   let total = sub_total(conn);
-   write_sub_replies!(&mut conn.parser.wbuf, "subscribe", &new_items, total);
 }
 
 pub fn handle_unsubscribe(conn: &mut Conn<'_>, parts: &[&str]) {
@@ -38,39 +36,37 @@ pub fn handle_unsubscribe(conn: &mut Conn<'_>, parts: &[&str]) {
       patterns,
    } = &mut conn.mode
    else {
-      conn
-         .parser
-         .wbuf
-         .extend_from_slice(&encode_sub_reply("unsubscribe", "", 0));
+      encode_sub_reply("unsubscribe", "", 0, &mut conn.parser.wbuf);
       return;
    };
 
-   let targets: Vec<String> = if parts.len() <= 1 {
-      channels.iter().cloned().collect()
-   } else {
-      parts[1..].iter().map(|s| s.to_string()).collect()
-   };
-
-   let mut removed = HashSet::new();
-   for ch in &targets {
-      if channels.remove(ch) {
+   let mut remaining = channels.len() + patterns.len();
+   let mut unsubscribe_one = |ch: &str, removed: bool| {
+      if removed {
          pubsub.unsubscribe(ch, &*slot);
          conn.notifier.unregister_local(ch, conn.token);
-         removed.insert(ch.clone());
+         remaining -= 1;
+      }
+      encode_sub_reply("unsubscribe", ch, remaining, &mut conn.parser.wbuf);
+   };
+
+   if parts.len() <= 1 {
+      let targets = std::mem::take(channels);
+
+      if targets.is_empty() {
+         unsubscribe_one("", false);
+      } else {
+         for ch in &targets {
+            unsubscribe_one(ch, true);
+         }
+      }
+   } else {
+      for &ch in &parts[1..] {
+         unsubscribe_one(ch, channels.remove(ch));
       }
    }
 
-   let remaining = channels.len() + patterns.len();
-   let drained = channels.is_empty() && patterns.is_empty();
-   write_unsub_replies!(
-      &mut conn.parser.wbuf,
-      "unsubscribe",
-      &targets,
-      &removed,
-      remaining + removed.len()
-   );
-
-   if drained {
+   if channels.is_empty() && patterns.is_empty() {
       conn.mode = ConnMode::Normal;
    }
 }
@@ -80,23 +76,20 @@ pub fn handle_psubscribe(conn: &mut Conn<'_>, parts: &[&str]) {
       resp::write_wrong_args(&mut conn.parser.wbuf, "psubscribe");
       return;
    }
-   let new_items: Vec<String> = parts[1..].iter().map(|s| s.to_string()).collect();
    let slot = ensure_slot(conn);
+   let pubsub = conn.pubsub;
 
-   let to_register: Vec<String> = {
-      let (_, pat_set) = sub_sets_mut(conn);
-      new_items
-         .iter()
-         .filter(|p| pat_set.insert((*p).clone()))
-         .cloned()
-         .collect()
-   };
-   for pat in &to_register {
-      conn.pubsub.psubscribe(pat, Arc::clone(&slot));
+   for &pat in &parts[1..] {
+      let total = {
+         let (ch_set, pat_set) = sub_sets_mut(conn);
+         if pat_set.insert(pat.to_string()) {
+            pubsub.psubscribe(pat, Arc::clone(&slot));
+         }
+         ch_set.len() + pat_set.len()
+      };
+
+      encode_sub_reply("psubscribe", pat, total, &mut conn.parser.wbuf);
    }
-
-   let total = sub_total(conn);
-   write_sub_replies!(&mut conn.parser.wbuf, "psubscribe", &new_items, total);
 }
 
 pub fn handle_punsubscribe(conn: &mut Conn<'_>, parts: &[&str]) {
@@ -107,38 +100,36 @@ pub fn handle_punsubscribe(conn: &mut Conn<'_>, parts: &[&str]) {
       patterns,
    } = &mut conn.mode
    else {
-      conn
-         .parser
-         .wbuf
-         .extend_from_slice(&encode_sub_reply("punsubscribe", "", 0));
+      encode_sub_reply("punsubscribe", "", 0, &mut conn.parser.wbuf);
       return;
    };
 
-   let targets: Vec<String> = if parts.len() <= 1 {
-      patterns.iter().cloned().collect()
-   } else {
-      parts[1..].iter().map(|s| s.to_string()).collect()
+   let mut remaining = channels.len() + patterns.len();
+   let mut punsubscribe_one = |pat: &str, removed: bool| {
+      if removed {
+         pubsub.punsubscribe(pat, &*slot);
+         remaining -= 1;
+      }
+      encode_sub_reply("punsubscribe", pat, remaining, &mut conn.parser.wbuf);
    };
 
-   let mut removed = HashSet::new();
-   for pat in &targets {
-      if patterns.remove(pat) {
-         pubsub.punsubscribe(pat, &*slot);
-         removed.insert(pat.clone());
+   if parts.len() <= 1 {
+      let targets = std::mem::take(patterns);
+
+      if targets.is_empty() {
+         punsubscribe_one("", false);
+      } else {
+         for pat in targets {
+            punsubscribe_one(&pat, true);
+         }
+      }
+   } else {
+      for &pat in &parts[1..] {
+         punsubscribe_one(pat, patterns.remove(pat));
       }
    }
 
-   let remaining = channels.len() + patterns.len();
-   let drained = channels.is_empty() && patterns.is_empty();
-   write_unsub_replies!(
-      &mut conn.parser.wbuf,
-      "punsubscribe",
-      &targets,
-      &removed,
-      remaining + removed.len()
-   );
-
-   if drained {
+   if channels.is_empty() && patterns.is_empty() {
       conn.mode = ConnMode::Normal;
    }
 }
@@ -190,13 +181,4 @@ fn sub_sets_mut<'c>(conn: &'c mut Conn<'_>) -> (&'c mut HashSet<String>, &'c mut
       unreachable!()
    };
    (channels, patterns)
-}
-
-fn sub_total(conn: &Conn<'_>) -> usize {
-   match &conn.mode {
-      ConnMode::Subscribed {
-         channels, patterns, ..
-      } => channels.len() + patterns.len(),
-      ConnMode::Normal => 0,
-   }
 }

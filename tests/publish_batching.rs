@@ -48,12 +48,12 @@ fn read_reply(r: &mut BufReader<TcpStream>) -> Vec<u8> {
    r.read_line(&mut line).unwrap();
    out.extend_from_slice(line.as_bytes());
    if line.starts_with('$') && line.trim() != "$-1" {
-      let n: usize = line.strip_prefix('$').unwrap().trim().parse().unwrap();
+      let n: usize = line.get(1..).unwrap().trim().parse().unwrap();
       let mut payload = vec![0u8; n + 2];
       r.read_exact(&mut payload).unwrap();
       out.extend_from_slice(&payload);
    } else if line.starts_with('*') {
-      let n: usize = line.strip_prefix('*').unwrap().trim().parse().unwrap();
+      let n: usize = line.get(1..).unwrap().trim().parse().unwrap();
       for _ in 0..n {
          out.extend_from_slice(&read_reply(r));
       }
@@ -167,6 +167,31 @@ fn pattern_subscriber_still_receives_batched_messages() {
       assert!(text.contains("pmessage"), "not a pmessage: {text:?}");
       assert!(text.contains(&format!("t{i}")), "missing t{i}: {text:?}");
    }
+}
+
+#[test]
+fn batched_subscription_generates_incrementing_answers() {
+   let port = spawn_server();
+   let (mut s, mut r) = conn(port);
+   s.write_all(&cmd(&["SUBSCRIBE", "a", "b"])).unwrap();
+   let ans = read_reply(&mut r);
+   assert_eq!(String::from_utf8(ans).unwrap(), "*3\r\n$9\r\nsubscribe\r\n$1\r\na\r\n:1\r\n");
+   let ans = read_reply(&mut r);
+   assert_eq!(String::from_utf8(ans).unwrap(), "*3\r\n$9\r\nsubscribe\r\n$1\r\nb\r\n:2\r\n");
+}
+
+#[test]
+fn batched_unsubscription_generates_decrementing_answers() {
+   let port = spawn_server();
+   let (mut s, mut r) = conn(port);
+   s.write_all(&cmd(&["SUBSCRIBE", "a", "b"])).unwrap();
+   let _ = read_reply(&mut r);
+   s.write_all(&cmd(&["UNSUBSCRIBE", "a", "b"])).unwrap();
+   let _ = read_reply(&mut r);
+   let ans = read_reply(&mut r);
+   assert_eq!(String::from_utf8(ans).unwrap(), "*3\r\n$11\r\nunsubscribe\r\n$1\r\na\r\n:1\r\n");
+   let ans = read_reply(&mut r);
+   assert_eq!(String::from_utf8(ans).unwrap(), "*3\r\n$11\r\nunsubscribe\r\n$1\r\nb\r\n:0\r\n");
 }
 
 // Workers block in poll(); they exit with the test process.
