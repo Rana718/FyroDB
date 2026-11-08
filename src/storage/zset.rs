@@ -1,5 +1,5 @@
 use crate::storage::store::Store;
-use crate::storage::value::{FyroDB, SmallStr, StoreValue, ZSetData};
+use crate::storage::value::{SmallStr, StoreValue, ZSetData};
 
 /// ZADD modifiers, bundled so the flag set has one name at every call site.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -45,8 +45,7 @@ impl Store {
                let added = z.insert(*s, m);
                out.extend_from_slice(if added { b":1\r\n" } else { b":0\r\n" });
             }
-            val.value = FyroDB::ZSet(Box::new(z));
-            val.expires_ms = 0;
+            *val = StoreValue::zset(z);
             return Ok(());
          }
          match val.value.as_zset_mut() {
@@ -70,13 +69,7 @@ impl Store {
                let added = z.insert(*s, m);
                out.extend_from_slice(if added { b":1\r\n" } else { b":0\r\n" });
             }
-            self.data.insert_str(
-               key,
-               StoreValue {
-                  value: FyroDB::ZSet(Box::new(z)),
-                  expires_ms: 0,
-               },
-            );
+            self.data.insert_str(key, StoreValue::zset(z));
             Ok(())
          }
       }
@@ -107,8 +100,7 @@ impl Store {
             for (s, m) in members {
                flags.push(z.insert(*s, m));
             }
-            val.value = FyroDB::ZSet(Box::new(z));
-            val.expires_ms = 0;
+            *val = StoreValue::zset(z);
             return Ok(flags);
          }
          match val.value.as_zset_mut() {
@@ -132,13 +124,7 @@ impl Store {
             for (s, m) in members {
                flags.push(z.insert(*s, m));
             }
-            self.data.insert_str(
-               key,
-               StoreValue {
-                  value: FyroDB::ZSet(Box::new(z)),
-                  expires_ms: 0,
-               },
-            );
+            self.data.insert_str(key, StoreValue::zset(z));
             Ok(flags)
          }
       }
@@ -167,16 +153,15 @@ impl Store {
       let ZAddOptions { nx, xx, gt, lt, ch } = opts;
       let result = self.data.update_with(key, |val| {
          if val.is_expired() {
-            let mut z = ZSetData::with_capacity(members.len());
-            let mut added = 0;
-            for (score, member) in members {
-               if !xx {
-                  z.insert(*score, member);
-                  added += 1;
-               }
+            if xx {
+               return Ok(0);
             }
-            val.value = FyroDB::ZSet(Box::new(z));
-            val.expires_ms = 0;
+            let mut z = ZSetData::with_capacity(members.len());
+            let added = members
+               .iter()
+               .filter(|(score, member)| z.insert(*score, member))
+               .count();
+            *val = StoreValue::zset(z);
             return Ok(added);
          }
          match val.value.as_zset_mut() {
@@ -185,7 +170,7 @@ impl Store {
                let mut added = 0usize;
                let mut changed = 0usize;
                for (score, member) in members {
-                  if nx || xx || gt || lt {
+                  if nx || xx || gt || lt || ch {
                      // Slow path: need to check existing score for conditional logic
                      let existing = z.get_score(member);
                      match existing {
@@ -204,15 +189,16 @@ impl Store {
                            };
                            if should_update {
                               z.insert(*score, member);
-                              changed += 1;
+                              if z.get_score(member) != Some(old) {
+                                 changed += 1;
+                              }
                            }
                         }
                         None => {
                            if xx {
                               continue;
                            }
-                           z.insert(*score, member);
-                           added += 1;
+                           z.insert(*score, member).then(|| added += 1);
                         }
                      }
                   } else {
@@ -234,16 +220,14 @@ impl Store {
       match result {
          Some(Ok(v)) => Ok(v),
          Some(Err(e)) => Err(e),
+         None if xx => Ok(0),
          None => {
-            if xx {
-               return Ok(0);
-            }
-            let mut z = ZSetData::new();
-            let mut added = 0;
-            for (score, member) in members {
-               z.insert(*score, member);
-               added += 1;
-            }
+            let mut z = ZSetData::with_capacity(members.len());
+            let added = members
+               .iter()
+               .filter(|(score, member)| z.insert(*score, member))
+               .count();
+
             self.data.insert_str(key, StoreValue::zset(z));
             Ok(added)
          }
@@ -261,11 +245,7 @@ impl Store {
          }
       });
 
-      match result {
-         Some(Ok(v)) => Ok(v),
-         Some(Err(e)) => Err(e),
-         None => Ok(0),
-      }
+      result.transpose().map(|v| v.unwrap_or(0))
    }
 
    pub fn zscore(&self, key: &str, member: &str) -> Result<Option<f64>, &'static str> {
@@ -394,8 +374,7 @@ impl Store {
          if val.is_expired() {
             let mut z = ZSetData::new();
             z.insert(increment, member);
-            val.value = FyroDB::ZSet(Box::new(z));
-            val.expires_ms = 0;
+            *val = StoreValue::zset(z);
             return Ok(increment);
          }
          match val.value.as_zset_mut() {
@@ -902,16 +881,7 @@ impl Store {
             None => {}
             Some(e) if e.is_expired() => {}
             Some(e) => match e.value.as_zset() {
-               Some(z) => {
-                  let to_remove: Vec<String> = result
-                     .members()
-                     .filter(|m| z.contains(m))
-                     .map(|m| m.to_string())
-                     .collect();
-                  for m in to_remove {
-                     result.remove(&m);
-                  }
-               }
+               Some(z) => result.retain(|m| !z.contains(m)),
                None => return Err("WRONGTYPE"),
             },
          }

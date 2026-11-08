@@ -1,11 +1,11 @@
-use super::small_str::SmallStr;
+use super::small_str::{SmallStr, SmallStrRef};
 use std::collections::HashMap;
 
 const CHUNK_MAX: usize = 64;
 const INDEX_ON: usize = 128;
 const INDEX_OFF: usize = 64;
 
-type Index = HashMap<SmallStr, f64, foldhash::fast::RandomState>;
+type Index = HashMap<SmallStrRef, f64, foldhash::fast::RandomState>;
 
 #[derive(Clone)]
 pub struct ZSetData {
@@ -198,7 +198,7 @@ impl ZSetData {
       if self.index.is_none() && self.len > INDEX_ON {
          let mut ix = Index::with_capacity_and_hasher(self.len, Default::default());
          for e in self.chunks.iter().flatten() {
-            ix.insert(e.member.clone(), e.score);
+            ix.insert(e.member.clone_as_ref(), e.score);
          }
          self.index = Some(Box::new(ix));
       } else if self.index.is_some() && self.len < INDEX_OFF {
@@ -212,7 +212,7 @@ impl ZSetData {
          member: SmallStr::new(member),
       };
       if let Some(ix) = &mut self.index {
-         ix.insert(entry.member.clone(), score);
+         ix.insert(entry.member.clone_as_ref(), score);
       }
       self.len += 1;
       self.place(entry);
@@ -283,7 +283,7 @@ impl ZSetData {
             return false;
          }
          let m = SmallStr::new(member);
-         ix.insert(m.clone(), score);
+         ix.insert(m.clone_as_ref(), score);
          self.len += 1;
          self.place(ZEntry { score, member: m });
          return true;
@@ -494,10 +494,12 @@ impl ZSetData {
          let lo = start.saturating_sub(r).min(clen);
          let hi = (end - r).min(clen);
          if lo < hi {
-            for e in c.drain(lo..hi) {
-               if let Some(ix) = &mut self.index {
+            if let Some(ix) = &mut self.index {
+               for e in c.drain(lo..hi) {
                   ix.remove(e.member.as_str());
                }
+            } else {
+               c.drain(lo..hi).for_each(drop);
             }
             removed += hi - lo;
          }
@@ -585,6 +587,23 @@ impl ZSetData {
       if let Some(ix) = &mut self.index {
          ix.shrink_to_fit();
       }
+   }
+
+   pub fn retain(&mut self, f: impl Fn(&str) -> bool) {
+      let mut removed = 0;
+      for c in self.chunks.iter_mut() {
+         c.retain(|m| {
+            let retain = f(m.member.as_str());
+            if !retain {
+               removed += 1;
+               if let Some(ix) = &mut self.index {
+                  ix.remove(m.member.as_str());
+               }
+            }
+            retain
+         });
+      }
+      self.finish_bulk_remove(removed);
    }
 }
 
@@ -716,6 +735,68 @@ mod tests {
       assert_eq!(zset.len(), 1000);
       let scores: Vec<f64> = zset.iter().map(|e| e.score).collect();
       assert!(scores.windows(2).all(|w| w[0] <= w[1]));
+   }
+
+   #[test]
+   fn retain_without_removals_preserves_members_and_index() {
+      let mut zset = ZSetData::new();
+      for i in 0..200 {
+         zset.insert(i as f64, &format!("m{i}"));
+      }
+      assert!(zset.index.is_some());
+
+      zset.retain(|_| true);
+
+      assert_eq!(zset.len(), 200);
+      assert_eq!(zset.iter().len(), 200);
+      assert!(zset.index.is_some());
+      assert_eq!(zset.get_score("m199"), Some(199.0));
+   }
+
+   #[test]
+   fn retain_partial_removal_updates_count_index_and_mutations() {
+      let mut zset = ZSetData::new();
+      for i in 0..200 {
+         zset.insert(i as f64, &format!("m{i}"));
+      }
+
+      zset.retain(|member| {
+         member
+            .strip_prefix('m')
+            .and_then(|n| n.parse::<usize>().ok())
+            .is_some_and(|i| i < 50)
+      });
+
+      assert_eq!(zset.len(), 50);
+      assert_eq!(zset.iter().len(), 50);
+      assert!(zset.index.is_none());
+      for i in 0..50 {
+         assert_eq!(zset.get_score(&format!("m{i}")), Some(i as f64));
+      }
+      assert_eq!(zset.get_score("m50"), None);
+
+      assert!(zset.insert(201.0, "new"));
+      assert_eq!(zset.remove("m0"), Some(0.0));
+      assert_eq!(zset.len(), 50);
+      assert_eq!(zset.iter().len(), 50);
+      assert_eq!(zset.get_score("new"), Some(201.0));
+   }
+
+   #[test]
+   fn retain_all_removes_members_and_allows_reuse() {
+      let mut zset = ZSetData::new();
+      for i in 0..200 {
+         zset.insert(i as f64, &format!("m{i}"));
+      }
+
+      zset.retain(|_| false);
+
+      assert_eq!(zset.len(), 0);
+      assert!(zset.is_empty());
+      assert_eq!(zset.iter().len(), 0);
+      assert!(zset.index.is_none());
+      assert!(zset.insert(1.0, "reused"));
+      assert_eq!(zset.get_score("reused"), Some(1.0));
    }
 
    #[test]
