@@ -1,6 +1,5 @@
 use crate::storage::store::Store;
 use crate::utils::resp;
-use crate::utils::util::format_float;
 use crate::{parse_float, parse_int, store_ok, wt};
 
 pub fn hset(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
@@ -123,10 +122,7 @@ pub fn hincrbyfloat(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
       return resp::write_wrong_args(out, "hincrbyfloat");
    };
    let n = parse_float!(out, by);
-   resp::write_bulk(
-      out,
-      &format_float(store_ok!(out, store.hincrbyfloat(key, field, n))),
-   );
+   resp::write_float(out, store_ok!(out, store.hincrbyfloat(key, field, n)));
 }
 
 pub fn hrandfield(parts: &[&str], store: &Store, out: &mut Vec<u8>) {

@@ -891,7 +891,7 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
                .geodist(key, m1, m2, crate::storage::geo::GeoUnit::M)
             {
                Ok(Some(d)) => {
-                  crate::utils::resp::write_bulk(out, &crate::utils::util::format_float(d))
+                  crate::utils::resp::write_float(out, d)
                }
                Ok(None) => crate::utils::resp::write_nil(out),
                Err(e) => crate::utils::resp::write_store_err(out, e),

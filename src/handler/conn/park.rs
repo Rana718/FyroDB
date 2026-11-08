@@ -314,7 +314,7 @@ impl BlockingOp for ZPop {
                resp::write_array_header(out, 3);
                resp::write_bulk(out, k);
                resp::write_bulk(out, &items[0].0);
-               resp::write_bulk(out, &crate::utils::util::format_float(items[0].1));
+               resp::write_float(out, items[0].1);
                return Attempt::Served;
             }
             Ok(_) => {}

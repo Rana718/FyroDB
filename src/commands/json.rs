@@ -1,6 +1,5 @@
 use crate::storage::store::Store;
 use crate::utils::resp;
-use crate::utils::util::format_float;
 use crate::{parse_float, parse_int, wt};
 
 pub fn json_set(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
@@ -70,7 +69,7 @@ pub fn json_numincrby(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
    };
    let by = parse_float!(out, value);
    match store.json_numincrby(key, path, by) {
-      Ok(Some(n)) => resp::write_bulk(out, &format_float(n)),
+      Ok(Some(n)) => resp::write_float(out, n),
       Ok(None) => resp::write_nil(out),
       Err(e) => resp::write_store_err(out, e),
    }
@@ -82,7 +81,7 @@ pub fn json_nummultby(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
    };
    let by = parse_float!(out, value);
    match store.json_nummultby(key, path, by) {
-      Ok(Some(n)) => resp::write_bulk(out, &format_float(n)),
+      Ok(Some(n)) => resp::write_float(out, n),
       Ok(None) => resp::write_nil(out),
       Err(e) => resp::write_store_err(out, e),
    }

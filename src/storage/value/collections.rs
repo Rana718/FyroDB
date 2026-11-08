@@ -77,6 +77,14 @@ impl HashInner {
    }
 
    #[inline]
+   pub fn get_mut(&mut self, field: &str) -> Option<&mut SmallStr> {
+      match self {
+         Self::Compact(v) => compact_find(v, field).ok().map(|i| &mut v[i * 2 + 1]),
+         Self::Full(m) => m.get_mut(field),
+      }
+   }
+
+   #[inline]
    pub fn insert(&mut self, field: String, value: String) -> bool {
       self.insert_small(SmallStr::from_string(field), SmallStr::from_string(value))
    }
@@ -308,11 +316,7 @@ impl SetInner {
                }
             } else {
                let mut strings = Vec::with_capacity(v.len() + 1);
-               strings.extend(v.drain(..).map(|n| {
-                  let mut buf = [0u8; 20];
-                  let s = crate::storage::value::write_int_to(&mut buf, n);
-                  SmallStr::new(s)
-               }));
+               strings.extend(v.drain(..).map(SmallStr::from_int));
                strings.push(member);
                strings.sort_by(|a, b| a.as_str().cmp(b.as_str()));
                *self = Self::Compact(strings);

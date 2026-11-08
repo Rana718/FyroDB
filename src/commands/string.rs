@@ -3,7 +3,6 @@ use crate::storage::{
    value::{SmallStr, StoreValue, expiry_from_ms, expiry_from_secs},
 };
 use crate::utils::resp;
-use crate::utils::util::format_float;
 use crate::{parse_float, parse_int, store_ok, wt};
 
 pub fn set(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
@@ -322,10 +321,7 @@ pub fn incrbyfloat(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
       return resp::write_wrong_args(out, "incrbyfloat");
    };
    let n = parse_float!(out, by);
-   resp::write_bulk(
-      out,
-      &format_float(store_ok!(out, store.incrbyfloat(key, n))),
-   );
+   resp::write_float(out, store_ok!(out, store.incrbyfloat(key, n)));
 }
 
 pub fn append(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
