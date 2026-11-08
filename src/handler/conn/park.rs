@@ -69,6 +69,28 @@ pub fn take_expired(now: Instant, out: &mut Vec<(usize, u64)>) {
    });
 }
 
+/// Pop every expired deadline into `out`. Fast check avoids clock_gettime when
+/// no timers exist or earliest has not fired.
+pub fn take_expired_into(out: &mut Vec<(usize, u64)>) {
+   TIMERS.with(|t| {
+      let mut t = t.borrow_mut();
+      let Some(Reverse((d, ..))) = t.peek() else {
+         return;
+      };
+      let now = Instant::now();
+      if *d > now {
+         return;
+      }
+      while let Some(Reverse((d, token, uid))) = t.peek().copied() {
+         if d > now {
+            break;
+         }
+         t.pop();
+         out.push((token, uid));
+      }
+   });
+}
+
 /// Sends an error reply if a job is dropped without completing (panic
 /// inside the job), so its connection can never stay parked forever.
 struct ReplyGuard {

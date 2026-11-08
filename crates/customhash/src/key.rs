@@ -41,7 +41,9 @@ impl CompactKey {
    #[inline]
    fn store_heap_len(data: &mut [u8; INLINE_CAP], len: usize) {
       let lb = (len as u64).to_le_bytes();
-      data[8..15].copy_from_slice(&lb[..7]);
+      unsafe {
+         std::ptr::copy_nonoverlapping(lb.as_ptr(), data.as_mut_ptr().add(8), 7);
+      }
    }
 
    #[inline(always)]
@@ -55,7 +57,9 @@ impl CompactKey {
    pub(crate) fn from_string(s: String) -> Self {
       if s.len() <= INLINE_CAP {
          let mut data = [0u8; INLINE_CAP];
-         data[..s.len()].copy_from_slice(s.as_bytes());
+         unsafe {
+            std::ptr::copy_nonoverlapping(s.as_bytes().as_ptr(), data.as_mut_ptr(), s.len());
+         }
          Self {
             data,
             tag: Tag::inline(s.len()),
@@ -63,8 +67,9 @@ impl CompactKey {
       } else {
          let ptr = Box::into_raw(s.into_boxed_str());
          let mut data = [0u8; INLINE_CAP];
-         let addr = (ptr as *const u8 as usize).to_ne_bytes();
-         data[..8].copy_from_slice(&addr);
+         unsafe {
+            std::ptr::write_unaligned(data.as_mut_ptr().cast::<usize>(), ptr as *const u8 as usize);
+         }
          Self::store_heap_len(&mut data, unsafe { &*ptr }.len());
          Self {
             data,
@@ -178,7 +183,7 @@ impl CompactKey {
 impl Drop for CompactKey {
    fn drop(&mut self) {
       if self.tag == Tag::Heap {
-         let ptr_val = usize::from_ne_bytes(self.data[..8].try_into().unwrap());
+         let ptr_val = unsafe { std::ptr::read_unaligned(self.data.as_ptr().cast::<usize>()) };
          let len_val = Self::read_heap_len(&self.data);
          unsafe {
             drop(Box::from_raw(

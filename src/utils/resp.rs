@@ -136,13 +136,16 @@ pub fn write_bulk_bytes(out: &mut Vec<u8>, s: &[u8]) {
       unsafe {
          let p = out.as_mut_ptr().add(old_len);
          *p = b'$';
-         *p.add(1) = b'0' + (len / 10) as u8;
-         *p.add(2) = b'0' + (len % 10) as u8;
-         *p.add(3) = b'\r';
-         *p.add(4) = b'\n';
+         let d_idx = len * 2;
+         *p.add(1) = DIGITS100[d_idx];
+         *p.add(2) = DIGITS100[d_idx + 1];
+         p.add(3)
+            .cast::<u16>()
+            .write_unaligned(u16::from_ne_bytes(*b"\r\n"));
          std::ptr::copy_nonoverlapping(s.as_ptr(), p.add(5), len);
-         *p.add(5 + len) = b'\r';
-         *p.add(6 + len) = b'\n';
+         p.add(5 + len)
+            .cast::<u16>()
+            .write_unaligned(u16::from_ne_bytes(*b"\r\n"));
          out.set_len(old_len + total);
       }
       return;
