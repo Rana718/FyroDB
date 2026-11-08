@@ -367,14 +367,14 @@ impl Store {
       let add_result = self.data.update_with(dst, |val| {
          if val.is_expired() {
             let mut set = SetInner::new();
-            set.insert(member.to_string());
+            set.insert_str(member);
             val.value = FyroDB::Set(Box::new(set));
             val.expires_ms = 0;
             return Ok(());
          }
          match val.value.as_set_mut() {
             Some(s) => {
-               s.insert(member.to_string());
+               s.insert_str(member);
                Ok(())
             }
             None => Err("WRONGTYPE"),
@@ -385,9 +385,15 @@ impl Store {
          Some(Ok(())) => Ok(true),
          Some(Err(e)) => Err(e),
          None => {
-            let mut s = HashSet::new();
-            s.insert(member.to_string());
-            self.data.insert(dst.to_string(), StoreValue::set(s));
+            let mut set = SetInner::new();
+            set.insert_str(member);
+            self.data.insert_str(
+               dst,
+               StoreValue {
+                  value: FyroDB::Set(Box::new(set)),
+                  expires_ms: 0,
+               },
+            );
             Ok(true)
          }
       }
@@ -477,7 +483,7 @@ impl Store {
       let members = self.sunion(keys)?;
       let count = members.len();
       let s: HashSet<String> = members.into_iter().collect();
-      self.data.insert(dst.to_string(), StoreValue::set(s));
+      self.data.insert_str(dst, StoreValue::set(s));
       Ok(count)
    }
 
@@ -485,7 +491,7 @@ impl Store {
       let members = self.sinter(keys)?;
       let count = members.len();
       let s: HashSet<String> = members.into_iter().collect();
-      self.data.insert(dst.to_string(), StoreValue::set(s));
+      self.data.insert_str(dst, StoreValue::set(s));
       Ok(count)
    }
 
@@ -493,7 +499,7 @@ impl Store {
       let members = self.sdiff(keys)?;
       let count = members.len();
       let s: HashSet<String> = members.into_iter().collect();
-      self.data.insert(dst.to_string(), StoreValue::set(s));
+      self.data.insert_str(dst, StoreValue::set(s));
       Ok(count)
    }
 

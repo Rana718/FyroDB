@@ -444,6 +444,13 @@ impl std::borrow::Borrow<str> for SmallStr {
    }
 }
 
+impl AsRef<str> for SmallStr {
+   #[inline(always)]
+   fn as_ref(&self) -> &str {
+      self.as_str()
+   }
+}
+
 impl PartialEq<str> for SmallStr {
    fn eq(&self, other: &str) -> bool {
       self.as_str() == other
@@ -453,6 +460,27 @@ impl PartialEq<str> for SmallStr {
 impl PartialEq<&str> for SmallStr {
    fn eq(&self, other: &&str) -> bool {
       self.as_str() == *other
+   }
+}
+
+impl PartialEq<String> for SmallStr {
+   #[inline]
+   fn eq(&self, other: &String) -> bool {
+      self.as_str() == other.as_str()
+   }
+}
+
+impl PartialEq<SmallStr> for String {
+   #[inline]
+   fn eq(&self, other: &SmallStr) -> bool {
+      self.as_str() == other.as_str()
+   }
+}
+
+impl PartialEq<SmallStr> for &str {
+   #[inline]
+   fn eq(&self, other: &SmallStr) -> bool {
+      *self == other.as_str()
    }
 }
 

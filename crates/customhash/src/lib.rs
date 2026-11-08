@@ -801,6 +801,22 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
    }
 
    #[inline]
+   pub fn try_insert_str(&self, key: &str, value: V) -> Result<bool, Full> {
+      if self.is_full() {
+         let (h, idx) = self.locate(key);
+         let exists = ebr::with_pin(|_| {
+            unsafe { self.shards.get_unchecked(idx) }
+               .find(key, h)
+               .is_some_and(|e| state_occupied(&e.state, Ordering::Acquire))
+         });
+         if !exists {
+            return Err(Full);
+         }
+      }
+      Ok(self.insert_str(key, value))
+   }
+
+   #[inline]
    pub fn set(&self, key: &str, value: V, key_owned: impl FnOnce() -> String) -> bool {
       self.set_compact(key, value, || CompactKey::from_string(key_owned()))
    }

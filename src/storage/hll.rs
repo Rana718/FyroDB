@@ -130,7 +130,7 @@ impl Store {
                }
             }
             let encoded = encode_hll(&hll);
-            val.value = FyroDB::String(SmallStr::from_string(encoded));
+            val.value = FyroDB::String(encoded);
             val.expires_ms = 0;
             return Ok(changed);
          }
@@ -156,7 +156,7 @@ impl Store {
                   }
                }
                if changed {
-                  *s = SmallStr::from_string(encode_hll(&hll));
+                  *s = encode_hll(&hll);
                }
                Ok(changed)
             }
@@ -175,7 +175,7 @@ impl Store {
                }
             }
             let encoded = encode_hll(&hll);
-            self.data.insert_str(key, StoreValue::string(encoded));
+            self.data.insert_str(key, StoreValue::string_small(encoded));
             Ok(changed)
          }
       }
@@ -224,7 +224,7 @@ impl Store {
             let flags = apply(&mut encoded);
             self.data.insert_str(
                key,
-               StoreValue::string(unsafe { String::from_utf8_unchecked(encoded) }),
+               StoreValue::string_small(SmallStr::from_bytes(encoded)),
             );
             Ok(flags)
          }
@@ -281,16 +281,16 @@ impl Store {
       let encoded = encode_hll(&merged);
       self
          .data
-         .insert(dest.to_string(), StoreValue::string(encoded));
+         .insert_str(dest, StoreValue::string_small(encoded));
       Ok(())
    }
 }
 
-fn encode_hll(hll: &HllData) -> String {
+fn encode_hll(hll: &HllData) -> SmallStr {
    let mut out = Vec::with_capacity(HLL_ENCODED_LEN);
    out.extend_from_slice(b"HLL\x01");
    out.extend_from_slice(&hll.registers);
-   unsafe { String::from_utf8_unchecked(out) }
+   SmallStr::from_bytes(out)
 }
 
 /// True when `data` is a well-formed `HLL\x01` register buffer that can be

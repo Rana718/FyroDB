@@ -54,18 +54,18 @@ fn hirschberg(a: &[u8], b: &[u8], out: &mut Vec<u8>) {
 }
 
 impl Store {
-   pub fn set(&self, key: String, value: StoreValue) {
+   pub fn set(&self, key: &str, value: StoreValue) {
       if value.expires_ms != 0 {
          self.add_ttl();
       }
-      self.data.insert(key, value);
+      self.data.insert_str(key, value);
    }
 
-   pub fn try_set_value(&self, key: String, value: StoreValue) -> Result<(), Full> {
+   pub fn try_set_value(&self, key: &str, value: StoreValue) -> Result<(), Full> {
       if value.expires_ms != 0 {
          self.add_ttl();
       }
-      self.data.try_insert(key, value)?;
+      self.data.try_set_str(key, value)?;
       Ok(())
    }
 
@@ -432,20 +432,23 @@ impl Store {
       matched.unwrap_or(false)
    }
 
-   pub fn getdel(&self, key: &str) -> Option<String> {
+   pub fn getdel(&self, key: &str) -> Option<SmallStr> {
       let entry = self.data.remove(key)?;
       if entry.is_expired() {
          return None;
       }
-      entry.value.as_string().map(|s| s.to_string())
+      match entry.value {
+         crate::storage::value::FyroDB::String(s) => Some(s),
+         _ => None,
+      }
    }
 
-   pub fn getset(&self, key: &str, new_value: &str) -> Option<String> {
+   pub fn getset(&self, key: &str, new_value: &str) -> Option<SmallStr> {
       let result = self.data.update_with(key, |val| {
          let old = if val.is_expired() {
             None
          } else {
-            val.value.as_string().map(|s| s.to_string())
+            val.value.as_string().cloned()
          };
          val.value = crate::storage::value::FyroDB::String(SmallStr::new(new_value));
          val.expires_ms = 0;
@@ -456,18 +459,18 @@ impl Store {
          None => {
             self
                .data
-               .insert_str(key, StoreValue::string(new_value.to_string()));
+               .insert_str(key, StoreValue::string_small(SmallStr::new(new_value)));
             None
          }
       }
    }
 
-   pub fn getex_ms(&self, key: &str, expires_ms: u64) -> Option<String> {
+   pub fn getex_ms(&self, key: &str, expires_ms: u64) -> Option<SmallStr> {
       let (result, ttl_change) = self.data.update_with(key, |val| {
          if val.is_expired() {
             return (None, 0i8);
          }
-         let Some(s) = val.value.as_string().map(|s| s.to_string()) else {
+         let Some(s) = val.value.as_string().cloned() else {
             return (None, 0);
          };
          let ttl_change = match (val.expires_ms == 0, expires_ms == 0) {
@@ -554,6 +557,55 @@ impl Store {
       }
    }
 
+   pub fn getrange_to_buf(&self, key: &str, start: i64, end: i64, out: &mut Vec<u8>) -> bool {
+      let entry = match self.data.get_ref(key) {
+         Some(e) if !e.is_expired() => e,
+         _ => {
+            crate::utils::resp::write_bulk(out, "");
+            return true;
+         }
+      };
+      let s = match entry.value.as_string() {
+         Some(s) => s,
+         None => {
+            crate::utils::resp::write_bulk(out, "");
+            return true;
+         }
+      };
+
+      let len = s.len() as i64;
+      if len == 0 {
+         crate::utils::resp::write_bulk(out, "");
+         return true;
+      }
+
+      let mut start = if start < 0 {
+         (len + start).max(0)
+      } else {
+         start.min(len)
+      } as usize;
+      let mut end = if end < 0 {
+         (len + end).max(0)
+      } else {
+         end.min(len - 1)
+      } as usize;
+
+      if start > end {
+         crate::utils::resp::write_bulk(out, "");
+         return true;
+      }
+
+      while start > 0 && !s.is_char_boundary(start) {
+         start -= 1;
+      }
+      end += 1;
+      while end < s.len() && !s.is_char_boundary(end) {
+         end += 1;
+      }
+      crate::utils::resp::write_bulk(out, &s[start..end]);
+      true
+   }
+
    pub fn getrange(&self, key: &str, start: i64, end: i64) -> String {
       let entry = match self.data.get_ref(key) {
          Some(e) if !e.is_expired() => e,
@@ -611,19 +663,13 @@ impl Store {
                   bytes.resize(needed, 0u8);
                }
                bytes[offset..offset + value.len()].copy_from_slice(value.as_bytes());
-               match String::from_utf8(bytes) {
-                  Ok(new_s) => {
-                     let len = new_s.len();
-                     *s = SmallStr::from_string(new_s);
-                     Ok(len)
-                  }
-                  Err(e) => {
-                     *s = SmallStr::from_string(unsafe {
-                        String::from_utf8_unchecked(e.into_bytes())
-                     });
-                     Err("result would not be valid UTF-8")
-                  }
+               if std::str::from_utf8(&bytes).is_err() {
+                  *s = SmallStr::from_bytes(bytes);
+                  return Err("result would not be valid UTF-8");
                }
+               let len = bytes.len();
+               *s = SmallStr::from_bytes(bytes);
+               Ok(len)
             }
             None => Err("WRONGTYPE"),
          });
@@ -633,14 +679,14 @@ impl Store {
          None => {
             let mut bytes = vec![0u8; needed];
             bytes[offset..].copy_from_slice(value.as_bytes());
-            let new_s = match String::from_utf8(bytes) {
-               Ok(s) => s,
-               Err(_) => return Err("result would not be valid UTF-8"),
-            };
-            let len = new_s.len();
+            if std::str::from_utf8(&bytes).is_err() {
+               return Err("result would not be valid UTF-8");
+            }
+            let len = bytes.len();
+            let new_str = SmallStr::from_bytes(bytes);
             if self
                .data
-               .insert_if_absent(key.to_string(), StoreValue::string(new_s))
+               .insert_if_absent_str(key, StoreValue::string_small(new_str))
             {
                Ok(len)
             } else {
@@ -740,19 +786,22 @@ impl Store {
 
 impl Store {
    pub fn lcs(&self, key1: &str, key2: &str) -> Result<String, &'static str> {
-      let s1 = match self.data.get_ref(key1) {
-         None => String::new(),
-         Some(e) if e.is_expired() => String::new(),
+      let ref1 = self.data.get_ref(key1);
+      let ref2 = self.data.get_ref(key2);
+
+      let s1 = match ref1.as_deref() {
+         None => "",
+         Some(e) if e.is_expired() => "",
          Some(e) => match e.value.as_string() {
-            Some(s) => s.to_string(),
+            Some(s) => s.as_str(),
             None => return Err("WRONGTYPE"),
          },
       };
-      let s2 = match self.data.get_ref(key2) {
-         None => String::new(),
-         Some(e) if e.is_expired() => String::new(),
+      let s2 = match ref2.as_deref() {
+         None => "",
+         Some(e) if e.is_expired() => "",
          Some(e) => match e.value.as_string() {
-            Some(s) => s.to_string(),
+            Some(s) => s.as_str(),
             None => return Err("WRONGTYPE"),
          },
       };

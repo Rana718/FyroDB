@@ -279,6 +279,29 @@ impl StoreValue {
    }
 
    #[inline]
+   pub fn string_str(s: &str) -> Self {
+      Self {
+         value: FyroDB::String(SmallStr::new(s)),
+         expires_ms: 0,
+      }
+   }
+
+   #[inline]
+   pub fn string_str_with_expiry(s: &str, expires_at: Option<std::time::Instant>) -> Self {
+      let expires_ms = match expires_at {
+         None => 0,
+         Some(exp) => {
+            let remaining = exp.saturating_duration_since(std::time::Instant::now());
+            now_ms().saturating_add(remaining.as_millis() as u64)
+         }
+      };
+      Self {
+         value: FyroDB::String(SmallStr::new(s)),
+         expires_ms,
+      }
+   }
+
+   #[inline]
    pub fn string_with_expiry(s: String, expires_at: Option<std::time::Instant>) -> Self {
       let expires_ms = match expires_at {
          None => 0,

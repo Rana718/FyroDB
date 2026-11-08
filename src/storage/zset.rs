@@ -680,7 +680,7 @@ impl Store {
          }
       }
       let count = result.len();
-      self.data.insert(dst.to_string(), StoreValue::zset(result));
+      self.data.insert_str(dst, StoreValue::zset(result));
       Ok(count)
    }
 
@@ -694,7 +694,7 @@ impl Store {
       if keys.is_empty() {
          self
             .data
-            .insert(dst.to_string(), StoreValue::zset(ZSetData::new()));
+            .insert_str(dst, StoreValue::zset(ZSetData::new()));
          return Ok(0);
       }
       // Collect first set's members without cloning the full ZSetData.
@@ -702,13 +702,13 @@ impl Store {
          None => {
             self
                .data
-               .insert(dst.to_string(), StoreValue::zset(ZSetData::new()));
+               .insert_str(dst, StoreValue::zset(ZSetData::new()));
             return Ok(0);
          }
          Some(e) if e.is_expired() => {
             self
                .data
-               .insert(dst.to_string(), StoreValue::zset(ZSetData::new()));
+               .insert_str(dst, StoreValue::zset(ZSetData::new()));
             return Ok(0);
          }
          Some(e) => match e.value.as_zset() {
@@ -733,13 +733,13 @@ impl Store {
             None => {
                self
                   .data
-                  .insert(dst.to_string(), StoreValue::zset(ZSetData::new()));
+                  .insert_str(dst, StoreValue::zset(ZSetData::new()));
                return Ok(0);
             }
             Some(e) if e.is_expired() => {
                self
                   .data
-                  .insert(dst.to_string(), StoreValue::zset(ZSetData::new()));
+                  .insert_str(dst, StoreValue::zset(ZSetData::new()));
                return Ok(0);
             }
             Some(e) => match e.value.as_zset() {
@@ -766,7 +766,7 @@ impl Store {
       }
 
       let count = result.len();
-      self.data.insert(dst.to_string(), StoreValue::zset(result));
+      self.data.insert_str(dst, StoreValue::zset(result));
       Ok(count)
    }
 
@@ -922,7 +922,7 @@ impl Store {
          z.insert(*score, member.as_str());
       }
       let count = z.len();
-      self.data.insert(dst.to_string(), StoreValue::zset(z));
+      self.data.insert_str(dst, StoreValue::zset(z));
       Ok(count)
    }
 

@@ -8,14 +8,14 @@ pub fn store() -> Arc<Store> {
 }
 
 pub fn set_str(s: &Store, key: &str, val: &str) {
-   s.set(key.to_string(), StoreValue::string(val.to_string()));
+   s.set(key, StoreValue::string_str(val));
 }
 
 pub fn set_expiring(s: &Store, key: &str, val: &str, secs: u64) {
    s.set(
-      key.to_string(),
-      StoreValue::string_with_expiry(
-         val.to_string(),
+      key,
+      StoreValue::string_str_with_expiry(
+         val,
          Some(Instant::now() + Duration::from_secs(secs)),
       ),
    );
@@ -23,7 +23,7 @@ pub fn set_expiring(s: &Store, key: &str, val: &str, secs: u64) {
 
 pub fn set_expired(s: &Store, key: &str, val: &str) {
    s.set(
-      key.to_string(),
-      StoreValue::string_with_expiry(val.to_string(), Some(Instant::now())),
+      key,
+      StoreValue::string_str_with_expiry(val, Some(Instant::now())),
    );
 }

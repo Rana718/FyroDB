@@ -370,11 +370,11 @@ mod tests {
       let expires_at = Some(Instant::now() + Duration::from_secs(60));
 
       store.set(
-         "key".to_owned(),
+         "key",
          StoreValue::string_with_expiry("one".to_owned(), expires_at),
       );
       store.set(
-         "key".to_owned(),
+         "key",
          StoreValue::string_with_expiry("two".to_owned(), expires_at),
       );
       assert_eq!(store.ttl_live(), 2);
@@ -408,12 +408,12 @@ mod tests {
    #[test]
    fn getex_updates_ttl_accounting() {
       let store = Store::with_config(1, 16);
-      store.set("key".to_owned(), StoreValue::string("value".to_owned()));
+      store.set("key", StoreValue::string_str("value"));
 
-      assert_eq!(store.getex_ms("key", u64::MAX), Some("value".to_owned()));
+      assert_eq!(store.getex_ms("key", u64::MAX).as_deref(), Some("value"));
       assert!(store.has_ttl_keys());
 
-      assert_eq!(store.getex_ms("key", 0), Some("value".to_owned()));
+      assert_eq!(store.getex_ms("key", 0).as_deref(), Some("value"));
       assert!(!store.has_ttl_keys());
    }
 

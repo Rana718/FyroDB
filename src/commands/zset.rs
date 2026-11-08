@@ -543,7 +543,7 @@ pub fn zrangestore(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
    let count = z.len();
    store
       .data
-      .insert(dst.to_string(), crate::storage::value::StoreValue::zset(z));
+      .insert_str(dst, crate::storage::value::StoreValue::zset(z));
    resp::write_integer(out, count as i64);
 }
 
