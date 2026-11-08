@@ -191,34 +191,60 @@ struct PortalEntry {
    cached_encoded: Option<Arc<EncodedResult>>,
 }
 
+#[derive(Clone)]
+struct HotQuerySlot {
+   fp: u64,
+   parsed: Arc<ParsedQuery>,
+   encoded: Option<Arc<EncodedResult>>,
+}
+
 struct ActiveState {
    mgr: Arc<DbCacheManager>,
    config: Arc<DbCacheConfig>,
    in_transaction: bool,
    transaction_failed: bool,
    transaction_writes: Vec<String>,
+   unnamed_stmt: Option<StmtEntry>,
+   unnamed_portal: Option<PortalEntry>,
    statements: HashMap<String, StmtEntry, FixedState>,
    portals: HashMap<String, PortalEntry, FixedState>,
    cycle_error: bool,
-   hot_sql_fp: u64,
-   hot_parsed: Option<Arc<ParsedQuery>>,
-   hot_encoded: Option<Arc<EncodedResult>>,
+   hot_slots: [Option<HotQuerySlot>; 8],
 }
 
 impl ActiveState {
    fn new(mgr: Arc<DbCacheManager>, config: Arc<DbCacheConfig>) -> Self {
+      const NONE_SLOT: Option<HotQuerySlot> = None;
       Self {
          mgr,
          config,
          in_transaction: false,
          transaction_failed: false,
          transaction_writes: Vec::new(),
+         unnamed_stmt: None,
+         unnamed_portal: None,
          statements: HashMap::with_hasher(FixedState::with_seed(0)),
          portals: HashMap::with_hasher(FixedState::with_seed(0)),
          cycle_error: false,
-         hot_sql_fp: 0,
-         hot_parsed: None,
-         hot_encoded: None,
+         hot_slots: [NONE_SLOT; 8],
+      }
+   }
+
+   #[inline]
+   fn get_statement(&self, name: &str) -> Option<&StmtEntry> {
+      if name.is_empty() {
+         self.unnamed_stmt.as_ref()
+      } else {
+         self.statements.get(name)
+      }
+   }
+
+   #[inline]
+   fn get_portal_mut(&mut self, name: &str) -> Option<&mut PortalEntry> {
+      if name.is_empty() {
+         self.unnamed_portal.as_mut()
+      } else {
+         self.portals.get_mut(name)
       }
    }
 
@@ -267,6 +293,7 @@ impl ActiveState {
       None
    }
 
+   #[inline]
    fn queue_ready(&self, out: &mut Vec<u8>) {
       let status = if self.transaction_failed {
          b'E'
@@ -275,7 +302,7 @@ impl ActiveState {
       } else {
          b'I'
       };
-      out.extend_from_slice(&protocol::encode_ready(status));
+      protocol::put_ready_for_query(out, status);
    }
 
    fn queue_error(&mut self, out: &mut Vec<u8>, code: &str, msg: &str) {
@@ -297,9 +324,12 @@ impl ActiveState {
       }
 
       let sql_fp = compute_fingerprint(sql);
-      if self.hot_sql_fp == sql_fp
-         && !self.in_transaction
-         && let Some(entry) = &self.hot_encoded
+      let slot_idx = (sql_fp as usize) & 7;
+
+      if !self.in_transaction
+         && let Some(slot) = &self.hot_slots[slot_idx]
+         && slot.fp == sql_fp
+         && let Some(entry) = &slot.encoded
       {
          let now = coarse_now_ms();
          if !entry.is_expired(now) {
@@ -308,14 +338,12 @@ impl ActiveState {
          }
       }
 
-      let parsed = match &self.hot_parsed {
-         Some(p) if self.hot_sql_fp == sql_fp => Arc::clone(p),
-         _ => {
-            let p = self.mgr.analyze(sql);
-            self.hot_sql_fp = sql_fp;
-            self.hot_parsed = Some(Arc::clone(&p));
-            p
-         }
+      let parsed = if let Some(slot) = &self.hot_slots[slot_idx]
+         && slot.fp == sql_fp
+      {
+         Arc::clone(&slot.parsed)
+      } else {
+         self.mgr.analyze(sql)
       };
 
       match parsed.kind {
@@ -343,12 +371,21 @@ impl ActiveState {
 
       if cacheable {
          if let Some(entry) = self.lookup_encoded(&parsed, fp) {
-            self.hot_encoded = Some(Arc::clone(&entry));
+            self.hot_slots[slot_idx] = Some(HotQuerySlot {
+               fp: sql_fp,
+               parsed: Arc::clone(&parsed),
+               encoded: Some(Arc::clone(&entry)),
+            });
             entry.write_simple_response(out);
             return true;
          }
          if let Some(result) = self.lookup_json_and_promote(&parsed, fp) {
             if let Some(entry) = self.lookup_encoded(&parsed, fp) {
+               self.hot_slots[slot_idx] = Some(HotQuerySlot {
+                  fp: sql_fp,
+                  parsed: Arc::clone(&parsed),
+                  encoded: Some(Arc::clone(&entry)),
+               });
                entry.write_simple_response(out);
                return true;
             }
@@ -373,7 +410,12 @@ impl ActiveState {
                QueryKind::Rollback => "ROLLBACK",
                _ => "SET",
             };
-            out.extend_from_slice(&protocol::encode_command_complete(tag));
+            protocol::put_command_complete(out, tag);
+            self.hot_slots[slot_idx] = Some(HotQuerySlot {
+               fp: sql_fp,
+               parsed: Arc::clone(&parsed),
+               encoded: None,
+            });
          }
          _ => {
             self.queue_error(
@@ -420,16 +462,19 @@ impl ActiveState {
 
       let parsed = self.mgr.analyze(sql);
 
-      self.statements.insert(
-         name.to_string(),
-         StmtEntry {
-            sql: sql.to_string(),
-            param_oids,
-            parsed,
-            parse_frame: Vec::new(),
-            row_description: None,
-         },
-      );
+      let entry = StmtEntry {
+         sql: sql.to_string(),
+         param_oids,
+         parsed,
+         parse_frame: Vec::new(),
+         row_description: None,
+      };
+
+      if name.is_empty() {
+         self.unnamed_stmt = Some(entry);
+      } else {
+         self.statements.insert(name.to_string(), entry);
+      }
 
       protocol::put_parse_complete(out);
       true
@@ -452,9 +497,9 @@ impl ActiveState {
       }
 
       // Fast path: repeated bind on the same portal with valid cached entry
-      if let Some(entry) = self.portals.get_mut(portal)
+      if !self.in_transaction
+         && let Some(entry) = self.get_portal_mut(portal)
          && entry.statement == statement
-         && !self.in_transaction
          && let Some(ref cached) = entry.cached_encoded
       {
          let now = coarse_now_ms();
@@ -466,7 +511,7 @@ impl ActiveState {
          }
       }
 
-      let Some(stmt) = self.statements.get(statement) else {
+      let Some(stmt) = self.get_statement(statement) else {
          self.queue_error(out, "26000", "prepared statement does not exist");
          self.cycle_error = true;
          return true;
@@ -572,7 +617,29 @@ impl ActiveState {
          None
       };
 
-      if let Some(entry) = self.portals.get_mut(portal) {
+      if portal.is_empty() {
+         if let Some(entry) = &mut self.unnamed_portal {
+            entry.statement.clear();
+            entry.statement.push_str(statement);
+            entry.parsed = parsed;
+            entry.fingerprint = base_fp;
+            entry.text_results = text_results;
+            entry.cursor = 0;
+            entry.finished = false;
+            entry.cached_encoded = cached_encoded;
+         } else {
+            self.unnamed_portal = Some(PortalEntry {
+               statement: statement.to_string(),
+               parsed,
+               fingerprint: base_fp,
+               text_results,
+               bind_frame: Vec::new(),
+               cursor: 0,
+               finished: false,
+               cached_encoded,
+            });
+         }
+      } else if let Some(entry) = self.portals.get_mut(portal) {
          entry.statement.clear();
          entry.statement.push_str(statement);
          entry.parsed = parsed;
@@ -614,7 +681,7 @@ impl ActiveState {
          0
       };
 
-      let Some(portal) = self.portals.get_mut(portal_name) else {
+      let Some(portal) = self.get_portal_mut(portal_name) else {
          self.queue_error(out, "34000", "portal does not exist");
          self.cycle_error = true;
          return true;
@@ -648,19 +715,19 @@ impl ActiveState {
 
       if cacheable {
          if let Some(entry) = self.lookup_encoded(&parsed, fp) {
-            let portal_mut = self.portals.get_mut(portal_name).unwrap();
+            let portal_mut = self.get_portal_mut(portal_name).unwrap();
             serve_encoded_from_portal(out, portal_mut, &entry, max_rows);
             return true;
          }
          if let Some(result) = self.lookup_json_and_promote(&parsed, fp) {
             if let Some(entry) = self.lookup_encoded(&parsed, fp) {
-               let portal_mut = self.portals.get_mut(portal_name).unwrap();
+               let portal_mut = self.get_portal_mut(portal_name).unwrap();
                serve_encoded_from_portal(out, portal_mut, &entry, max_rows);
                return true;
             }
             let tag = format!("SELECT {}", result.rows.len());
             let _ = protocol::write_result_set(out, &result, &tag);
-            if let Some(p) = self.portals.get_mut(portal_name) {
+            if let Some(p) = self.get_portal_mut(portal_name) {
                p.finished = true;
             }
             return true;
@@ -677,8 +744,8 @@ impl ActiveState {
          QueryKind::Begin => {
             self.in_transaction = true;
             self.transaction_writes.clear();
-            out.extend_from_slice(&protocol::encode_command_complete("BEGIN"));
-            if let Some(p) = self.portals.get_mut(portal_name) {
+            protocol::put_command_complete(out, "BEGIN");
+            if let Some(p) = self.get_portal_mut(portal_name) {
                p.finished = true;
             }
          }
@@ -686,8 +753,8 @@ impl ActiveState {
             self.in_transaction = false;
             self.transaction_failed = false;
             self.transaction_writes.clear();
-            out.extend_from_slice(&protocol::encode_command_complete("COMMIT"));
-            if let Some(p) = self.portals.get_mut(portal_name) {
+            protocol::put_command_complete(out, "COMMIT");
+            if let Some(p) = self.get_portal_mut(portal_name) {
                p.finished = true;
             }
          }
@@ -695,8 +762,8 @@ impl ActiveState {
             self.in_transaction = false;
             self.transaction_failed = false;
             self.transaction_writes.clear();
-            out.extend_from_slice(&protocol::encode_command_complete("ROLLBACK"));
-            if let Some(p) = self.portals.get_mut(portal_name) {
+            protocol::put_command_complete(out, "ROLLBACK");
+            if let Some(p) = self.get_portal_mut(portal_name) {
                p.finished = true;
             }
          }
@@ -723,20 +790,19 @@ impl ActiveState {
       }
       let kind = body[0];
       let mut pos = 1usize;
-      let name = take_cstr(body, &mut pos).unwrap_or("").to_string();
+      let name = take_cstr(body, &mut pos).unwrap_or("");
 
       match kind {
          b'S' => {
-            let Some(stmt) = self.statements.get(&name) else {
+            let Some(stmt) = self.get_statement(name) else {
                self.queue_error(out, "26000", "prepared statement does not exist");
                self.cycle_error = true;
                return;
             };
-            let oids = stmt.param_oids.clone();
-            let rd = stmt.row_description.clone();
-            protocol::put_parameter_description(out, &oids);
-            if let Some(row_desc) = rd {
-               out.extend_from_slice(&row_desc);
+            let oids = &stmt.param_oids;
+            protocol::put_parameter_description(out, oids);
+            if let Some(row_desc) = &stmt.row_description {
+               out.extend_from_slice(row_desc);
             } else {
                protocol::put_no_data(out);
             }
@@ -759,14 +825,32 @@ impl ActiveState {
       }
       let kind = body[0];
       let mut pos = 1usize;
-      let name = take_cstr(body, &mut pos).unwrap_or("").to_string();
+      let name = take_cstr(body, &mut pos).unwrap_or("");
       match kind {
          b'S' => {
-            self.statements.remove(&name);
-            self.portals.retain(|_, p| p.statement != name);
+            if name.is_empty() {
+               self.unnamed_stmt = None;
+               if let Some(p) = &self.unnamed_portal
+                  && p.statement.is_empty()
+               {
+                  self.unnamed_portal = None;
+               }
+            } else {
+               self.statements.remove(name);
+               self.portals.retain(|_, p| p.statement != name);
+               if let Some(p) = &self.unnamed_portal
+                  && p.statement == name
+               {
+                  self.unnamed_portal = None;
+               }
+            }
          }
          b'P' => {
-            self.portals.remove(&name);
+            if name.is_empty() {
+               self.unnamed_portal = None;
+            } else {
+               self.portals.remove(name);
+            }
          }
          _ => {}
       }
@@ -836,10 +920,15 @@ fn next_data_frame_end(data: &[u8], offset: usize) -> Option<usize> {
    Some(offset + total)
 }
 
+#[inline]
 fn take_cstr<'a>(buf: &'a [u8], pos: &mut usize) -> Option<&'a str> {
    let start = *pos;
    if start >= buf.len() {
       return None;
+   }
+   if buf[start] == 0 {
+      *pos = start + 1;
+      return Some("");
    }
    let rel = buf[start..].iter().position(|&b| b == 0)?;
    let end = start + rel;
@@ -1150,11 +1239,9 @@ fn handle_startup_event(
       }
 
       // No upstream: send AuthOk + params + ReadyForQuery inline.
-      let mut tmp = Vec::new();
-      if protocol::write_startup_ok(&mut tmp).is_err() {
+      if protocol::write_startup_ok(&mut conn.wbuf.buf).is_err() {
          return false;
       }
-      conn.wbuf.extend(&tmp);
       conn.state = ConnState::Active(Box::new(ActiveState::new(
          Arc::clone(mgr),
          Arc::clone(config),

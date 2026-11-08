@@ -55,18 +55,23 @@ impl EncodedResult {
    }
 
    // Simple-query response: RowDescription, rows, CommandComplete, ReadyForQuery.
+   #[inline(always)]
    pub fn write_simple_response(&self, out: &mut Vec<u8>) {
-      out.reserve(self.wire.len() + protocol::READY_IDLE.len());
-      out.extend_from_slice(&self.wire);
-      out.extend_from_slice(&protocol::READY_IDLE);
+      let total = self.wire.len() + 6;
+      let old = out.len();
+      out.reserve(total);
+      unsafe {
+         let p = out.as_mut_ptr().add(old);
+         std::ptr::copy_nonoverlapping(self.wire.as_ptr(), p, self.wire.len());
+         std::ptr::copy_nonoverlapping(protocol::READY_IDLE.as_ptr(), p.add(self.wire.len()), 6);
+         out.set_len(old + total);
+      }
    }
 
    // Extended-protocol Execute response: rows plus CommandComplete.
+   #[inline(always)]
    pub fn write_execute_response(&self, out: &mut Vec<u8>) {
-      let payload = self.data_rows().len() + self.command_complete().len();
-      out.reserve(payload);
-      out.extend_from_slice(self.data_rows());
-      out.extend_from_slice(self.command_complete());
+      out.extend_from_slice(&self.wire[self.split0 as usize..]);
    }
 }
 

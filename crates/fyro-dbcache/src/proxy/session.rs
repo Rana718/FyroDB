@@ -553,9 +553,7 @@ impl Session {
             return self.flush_out();
          }
       };
-      self
-         .out
-         .extend_from_slice(&protocol::encode_command_complete(tag));
+      protocol::put_command_complete(&mut self.out, tag);
       if matches!(parsed.kind, QueryKind::Commit | QueryKind::Rollback) {
          self.transaction_writes.clear();
       }
@@ -1644,7 +1642,7 @@ impl Session {
       } else {
          b'I'
       };
-      self.out.extend_from_slice(&protocol::encode_ready(status));
+      protocol::put_ready_for_query(&mut self.out, status);
    }
 
    fn queue_error(&mut self, code: &str, message: &str) {
