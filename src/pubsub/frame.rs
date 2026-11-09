@@ -4,8 +4,7 @@ use std::sync::Arc;
 struct CachedBatch {
    channel: String,
    msg_count: usize,
-   msg_ptr: *const u8,
-   msg_len: usize,
+   msg_bytes: Vec<u8>,
    frame: Arc<[u8]>,
 }
 
@@ -56,17 +55,15 @@ pub fn encode_batch(channel: &str, messages: &[&str]) -> Arc<[u8]> {
    }
 
    let first = messages[0];
-   let is_uniform_ptr = messages
-      .iter()
-      .all(|m| std::ptr::eq(m.as_ptr(), first.as_ptr()) && m.len() == first.len());
+   let first_bytes = first.as_bytes();
+   let is_uniform = messages.iter().all(|m| m.as_bytes() == first_bytes);
 
-   if is_uniform_ptr {
+   if is_uniform {
       let cached = BATCH_CACHE.with_borrow(|cache| {
          if let Some(c) = cache.as_ref()
             && c.msg_count == messages.len()
-            && c.msg_ptr == first.as_ptr()
-            && c.msg_len == first.len()
             && c.channel == channel
+            && c.msg_bytes.as_slice() == first_bytes
          {
             return Some(Arc::clone(&c.frame));
          }
@@ -119,7 +116,7 @@ pub fn encode_batch(channel: &str, messages: &[&str]) -> Arc<[u8]> {
    let prefix = &prefix_buf[..prefix_len];
 
    let first_len = first.len();
-   let uniform = is_uniform_ptr || messages.iter().all(|m| m.len() == first_len);
+   let uniform = is_uniform || messages.iter().all(|m| m.len() == first_len);
 
    if uniform {
       let mut hdr_buf = [0u8; 96];
@@ -159,7 +156,7 @@ pub fn encode_batch(channel: &str, messages: &[&str]) -> Arc<[u8]> {
       let mut dst = Arc::get_mut(&mut arc).unwrap().as_mut_ptr() as *mut u8;
 
       let mut block_buf = [0u8; 128];
-      if block_len <= 128 && is_uniform_ptr {
+      if block_len <= 128 && is_uniform {
          unsafe {
             std::ptr::copy_nonoverlapping(
                combined_hdr.as_ptr(),
@@ -196,13 +193,12 @@ pub fn encode_batch(channel: &str, messages: &[&str]) -> Arc<[u8]> {
          }
       }
       let frame = unsafe { arc.assume_init() };
-      if is_uniform_ptr {
+      if is_uniform {
          BATCH_CACHE.with_borrow_mut(|c| {
             *c = Some(CachedBatch {
                channel: channel.to_string(),
                msg_count: messages.len(),
-               msg_ptr: first.as_ptr(),
-               msg_len: first.len(),
+               msg_bytes: first_bytes.to_vec(),
                frame: Arc::clone(&frame),
             });
          });

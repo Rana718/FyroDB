@@ -615,7 +615,7 @@ pub(super) fn dispatch_json_set_run(conn: &mut Conn<'_>, first_raw: &[(*const u8
    true
 }
 
-#[inline(always)]
+#[inline]
 pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
    if raw.is_empty() {
       return;

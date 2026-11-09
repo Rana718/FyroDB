@@ -160,6 +160,8 @@ pub fn do_full_unsubscribe(conn: &mut Conn<'_>) {
 
 pub fn ensure_slot(conn: &mut Conn<'_>) -> Arc<SubSlot> {
    if let ConnMode::Normal = conn.mode {
+      let sock_ref = socket2::SockRef::from(&conn.stream);
+      let _ = sock_ref.set_send_buffer_size(1024 * 1024);
       let slot = Arc::new(SubSlot::new(conn.token, Arc::clone(conn.notifier)));
       conn.mode = ConnMode::Subscribed {
          slot,

@@ -352,6 +352,66 @@ impl RespParser {
    }
 
    #[inline(always)]
+   pub(crate) fn try_fast_publish_at(
+      &mut self,
+      buf: *const u8,
+      avail: usize,
+      channel: &[u8],
+   ) -> Option<RawSlice> {
+      const T3_DOLLAR7: u64 = u64::from_ne_bytes(*b"*3\r\n$7\r\n");
+      const PUB_LOWER: u64 = u64::from_ne_bytes(*b"publish\r");
+      const LF_DOLLAR: u16 = u16::from_ne_bytes(*b"\n$");
+      const CRLF: u16 = u16::from_ne_bytes(*b"\r\n");
+
+      if avail < 17 + 4 + channel.len() + 4 {
+         return None;
+      }
+      let w0 = unsafe { std::ptr::read_unaligned(buf as *const u64) };
+      if w0 != T3_DOLLAR7 {
+         return None;
+      }
+      let w1 = unsafe { std::ptr::read_unaligned(buf.add(8) as *const u64) };
+      if (w1 | 0x0020_2020_2020_2020) != PUB_LOWER {
+         return None;
+      }
+      if unsafe { std::ptr::read_unaligned(buf.add(16) as *const u16) } != LF_DOLLAR {
+         return None;
+      }
+      let (ch_len, ch_hdr) = unsafe { parse_len_le4(buf.add(18), avail - 18) }?;
+      if ch_len != channel.len() {
+         return None;
+      }
+      let ch_offset = 18 + ch_hdr;
+      if avail < ch_offset + ch_len + 5 {
+         return None;
+      }
+      let ch_in_buf = unsafe { std::slice::from_raw_parts(buf.add(ch_offset), ch_len) };
+      if ch_in_buf != channel {
+         return None;
+      }
+      let p_msg_hdr = ch_offset + ch_len;
+      if unsafe { std::ptr::read_unaligned(buf.add(p_msg_hdr) as *const u16) } != CRLF {
+         return None;
+      }
+      if unsafe { *buf.add(p_msg_hdr + 2) } != b'$' {
+         return None;
+      }
+      let (msg_len, msg_hdr) =
+         unsafe { parse_len_le4(buf.add(p_msg_hdr + 3), avail - (p_msg_hdr + 3)) }?;
+      let msg_offset = p_msg_hdr + 3 + msg_hdr;
+      let total_len = msg_offset + msg_len + 2;
+      if avail < total_len {
+         return None;
+      }
+      if unsafe { std::ptr::read_unaligned(buf.add(total_len - 2) as *const u16) } != CRLF {
+         return None;
+      }
+
+      self.pos += total_len;
+      Some(unsafe { (buf.add(msg_offset), msg_len) })
+   }
+
+   #[inline(always)]
    pub(crate) fn try_fast_json_set_key_val_at(
       &mut self,
       buf: *const u8,

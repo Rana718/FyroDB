@@ -145,11 +145,21 @@ pub(super) fn dispatch_publish_run(
    // first aliases parts_raw (overwritten by each parse_one): copy the
    // message now; allocate only once a real run forms.
    let first_msg = first[2];
-   let mut parts: Vec<(*const u8, usize)> = Vec::new();
-   let mut collected_first = false;
+   let mut parts = [(std::ptr::null::<u8>(), 0usize); QUEUE_RUN_MAX];
+   parts[0] = first_msg;
    let mut cmds = 1usize;
 
    while cmds < QUEUE_RUN_MAX {
+      let avail = conn.parser.filled - conn.parser.pos;
+      if avail >= 24 {
+         let buf = unsafe { conn.parser.rbuf.as_ptr().add(conn.parser.pos) };
+         if let Some(msg_slice) = conn.parser.try_fast_publish_at(buf, avail, channel_bytes) {
+            parts[cmds] = msg_slice;
+            cmds += 1;
+            continue;
+         }
+      }
+
       match conn.parser.parse_one() {
          ParseResult::Complete => {
             let raw_ptr = conn.parser.parts_raw.as_ptr();
@@ -160,12 +170,7 @@ pub(super) fn dispatch_publish_run(
                && cmd_id(cmd) == CmdId::Publish
                && unsafe { part_bytes(raw[1]) } == channel_bytes;
             if !same {
-               let tail: &[(*const u8, usize)] = if collected_first {
-                  &parts
-               } else {
-                  std::slice::from_ref(&first_msg)
-               };
-               let outcome = match execute_publish_run(conn, channel, cmds, tail) {
+               let outcome = match execute_publish_run(conn, channel, cmds, &parts[..cmds]) {
                   Ok(()) => QueueRunOutcome::Done,
                   Err(()) => QueueRunOutcome::ConnError,
                };
@@ -174,21 +179,12 @@ pub(super) fn dispatch_publish_run(
                }
                return outcome;
             }
-            if !collected_first {
-               parts.push(first_msg);
-               collected_first = true;
-            }
-            parts.push(raw[2]);
+            parts[cmds] = raw[2];
             cmds += 1;
          }
          ParseResult::Incomplete => break,
          ParseResult::Error => {
-            let tail: &[(*const u8, usize)] = if collected_first {
-               &parts
-            } else {
-               std::slice::from_ref(&first_msg)
-            };
-            return match execute_publish_run(conn, channel, cmds, tail) {
+            return match execute_publish_run(conn, channel, cmds, &parts[..cmds]) {
                Ok(()) => QueueRunOutcome::Done,
                Err(()) => QueueRunOutcome::ConnError,
             };
@@ -196,12 +192,7 @@ pub(super) fn dispatch_publish_run(
       }
    }
 
-   let tail: &[(*const u8, usize)] = if collected_first {
-      &parts
-   } else {
-      std::slice::from_ref(&first_msg)
-   };
-   match execute_publish_run(conn, channel, cmds, tail) {
+   match execute_publish_run(conn, channel, cmds, &parts[..cmds]) {
       Ok(()) => QueueRunOutcome::Done,
       Err(()) => QueueRunOutcome::ConnError,
    }
@@ -215,16 +206,29 @@ pub(super) fn execute_publish_run(
 ) -> Result<(), ()> {
    let out = &mut conn.parser.wbuf;
    out.reserve(cmds * 8);
-   let mut messages: Vec<&str> = Vec::with_capacity(parts.len());
-   for &part in parts {
+   let mut messages: [&str; QUEUE_RUN_MAX] = [""; QUEUE_RUN_MAX];
+   for (idx, &part) in parts.iter().enumerate() {
       let Some(m) = part_str(out, part) else {
          return Err(());
       };
-      messages.push(m);
+      messages[idx] = m;
    }
-   let n = conn.pubsub.publish_batch(channel, &messages);
-   for _ in 0..cmds {
-      crate::utils::resp::write_integer(out, n as i64);
+   let n = conn.pubsub.publish_batch(channel, &messages[..cmds]);
+   let old_len = out.len();
+   crate::utils::resp::write_integer(out, n as i64);
+   let single_len = out.len() - old_len;
+   if cmds > 1 {
+      let total_add = (cmds - 1) * single_len;
+      out.reserve(total_add);
+      let src = unsafe { out.as_ptr().add(old_len) };
+      let mut dst = unsafe { out.as_mut_ptr().add(out.len()) };
+      for _ in 1..cmds {
+         unsafe {
+            std::ptr::copy_nonoverlapping(src, dst, single_len);
+            dst = dst.add(single_len);
+         }
+      }
+      unsafe { out.set_len(old_len + cmds * single_len); }
    }
    Ok(())
 }
