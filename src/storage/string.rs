@@ -121,11 +121,12 @@ impl Store {
       value: &str,
       expires_ms: u64,
    ) {
+      let idx = self.data.shard_of(hash);
       let store_val = StoreValue {
          value: crate::storage::value::FyroDB::String(SmallStr::new(value)),
          expires_ms,
       };
-      if self.data.insert_slot_fast(hash, key, store_val) {
+      if self.data.insert_slot_fast_located(hash, idx, key, store_val) {
          self.data.touched(key);
          if expires_ms != 0 {
             self.add_ttl();
@@ -214,19 +215,34 @@ impl Store {
 
    #[inline(always)]
    pub fn get_to_buf_hinted(&self, key: &str, hash: Option<u64>, out: &mut Vec<u8>) -> bool {
+      self.get_to_buf_hinted_bytes(key.as_bytes(), hash, out)
+   }
+
+   #[inline(always)]
+   pub fn get_to_buf_hinted_bytes(&self, key: &[u8], hash: Option<u64>, out: &mut Vec<u8>) -> bool {
       let (h, idx) = match hash {
          Some(h) => (h, self.data.shard_of(h)),
-         None => self.data.locate_key(key),
+         None => {
+            if let Ok(s) = std::str::from_utf8(key) {
+               self.data.locate_key(s)
+            } else {
+               return false;
+            }
+         }
       };
       let p = self.data.probe_slot_entry(h, idx);
       if !p.is_null() {
          unsafe {
-            if self.get_to_buf_fast_entry(key, h, p, out) {
+            if self.get_to_buf_fast_entry_bytes(key, h, p, out) {
                return true;
             }
          }
       }
-      self.get_to_buf_fallback(key, h, out)
+      if let Ok(s) = std::str::from_utf8(key) {
+         self.get_to_buf_fallback(s, h, out)
+      } else {
+         false
+      }
    }
 
    #[cold]
@@ -256,9 +272,9 @@ impl Store {
    ///
    /// `p` must be null or point to a valid `Entry<StoreValue>`.
    #[inline(always)]
-   pub unsafe fn get_to_buf_fast_entry(
+   pub unsafe fn get_to_buf_fast_entry_bytes(
       &self,
-      key: &str,
+      key: &[u8],
       hash: u64,
       p: *const customhash::Entry<StoreValue>,
       out: &mut Vec<u8>,
@@ -267,7 +283,7 @@ impl Store {
          let e = unsafe { &*p };
          let state = e.state.load(std::sync::atomic::Ordering::Acquire);
          let expected = ((hash as u32 as u64) << 32) | customhash::STATE_OCCUPIED;
-         if (state & customhash::STATE_MATCH_MASK) == expected && e.key.eq_str(key) {
+         if (state & customhash::STATE_MATCH_MASK) == expected && e.key.eq_bytes(key) {
             let val = unsafe { (*e.value.get()).assume_init_ref() };
             if val.expires_ms == 0 || !val.is_expired() {
                if let crate::storage::value::FyroDB::String(s) = &val.value {
@@ -275,12 +291,32 @@ impl Store {
                   return true;
                }
             } else {
-               self.data.remove(key);
+               if let Ok(key_str) = std::str::from_utf8(key) {
+                  self.data.remove(key_str);
+               }
                return false;
             }
          }
       }
-      self.get_to_buf_fallback(key, hash, out)
+      if let Ok(key_str) = std::str::from_utf8(key) {
+         self.get_to_buf_fallback(key_str, hash, out)
+      } else {
+         false
+      }
+   }
+
+   /// # Safety
+   ///
+   /// `p` must be null or point to a valid `Entry<StoreValue>`.
+   #[inline(always)]
+   pub unsafe fn get_to_buf_fast_entry(
+      &self,
+      key: &str,
+      hash: u64,
+      p: *const customhash::Entry<StoreValue>,
+      out: &mut Vec<u8>,
+   ) -> bool {
+      unsafe { self.get_to_buf_fast_entry_bytes(key.as_bytes(), hash, p, out) }
    }
 
    /// # Safety
@@ -319,10 +355,7 @@ impl Store {
                      } else {
                         val.value = crate::storage::value::FyroDB::String(SmallStr::new(value));
                      }
-                     let unlocked = (customhash::bump_seq(locked) & !customhash::STATE_LOCK)
-                        | customhash::STATE_OCCUPIED;
-                     e.state
-                        .store(unlocked, std::sync::atomic::Ordering::Release);
+                     customhash::unlock_write(&e.state, locked, true);
                      self.data.touched(key);
                      if expires_ms != 0 {
                         self.add_ttl();
@@ -419,6 +452,17 @@ impl Store {
       out: &mut Vec<u8>,
    ) -> bool {
       unsafe { self.get_to_buf_fast_entry(key, hash, entry_hint.cast(), out) }
+   }
+
+   #[inline(always)]
+   pub fn get_to_buf_with_hint_bytes(
+      &self,
+      key: &[u8],
+      hash: u64,
+      entry_hint: *const (),
+      out: &mut Vec<u8>,
+   ) -> bool {
+      unsafe { self.get_to_buf_fast_entry_bytes(key, hash, entry_hint.cast(), out) }
    }
 
    #[inline(always)]

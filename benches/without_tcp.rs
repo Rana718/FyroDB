@@ -146,62 +146,27 @@ fn exec_insert_batch<const N: usize>(
    tables: &[*const (); N],
    len: usize,
 ) {
+   let k_ptr = keys.as_ptr();
+   let h_ptr = hashes.as_ptr();
+   let t_ptr = tables.as_ptr();
    let mut j = 0;
    while j + 8 <= len {
-      store.set_string_hinted_slot(keys[j].as_str(), hashes[j], tables[j], "value", 0);
-      store.set_string_hinted_slot(
-         keys[j + 1].as_str(),
-         hashes[j + 1],
-         tables[j + 1],
-         "value",
-         0,
-      );
-      store.set_string_hinted_slot(
-         keys[j + 2].as_str(),
-         hashes[j + 2],
-         tables[j + 2],
-         "value",
-         0,
-      );
-      store.set_string_hinted_slot(
-         keys[j + 3].as_str(),
-         hashes[j + 3],
-         tables[j + 3],
-         "value",
-         0,
-      );
-      store.set_string_hinted_slot(
-         keys[j + 4].as_str(),
-         hashes[j + 4],
-         tables[j + 4],
-         "value",
-         0,
-      );
-      store.set_string_hinted_slot(
-         keys[j + 5].as_str(),
-         hashes[j + 5],
-         tables[j + 5],
-         "value",
-         0,
-      );
-      store.set_string_hinted_slot(
-         keys[j + 6].as_str(),
-         hashes[j + 6],
-         tables[j + 6],
-         "value",
-         0,
-      );
-      store.set_string_hinted_slot(
-         keys[j + 7].as_str(),
-         hashes[j + 7],
-         tables[j + 7],
-         "value",
-         0,
-      );
+      unsafe {
+         store.set_string_hinted_slot((*k_ptr.add(j)).as_str(), *h_ptr.add(j), *t_ptr.add(j), "value", 0);
+         store.set_string_hinted_slot((*k_ptr.add(j + 1)).as_str(), *h_ptr.add(j + 1), *t_ptr.add(j + 1), "value", 0);
+         store.set_string_hinted_slot((*k_ptr.add(j + 2)).as_str(), *h_ptr.add(j + 2), *t_ptr.add(j + 2), "value", 0);
+         store.set_string_hinted_slot((*k_ptr.add(j + 3)).as_str(), *h_ptr.add(j + 3), *t_ptr.add(j + 3), "value", 0);
+         store.set_string_hinted_slot((*k_ptr.add(j + 4)).as_str(), *h_ptr.add(j + 4), *t_ptr.add(j + 4), "value", 0);
+         store.set_string_hinted_slot((*k_ptr.add(j + 5)).as_str(), *h_ptr.add(j + 5), *t_ptr.add(j + 5), "value", 0);
+         store.set_string_hinted_slot((*k_ptr.add(j + 6)).as_str(), *h_ptr.add(j + 6), *t_ptr.add(j + 6), "value", 0);
+         store.set_string_hinted_slot((*k_ptr.add(j + 7)).as_str(), *h_ptr.add(j + 7), *t_ptr.add(j + 7), "value", 0);
+      }
       j += 8;
    }
    while j < len {
-      store.set_string_hinted_slot(keys[j].as_str(), hashes[j], tables[j], "value", 0);
+      unsafe {
+         store.set_string_hinted_slot((*k_ptr.add(j)).as_str(), *h_ptr.add(j), *t_ptr.add(j), "value", 0);
+      }
       j += 1;
    }
 }
@@ -214,62 +179,27 @@ fn exec_pipelined_set<const N: usize>(
    entries: &[*const (); N],
    len: usize,
 ) {
+   let k_ptr = keys.as_ptr();
+   let h_ptr = hashes.as_ptr();
+   let e_ptr = entries.as_ptr();
    let mut j = 0;
    while j + 8 <= len {
-      store.set_string_with_hint(keys[j].as_str(), hashes[j], entries[j], "value", 0);
-      store.set_string_with_hint(
-         keys[j + 1].as_str(),
-         hashes[j + 1],
-         entries[j + 1],
-         "value",
-         0,
-      );
-      store.set_string_with_hint(
-         keys[j + 2].as_str(),
-         hashes[j + 2],
-         entries[j + 2],
-         "value",
-         0,
-      );
-      store.set_string_with_hint(
-         keys[j + 3].as_str(),
-         hashes[j + 3],
-         entries[j + 3],
-         "value",
-         0,
-      );
-      store.set_string_with_hint(
-         keys[j + 4].as_str(),
-         hashes[j + 4],
-         entries[j + 4],
-         "value",
-         0,
-      );
-      store.set_string_with_hint(
-         keys[j + 5].as_str(),
-         hashes[j + 5],
-         entries[j + 5],
-         "value",
-         0,
-      );
-      store.set_string_with_hint(
-         keys[j + 6].as_str(),
-         hashes[j + 6],
-         entries[j + 6],
-         "value",
-         0,
-      );
-      store.set_string_with_hint(
-         keys[j + 7].as_str(),
-         hashes[j + 7],
-         entries[j + 7],
-         "value",
-         0,
-      );
+      unsafe {
+         store.set_string_with_hint((*k_ptr.add(j)).as_str(), *h_ptr.add(j), *e_ptr.add(j), "value", 0);
+         store.set_string_with_hint((*k_ptr.add(j + 1)).as_str(), *h_ptr.add(j + 1), *e_ptr.add(j + 1), "value", 0);
+         store.set_string_with_hint((*k_ptr.add(j + 2)).as_str(), *h_ptr.add(j + 2), *e_ptr.add(j + 2), "value", 0);
+         store.set_string_with_hint((*k_ptr.add(j + 3)).as_str(), *h_ptr.add(j + 3), *e_ptr.add(j + 3), "value", 0);
+         store.set_string_with_hint((*k_ptr.add(j + 4)).as_str(), *h_ptr.add(j + 4), *e_ptr.add(j + 4), "value", 0);
+         store.set_string_with_hint((*k_ptr.add(j + 5)).as_str(), *h_ptr.add(j + 5), *e_ptr.add(j + 5), "value", 0);
+         store.set_string_with_hint((*k_ptr.add(j + 6)).as_str(), *h_ptr.add(j + 6), *e_ptr.add(j + 6), "value", 0);
+         store.set_string_with_hint((*k_ptr.add(j + 7)).as_str(), *h_ptr.add(j + 7), *e_ptr.add(j + 7), "value", 0);
+      }
       j += 8;
    }
    while j < len {
-      store.set_string_with_hint(keys[j].as_str(), hashes[j], entries[j], "value", 0);
+      unsafe {
+         store.set_string_with_hint((*k_ptr.add(j)).as_str(), *h_ptr.add(j), *e_ptr.add(j), "value", 0);
+      }
       j += 1;
    }
 }
@@ -283,29 +213,36 @@ fn exec_pipelined_get<const N: usize>(
    len: usize,
    out: &mut Vec<u8>,
 ) {
+   let k_ptr = keys.as_ptr();
+   let h_ptr = hashes.as_ptr();
+   let e_ptr = entries.as_ptr();
    let mut j = 0;
    while j + 8 <= len {
-      out.clear();
-      let _ = store.get_to_buf_with_hint(keys[j].as_str(), hashes[j], entries[j], out);
-      out.clear();
-      let _ = store.get_to_buf_with_hint(keys[j + 1].as_str(), hashes[j + 1], entries[j + 1], out);
-      out.clear();
-      let _ = store.get_to_buf_with_hint(keys[j + 2].as_str(), hashes[j + 2], entries[j + 2], out);
-      out.clear();
-      let _ = store.get_to_buf_with_hint(keys[j + 3].as_str(), hashes[j + 3], entries[j + 3], out);
-      out.clear();
-      let _ = store.get_to_buf_with_hint(keys[j + 4].as_str(), hashes[j + 4], entries[j + 4], out);
-      out.clear();
-      let _ = store.get_to_buf_with_hint(keys[j + 5].as_str(), hashes[j + 5], entries[j + 5], out);
-      out.clear();
-      let _ = store.get_to_buf_with_hint(keys[j + 6].as_str(), hashes[j + 6], entries[j + 6], out);
-      out.clear();
-      let _ = store.get_to_buf_with_hint(keys[j + 7].as_str(), hashes[j + 7], entries[j + 7], out);
+      unsafe {
+         out.clear();
+         let _ = store.get_to_buf_with_hint_bytes((*k_ptr.add(j)).as_bytes(), *h_ptr.add(j), *e_ptr.add(j), out);
+         out.clear();
+         let _ = store.get_to_buf_with_hint_bytes((*k_ptr.add(j + 1)).as_bytes(), *h_ptr.add(j + 1), *e_ptr.add(j + 1), out);
+         out.clear();
+         let _ = store.get_to_buf_with_hint_bytes((*k_ptr.add(j + 2)).as_bytes(), *h_ptr.add(j + 2), *e_ptr.add(j + 2), out);
+         out.clear();
+         let _ = store.get_to_buf_with_hint_bytes((*k_ptr.add(j + 3)).as_bytes(), *h_ptr.add(j + 3), *e_ptr.add(j + 3), out);
+         out.clear();
+         let _ = store.get_to_buf_with_hint_bytes((*k_ptr.add(j + 4)).as_bytes(), *h_ptr.add(j + 4), *e_ptr.add(j + 4), out);
+         out.clear();
+         let _ = store.get_to_buf_with_hint_bytes((*k_ptr.add(j + 5)).as_bytes(), *h_ptr.add(j + 5), *e_ptr.add(j + 5), out);
+         out.clear();
+         let _ = store.get_to_buf_with_hint_bytes((*k_ptr.add(j + 6)).as_bytes(), *h_ptr.add(j + 6), *e_ptr.add(j + 6), out);
+         out.clear();
+         let _ = store.get_to_buf_with_hint_bytes((*k_ptr.add(j + 7)).as_bytes(), *h_ptr.add(j + 7), *e_ptr.add(j + 7), out);
+      }
       j += 8;
    }
    while j < len {
-      out.clear();
-      let _ = store.get_to_buf_with_hint(keys[j].as_str(), hashes[j], entries[j], out);
+      unsafe {
+         out.clear();
+         let _ = store.get_to_buf_with_hint_bytes((*k_ptr.add(j)).as_bytes(), *h_ptr.add(j), *e_ptr.add(j), out);
+      }
       j += 1;
    }
 }
@@ -873,7 +810,7 @@ fn run_mix(store: &Arc<Store>, results: &mut Vec<BenchResult>) {
                      for j in 0..b {
                         out.clear();
                         let _ =
-                           store.get_to_buf_hinted(keys[j].as_str(), Some(hashes[j]), &mut out);
+                           store.get_to_buf_hinted_bytes(keys[j].as_bytes(), Some(hashes[j]), &mut out);
                      }
                   }
                }

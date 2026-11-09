@@ -251,7 +251,7 @@ fn hincrbyfloat_errors_on_non_float() {
 #[test]
 fn all_hash_ops_wrongtype_on_string_key() {
    let s = store();
-   s.set("k".into(), StoreValue::string("hello".into()));
+   s.set("k", StoreValue::string("hello".into()));
 
    assert!(s.hset("k", &[("f", "v")]).is_err());
    assert!(s.hsetnx("k", "f", "v").is_err());
