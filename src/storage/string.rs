@@ -281,9 +281,20 @@ impl Store {
    ) -> bool {
       if !p.is_null() {
          let e = unsafe { &*p };
-         let state = e.state.load(std::sync::atomic::Ordering::Acquire);
+         let state = e.state.load(std::sync::atomic::Ordering::Relaxed);
          let expected = ((hash as u32 as u64) << 32) | customhash::STATE_OCCUPIED;
-         if (state & customhash::STATE_MATCH_MASK) == expected && e.key.eq_bytes(key) {
+         if (state & (0xFFFF_FFFF_0000_0000 | customhash::STATE_OCCUPIED)) == expected && e.key.eq_bytes(key) {
+            if state & customhash::STATE_LOCK != 0 {
+               let mut cur = state;
+               while cur & customhash::STATE_LOCK != 0 {
+                  std::hint::spin_loop();
+                  cur = e.state.load(std::sync::atomic::Ordering::Acquire);
+               }
+               if cur & customhash::STATE_OCCUPIED == 0 {
+                  return false;
+               }
+            }
+            std::sync::atomic::fence(std::sync::atomic::Ordering::Acquire);
             let val = unsafe { (*e.value.get()).assume_init_ref() };
             if val.expires_ms == 0 || !val.is_expired() {
                if let crate::storage::value::FyroDB::String(s) = &val.value {
@@ -333,10 +344,16 @@ impl Store {
    ) {
       if !p.is_null() {
          let e = unsafe { &*p };
-         let expected = ((hash as u32 as u64) << 32) | customhash::STATE_OCCUPIED;
-         let mut current = e.state.load(std::sync::atomic::Ordering::Relaxed);
-         if (current & customhash::STATE_MATCH_MASK) == expected && e.key.eq_str(key) {
-            for _ in 0..4 {
+         if e.key.eq_str(key) {
+            let mut current = e.state.load(std::sync::atomic::Ordering::Relaxed);
+            for _ in 0..32 {
+               while current & customhash::STATE_LOCK != 0 {
+                  std::hint::spin_loop();
+                  current = e.state.load(std::sync::atomic::Ordering::Relaxed);
+               }
+               if (current & customhash::STATE_OCCUPIED) == 0 {
+                  break;
+               }
                let locked = customhash::bump_seq(current) | customhash::STATE_LOCK;
                match e.state.compare_exchange_weak(
                   current,
@@ -364,9 +381,6 @@ impl Store {
                   }
                   Err(observed) => {
                      current = observed;
-                     if (current & customhash::STATE_MATCH_MASK) != expected {
-                        break;
-                     }
                      std::hint::spin_loop();
                   }
                }

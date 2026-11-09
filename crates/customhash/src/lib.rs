@@ -561,9 +561,21 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
       let p = unsafe { TaggedSlot::probe_from_base(base, hash, 16) };
       if !p.is_null() {
          let e = unsafe { &*p };
+         let state = e.state.load(Ordering::Relaxed);
          let expected = ((hash as u32 as u64) << 32) | STATE_OCCUPIED;
-         if (e.state.load(Ordering::Relaxed) & STATE_MATCH_MASK) == expected && e.key.eq_str(key) {
-            return Some(p as *const Entry<V>);
+         if (state & (0xFFFF_FFFF_0000_0000 | STATE_OCCUPIED)) == expected && e.key.eq_str(key) {
+            if state & STATE_LOCK != 0 {
+               let mut cur = state;
+               while cur & STATE_LOCK != 0 {
+                  std::hint::spin_loop();
+                  cur = e.state.load(Ordering::Acquire);
+               }
+               if cur & STATE_OCCUPIED != 0 {
+                  return Some(p as *const Entry<V>);
+               }
+            } else {
+               return Some(p as *const Entry<V>);
+            }
          }
       }
       None
@@ -597,10 +609,21 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
       if !entry_hint.is_null() {
          let p = entry_hint.cast::<Entry<V>>();
          let e = unsafe { &*p };
-         let state = e.state.load(Ordering::Acquire);
+         let state = e.state.load(Ordering::Relaxed);
          let expected = ((hash as u32 as u64) << 32) | STATE_OCCUPIED;
-         if (state & STATE_MATCH_MASK) == expected && e.key.eq_str(key) {
-            return Some(f(unsafe { (*e.value.get()).assume_init_ref() }));
+         if (state & (0xFFFF_FFFF_0000_0000 | STATE_OCCUPIED)) == expected && e.key.eq_str(key) {
+            if state & STATE_LOCK != 0 {
+               let mut cur = state;
+               while cur & STATE_LOCK != 0 {
+                  std::hint::spin_loop();
+                  cur = e.state.load(Ordering::Acquire);
+               }
+               if cur & STATE_OCCUPIED != 0 {
+                  return Some(f(unsafe { (*e.value.get()).assume_init_ref() }));
+               }
+            } else {
+               return Some(f(unsafe { (*e.value.get()).assume_init_ref() }));
+            }
          }
       }
       let idx = self.shard_of(hash);

@@ -219,9 +219,21 @@ pub(super) fn dispatch_get_run(conn: &mut Conn<'_>, first_key: (*const u8, usize
       let p = entries[i];
       if !p.is_null() {
          let e = unsafe { &*p.cast::<customhash::Entry<crate::storage::value::StoreValue>>() };
-         let state = e.state.load(std::sync::atomic::Ordering::Acquire);
+         let state = e.state.load(std::sync::atomic::Ordering::Relaxed);
          let expected = ((hashes[i] as u32 as u64) << 32) | customhash::STATE_OCCUPIED;
-         if (state & customhash::STATE_MATCH_MASK) == expected && e.key.eq_bytes(keys[i]) {
+         if (state & (0xFFFF_FFFF_0000_0000 | customhash::STATE_OCCUPIED)) == expected && e.key.eq_bytes(keys[i]) {
+            if state & customhash::STATE_LOCK != 0 {
+               let mut cur = state;
+               while cur & customhash::STATE_LOCK != 0 {
+                  std::hint::spin_loop();
+                  cur = e.state.load(std::sync::atomic::Ordering::Acquire);
+               }
+               if cur & customhash::STATE_OCCUPIED == 0 {
+                  out.extend_from_slice(b"$-1\r\n");
+                  continue;
+               }
+            }
+            std::sync::atomic::fence(std::sync::atomic::Ordering::Acquire);
             let val = unsafe { (*e.value.get()).assume_init_ref() };
             if val.expires_ms == 0 || !val.is_expired() {
                if let crate::storage::value::FyroDB::String(s) = &val.value {
@@ -337,12 +349,18 @@ pub(super) fn dispatch_set_run(
       let p = entries[i];
       if !p.is_null() && !conn.store.has_replication() {
          let e = unsafe { &*p.cast::<customhash::Entry<crate::storage::value::StoreValue>>() };
-         let expected = ((hashes[i] as u32 as u64) << 32) | customhash::STATE_OCCUPIED;
-         let mut current = e.state.load(std::sync::atomic::Ordering::Relaxed);
-         if (current & customhash::STATE_MATCH_MASK) == expected && e.key.eq_bytes(keys[i]) {
+         if e.key.eq_bytes(keys[i]) {
             let val_bytes = unsafe { std::slice::from_raw_parts(vals[i].0, vals[i].1) };
             let mut updated = false;
-            for _ in 0..4 {
+            let mut current = e.state.load(std::sync::atomic::Ordering::Relaxed);
+            for _ in 0..32 {
+               while current & customhash::STATE_LOCK != 0 {
+                  std::hint::spin_loop();
+                  current = e.state.load(std::sync::atomic::Ordering::Relaxed);
+               }
+               if (current & customhash::STATE_OCCUPIED) == 0 {
+                  break;
+               }
                let locked = customhash::bump_seq(current) | customhash::STATE_LOCK;
                match e.state.compare_exchange_weak(
                   current,
@@ -371,9 +389,6 @@ pub(super) fn dispatch_set_run(
                   }
                   Err(observed) => {
                      current = observed;
-                     if (current & customhash::STATE_MATCH_MASK) != expected {
-                        break;
-                     }
                      std::hint::spin_loop();
                   }
                }
