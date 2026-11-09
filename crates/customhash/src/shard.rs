@@ -837,7 +837,7 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
       let slots = self.slots.load(Ordering::Relaxed);
       let base_idx = (hash as usize) & mask;
 
-      for offset in 0..4 {
+      for offset in 0..8 {
          let slot = unsafe { &*slots.add((base_idx + offset) & mask) };
          let word = slot.0.load(Ordering::Relaxed) as usize;
          if word == 0 {

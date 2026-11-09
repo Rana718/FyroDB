@@ -8,6 +8,9 @@ impl Store {
       let removed = self.data.remove_no_clone(key);
       if removed {
          self.aof_capture(key);
+         if let Some(mgr) = self.dbcache_manager() {
+            mgr.invalidate_key(key);
+         }
       }
       if removed && let Some(log) = &self.replication {
          let _ = log.append(crate::cluster::MutationRecord {

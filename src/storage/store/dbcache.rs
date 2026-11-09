@@ -24,7 +24,7 @@ impl DbCacheStorage for Store {
    }
 
    fn is_local(&self) -> bool {
-      false
+      true
    }
 
    fn scan_prefix(&self, prefix: &str) -> Vec<(String, Option<String>)> {

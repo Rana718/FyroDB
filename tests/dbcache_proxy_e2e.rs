@@ -703,6 +703,7 @@ fn start_configured(
 ) -> (u16, Arc<DbCacheManager>, Arc<Store>) {
    let store = Arc::new(Store::new());
    let manager = Arc::new(DbCacheManager::new(store.clone()));
+   store.install_dbcache_manager(Arc::clone(&manager));
    let port = free_port();
    let config = DbCacheConfig {
       enabled: true,
