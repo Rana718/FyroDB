@@ -518,40 +518,30 @@ fn parse_unix_path(bind: &str) -> Option<&str> {
 }
 
 #[cfg(feature = "unix-sockets")]
-fn make_unix_listener(path: &str, worker_index: usize) -> UnixListener {
+fn make_unix_listener(path: &str, _worker_index: usize) -> UnixListener {
    use std::os::unix::net::UnixListener as StdUnixListener;
 
-   if worker_index == 0 {
-      let _ = std::fs::remove_file(path);
-      let std_listener = StdUnixListener::bind(path).unwrap_or_else(|e| {
-         panic!("failed to bind unix socket at {path}: {e}");
-      });
-      std_listener.set_nonblocking(true).unwrap();
+   let mut lock = UNIX_LISTENERS.lock();
+   let map = lock.get_or_insert_with(std::collections::HashMap::new);
+
+   if let Some(std_listener) = map.get(path) {
       let clone = std_listener
          .try_clone()
          .expect("failed to clone unix listener");
-
-      let mut lock = UNIX_LISTENERS.lock();
-      let map = lock.get_or_insert_with(std::collections::HashMap::new);
-      map.insert(path.to_string(), std_listener);
-
-      UnixListener::from_std(clone)
-   } else {
-      for _ in 0..200 {
-         {
-            let mut lock = UNIX_LISTENERS.lock();
-            let std_listener = lock.as_mut().and_then(|map| map.get(path));
-            if let Some(std_listener) = std_listener {
-               let clone = std_listener
-                  .try_clone()
-                  .expect("failed to clone unix listener");
-               return UnixListener::from_std(clone);
-            }
-         }
-         std::thread::sleep(std::time::Duration::from_millis(1));
-      }
-      panic!("timed out waiting for worker 0 to initialize unix listener at {path}");
+      return UnixListener::from_std(clone);
    }
+
+   let _ = std::fs::remove_file(path);
+   let std_listener = StdUnixListener::bind(path).unwrap_or_else(|e| {
+      panic!("failed to bind unix socket at {path}: {e}");
+   });
+   std_listener.set_nonblocking(true).unwrap();
+   let clone = std_listener
+      .try_clone()
+      .expect("failed to clone unix listener");
+
+   map.insert(path.to_string(), std_listener);
+   UnixListener::from_std(clone)
 }
 
 fn make_listener(port: u16, bind: &str, _worker_index: usize) -> Listener {
