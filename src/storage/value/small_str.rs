@@ -318,6 +318,68 @@ impl SmallStr {
       crate::utils::resp::write_bulk_bytes(out, self.as_bytes());
    }
 
+   /// Writes the formatted RESP bulk string response directly to `p` without bounds checks.
+   /// Returns the total bytes written.
+   ///
+   /// # Safety
+   ///
+   /// The caller must ensure that `p` points to a valid buffer with at least 64 bytes
+   /// of allocated, writable memory.
+   #[inline(always)]
+   pub unsafe fn write_resp_raw(&self, p: *mut u8) -> usize {
+      unsafe {
+         let len = self.len as usize;
+         if len < 10 {
+            let total = 6 + len;
+            let header = 0x0A0D_3024u32 | ((len as u32) << 8);
+            p.cast::<u32>().write_unaligned(header);
+            p.add(4)
+               .cast::<u64>()
+               .write_unaligned(self.data.as_ptr().cast::<u64>().read_unaligned());
+            if len == 9 {
+               *p.add(12) = *self.data.as_ptr().add(8);
+            }
+            p.add(4 + len).cast::<u16>().write_unaligned(CRLF_U16);
+            total
+         } else if len <= SMALL_STR_CAP {
+            let total = 7 + len;
+            let (d1, d2) = if len >= 20 {
+               (b'2', b'0' + (len - 20) as u8)
+            } else {
+               (b'1', b'0' + (len - 10) as u8)
+            };
+            let header = 0x0D00_0024u32 | ((d1 as u32) << 8) | ((d2 as u32) << 16);
+            p.cast::<u32>().write_unaligned(header);
+            *p.add(4) = b'\n';
+
+            let src = self.data.as_ptr();
+            let dst = p.add(5);
+            if len >= 16 {
+               let w1 = std::ptr::read_unaligned(src.cast::<u64>());
+               let w2 = std::ptr::read_unaligned(src.add(8).cast::<u64>());
+               let w3 = std::ptr::read_unaligned(src.add(len - 8).cast::<u64>());
+               std::ptr::write_unaligned(dst.cast::<u64>(), w1);
+               std::ptr::write_unaligned(dst.add(8).cast::<u64>(), w2);
+               std::ptr::write_unaligned(dst.add(len - 8).cast::<u64>(), w3);
+            } else {
+               let w1 = std::ptr::read_unaligned(src.cast::<u64>());
+               let w2 = std::ptr::read_unaligned(src.add(len - 8).cast::<u64>());
+               std::ptr::write_unaligned(dst.cast::<u64>(), w1);
+               std::ptr::write_unaligned(dst.add(len - 8).cast::<u64>(), w2);
+            }
+
+            p.add(5 + len).cast::<u16>().write_unaligned(CRLF_U16);
+            total
+         } else {
+            let bytes = self.as_bytes();
+            let mut v = Vec::new();
+            crate::utils::resp::write_bulk_bytes(&mut v, bytes);
+            std::ptr::copy_nonoverlapping(v.as_ptr(), p, v.len());
+            v.len()
+         }
+      }
+   }
+
    #[inline]
    pub fn into_bytes(self) -> Vec<u8> {
       if self.len != Tag::Heap {

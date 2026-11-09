@@ -126,7 +126,10 @@ impl Store {
          value: crate::storage::value::FyroDB::String(SmallStr::new(value)),
          expires_ms,
       };
-      if self.data.insert_slot_fast_located(hash, idx, key, store_val) {
+      if self
+         .data
+         .insert_slot_fast_located(hash, idx, key, store_val)
+      {
          self.data.touched(key);
          if expires_ms != 0 {
             self.add_ttl();
@@ -283,7 +286,9 @@ impl Store {
          let e = unsafe { &*p };
          let state = e.state.load(std::sync::atomic::Ordering::Relaxed);
          let expected = ((hash as u32 as u64) << 32) | customhash::STATE_OCCUPIED;
-         if (state & (0xFFFF_FFFF_0000_0000 | customhash::STATE_OCCUPIED)) == expected && e.key.eq_bytes(key) {
+         if (state & (0xFFFF_FFFF_0000_0000 | customhash::STATE_OCCUPIED)) == expected
+            && e.key.eq_bytes(key)
+         {
             if state & customhash::STATE_LOCK != 0 {
                let mut cur = state;
                while cur & customhash::STATE_LOCK != 0 {
@@ -410,6 +415,21 @@ impl Store {
          Some(h) => h,
          None => self.data.locate_key(key).0,
       };
+      let idx = self.data.shard_of(hash);
+      let store_val = StoreValue {
+         value: crate::storage::value::FyroDB::String(SmallStr::new(value)),
+         expires_ms,
+      };
+      if self
+         .data
+         .insert_slot_fast_located(hash, idx, key, store_val)
+      {
+         self.data.touched(key);
+         if expires_ms != 0 {
+            self.add_ttl();
+         }
+         return;
+      }
       match self.data.probe_or_insert_fast(hash, key, || StoreValue {
          value: crate::storage::value::FyroDB::String(SmallStr::new(value)),
          expires_ms,
@@ -424,6 +444,25 @@ impl Store {
             }
          }
          customhash::FastSet::Retry => self.set_string_fallback(key, hash, value, expires_ms),
+      }
+   }
+
+   #[inline(always)]
+   pub fn set_string_fast_bytes(&self, key: &str, hash: u64, val_bytes: &[u8]) {
+      let idx = self.data.shard_of(hash);
+      let store_val = StoreValue {
+         value: crate::storage::value::FyroDB::String(SmallStr::from_slice(val_bytes)),
+         expires_ms: 0,
+      };
+      if self
+         .data
+         .insert_slot_fast_located(hash, idx, key, store_val)
+      {
+         self.data.touched(key);
+         return;
+      }
+      if let Ok(val_str) = std::str::from_utf8(val_bytes) {
+         self.set_string_auto(key, Some(hash), std::ptr::null(), val_str, 0);
       }
    }
 
@@ -837,8 +876,7 @@ impl Store {
                   Err(_) => return Err("value is not a valid float"),
                };
                let new = n + by;
-               val.value =
-                  crate::storage::value::FyroDB::String(SmallStr::from_float(new));
+               val.value = crate::storage::value::FyroDB::String(SmallStr::from_float(new));
                Ok(new)
             }
             None => Err("WRONGTYPE"),

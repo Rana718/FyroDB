@@ -1,5 +1,19 @@
 use super::*;
 
+const OK_BLOCK: [u8; 256 * 5] = {
+   let mut b = [0u8; 256 * 5];
+   let mut i = 0;
+   while i < 256 * 5 {
+      b[i] = b'+';
+      b[i + 1] = b'O';
+      b[i + 2] = b'K';
+      b[i + 3] = b'\r';
+      b[i + 4] = b'\n';
+      i += 5;
+   }
+   b
+};
+
 /// Command identity resolved from one lowercased 8-byte window, so a command
 /// is classified once instead of being re-compared at every dispatch gate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -214,9 +228,20 @@ pub(super) fn dispatch_get_run(conn: &mut Conn<'_>, first_key: (*const u8, usize
       .store
       .probe_and_prefetch_entries(&tables[..count], &hashes[..count], &mut entries[..count]);
    let out = &mut conn.parser.wbuf;
-   out.reserve(count * 32);
-   for i in 0..count {
+   out.reserve(count * 64);
+   let old_len = out.len();
+   let mut out_ptr = unsafe { out.as_mut_ptr().add(old_len) };
+
+   let mut i = 0;
+   while i < count {
+      let mut end = i + 1;
+      while end < count && keys[end] == keys[i] {
+         end += 1;
+      }
+      let run_len = end - i;
+
       let p = entries[i];
+      let mut found = false;
       if !p.is_null() {
          let e = unsafe { &*p.cast::<customhash::Entry<crate::storage::value::StoreValue>>() };
          let state = e.state.load(std::sync::atomic::Ordering::Relaxed);
@@ -229,7 +254,13 @@ pub(super) fn dispatch_get_run(conn: &mut Conn<'_>, first_key: (*const u8, usize
                   cur = e.state.load(std::sync::atomic::Ordering::Acquire);
                }
                if cur & customhash::STATE_OCCUPIED == 0 {
-                  out.extend_from_slice(b"$-1\r\n");
+                  for _ in 0..run_len {
+                     unsafe {
+                        std::ptr::copy_nonoverlapping(b"$-1\r\n".as_ptr(), out_ptr, 5);
+                        out_ptr = out_ptr.add(5);
+                     }
+                  }
+                  i = end;
                   continue;
                }
             }
@@ -237,28 +268,68 @@ pub(super) fn dispatch_get_run(conn: &mut Conn<'_>, first_key: (*const u8, usize
             let val = unsafe { (*e.value.get()).assume_init_ref() };
             if val.expires_ms == 0 || !val.is_expired() {
                if let crate::storage::value::FyroDB::String(s) = &val.value {
-                  s.write_resp(out);
-                  continue;
+                  let written = unsafe { s.write_resp_raw(out_ptr) };
+                  if run_len > 1 {
+                     for step in 1..run_len {
+                        unsafe {
+                           std::ptr::copy_nonoverlapping(out_ptr, out_ptr.add(step * written), written);
+                        }
+                     }
+                  }
+                  out_ptr = unsafe { out_ptr.add(written * run_len) };
+                  found = true;
                }
             } else {
                if let Ok(key_str) = std::str::from_utf8(keys[i]) {
                   conn.store.data.remove(key_str);
                }
-               out.extend_from_slice(b"$-1\r\n");
+               for _ in 0..run_len {
+                  unsafe {
+                     std::ptr::copy_nonoverlapping(b"$-1\r\n".as_ptr(), out_ptr, 5);
+                     out_ptr = out_ptr.add(5);
+                  }
+               }
+               i = end;
                continue;
             }
          }
       }
-      let Ok(key_str) = std::str::from_utf8(keys[i]) else {
-         crate::utils::resp::write_err(out, "invalid UTF-8 in request");
-         continue;
-      };
-      if !conn
-         .store
-         .get_to_buf_auto(key_str, Some(hashes[i]), entries[i], out)
-      {
-         out.extend_from_slice(b"$-1\r\n");
+      if !found {
+         unsafe {
+            out.set_len(out_ptr.offset_from(out.as_ptr()) as usize);
+         }
+         let Ok(key_str) = std::str::from_utf8(keys[i]) else {
+            for _ in 0..run_len {
+               crate::utils::resp::write_err(out, "invalid UTF-8 in request");
+            }
+            out_ptr = unsafe { out.as_mut_ptr().add(out.len()) };
+            i = end;
+            continue;
+         };
+         let start_offset = out.len();
+         if !conn.store.get_to_buf_auto(key_str, Some(hashes[i]), entries[i], out) {
+            out.extend_from_slice(b"$-1\r\n");
+         }
+         let single_len = out.len() - start_offset;
+         if run_len > 1 {
+            let add_bytes = (run_len - 1) * single_len;
+            out.reserve(add_bytes);
+            let src = unsafe { out.as_ptr().add(start_offset) };
+            let mut dst = unsafe { out.as_mut_ptr().add(out.len()) };
+            for _ in 1..run_len {
+               unsafe {
+                  std::ptr::copy_nonoverlapping(src, dst, single_len);
+                  dst = dst.add(single_len);
+               }
+            }
+            unsafe { out.set_len(out.len() + add_bytes); }
+         }
+         out_ptr = unsafe { out.as_mut_ptr().add(out.len()) };
       }
+      i = end;
+   }
+   unsafe {
+      out.set_len(out_ptr.offset_from(out.as_ptr()) as usize);
    }
 }
 
@@ -303,15 +374,10 @@ pub(super) fn dispatch_set_run(
    if is_null_store() {
       let out = &mut conn.parser.wbuf;
       out.reserve(count * 5);
-      const OK_REPLY_5: &[u8] = b"+OK\r\n";
       let old_len = out.len();
       unsafe {
          out.set_len(old_len + count * 5);
-         let mut p = out.as_mut_ptr().add(old_len);
-         for _ in 0..count {
-            std::ptr::copy_nonoverlapping(OK_REPLY_5.as_ptr(), p, 5);
-            p = p.add(5);
-         }
+         std::ptr::copy_nonoverlapping(OK_BLOCK.as_ptr(), out.as_mut_ptr().add(old_len), count * 5);
       }
       return;
    }
@@ -345,17 +411,31 @@ pub(super) fn dispatch_set_run(
    out.reserve(count * 5);
    let old_len = out.len();
    let mut success = true;
-   for i in 0..count {
+   let mut i = 0;
+   while i < count {
+      let mut end = i + 1;
+      while end < count && keys[end] == keys[i] {
+         end += 1;
+      }
+
       let p = entries[i];
+      let mut updated = false;
       if !p.is_null() && !conn.store.has_replication() {
          let e = unsafe { &*p.cast::<customhash::Entry<crate::storage::value::StoreValue>>() };
-         if e.key.eq_bytes(keys[i]) {
-            let val_bytes = unsafe { std::slice::from_raw_parts(vals[i].0, vals[i].1) };
-            let mut updated = false;
-            let mut current = e.state.load(std::sync::atomic::Ordering::Relaxed);
+         let mut current = e.state.load(std::sync::atomic::Ordering::Relaxed);
+         let expected = ((hashes[i] as u32 as u64) << 32) | customhash::STATE_OCCUPIED;
+         if (current & (0xFFFF_FFFF_0000_0000 | customhash::STATE_OCCUPIED)) == expected && e.key.eq_bytes(keys[i]) {
+            let last_val = vals[end - 1];
+            let val_bytes = unsafe { std::slice::from_raw_parts(last_val.0, last_val.1) };
+            let mut backoff = 1u32;
             for _ in 0..32 {
                while current & customhash::STATE_LOCK != 0 {
-                  std::hint::spin_loop();
+                  for _ in 0..backoff {
+                     std::hint::spin_loop();
+                  }
+                  if backoff < 64 {
+                     backoff <<= 1;
+                  }
                   current = e.state.load(std::sync::atomic::Ordering::Relaxed);
                }
                if (current & customhash::STATE_OCCUPIED) == 0 {
@@ -389,42 +469,49 @@ pub(super) fn dispatch_set_run(
                   }
                   Err(observed) => {
                      current = observed;
-                     std::hint::spin_loop();
+                     for _ in 0..backoff {
+                        std::hint::spin_loop();
+                     }
+                     if backoff < 64 {
+                        backoff <<= 1;
+                     }
                   }
                }
-            }
-            if updated {
-               continue;
             }
          }
       }
 
-      let Ok(key_str) = std::str::from_utf8(keys[i]) else {
-         crate::utils::resp::write_err(out, "invalid UTF-8 in request");
-         success = false;
-         continue;
-      };
-      let val_bytes = unsafe { std::slice::from_raw_parts(vals[i].0, vals[i].1) };
-      let Ok(val_str) = std::str::from_utf8(val_bytes) else {
-         crate::utils::resp::write_err(out, "invalid UTF-8 in request");
-         success = false;
-         continue;
-      };
-      conn
-         .store
-         .set_string_auto(key_str, Some(hashes[i]), entries[i], val_str, 0);
-      if conn.store.has_replication() {
-         conn.store.record_current_value(key_str);
+      if !updated {
+         for k in i..end {
+            let Ok(key_str) = std::str::from_utf8(keys[k]) else {
+               crate::utils::resp::write_err(out, "invalid UTF-8 in request");
+               success = false;
+               continue;
+            };
+            let val_bytes = unsafe { std::slice::from_raw_parts(vals[k].0, vals[k].1) };
+            if entries[k].is_null() && !conn.store.has_replication() {
+               conn.store.set_string_fast_bytes(key_str, hashes[k], val_bytes);
+            } else {
+               let Ok(val_str) = std::str::from_utf8(val_bytes) else {
+                  crate::utils::resp::write_err(out, "invalid UTF-8 in request");
+                  success = false;
+                  continue;
+               };
+               conn
+                  .store
+                  .set_string_auto(key_str, Some(hashes[k]), entries[k], val_str, 0);
+               if conn.store.has_replication() {
+                  conn.store.record_current_value(key_str);
+               }
+            }
+         }
       }
+      i = end;
    }
    if success {
       unsafe {
          out.set_len(old_len + count * 5);
-         let mut p = out.as_mut_ptr().add(old_len);
-         for _ in 0..count {
-            std::ptr::copy_nonoverlapping(b"+OK\r\n".as_ptr(), p, 5);
-            p = p.add(5);
-         }
+         std::ptr::copy_nonoverlapping(OK_BLOCK.as_ptr(), out.as_mut_ptr().add(old_len), count * 5);
       }
    }
 }
