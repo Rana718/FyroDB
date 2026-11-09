@@ -6,13 +6,15 @@ order: 15
 
 ## Overview
 
-FyroDB combines five key architectural decisions:
+FyroDB combines seven key architectural decisions:
 
 1. **Thread-per-core I/O** — one epoll loop per CPU core via `mio`, with `SO_REUSEPORT` for kernel-level connection distribution
-2. **Lock-free hash map** — custom sharded open-addressing map with atomic pointer swaps and epoch-based reclamation
+2. **Lock-free hash map** — custom sharded open-addressing map with atomic pointer swaps, epoch-based reclamation, and right-sized initial shard capacity (32K slots)
 3. **Zero-copy data path** — RESP parsing directly from read buffer, GET writes stored value straight to TCP buffer
-4. **Batched writes** — all epoll events processed before flushing responses, reducing syscall count
-5. **Compact, adaptive storage** — inline keys and values, lazy shard growth, compact collection encodings, and background memory reclamation
+4. **Batched writes & run coalescing** — all epoll events processed before flushing responses; `try_fast_tail` parses write runs directly into stack arrays
+5. **Compact, adaptive storage** — inline keys and values, right-sized shard memory, compact collection encodings, and background memory reclamation
+6. **Embedded Lua 5.4 scripting** — Redis-compatible runtime with SHA1 chunk caching, re-entrant in-process command execution, and generational GC
+7. **In-process L1 DB Cache routing** — direct memory query routing between PostgreSQL proxy and KV store, completely bypassing loopback network hops
 
 ## Data Flow
 
@@ -80,7 +82,7 @@ Key properties:
   backoff a hot key scaled *negatively* with worker count, because every waiter
   saw the unlock at once and stampeded the same line with compare-exchanges
 - Keys up to 15 bytes are stored inline; longer keys use one boxed string
-- Shards begin with eight slots and grow lazily to the configured key limit
+- Shards begin with 32,768 initial capacity (right-sized to eliminate over 100MB of idle pointer arrays across 128 shards) and issue `_mm_prefetch` hints to overlap memory latency during dynamic table rebuilds
 - Retired entries and tables are freed through EBR after a grace period; a thread
   that exits hands its remaining garbage to a global list instead of leaking it
 - Direct raw-byte key matching (`eq_bytes`) avoids UTF-8 decode cycles on cache hits,
@@ -89,14 +91,18 @@ Key properties:
   allocations on pipelined SET updates, slashing hot-key contention latency by 2.4×
 - Specialized pipeline run engines process bursts up to 256 keys per pass (`BATCH = 256`),
   with an early prefetch-ahead bypass that eliminates redundant hashing and slot lookups
+- Zero-allocation `try_fast_tail` parsing inspects wire prefixes in a single 64-bit comparison and extracts arguments into fixed stack arrays (`QUEUE_RUN_MAX * 3`), bypassing general `parse_one()` overhead
+- Greedy `try_fast_set_expire_pair_at` absorbs adjacent `SET` + `EXPIRE` command pairs directly out of socket buffers into atomic fused operations
 
 ## Compact Values and Collections
 
 - Strings and JSON payloads use `SmallStr`, keeping values up to 23 bytes inline
 - Hashes and lists use compact vector/deque forms for small collections
-- Sets use sorted integers for numeric members, a compact vector for small sets, and promote to a hash set only when needed
+- Sets use sorted integers for numeric members (with $O(1)$ sequential push fast paths), a compact vector for small sets, and promote to a hash set only when needed; `sadd_added_flags_into` streams `:1\r\n` / `:0\r\n` responses directly to connection buffers
+- Pipelined `JSON.GET` runs prefetch cache slots and entries in parallel, streaming raw JSON payloads via `write_bulk_raw`
 - Compact collections promote after 64 elements and can demote again after shrinking
-- Sorted sets use one score-ordered vector instead of duplicate ordered and lookup indexes
+- Sorted sets use one score-ordered vector instead of duplicate ordered and lookup indexes; `ZSetData::with_capacity` pre-allocates index structures for large sets with `CHUNK_MAX = 64`
+- Fast float formatting uses `ryu` for zero-allocation floating point serialization
 - A sorted set's bloom filter probes five bits per member, keeping the
   false-positive rate near 0.5%. Each false positive costs a full linear scan of
   the member list, which is the dominant cost of `ZADD` into a large set
@@ -128,7 +134,27 @@ Memory maintenance runs outside command hot paths:
 
 - **Arc snapshot** — publish reads an Arc-cloned subscriber list (zero locks)
 - **First-byte pattern index** — patterns bucketed by first character, PUBLISH only checks relevant bucket
-- **Lock-free delivery** — SegQueue per subscriber, coalesced wake notifications
+- **Lock-free delivery & batched fanout** — SegQueue per subscriber, batched worker fanout, uniform `CachedFrame` sharing, and 1 MB `SO_SNDBUF` tuning on subscriber sockets
+- **Protocol conformance** — per-channel subscribe/unsubscribe response emission directly into connection buffers without temporary `Vec` allocations
+
+## Redis Lua Scripting Engine
+
+FyroDB embeds a full Redis-compatible Lua 5.4 scripting runtime powered by `mlua`:
+
+- **Commands**: `EVAL`, `EVALSHA`, `SCRIPT LOAD`, `SCRIPT EXISTS`, and `SCRIPT FLUSH`
+- **Pre-compiled SHA1 digest caching**: Scripts are compiled once and executed repeatedly via SHA1 digest lookup with zero compile latency
+- **Re-entrant in-process execution**: `redis.call` and `redis.pcall` invoke the server's command dispatcher directly against local storage without TCP loopback or process hops
+- **Generational GC & memory limits**: Isolated script state with generational garbage collection prevents memory growth across long sessions
+- **Zero-allocation conversions**: Direct streaming between Lua primitives and RESP protocol frames
+
+## DB Cache Proxy & In-Process L1 Routing
+
+The PostgreSQL caching proxy sits in front of upstream PostgreSQL instances while sharing memory with the KV engine:
+
+- **In-process L1 routing**: Query cache hits resolve directly from shared memory structures (`L1Cache`), bypassing TCP network hops
+- **8-slot hot query cache**: Bypasses hash and normalization logic on hot repeated queries within active connections
+- **Zero-allocation parameter parsing**: Decodes extended protocol parameters directly from wire slices
+- **mio worker event loop**: N worker threads multiplex client connections with coalesced batch flushing (`flush_out_batched`)
 
 ## Vector and Full-Text Search
 

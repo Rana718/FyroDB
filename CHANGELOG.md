@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.3.1] - 2026-11-09
+
+### Added
+- **Redis Lua Scripting Engine (`EVAL`, `EVALSHA`, `SCRIPT`)** — Full Redis-compatible Lua 5.4 scripting runtime powered by `mlua` 0.12.2. Features re-entrant `redis.call` and `redis.pcall` dispatch directly into FyroDB's command pipeline, pre-compiled SHA1 digest caching, generational garbage collection, isolated script execution state, and zero-allocation RESP type conversions.
+- **In-Process L1 Cache Routing for DB Cache** — Direct memory-mapped query result routing between the PostgreSQL proxy and the KV storage engine. Cache hits bypass TCP loopback overhead entirely, serving warm PostgreSQL query results at raw in-process memory speeds.
+- **Pipelined `JSON.GET` Run Dispatcher** — Fast-path parser `try_fast_json_get_key_at` with batch slot and entry prefetching (`dispatch_json_get_run`) and direct raw bulk byte emission (`write_bulk_raw`). Batch window for `JSON.SET` expanded to 256.
+- **Greedy `SET` + `EXPIRE` Pair Absorption** — `try_fast_set_expire_pair_at` parser path greedily absorbs adjacent `SET key val` and `EXPIRE key ttl` command pairs directly out of the read buffer (up to 128 pairs per batch) into fused atomic writes under a single lock.
+
+### Optimized
+- **Zero-Allocation Write Run Parsing & Execution** — `try_fast_tail` verifies command prefixes via a single 64-bit comparison and extracts arguments into fixed stack arrays (`QUEUE_RUN_MAX * 3`), eliminating `parse_one()` overhead and heap allocations across `ZADD`, `SADD`, `HSET`, `PFADD`, `GEOADD`, `XADD`, and `LPUSH`/`RPOP`.
+- **High-Throughput Pub/Sub TCP Pipeline Scaling** — Batched fanout delivery to same-channel subscribers, uniform cached frame encoding (`CachedFrame`), socket write buffer tuning (1 MB `SO_SNDBUF` on subscriber sockets), and `try_fast_publish_at` fast path in command dispatch.
+- **Storage Shard Capacity & Memory Right-Sizing** — Right-sized default `INITIAL_SHARD_CAPACITY` from 131,072 to 32,768 (reducing idle empty table footprint by >100 MB across 128 shards) and implemented adaptive write buffer retention (32 KB for standard connections, 256 KB for subscribers).
+- **Lookahead Cache-Line Prefetching** — Added `_mm_prefetch` hints during shard resizing table rebuilds and probe sequences in CustomHash.
+- **Collection Fast Paths & Streamed Buffer Formatting** — Monotonic sequential integer insertion fast path in Set storage, `sadd_added_flags_into` streaming `:1\r\n` / `:0\r\n` responses directly into connection buffers without intermediate `Vec<bool>` allocations, and capacity-based index pre-allocation in `ZSetData` with `CHUNK_MAX = 64`.
+- **DB Cache Extended Protocol & Pooling Enhancements** — 8-slot hot query cache, unnamed portal fast-path, zero-allocation parameter decoding, and optimized upstream connection pool management.
+- **Fast Float Serialization** — Integrated `ryu` for zero-allocation floating point to string conversion.
+
+### Fixed
+- **CustomHash Spinlock Deadlock Under High Contention** — Fixed single-key contention deadlock in CustomHash spinlocks by introducing exponential backoff with thread yield.
+- **Shard Capacity Growth Calculation** — Fixed capacity growth boundary checks in CustomHash shards to prevent premature rebuild stalls.
+- **Pub/Sub Multi-Subscribe Protocol Alignment** — Fixed `SUBSCRIBE` / `UNSUBSCRIBE` responses to emit separate RESP frames per channel as mandated by the Redis specification, while eliminating temporary `Vec` allocations.
+- **Pub/Sub Frame Length Calculation** — Corrected an off-by-one error in total byte length calculation in `encode_message()`.
+- **`Store::hset_bytes` Return Count** — Fixed inconsistent return counter semantics in `Store::hset_bytes` to accurately reflect newly created fields versus updated fields.
+
+---
+
 ## [0.3.0] - 2026-10-26
 
 ### Added

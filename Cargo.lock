@@ -182,7 +182,7 @@ dependencies = [
 
 [[package]]
 name = "customhash"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "ahash",
  "crossbeam-utils",
@@ -344,7 +344,7 @@ dependencies = [
 
 [[package]]
 name = "fyro-dbcache"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "base64",
  "foldhash",
@@ -362,7 +362,7 @@ dependencies = [
 
 [[package]]
 name = "fyro-vector"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "bytemuck",
  "crossbeam-queue",
@@ -373,7 +373,7 @@ dependencies = [
 
 [[package]]
 name = "fyro_db"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "bytemuck",
  "crossbeam-queue",
@@ -854,7 +854,7 @@ dependencies = [
 
 [[package]]
 name = "rust-zmalloc"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "jemallocator",
  "libc",
