@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.3.1] - 2026-11-09
 
 ### Added
+- **Unix Domain Socket Support (`unix-sockets`)** — Added high-performance Unix domain socket transport support via the `unix-sockets` feature. Clients can connect over local IPC sockets via `unix:/path/to/socket.sock` or `--unix-socket <path>`, reducing localhost round-trip latency to a third compared to loopback TCP. Features multi-worker listener cloning (`dup`) allowing all worker threads to accept incoming Unix connections concurrently.
 - **Redis Lua Scripting Engine (`EVAL`, `EVALSHA`, `SCRIPT`)** — Full Redis-compatible Lua 5.4 scripting runtime powered by `mlua` 0.12.2. Features re-entrant `redis.call` and `redis.pcall` dispatch directly into FyroDB's command pipeline, pre-compiled SHA1 digest caching, generational garbage collection, isolated script execution state, and zero-allocation RESP type conversions.
 - **In-Process L1 Cache Routing for DB Cache** — Direct memory-mapped query result routing between the PostgreSQL proxy and the KV storage engine. Cache hits bypass TCP loopback overhead entirely, serving warm PostgreSQL query results at raw in-process memory speeds.
 - **Pipelined `JSON.GET` Run Dispatcher** — Fast-path parser `try_fast_json_get_key_at` with batch slot and entry prefetching (`dispatch_json_get_run`) and direct raw bulk byte emission (`write_bulk_raw`). Batch window for `JSON.SET` expanded to 256.

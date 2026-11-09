@@ -14,6 +14,14 @@ v0.3.1 brings the Redis Lua scripting engine to FyroDB, alongside major write-pa
 
 ## Highlights
 
+### Unix Domain Socket Support
+
+v0.3.1 introduces high-performance Unix domain socket listener support (`unix-sockets` feature):
+
+- **Ultra-low latency IPC**: Connect directly over Unix domain sockets (`unix:/path/to/socket.sock` or `--unix-socket <path>`), reducing localhost round-trip latency to a third by eliminating TCP loopback overhead.
+- **Multi-Worker Listener Duplication**: Uses kernel file descriptor duplication (`dup`) across worker threads, allowing all mio worker threads to concurrently multiplex and accept incoming Unix domain socket connections.
+- **Graceful Lifecycle Management**: Worker 0 automatically manages socket binding and unlinks stale socket files on startup and clean shutdown.
+
 ### Redis Lua Scripting Engine
 
 v0.3.1 introduces a fully Redis-compatible Lua 5.4 scripting runtime powered by `mlua` 0.12.2:
@@ -89,6 +97,7 @@ No breaking changes. All existing configuration, Redis commands, and client conn
 
 | Area | Change |
 |---|---|
+| Networking | Unix domain socket support (`unix-sockets`), multi-worker `dup` listener scaling, `--unix-socket` flag |
 | Scripting | Redis Lua 5.4 scripting runtime (`EVAL`, `EVALSHA`, `SCRIPT LOAD/EXISTS/FLUSH`), SHA1 caching, generational GC |
 | DB Cache Proxy | In-process L1 cache routing between proxy and KV store; 8-slot hot query cache, unnamed portal fast-path |
 | Command Parser | `try_fast_tail` zero-alloc write run parsing into fixed stack buffers (`QUEUE_RUN_MAX * 3`) |

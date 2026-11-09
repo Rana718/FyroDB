@@ -8,7 +8,7 @@ order: 15
 
 FyroDB combines seven key architectural decisions:
 
-1. **Thread-per-core I/O** — one epoll loop per CPU core via `mio`, with `SO_REUSEPORT` for kernel-level connection distribution
+1. **Thread-per-core I/O** — one epoll loop per CPU core via `mio`, with `SO_REUSEPORT` for TCP and `dup` socket cloning for Unix domain sockets
 2. **Lock-free hash map** — custom sharded open-addressing map with atomic pointer swaps, epoch-based reclamation, and right-sized initial shard capacity (32K slots)
 3. **Zero-copy data path** — RESP parsing directly from read buffer, GET writes stored value straight to TCP buffer
 4. **Batched writes & run coalescing** — all epoll events processed before flushing responses; `try_fast_tail` parses write runs directly into stack arrays

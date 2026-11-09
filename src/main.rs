@@ -153,10 +153,14 @@ fn main() {
       );
    }
 
-   println!(
-      "fyrodb running on {}:{} ({workers} workers)",
-      config.bind, config.port
-   );
+   if config.bind.starts_with("unix:") || config.bind.starts_with("unix://") {
+      println!("fyrodb running on {} ({workers} workers)", config.bind);
+   } else {
+      println!(
+         "fyrodb running on {}:{} ({workers} workers)",
+         config.bind, config.port
+      );
+   }
    println!(
       "  max_keys={} shards={} max_clients={} rdb_path={} rdb_interval={}s",
       if config.max_keys == usize::MAX {
@@ -297,12 +301,24 @@ impl Config {
    fn from_env() -> Self {
       let mut workers = env_usize("FYRODB_WORKERS", 0);
       let mut port = env_u16("FYRODB_PORT", 8000);
+      let mut bind = env::var("FYRODB_UNIX_SOCKET")
+         .map(|p| format!("unix:{p}"))
+         .or_else(|_| env::var("FYRODB_BIND"))
+         .unwrap_or_else(|_| "0.0.0.0".to_string());
       let mut auth = env::var("FYRODB_AUTH").ok().filter(|s| !s.is_empty());
       let mut dbcache = fyro_dbcache::DbCacheConfig::from_env();
       let args: Vec<String> = env::args().collect();
       let mut i = 1;
       while i < args.len() {
          match args[i].as_str() {
+            "--bind" | "-b" if i + 1 < args.len() => {
+               bind = args[i + 1].clone();
+               i += 1;
+            }
+            "--unix-socket" | "--unixsocket" if i + 1 < args.len() => {
+               bind = format!("unix:{}", args[i + 1]);
+               i += 1;
+            }
             "--workers" | "-w" if i + 1 < args.len() => {
                if let Ok(w) = args[i + 1].parse::<usize>() {
                   workers = w;
@@ -378,7 +394,7 @@ impl Config {
          rdb_path: env::var("FYRODB_RDB_PATH").unwrap_or_else(|_| "fyrodb.rdb".to_string()),
          rdb_interval: Duration::from_secs(env_u64("FYRODB_RDB_INTERVAL", 300)),
          auth,
-         bind: env::var("FYRODB_BIND").unwrap_or_else(|_| "0.0.0.0".to_string()),
+         bind,
          dbcache,
       }
    }

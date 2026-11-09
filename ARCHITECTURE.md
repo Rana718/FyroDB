@@ -14,7 +14,7 @@ FyroDB is a two-engine system in a single Rust binary:
 
 | Factor              | Redis                         | FyroDB                                                                                       |
 | ------------------- | ----------------------------- | -------------------------------------------------------------------------------------------- |
-| I/O model           | Single-thread epoll           | Thread-per-core epoll (mio), SO_REUSEPORT                                                    |
+| I/O model           | Single-thread epoll           | Thread-per-core epoll (mio), SO_REUSEPORT, Unix domain sockets (`unix-sockets`) with multi-worker dup accept scaling |
 | Accept queue        | Single shared queue           | Per-thread kernel queue — no contention                                                      |
 | Hash map            | Custom, single-threaded       | Lock-free CustomMap — EBR + seqlock + per-key spinlock                                       |
 | RESP parsing        | Copy into dynamic buffer      | Zero-copy: parse directly from read buffer                                                   |
