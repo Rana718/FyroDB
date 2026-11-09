@@ -84,6 +84,61 @@ const DIGITS100: &[u8; 200] = b"0001020304050607080910111213141516171819\
 6061626364656667686970717273747576777879\
 8081828384858687888990919293949596979899";
 
+#[inline(always)]
+pub fn format_usize_digits<'a>(mut n: usize, buf: &'a mut [u8]) -> &'a [u8] {
+   if n == 0 {
+      buf[0] = b'0';
+      return &buf[..1];
+   }
+   let mut i = buf.len();
+   while n > 0 {
+      i -= 1;
+      buf[i] = b'0' + (n % 10) as u8;
+      n /= 10;
+   }
+   &buf[i..]
+}
+
+#[inline(always)]
+pub unsafe fn write_bulk_raw(dst: *mut u8, s: &[u8]) -> usize {
+   unsafe {
+      let len = s.len();
+      if len < 10 {
+         let total = 6 + len;
+         let header = 0x0A0D_3024u32 | ((len as u32) << 8);
+         dst.cast::<u32>().write_unaligned(header);
+         std::ptr::copy_nonoverlapping(s.as_ptr(), dst.add(4), len);
+         dst.add(4 + len).cast::<u16>().write_unaligned(CRLF_U16);
+         total
+      } else if len < 100 {
+         let total = 7 + len;
+         let d1 = b'0' + (len / 10) as u8;
+         let d2 = b'0' + (len % 10) as u8;
+         let header = 0x0D00_0024u32 | ((d1 as u32) << 8) | ((d2 as u32) << 16);
+         dst.cast::<u32>().write_unaligned(header);
+         *dst.add(4) = b'\n';
+         std::ptr::copy_nonoverlapping(s.as_ptr(), dst.add(5), len);
+         dst.add(5 + len).cast::<u16>().write_unaligned(CRLF_U16);
+         total
+      } else {
+         let mut p = dst;
+         *p = b'$';
+         p = p.add(1);
+         let mut num_buf = [0u8; 20];
+         let num_str = format_usize_digits(len, &mut num_buf);
+         std::ptr::copy_nonoverlapping(num_str.as_ptr(), p, num_str.len());
+         p = p.add(num_str.len());
+         p.cast::<u16>().write_unaligned(CRLF_U16);
+         p = p.add(2);
+         std::ptr::copy_nonoverlapping(s.as_ptr(), p, len);
+         p = p.add(len);
+         p.cast::<u16>().write_unaligned(CRLF_U16);
+         p = p.add(2);
+         p.offset_from(dst) as usize
+      }
+   }
+}
+
 #[inline]
 pub fn write_ok(out: &mut Vec<u8>) {
    out.extend_from_slice(OK);

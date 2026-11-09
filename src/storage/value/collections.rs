@@ -284,6 +284,20 @@ impl SetInner {
       Self::Integers(Vec::new())
    }
 
+   #[inline]
+   pub fn with_capacity(cap: usize) -> Self {
+      Self::Integers(Vec::with_capacity(cap))
+   }
+
+   #[inline]
+   pub fn reserve(&mut self, additional: usize) {
+      match self {
+         Self::Integers(v) => v.reserve(additional),
+         Self::Compact(v) => v.reserve(additional),
+         Self::Full(s) => s.reserve(additional),
+      }
+   }
+
    pub fn from_strings(values: impl IntoIterator<Item = String>) -> Self {
       let mut set = Self::new();
       for value in values {
@@ -307,6 +321,15 @@ impl SetInner {
       match self {
          Self::Integers(v) => {
             if let Some(n) = canonical_i64(member.as_str()) {
+               if let Some(&last) = v.last() {
+                  if n > last {
+                     v.push(n);
+                     return true;
+                  }
+                  if n == last {
+                     return false;
+                  }
+               }
                match v.binary_search(&n) {
                   Ok(_) => false,
                   Err(pos) => {
@@ -323,16 +346,30 @@ impl SetInner {
                true
             }
          }
-         Self::Compact(v) => match v.binary_search_by(|m| m.as_str().cmp(member.as_str())) {
-            Ok(_) => false,
-            Err(pos) => {
-               v.insert(pos, member);
-               if v.len() > COMPACT_THRESHOLD {
-                  self.promote_set();
+         Self::Compact(v) => {
+            if let Some(last) = v.last() {
+               if member.as_str() > last.as_str() {
+                  v.push(member);
+                  if v.len() > COMPACT_THRESHOLD {
+                     self.promote_set();
+                  }
+                  return true;
                }
-               true
+               if member.as_str() == last.as_str() {
+                  return false;
+               }
             }
-         },
+            match v.binary_search_by(|m| m.as_str().cmp(member.as_str())) {
+               Ok(_) => false,
+               Err(pos) => {
+                  v.insert(pos, member);
+                  if v.len() > COMPACT_THRESHOLD {
+                     self.promote_set();
+                  }
+                  true
+               }
+            }
+         }
          Self::Full(s) => s.insert(member),
       }
    }

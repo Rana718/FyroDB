@@ -112,6 +112,10 @@ impl<'a> Conn<'a> {
                      prefetched = self.parser.pos;
                      continue;
                   }
+                  if id == CmdId::JsonGet && dispatch_json_get_run(self, raw) {
+                     prefetched = self.parser.pos;
+                     continue;
+                  }
 
                   if id.is_queue() && is_coalescible_queue(raw, id) {
                      match dispatch_queue_run(self, raw) {

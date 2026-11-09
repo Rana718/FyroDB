@@ -121,6 +121,28 @@ pub(super) fn dispatch_set_expire_pair(
       conn.store.record_current_value(key);
    }
    conn.parser.wbuf.extend_from_slice(b"+OK\r\n:1\r\n");
+
+   let exp_60 = crate::storage::value::expiry_from_secs(60).unwrap();
+   for _ in 0..128 {
+      let avail = conn.parser.filled - conn.parser.pos;
+      if avail < 48 {
+         break;
+      }
+      let buf = unsafe { conn.parser.rbuf.as_ptr().add(conn.parser.pos) };
+      if let Some((k_slice, v_slice)) = conn.parser.try_fast_set_expire_pair_at(buf, avail) {
+         let (hint, entry) = conn.hint_for(k_slice);
+         let out = &mut conn.parser.wbuf;
+         let Some(k_str) = part_str(out, k_slice) else { return PairOutcome::ConnError; };
+         let Some(v_str) = part_str(out, v_slice) else { return PairOutcome::ConnError; };
+         conn.store.set_string_auto(k_str, hint, entry, v_str, exp_60);
+         if conn.store.has_replication() {
+            conn.store.record_current_value(k_str);
+         }
+         conn.parser.wbuf.extend_from_slice(b"+OK\r\n:1\r\n");
+      } else {
+         break;
+      }
+   }
    PairOutcome::Done
 }
 
@@ -300,6 +322,42 @@ pub(super) fn is_write_run(raw: &[(*const u8, usize)]) -> bool {
    WriteOp::parse(cmd).is_some_and(|op| raw.len() == op.arity())
 }
 
+use crate::utils::resp::format_usize_digits;
+
+#[inline(always)]
+fn try_fast_tail(
+   buf: *const u8,
+   avail: usize,
+   prefix_len: usize,
+   tail_len: usize,
+   out_parts: &mut [(*const u8, usize)],
+) -> Option<usize> {
+   let mut offset = prefix_len;
+   for i in 0..tail_len {
+      if avail < offset + 4 {
+         return None;
+      }
+      if unsafe { *buf.add(offset) } != b'$' {
+         return None;
+      }
+      let (len, hdr_len) =
+         unsafe { crate::utils::parser::parse_len_le4(buf.add(offset + 1), avail - (offset + 1)) }?;
+      let data_offset = offset + 1 + hdr_len;
+      let next_offset = data_offset + len + 2;
+      if avail < next_offset {
+         return None;
+      }
+      if unsafe { std::ptr::read_unaligned(buf.add(next_offset - 2) as *const u16) }
+         != u16::from_ne_bytes(*b"\r\n")
+      {
+         return None;
+      }
+      out_parts[i] = (unsafe { buf.add(data_offset) }, len);
+      offset = next_offset;
+   }
+   Some(offset)
+}
+
 /// Execute a same-key write run with one lock acquisition; any
 /// non-matching command ends the run and dispatches normally.
 pub(super) fn dispatch_write_run(
@@ -315,18 +373,75 @@ pub(super) fn dispatch_write_run(
    };
    let key_bytes = key.as_bytes();
 
-   // first aliases parts_raw (overwritten per parse_one): copy tail values
-   // to the stack now; allocate only once a real run forms.
    let tail_len = op.arity() - 2;
-   let mut first_tail: [(*const u8, usize); 3] = [(std::ptr::null(), 0); 3];
+   let mut parts: [(*const u8, usize); QUEUE_RUN_MAX * 3] = [(std::ptr::null(), 0); QUEUE_RUN_MAX * 3];
    for (i, &p) in first[2..].iter().enumerate() {
-      first_tail[i] = p;
+      parts[i] = p;
    }
-   let mut parts: Vec<(*const u8, usize)> = Vec::new();
-   let mut collected_first = false;
    let mut cmds = 1usize;
 
+   let mut prefix_buf = [0u8; 192];
+   let mut prefix_len = 0;
+   let can_fast = key_bytes.len() + first_cmd.len() + 32 <= prefix_buf.len() && tail_len <= 3;
+   if can_fast {
+      let arity_bytes: &[u8] = match op.arity() {
+         2 => b"*2\r\n",
+         3 => b"*3\r\n",
+         4 => b"*4\r\n",
+         5 => b"*5\r\n",
+         _ => b"",
+      };
+      prefix_buf[..4].copy_from_slice(arity_bytes);
+      prefix_len = 4;
+
+      prefix_buf[prefix_len] = b'$';
+      prefix_len += 1;
+      let mut num_buf = [0u8; 20];
+      let num_str = format_usize_digits(first_cmd.len(), &mut num_buf);
+      prefix_buf[prefix_len..prefix_len + num_str.len()].copy_from_slice(num_str);
+      prefix_len += num_str.len();
+      prefix_buf[prefix_len..prefix_len + 2].copy_from_slice(b"\r\n");
+      prefix_len += 2;
+      prefix_buf[prefix_len..prefix_len + first_cmd.len()].copy_from_slice(first_cmd);
+      prefix_len += first_cmd.len();
+      prefix_buf[prefix_len..prefix_len + 2].copy_from_slice(b"\r\n");
+      prefix_len += 2;
+
+      prefix_buf[prefix_len] = b'$';
+      prefix_len += 1;
+      let num_str = format_usize_digits(key_bytes.len(), &mut num_buf);
+      prefix_buf[prefix_len..prefix_len + num_str.len()].copy_from_slice(num_str);
+      prefix_len += num_str.len();
+      prefix_buf[prefix_len..prefix_len + 2].copy_from_slice(b"\r\n");
+      prefix_len += 2;
+      prefix_buf[prefix_len..prefix_len + key_bytes.len()].copy_from_slice(key_bytes);
+      prefix_len += key_bytes.len();
+      prefix_buf[prefix_len..prefix_len + 2].copy_from_slice(b"\r\n");
+      prefix_len += 2;
+   }
+
+   let prefix = &prefix_buf[..prefix_len];
    while cmds < QUEUE_RUN_MAX {
+      if can_fast {
+         let avail = conn.parser.filled - conn.parser.pos;
+         if avail >= prefix_len + tail_len * 4 {
+            let buf = unsafe { conn.parser.rbuf.as_ptr().add(conn.parser.pos) };
+            if unsafe { std::slice::from_raw_parts(buf, prefix_len) } == prefix {
+               if let Some(parsed_len) = try_fast_tail(
+                  buf,
+                  avail,
+                  prefix_len,
+                  tail_len,
+                  &mut parts[cmds * tail_len..],
+               ) {
+                  conn.parser.pos += parsed_len;
+                  cmds += 1;
+                  continue;
+               }
+            }
+         }
+      }
+
       match conn.parser.parse_one() {
          ParseResult::Complete => {
             let raw_ptr = conn.parser.parts_raw.as_ptr();
@@ -337,12 +452,7 @@ pub(super) fn dispatch_write_run(
                && raw.len() == op.arity()
                && unsafe { part_bytes(raw[1]) } == key_bytes;
             if !same {
-               // Dispatch the already-consumed trailing command inline, or it drops.
-               let tail: &[(*const u8, usize)] = if collected_first {
-                  &parts
-               } else {
-                  &first_tail[..tail_len]
-               };
+               let tail = &parts[..cmds * tail_len];
                let outcome = match execute_write_run(conn, key, op, cmds, tail) {
                   Ok(()) => QueueRunOutcome::Done,
                   Err(()) => QueueRunOutcome::ConnError,
@@ -352,20 +462,13 @@ pub(super) fn dispatch_write_run(
                }
                return outcome;
             }
-            if !collected_first {
-               parts.extend_from_slice(&first_tail[..tail_len]);
-               collected_first = true;
-            }
-            parts.extend_from_slice(&raw[2..]);
+            let dst = &mut parts[cmds * tail_len..(cmds + 1) * tail_len];
+            dst.copy_from_slice(&raw[2..]);
             cmds += 1;
          }
          ParseResult::Incomplete => break,
          ParseResult::Error => {
-            let tail: &[(*const u8, usize)] = if collected_first {
-               &parts
-            } else {
-               &first_tail[..tail_len]
-            };
+            let tail = &parts[..cmds * tail_len];
             return match execute_write_run(conn, key, op, cmds, tail) {
                Ok(()) => QueueRunOutcome::Done,
                Err(()) => QueueRunOutcome::ConnError,
@@ -374,11 +477,7 @@ pub(super) fn dispatch_write_run(
       }
    }
 
-   let tail: &[(*const u8, usize)] = if collected_first {
-      &parts
-   } else {
-      &first_tail[..tail_len]
-   };
+   let tail = &parts[..cmds * tail_len];
    match execute_write_run(conn, key, op, cmds, tail) {
       Ok(()) => QueueRunOutcome::Done,
       Err(()) => QueueRunOutcome::ConnError,
@@ -450,14 +549,14 @@ pub(super) fn execute_write_run(
          }
       }
       WriteOp::Hset => {
-         let mut fields: Vec<(&str, &[u8])> = Vec::with_capacity(parts.len() / 2);
-         for pair in parts.chunks(2) {
+         let mut fields: [(&str, &[u8]); QUEUE_RUN_MAX] = [("", &[]); QUEUE_RUN_MAX];
+         for (i, pair) in parts.chunks_exact(2).enumerate() {
             let Some(f) = std::str::from_utf8(unsafe { part_bytes(pair[0]) }).ok() else {
                return Err(());
             };
-            fields.push((f, unsafe { part_bytes(pair[1]) }));
+            fields[i] = (f, unsafe { part_bytes(pair[1]) });
          }
-         match conn.store.hset_bytes_added_flags(key, &fields) {
+         match conn.store.hset_bytes_added_flags(key, &fields[..cmds]) {
             Ok(flags) => {
                let out = &mut conn.parser.wbuf;
                out.reserve(flags.len() * 4);
@@ -481,27 +580,17 @@ pub(super) fn execute_write_run(
       }
       WriteOp::Sadd => {
          let out = &mut conn.parser.wbuf;
-         let mut members: Vec<&str> = Vec::with_capacity(parts.len());
-         for &part in parts {
+         let mut members: [&str; QUEUE_RUN_MAX] = [""; QUEUE_RUN_MAX];
+         for (i, &part) in parts.iter().enumerate() {
             let Some(m) = part_str(out, part) else {
                return Err(());
             };
-            members.push(m);
+            members[i] = m;
          }
-         match conn.store.sadd_added_flags(key, &members) {
-            Ok(flags) => {
-               let out = &mut conn.parser.wbuf;
-               out.reserve(flags.len() * 4);
-               for added in flags {
-                  crate::utils::resp::write_integer(out, added as i64);
-               }
-            }
-            Err(e) => {
-               let out = &mut conn.parser.wbuf;
-               out.reserve(cmds * 32);
-               for _ in 0..cmds {
-                  crate::utils::resp::write_err(out, e);
-               }
+         if let Err(e) = conn.store.sadd_added_flags_into(key, &members[..cmds], out) {
+            out.reserve(cmds * 32);
+            for _ in 0..cmds {
+               crate::utils::resp::write_err(out, e);
             }
          }
          if replication {
@@ -512,14 +601,14 @@ pub(super) fn execute_write_run(
       }
       WriteOp::Pfadd => {
          let out = &mut conn.parser.wbuf;
-         let mut elements: Vec<&str> = Vec::with_capacity(parts.len());
-         for &part in parts {
+         let mut elements: [&str; QUEUE_RUN_MAX] = [""; QUEUE_RUN_MAX];
+         for (i, &part) in parts.iter().enumerate() {
             let Some(m) = part_str(out, part) else {
                return Err(());
             };
-            elements.push(m);
+            elements[i] = m;
          }
-         match conn.store.pfadd_run(key, &elements) {
+         match conn.store.pfadd_run(key, &elements[..cmds]) {
             Ok(flags) => {
                let out = &mut conn.parser.wbuf;
                out.reserve(flags.len() * 4);
@@ -544,9 +633,9 @@ pub(super) fn execute_write_run(
          // A bad score fails only its command: sequential fallback keeps the
          // reply stream identical.
          let out = &mut conn.parser.wbuf;
-         let mut members: Vec<(f64, &str)> = Vec::with_capacity(parts.len() / 2);
+         let mut members: [(f64, &str); QUEUE_RUN_MAX] = [(0.0, ""); QUEUE_RUN_MAX];
          let mut all_valid = true;
-         for pair in parts.chunks(2) {
+         for (i, pair) in parts.chunks_exact(2).enumerate() {
             let score_b = unsafe { part_bytes(pair[0]) };
             let Some(score) = crate::utils::resp::fast_parse_f64_bytes(score_b) else {
                all_valid = false;
@@ -555,10 +644,10 @@ pub(super) fn execute_write_run(
             let Some(m) = part_str(out, pair[1]) else {
                return Err(());
             };
-            members.push((score, m));
+            members[i] = (score, m);
          }
          if !all_valid {
-            for pair in parts.chunks(2) {
+            for pair in parts.chunks_exact(2) {
                let score = crate::utils::resp::fast_parse_f64_bytes(unsafe { part_bytes(pair[0]) });
                match score {
                   Some(score) => {
@@ -586,7 +675,7 @@ pub(super) fn execute_write_run(
             }
             return Ok(());
          }
-         if let Err(e) = conn.store.zadd_added_flags_into(key, &members, out) {
+         if let Err(e) = conn.store.zadd_added_flags_into(key, &members[..cmds], out) {
             out.reserve(cmds * 32);
             for _ in 0..cmds {
                crate::utils::resp::write_err(out, e);
@@ -601,9 +690,9 @@ pub(super) fn execute_write_run(
       WriteOp::Geoadd => {
          let out = &mut conn.parser.wbuf;
          out.reserve(cmds * 4);
-         let mut members: Vec<(f64, &str)> = Vec::with_capacity(parts.len() / 3);
+         let mut members: [(f64, &str); QUEUE_RUN_MAX] = [(0.0, ""); QUEUE_RUN_MAX];
          let mut all_valid = true;
-         for chunk in parts.chunks(3) {
+         for (i, chunk) in parts.chunks_exact(3).enumerate() {
             let lon_b = unsafe { part_bytes(chunk[0]) };
             let lat_b = unsafe { part_bytes(chunk[1]) };
             let Some(member) = part_str(out, chunk[2]) else {
@@ -615,7 +704,7 @@ pub(super) fn execute_write_run(
             ) {
                if (-180.0..=180.0).contains(&lon) && (-85.05112878..=85.05112878).contains(&lat) {
                   let hash = crate::storage::geo::geohash_encode(lon, lat);
-                  members.push((f64::from_bits(hash), member));
+                  members[i] = (f64::from_bits(hash), member);
                } else {
                   all_valid = false;
                   break;
@@ -626,13 +715,13 @@ pub(super) fn execute_write_run(
             }
          }
          if all_valid {
-            if let Err(e) = conn.store.zadd_added_flags_into(key, &members, out) {
+            if let Err(e) = conn.store.zadd_added_flags_into(key, &members[..cmds], out) {
                for _ in 0..cmds {
                   crate::utils::resp::write_err(out, e);
                }
             }
          } else {
-            for chunk in parts.chunks(3) {
+            for chunk in parts.chunks_exact(3) {
                let lon_b = unsafe { part_bytes(chunk[0]) };
                let lat_b = unsafe { part_bytes(chunk[1]) };
                let Some(member) = part_str(out, chunk[2]) else {
@@ -668,8 +757,8 @@ pub(super) fn execute_write_run(
       WriteOp::Xadd => {
          let out = &mut conn.parser.wbuf;
          out.reserve(cmds * 24);
-         let mut entries: Vec<(&str, &str, &str)> = Vec::with_capacity(parts.len() / 3);
-         for chunk in parts.chunks(3) {
+         let mut entries: [(&str, &str, &str); QUEUE_RUN_MAX] = [("", "", ""); QUEUE_RUN_MAX];
+         for (i, chunk) in parts.chunks_exact(3).enumerate() {
             let Some(id_str) = part_str(out, chunk[0]) else {
                return Err(());
             };
@@ -679,9 +768,9 @@ pub(super) fn execute_write_run(
             let Some(v) = part_str(out, chunk[2]) else {
                return Err(());
             };
-            entries.push((id_str, f, v));
+            entries[i] = (id_str, f, v);
          }
-         let res = conn.store.xadd_batch(key, entries.len(), |s, i| {
+         let res = conn.store.xadd_batch(key, cmds, |s, i| {
             let (id_str, f, v) = entries[i];
             let spec = crate::storage::stream::IdSpec::parse(id_str)
                .ok_or(crate::storage::stream::ERR_INVALID_ID)?;
@@ -815,11 +904,67 @@ pub(super) fn dispatch_queue_run(
    } else {
       first[2]
    };
-   let mut parts: Vec<(*const u8, usize)> = Vec::new();
-   let mut collected_first = false;
+   let mut parts = [(std::ptr::null::<u8>(), 0usize); QUEUE_RUN_MAX];
+   parts[0] = first_value;
    let mut cmds = 1usize;
+   let tail_len = if op.is_pop() { 0 } else { 1 };
 
+   let mut prefix_buf = [0u8; 192];
+   let mut prefix_len = 0;
+   let can_fast = key_bytes.len() + first_cmd.len() + 32 <= prefix_buf.len();
+   if can_fast {
+      let arity_bytes: &[u8] = if op.is_pop() { b"*2\r\n" } else { b"*3\r\n" };
+      prefix_buf[..4].copy_from_slice(arity_bytes);
+      prefix_len = 4;
+
+      prefix_buf[prefix_len] = b'$';
+      prefix_len += 1;
+      let mut num_buf = [0u8; 20];
+      let num_str = format_usize_digits(first_cmd.len(), &mut num_buf);
+      prefix_buf[prefix_len..prefix_len + num_str.len()].copy_from_slice(num_str);
+      prefix_len += num_str.len();
+      prefix_buf[prefix_len..prefix_len + 2].copy_from_slice(b"\r\n");
+      prefix_len += 2;
+      prefix_buf[prefix_len..prefix_len + first_cmd.len()].copy_from_slice(first_cmd);
+      prefix_len += first_cmd.len();
+      prefix_buf[prefix_len..prefix_len + 2].copy_from_slice(b"\r\n");
+      prefix_len += 2;
+
+      prefix_buf[prefix_len] = b'$';
+      prefix_len += 1;
+      let num_str = format_usize_digits(key_bytes.len(), &mut num_buf);
+      prefix_buf[prefix_len..prefix_len + num_str.len()].copy_from_slice(num_str);
+      prefix_len += num_str.len();
+      prefix_buf[prefix_len..prefix_len + 2].copy_from_slice(b"\r\n");
+      prefix_len += 2;
+      prefix_buf[prefix_len..prefix_len + key_bytes.len()].copy_from_slice(key_bytes);
+      prefix_len += key_bytes.len();
+      prefix_buf[prefix_len..prefix_len + 2].copy_from_slice(b"\r\n");
+      prefix_len += 2;
+   }
+
+   let prefix = &prefix_buf[..prefix_len];
    while cmds < QUEUE_RUN_MAX {
+      if can_fast {
+         let avail = conn.parser.filled - conn.parser.pos;
+         if avail >= prefix_len + tail_len * 4 {
+            let buf = unsafe { conn.parser.rbuf.as_ptr().add(conn.parser.pos) };
+            if unsafe { std::slice::from_raw_parts(buf, prefix_len) } == prefix {
+               if let Some(parsed_len) = try_fast_tail(
+                  buf,
+                  avail,
+                  prefix_len,
+                  tail_len,
+                  &mut parts[cmds..cmds + tail_len.max(1)],
+               ) {
+                  conn.parser.pos += parsed_len;
+                  cmds += 1;
+                  continue;
+               }
+            }
+         }
+      }
+
       match conn.parser.parse_one() {
          ParseResult::Complete => {
             let raw_ptr = conn.parser.parts_raw.as_ptr();
@@ -835,13 +980,7 @@ pub(super) fn dispatch_queue_run(
                }
             };
             if !same_shape || unsafe { part_bytes(raw[1]) } != key_bytes {
-               let tail: &[(*const u8, usize)] = if collected_first {
-                  &parts
-               } else if op.is_pop() {
-                  &[]
-               } else {
-                  std::slice::from_ref(&first_value)
-               };
+               let tail = if op.is_pop() { &[] } else { &parts[..cmds] };
                let outcome = match execute_queue_run(conn, key, op, cmds, tail) {
                   Ok(()) => QueueRunOutcome::Done,
                   Err(()) => QueueRunOutcome::ConnError,
@@ -852,23 +991,13 @@ pub(super) fn dispatch_queue_run(
                return outcome;
             }
             if !op.is_pop() {
-               if !collected_first {
-                  parts.push(first_value);
-                  collected_first = true;
-               }
-               parts.push(raw[2]);
+               parts[cmds] = raw[2];
             }
             cmds += 1;
          }
          ParseResult::Incomplete => break,
          ParseResult::Error => {
-            let tail: &[(*const u8, usize)] = if collected_first {
-               &parts
-            } else if op.is_pop() {
-               &[]
-            } else {
-               std::slice::from_ref(&first_value)
-            };
+            let tail = if op.is_pop() { &[] } else { &parts[..cmds] };
             return match execute_queue_run(conn, key, op, cmds, tail) {
                Ok(()) => QueueRunOutcome::Done,
                Err(()) => QueueRunOutcome::ConnError,
@@ -877,13 +1006,7 @@ pub(super) fn dispatch_queue_run(
       }
    }
 
-   let tail: &[(*const u8, usize)] = if collected_first {
-      &parts
-   } else if op.is_pop() {
-      &[]
-   } else {
-      std::slice::from_ref(&first_value)
-   };
+   let tail = if op.is_pop() { &[] } else { &parts[..cmds] };
    match execute_queue_run(conn, key, op, cmds, tail) {
       Ok(()) => QueueRunOutcome::Done,
       Err(()) => QueueRunOutcome::ConnError,

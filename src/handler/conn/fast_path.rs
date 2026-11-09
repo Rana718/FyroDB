@@ -524,7 +524,7 @@ pub(super) fn dispatch_json_set_run(conn: &mut Conn<'_>, first_raw: &[(*const u8
    if first_path != b"." {
       return false;
    }
-   const BATCH: usize = 128;
+   const BATCH: usize = 256;
    let mut keys: [&[u8]; BATCH] = [&[]; BATCH];
    let mut vals: [(*const u8, usize); BATCH] = [(std::ptr::null(), 0); BATCH];
    let mut hashes = [0u64; BATCH];
@@ -611,6 +611,118 @@ pub(super) fn dispatch_json_set_run(conn: &mut Conn<'_>, first_raw: &[(*const u8
             p = p.add(5);
          }
       }
+   }
+   true
+}
+
+pub(super) fn dispatch_json_get_run(conn: &mut Conn<'_>, first_raw: &[(*const u8, usize)]) -> bool {
+   if first_raw.len() != 3 {
+      return false;
+   }
+   let path = unsafe { part_bytes(first_raw[2]) };
+   if path != b"." {
+      return false;
+   }
+   const BATCH: usize = 256;
+   let mut keys: [&[u8]; BATCH] = [&[]; BATCH];
+   let mut hashes = [0u64; BATCH];
+   let mut tables = [std::ptr::null(); BATCH];
+   let mut entries = [std::ptr::null(); BATCH];
+
+   keys[0] = unsafe { part_bytes(first_raw[1]) };
+   let mut count = 1;
+
+   while count < BATCH {
+      let avail = conn.parser.filled - conn.parser.pos;
+      if avail < 24 {
+         break;
+      }
+      let buf = unsafe { conn.parser.rbuf.as_ptr().add(conn.parser.pos) };
+      if let Some(k_ptr) = conn.parser.try_fast_json_get_key_at(buf, avail) {
+         keys[count] = unsafe { std::slice::from_raw_parts(k_ptr.0, k_ptr.1) };
+         count += 1;
+      } else {
+         break;
+      }
+   }
+
+   if count == 1 {
+      let out = &mut conn.parser.wbuf;
+      let Some(key) = part_str(out, first_raw[1]) else {
+         return false;
+      };
+      match conn.store.json_get_to_buf(key, &["."], out) {
+         Ok(true) => {}
+         Ok(false) => crate::utils::resp::write_nil(out),
+         Err(e) => crate::utils::resp::write_store_err(out, e),
+      }
+      return true;
+   }
+
+   conn
+      .store
+      .prefetch_slots(&keys[..count], &mut hashes[..count], &mut tables[..count]);
+   conn
+      .store
+      .probe_and_prefetch_entries(&tables[..count], &hashes[..count], &mut entries[..count]);
+
+   let out = &mut conn.parser.wbuf;
+   out.reserve(count * 64);
+   let old_len = out.len();
+   let mut out_ptr = unsafe { out.as_mut_ptr().add(old_len) };
+
+   for i in 0..count {
+      let p = entries[i];
+      let mut found = false;
+      if !p.is_null() {
+         let e = unsafe { &*p.cast::<customhash::Entry<crate::storage::value::StoreValue>>() };
+         let state = e.state.load(std::sync::atomic::Ordering::Relaxed);
+         let expected = ((hashes[i] as u32 as u64) << 32) | customhash::STATE_OCCUPIED;
+         if (state & (0xFFFF_FFFF_0000_0000 | customhash::STATE_OCCUPIED)) == expected && e.key.eq_bytes(keys[i]) {
+            if state & customhash::STATE_LOCK != 0 {
+               let mut cur = state;
+               while cur & customhash::STATE_LOCK != 0 {
+                  std::hint::spin_loop();
+                  cur = e.state.load(std::sync::atomic::Ordering::Acquire);
+               }
+               if cur & customhash::STATE_OCCUPIED == 0 {
+                  unsafe {
+                     std::ptr::copy_nonoverlapping(b"$-1\r\n".as_ptr(), out_ptr, 5);
+                     out_ptr = out_ptr.add(5);
+                  }
+                  continue;
+               }
+            }
+            std::sync::atomic::fence(std::sync::atomic::Ordering::Acquire);
+            let val = unsafe { (*e.value.get()).assume_init_ref() };
+            if val.expires_ms == 0 || !val.is_expired() {
+               if let Some(raw) = val.value.as_json_str() {
+                  let written = unsafe { crate::utils::resp::write_bulk_raw(out_ptr, raw.as_bytes()) };
+                  out_ptr = unsafe { out_ptr.add(written) };
+                  found = true;
+               }
+            }
+         }
+      }
+      if !found {
+         unsafe {
+            out.set_len(out_ptr.offset_from(out.as_ptr()) as usize);
+         }
+         let Ok(key_str) = std::str::from_utf8(keys[i]) else {
+            crate::utils::resp::write_err(out, "invalid UTF-8 in request");
+            out_ptr = unsafe { out.as_mut_ptr().add(out.len()) };
+            continue;
+         };
+         match conn.store.json_get_to_buf(key_str, &["."], out) {
+            Ok(true) => {}
+            Ok(false) => crate::utils::resp::write_nil(out),
+            Err(e) => crate::utils::resp::write_store_err(out, e),
+         }
+         out_ptr = unsafe { out.as_mut_ptr().add(out.len()) };
+      }
+   }
+   unsafe {
+      out.set_len(out_ptr.offset_from(out.as_ptr()) as usize);
    }
    true
 }
