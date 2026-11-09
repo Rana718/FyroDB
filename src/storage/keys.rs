@@ -8,6 +8,9 @@ impl Store {
       let removed = self.data.remove_no_clone(key);
       if removed {
          self.aof_capture(key);
+         if let Some(mgr) = self.dbcache_manager() {
+            mgr.invalidate_key(key);
+         }
       }
       if removed && let Some(log) = &self.replication {
          let _ = log.append(crate::cluster::MutationRecord {
@@ -134,7 +137,7 @@ impl Store {
       }
       match self.data.remove(old_key) {
          Some(entry) if !entry.is_expired() => {
-            self.data.insert(new_key.to_string(), entry);
+            self.data.insert_str(new_key, entry);
             true
          }
          _ => false,
@@ -147,13 +150,10 @@ impl Store {
       }
       match self.data.remove(old_key) {
          Some(entry) if !entry.is_expired() => {
-            if self
-               .data
-               .insert_if_absent(new_key.to_string(), entry.clone())
-            {
+            if self.data.insert_if_absent_str(new_key, entry.clone()) {
                true
             } else {
-               self.data.insert(old_key.to_string(), entry);
+               self.data.insert_str(old_key, entry);
                false
             }
          }
@@ -169,10 +169,10 @@ impl Store {
       let entry: crate::storage::value::StoreValue = (*vref).clone();
       drop(vref);
       if replace {
-         self.data.insert(dst.to_string(), entry);
+         self.data.insert_str(dst, entry);
          true
       } else {
-         self.data.insert_if_absent(dst.to_string(), entry)
+         self.data.insert_if_absent_str(dst, entry)
       }
    }
 

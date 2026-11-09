@@ -1,4 +1,20 @@
+#![allow(clippy::collapsible_if)]
+
 use super::*;
+
+const OK_BLOCK: [u8; 256 * 5] = {
+   let mut b = [0u8; 256 * 5];
+   let mut i = 0;
+   while i < 256 * 5 {
+      b[i] = b'+';
+      b[i + 1] = b'O';
+      b[i + 2] = b'K';
+      b[i + 3] = b'\r';
+      b[i + 4] = b'\n';
+      i += 5;
+   }
+   b
+};
 
 /// Command identity resolved from one lowercased 8-byte window, so a command
 /// is classified once instead of being re-compared at every dispatch gate.
@@ -107,38 +123,40 @@ pub(super) fn cmd_id(cmd: &[u8]) -> CmdId {
       return CmdId::Other;
    }
    let mut w = [b' '; 8];
-   w[..n].copy_from_slice(&cmd[..n]);
+   unsafe {
+      std::ptr::copy_nonoverlapping(cmd.as_ptr(), w.as_mut_ptr(), n);
+   }
    // Bit 5 is the ASCII case bit: setting it folds uppercase letters and
    // leaves the digits and '.' in command names untouched.
    let w = u64::from_le_bytes(w) | 0x2020_2020_2020_2020;
-   match (n, w) {
-      (3, W_GET) => CmdId::Get,
-      (3, W_SET) => CmdId::Set,
-      (3, W_DEL) => CmdId::Del,
-      (4, W_PING) => CmdId::Ping,
-      (4, W_AUTH) => CmdId::Auth,
-      (4, W_QUIT) => CmdId::Quit,
-      (4, W_HGET) => CmdId::Hget,
-      (4, W_HSET) => CmdId::Hset,
-      (4, W_INCR) => CmdId::Incr,
-      (4, W_RPOP) => CmdId::Rpop,
-      (4, W_LPOP) => CmdId::Lpop,
-      (4, W_SADD) => CmdId::Sadd,
-      (4, W_ZADD) => CmdId::Zadd,
-      (4, W_XADD) => CmdId::Xadd,
-      (5, W_HELLO) => CmdId::Hello,
-      (5, W_LPUSH) => CmdId::Lpush,
-      (5, W_RPUSH) => CmdId::Rpush,
-      (5, W_PFADD) => CmdId::Pfadd,
-      (6, W_EXPIRE) => CmdId::Expire,
-      (6, W_SETBIT) => CmdId::Setbit,
-      (6, W_GEOADD) => CmdId::Geoadd,
-      (7, W_PFCOUNT) => CmdId::Pfcount,
-      (7, W_GEODIST) => CmdId::Geodist,
-      (7, W_PUBLISH) => CmdId::Publish,
-      (8, W_BITCOUNT) => CmdId::Bitcount,
-      (8, W_JSONSET) => CmdId::JsonSet,
-      (8, W_JSONGET) => CmdId::JsonGet,
+   match w {
+      W_GET => CmdId::Get,
+      W_SET => CmdId::Set,
+      W_DEL => CmdId::Del,
+      W_PING => CmdId::Ping,
+      W_AUTH => CmdId::Auth,
+      W_QUIT => CmdId::Quit,
+      W_HGET => CmdId::Hget,
+      W_HSET => CmdId::Hset,
+      W_INCR => CmdId::Incr,
+      W_RPOP => CmdId::Rpop,
+      W_LPOP => CmdId::Lpop,
+      W_SADD => CmdId::Sadd,
+      W_ZADD => CmdId::Zadd,
+      W_XADD => CmdId::Xadd,
+      W_HELLO => CmdId::Hello,
+      W_LPUSH => CmdId::Lpush,
+      W_RPUSH => CmdId::Rpush,
+      W_PFADD => CmdId::Pfadd,
+      W_EXPIRE => CmdId::Expire,
+      W_SETBIT => CmdId::Setbit,
+      W_GEOADD => CmdId::Geoadd,
+      W_PFCOUNT => CmdId::Pfcount,
+      W_GEODIST => CmdId::Geodist,
+      W_PUBLISH => CmdId::Publish,
+      W_BITCOUNT => CmdId::Bitcount,
+      W_JSONSET => CmdId::JsonSet,
+      W_JSONGET => CmdId::JsonGet,
       _ => CmdId::Other,
    }
 }
@@ -212,39 +230,119 @@ pub(super) fn dispatch_get_run(conn: &mut Conn<'_>, first_key: (*const u8, usize
       .store
       .probe_and_prefetch_entries(&tables[..count], &hashes[..count], &mut entries[..count]);
    let out = &mut conn.parser.wbuf;
-   out.reserve(count * 32);
-   for i in 0..count {
+   out.reserve(count * 64);
+   let old_len = out.len();
+   let mut out_ptr = unsafe { out.as_mut_ptr().add(old_len) };
+
+   let mut i = 0;
+   while i < count {
+      let mut end = i + 1;
+      while end < count && keys[end] == keys[i] {
+         end += 1;
+      }
+      let run_len = end - i;
+
       let p = entries[i];
+      let mut found = false;
       if !p.is_null() {
          let e = unsafe { &*p.cast::<customhash::Entry<crate::storage::value::StoreValue>>() };
-         let state = e.state.load(std::sync::atomic::Ordering::Acquire);
+         let state = e.state.load(std::sync::atomic::Ordering::Relaxed);
          let expected = ((hashes[i] as u32 as u64) << 32) | customhash::STATE_OCCUPIED;
-         if (state & customhash::STATE_MATCH_MASK) == expected && e.key.eq_bytes(keys[i]) {
+         if (state & (0xFFFF_FFFF_0000_0000 | customhash::STATE_OCCUPIED)) == expected
+            && e.key.eq_bytes(keys[i])
+         {
+            if state & customhash::STATE_LOCK != 0 {
+               let mut cur = state;
+               while cur & customhash::STATE_LOCK != 0 {
+                  std::hint::spin_loop();
+                  cur = e.state.load(std::sync::atomic::Ordering::Acquire);
+               }
+               if cur & customhash::STATE_OCCUPIED == 0 {
+                  for _ in 0..run_len {
+                     unsafe {
+                        std::ptr::copy_nonoverlapping(b"$-1\r\n".as_ptr(), out_ptr, 5);
+                        out_ptr = out_ptr.add(5);
+                     }
+                  }
+                  i = end;
+                  continue;
+               }
+            }
+            std::sync::atomic::fence(std::sync::atomic::Ordering::Acquire);
             let val = unsafe { (*e.value.get()).assume_init_ref() };
             if val.expires_ms == 0 || !val.is_expired() {
                if let crate::storage::value::FyroDB::String(s) = &val.value {
-                  s.write_resp(out);
-                  continue;
+                  let written = unsafe { s.write_resp_raw(out_ptr) };
+                  if run_len > 1 {
+                     for step in 1..run_len {
+                        unsafe {
+                           std::ptr::copy_nonoverlapping(
+                              out_ptr,
+                              out_ptr.add(step * written),
+                              written,
+                           );
+                        }
+                     }
+                  }
+                  out_ptr = unsafe { out_ptr.add(written * run_len) };
+                  found = true;
                }
             } else {
                if let Ok(key_str) = std::str::from_utf8(keys[i]) {
                   conn.store.data.remove(key_str);
                }
-               out.extend_from_slice(b"$-1\r\n");
+               for _ in 0..run_len {
+                  unsafe {
+                     std::ptr::copy_nonoverlapping(b"$-1\r\n".as_ptr(), out_ptr, 5);
+                     out_ptr = out_ptr.add(5);
+                  }
+               }
+               i = end;
                continue;
             }
          }
       }
-      let Ok(key_str) = std::str::from_utf8(keys[i]) else {
-         crate::utils::resp::write_err(out, "invalid UTF-8 in request");
-         continue;
-      };
-      if !conn
-         .store
-         .get_to_buf_auto(key_str, Some(hashes[i]), entries[i], out)
-      {
-         out.extend_from_slice(b"$-1\r\n");
+      if !found {
+         unsafe {
+            out.set_len(out_ptr.offset_from(out.as_ptr()) as usize);
+         }
+         let Ok(key_str) = std::str::from_utf8(keys[i]) else {
+            for _ in 0..run_len {
+               crate::utils::resp::write_err(out, "invalid UTF-8 in request");
+            }
+            out_ptr = unsafe { out.as_mut_ptr().add(out.len()) };
+            i = end;
+            continue;
+         };
+         let start_offset = out.len();
+         if !conn
+            .store
+            .get_to_buf_auto(key_str, Some(hashes[i]), entries[i], out)
+         {
+            out.extend_from_slice(b"$-1\r\n");
+         }
+         let single_len = out.len() - start_offset;
+         if run_len > 1 {
+            let add_bytes = (run_len - 1) * single_len;
+            out.reserve(add_bytes);
+            let src = unsafe { out.as_ptr().add(start_offset) };
+            let mut dst = unsafe { out.as_mut_ptr().add(out.len()) };
+            for _ in 1..run_len {
+               unsafe {
+                  std::ptr::copy_nonoverlapping(src, dst, single_len);
+                  dst = dst.add(single_len);
+               }
+            }
+            unsafe {
+               out.set_len(out.len() + add_bytes);
+            }
+         }
+         out_ptr = unsafe { out.as_mut_ptr().add(out.len()) };
       }
+      i = end;
+   }
+   unsafe {
+      out.set_len(out_ptr.offset_from(out.as_ptr()) as usize);
    }
 }
 
@@ -289,15 +387,10 @@ pub(super) fn dispatch_set_run(
    if is_null_store() {
       let out = &mut conn.parser.wbuf;
       out.reserve(count * 5);
-      const OK_REPLY_5: &[u8] = b"+OK\r\n";
       let old_len = out.len();
       unsafe {
          out.set_len(old_len + count * 5);
-         let mut p = out.as_mut_ptr().add(old_len);
-         for _ in 0..count {
-            std::ptr::copy_nonoverlapping(OK_REPLY_5.as_ptr(), p, 5);
-            p = p.add(5);
-         }
+         std::ptr::copy_nonoverlapping(OK_BLOCK.as_ptr(), out.as_mut_ptr().add(old_len), count * 5);
       }
       return;
    }
@@ -331,16 +424,38 @@ pub(super) fn dispatch_set_run(
    out.reserve(count * 5);
    let old_len = out.len();
    let mut success = true;
-   for i in 0..count {
+   let mut i = 0;
+   while i < count {
+      let mut end = i + 1;
+      while end < count && keys[end] == keys[i] {
+         end += 1;
+      }
+
       let p = entries[i];
+      let mut updated = false;
       if !p.is_null() && !conn.store.has_replication() {
          let e = unsafe { &*p.cast::<customhash::Entry<crate::storage::value::StoreValue>>() };
-         let expected = ((hashes[i] as u32 as u64) << 32) | customhash::STATE_OCCUPIED;
          let mut current = e.state.load(std::sync::atomic::Ordering::Relaxed);
-         if (current & customhash::STATE_MATCH_MASK) == expected && e.key.eq_bytes(keys[i]) {
-            let val_bytes = unsafe { std::slice::from_raw_parts(vals[i].0, vals[i].1) };
-            let mut updated = false;
-            for _ in 0..4 {
+         let expected = ((hashes[i] as u32 as u64) << 32) | customhash::STATE_OCCUPIED;
+         if (current & (0xFFFF_FFFF_0000_0000 | customhash::STATE_OCCUPIED)) == expected
+            && e.key.eq_bytes(keys[i])
+         {
+            let last_val = vals[end - 1];
+            let val_bytes = unsafe { std::slice::from_raw_parts(last_val.0, last_val.1) };
+            let mut backoff = 1u32;
+            for _ in 0..32 {
+               while current & customhash::STATE_LOCK != 0 {
+                  for _ in 0..backoff {
+                     std::hint::spin_loop();
+                  }
+                  if backoff < 64 {
+                     backoff <<= 1;
+                  }
+                  current = e.state.load(std::sync::atomic::Ordering::Relaxed);
+               }
+               if (current & customhash::STATE_OCCUPIED) == 0 {
+                  break;
+               }
                let locked = customhash::bump_seq(current) | customhash::STATE_LOCK;
                match e.state.compare_exchange_weak(
                   current,
@@ -369,45 +484,51 @@ pub(super) fn dispatch_set_run(
                   }
                   Err(observed) => {
                      current = observed;
-                     if (current & customhash::STATE_MATCH_MASK) != expected {
-                        break;
+                     for _ in 0..backoff {
+                        std::hint::spin_loop();
                      }
-                     std::hint::spin_loop();
+                     if backoff < 64 {
+                        backoff <<= 1;
+                     }
                   }
                }
-            }
-            if updated {
-               continue;
             }
          }
       }
 
-      let Ok(key_str) = std::str::from_utf8(keys[i]) else {
-         crate::utils::resp::write_err(out, "invalid UTF-8 in request");
-         success = false;
-         continue;
-      };
-      let val_bytes = unsafe { std::slice::from_raw_parts(vals[i].0, vals[i].1) };
-      let Ok(val_str) = std::str::from_utf8(val_bytes) else {
-         crate::utils::resp::write_err(out, "invalid UTF-8 in request");
-         success = false;
-         continue;
-      };
-      conn
-         .store
-         .set_string_auto(key_str, Some(hashes[i]), entries[i], val_str, 0);
-      if conn.store.has_replication() {
-         conn.store.record_current_value(key_str);
+      if !updated {
+         for k in i..end {
+            let Ok(key_str) = std::str::from_utf8(keys[k]) else {
+               crate::utils::resp::write_err(out, "invalid UTF-8 in request");
+               success = false;
+               continue;
+            };
+            let val_bytes = unsafe { std::slice::from_raw_parts(vals[k].0, vals[k].1) };
+            if entries[k].is_null() && !conn.store.has_replication() {
+               conn
+                  .store
+                  .set_string_fast_bytes(key_str, hashes[k], val_bytes);
+            } else {
+               let Ok(val_str) = std::str::from_utf8(val_bytes) else {
+                  crate::utils::resp::write_err(out, "invalid UTF-8 in request");
+                  success = false;
+                  continue;
+               };
+               conn
+                  .store
+                  .set_string_auto(key_str, Some(hashes[k]), entries[k], val_str, 0);
+               if conn.store.has_replication() {
+                  conn.store.record_current_value(key_str);
+               }
+            }
+         }
       }
+      i = end;
    }
    if success {
       unsafe {
          out.set_len(old_len + count * 5);
-         let mut p = out.as_mut_ptr().add(old_len);
-         for _ in 0..count {
-            std::ptr::copy_nonoverlapping(b"+OK\r\n".as_ptr(), p, 5);
-            p = p.add(5);
-         }
+         std::ptr::copy_nonoverlapping(OK_BLOCK.as_ptr(), out.as_mut_ptr().add(old_len), count * 5);
       }
    }
 }
@@ -420,7 +541,7 @@ pub(super) fn dispatch_json_set_run(conn: &mut Conn<'_>, first_raw: &[(*const u8
    if first_path != b"." {
       return false;
    }
-   const BATCH: usize = 128;
+   const BATCH: usize = 256;
    let mut keys: [&[u8]; BATCH] = [&[]; BATCH];
    let mut vals: [(*const u8, usize); BATCH] = [(std::ptr::null(), 0); BATCH];
    let mut hashes = [0u64; BATCH];
@@ -511,7 +632,122 @@ pub(super) fn dispatch_json_set_run(conn: &mut Conn<'_>, first_raw: &[(*const u8
    true
 }
 
-#[inline(always)]
+pub(super) fn dispatch_json_get_run(conn: &mut Conn<'_>, first_raw: &[(*const u8, usize)]) -> bool {
+   if first_raw.len() != 3 {
+      return false;
+   }
+   let path = unsafe { part_bytes(first_raw[2]) };
+   if path != b"." {
+      return false;
+   }
+   const BATCH: usize = 256;
+   let mut keys: [&[u8]; BATCH] = [&[]; BATCH];
+   let mut hashes = [0u64; BATCH];
+   let mut tables = [std::ptr::null(); BATCH];
+   let mut entries = [std::ptr::null(); BATCH];
+
+   keys[0] = unsafe { part_bytes(first_raw[1]) };
+   let mut count = 1;
+
+   while count < BATCH {
+      let avail = conn.parser.filled - conn.parser.pos;
+      if avail < 24 {
+         break;
+      }
+      let buf = unsafe { conn.parser.rbuf.as_ptr().add(conn.parser.pos) };
+      if let Some(k_ptr) = conn.parser.try_fast_json_get_key_at(buf, avail) {
+         keys[count] = unsafe { std::slice::from_raw_parts(k_ptr.0, k_ptr.1) };
+         count += 1;
+      } else {
+         break;
+      }
+   }
+
+   if count == 1 {
+      let out = &mut conn.parser.wbuf;
+      let Some(key) = part_str(out, first_raw[1]) else {
+         return false;
+      };
+      match conn.store.json_get_to_buf(key, &["."], out) {
+         Ok(true) => {}
+         Ok(false) => crate::utils::resp::write_nil(out),
+         Err(e) => crate::utils::resp::write_store_err(out, e),
+      }
+      return true;
+   }
+
+   conn
+      .store
+      .prefetch_slots(&keys[..count], &mut hashes[..count], &mut tables[..count]);
+   conn
+      .store
+      .probe_and_prefetch_entries(&tables[..count], &hashes[..count], &mut entries[..count]);
+
+   let out = &mut conn.parser.wbuf;
+   out.reserve(count * 64);
+   let old_len = out.len();
+   let mut out_ptr = unsafe { out.as_mut_ptr().add(old_len) };
+
+   for i in 0..count {
+      let p = entries[i];
+      let mut found = false;
+      if !p.is_null() {
+         let e = unsafe { &*p.cast::<customhash::Entry<crate::storage::value::StoreValue>>() };
+         let state = e.state.load(std::sync::atomic::Ordering::Relaxed);
+         let expected = ((hashes[i] as u32 as u64) << 32) | customhash::STATE_OCCUPIED;
+         if (state & (0xFFFF_FFFF_0000_0000 | customhash::STATE_OCCUPIED)) == expected
+            && e.key.eq_bytes(keys[i])
+         {
+            if state & customhash::STATE_LOCK != 0 {
+               let mut cur = state;
+               while cur & customhash::STATE_LOCK != 0 {
+                  std::hint::spin_loop();
+                  cur = e.state.load(std::sync::atomic::Ordering::Acquire);
+               }
+               if cur & customhash::STATE_OCCUPIED == 0 {
+                  unsafe {
+                     std::ptr::copy_nonoverlapping(b"$-1\r\n".as_ptr(), out_ptr, 5);
+                     out_ptr = out_ptr.add(5);
+                  }
+                  continue;
+               }
+            }
+            std::sync::atomic::fence(std::sync::atomic::Ordering::Acquire);
+            let val = unsafe { (*e.value.get()).assume_init_ref() };
+            if val.expires_ms == 0 || !val.is_expired() {
+               if let Some(raw) = val.value.as_json_str() {
+                  let written =
+                     unsafe { crate::utils::resp::write_bulk_raw(out_ptr, raw.as_bytes()) };
+                  out_ptr = unsafe { out_ptr.add(written) };
+                  found = true;
+               }
+            }
+         }
+      }
+      if !found {
+         unsafe {
+            out.set_len(out_ptr.offset_from(out.as_ptr()) as usize);
+         }
+         let Ok(key_str) = std::str::from_utf8(keys[i]) else {
+            crate::utils::resp::write_err(out, "invalid UTF-8 in request");
+            out_ptr = unsafe { out.as_mut_ptr().add(out.len()) };
+            continue;
+         };
+         match conn.store.json_get_to_buf(key_str, &["."], out) {
+            Ok(true) => {}
+            Ok(false) => crate::utils::resp::write_nil(out),
+            Err(e) => crate::utils::resp::write_store_err(out, e),
+         }
+         out_ptr = unsafe { out.as_mut_ptr().add(out.len()) };
+      }
+   }
+   unsafe {
+      out.set_len(out_ptr.offset_from(out.as_ptr()) as usize);
+   }
+   true
+}
+
+#[inline]
 pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
    if raw.is_empty() {
       return;
@@ -547,14 +783,16 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
    }
 
    if !conn.store.cluster.enabled && !conn.store.at_key_capacity() {
-      if cmd_len == 3 {
-         if id == CmdId::Get && raw.len() == 2 {
+      match id {
+         CmdId::Get if raw.len() == 2 => {
             dispatch_get_run(conn, raw[1]);
             return;
-         } else if id == CmdId::Set && raw.len() == 3 {
+         }
+         CmdId::Set if raw.len() == 3 => {
             dispatch_set_run(conn, raw[1], raw[2]);
             return;
-         } else if id == CmdId::Del && raw.len() == 2 {
+         }
+         CmdId::Del if raw.len() == 2 => {
             let out = &mut conn.parser.wbuf;
             let Some(key) = part_str(out, raw[1]) else {
                return;
@@ -566,8 +804,7 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
             }
             return;
          }
-      } else if cmd_len == 4 {
-         if id == CmdId::Hget && raw.len() == 3 {
+         CmdId::Hget if raw.len() == 3 => {
             let out = &mut conn.parser.wbuf;
             let Some(key) = part_str(out, raw[1]) else {
                return;
@@ -581,7 +818,8 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
                Err(_) => crate::utils::resp::write_wrong_type(out),
             }
             return;
-         } else if id == CmdId::Hset && raw.len() == 4 {
+         }
+         CmdId::Hset if raw.len() == 4 => {
             let out = &mut conn.parser.wbuf;
             let Some(key) = part_str(out, raw[1]) else {
                return;
@@ -592,7 +830,8 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
                conn.store.record_current_value(key);
             }
             return;
-         } else if id == CmdId::Ping {
+         }
+         CmdId::Ping => {
             if raw.len() == 1 {
                conn.parser.wbuf.extend_from_slice(crate::utils::resp::PONG);
                return;
@@ -601,7 +840,8 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
                crate::utils::resp::write_bulk_bytes(&mut conn.parser.wbuf, msg);
                return;
             }
-         } else if id == CmdId::Incr && raw.len() == 2 {
+         }
+         CmdId::Incr if raw.len() == 2 => {
             let (hint, _) = conn.hint_for(raw[1]);
             let out = &mut conn.parser.wbuf;
             let Some(key) = part_str(out, raw[1]) else {
@@ -617,7 +857,8 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
                Err(e) => crate::utils::resp::write_err(out, e),
             }
             return;
-         } else if id == CmdId::Rpop && raw.len() == 2 {
+         }
+         CmdId::Rpop if raw.len() == 2 => {
             let out = &mut conn.parser.wbuf;
             let Some(key) = part_str(out, raw[1]) else {
                return;
@@ -632,7 +873,8 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
                Err(_) => crate::utils::resp::write_wrong_type(out),
             }
             return;
-         } else if id == CmdId::Lpop && raw.len() == 2 {
+         }
+         CmdId::Lpop if raw.len() == 2 => {
             let out = &mut conn.parser.wbuf;
             let Some(key) = part_str(out, raw[1]) else {
                return;
@@ -647,7 +889,8 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
                Err(_) => crate::utils::resp::write_wrong_type(out),
             }
             return;
-         } else if id == CmdId::Sadd && raw.len() == 3 {
+         }
+         CmdId::Sadd if raw.len() == 3 => {
             let out = &mut conn.parser.wbuf;
             let Some(key) = part_str(out, raw[1]) else {
                return;
@@ -665,7 +908,8 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
                Err(_) => crate::utils::resp::write_wrong_type(out),
             }
             return;
-         } else if id == CmdId::Zadd && raw.len() == 4 {
+         }
+         CmdId::Zadd if raw.len() == 4 => {
             let out = &mut conn.parser.wbuf;
             let Some(key) = part_str(out, raw[1]) else {
                return;
@@ -690,7 +934,8 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
                out.extend_from_slice(b"-ERR value is not a valid float\r\n");
             }
             return;
-         } else if id == CmdId::Xadd && raw.len() == 5 {
+         }
+         CmdId::Xadd if raw.len() == 5 => {
             let out = &mut conn.parser.wbuf;
             let Some(key) = part_str(out, raw[1]) else {
                return;
@@ -714,8 +959,7 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
             }
             return;
          }
-      } else if cmd_len == 5 {
-         if id == CmdId::Lpush && raw.len() == 3 {
+         CmdId::Lpush if raw.len() == 3 => {
             let out = &mut conn.parser.wbuf;
             let Some(key) = part_str(out, raw[1]) else {
                return;
@@ -733,7 +977,8 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
                Err(_) => crate::utils::resp::write_wrong_type(out),
             }
             return;
-         } else if id == CmdId::Rpush && raw.len() == 3 {
+         }
+         CmdId::Rpush if raw.len() == 3 => {
             let out = &mut conn.parser.wbuf;
             let Some(key) = part_str(out, raw[1]) else {
                return;
@@ -751,7 +996,8 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
                Err(_) => crate::utils::resp::write_wrong_type(out),
             }
             return;
-         } else if id == CmdId::Pfadd && raw.len() == 3 {
+         }
+         CmdId::Pfadd if raw.len() == 3 => {
             let out = &mut conn.parser.wbuf;
             let Some(key) = part_str(out, raw[1]) else {
                return;
@@ -770,8 +1016,7 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
             }
             return;
          }
-      } else if cmd_len == 6 {
-         if id == CmdId::Expire && raw.len() == 3 {
+         CmdId::Expire if raw.len() == 3 => {
             let out = &mut conn.parser.wbuf;
             let Some(key) = part_str(out, raw[1]) else {
                return;
@@ -799,7 +1044,8 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
             };
             out.extend_from_slice(reply);
             return;
-         } else if id == CmdId::Setbit && raw.len() == 4 {
+         }
+         CmdId::Setbit if raw.len() == 4 => {
             let out = &mut conn.parser.wbuf;
             let Some(key) = part_str(out, raw[1]) else {
                return;
@@ -828,7 +1074,8 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
                out.extend_from_slice(b"-ERR value is not an integer or out of range\r\n");
             }
             return;
-         } else if id == CmdId::Geoadd && raw.len() == 5 {
+         }
+         CmdId::Geoadd if raw.len() == 5 => {
             let out = &mut conn.parser.wbuf;
             let Some(key) = part_str(out, raw[1]) else {
                return;
@@ -864,8 +1111,7 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
             }
             return;
          }
-      } else if cmd_len == 7 {
-         if id == CmdId::Pfcount && raw.len() == 2 {
+         CmdId::Pfcount if raw.len() == 2 => {
             let out = &mut conn.parser.wbuf;
             let Some(key) = part_str(out, raw[1]) else {
                return;
@@ -875,7 +1121,8 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
                Err(e) => crate::utils::resp::write_store_err(out, e),
             }
             return;
-         } else if id == CmdId::Geodist && raw.len() == 4 {
+         }
+         CmdId::Geodist if raw.len() == 4 => {
             let out = &mut conn.parser.wbuf;
             let Some(key) = part_str(out, raw[1]) else {
                return;
@@ -890,16 +1137,25 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
                .store
                .geodist(key, m1, m2, crate::storage::geo::GeoUnit::M)
             {
-               Ok(Some(d)) => {
-                  crate::utils::resp::write_bulk(out, &crate::utils::util::format_float(d))
-               }
+               Ok(Some(d)) => crate::utils::resp::write_float(out, d),
                Ok(None) => crate::utils::resp::write_nil(out),
                Err(e) => crate::utils::resp::write_store_err(out, e),
             }
             return;
          }
-      } else if cmd_len == 8 {
-         if id == CmdId::Bitcount && raw.len() == 2 {
+         CmdId::Publish if raw.len() == 3 => {
+            let out = &mut conn.parser.wbuf;
+            let Some(channel) = part_str(out, raw[1]) else {
+               return;
+            };
+            let Some(message) = part_str(out, raw[2]) else {
+               return;
+            };
+            let n = conn.pubsub.publish(channel, message);
+            crate::utils::resp::write_integer(out, n as i64);
+            return;
+         }
+         CmdId::Bitcount if raw.len() == 2 => {
             let out = &mut conn.parser.wbuf;
             let Some(key) = part_str(out, raw[1]) else {
                return;
@@ -909,7 +1165,8 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
                Err(_) => crate::utils::resp::write_wrong_type(out),
             }
             return;
-         } else if id == CmdId::JsonSet && raw.len() == 4 {
+         }
+         CmdId::JsonSet if raw.len() == 4 => {
             let out = &mut conn.parser.wbuf;
             let Some(key) = part_str(out, raw[1]) else {
                return;
@@ -931,7 +1188,8 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
                Err(e) => crate::utils::resp::write_store_err(out, e),
             }
             return;
-         } else if id == CmdId::JsonGet {
+         }
+         CmdId::JsonGet => {
             let out = &mut conn.parser.wbuf;
             let Some(key) = part_str(out, raw[1]) else {
                return;
@@ -954,6 +1212,7 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
             }
             return;
          }
+         _ => {}
       }
    }
 
@@ -1053,8 +1312,8 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
       return;
    }
 
-   if cmd_len == 3 {
-      if id == CmdId::Set && raw.len() >= 3 {
+   match id {
+      CmdId::Set if raw.len() >= 3 => {
          let (hint, entry) = conn.hint_for(raw[1]);
          let out = &mut conn.parser.wbuf;
          let Some(key) = part_str(out, raw[1]) else {
@@ -1071,7 +1330,8 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
             conn.parser.wbuf.extend_from_slice(b"+OK\r\n");
             return;
          }
-      } else if id == CmdId::Get && raw.len() == 2 {
+      }
+      CmdId::Get if raw.len() == 2 => {
          let (hint, entry) = conn.hint_for(raw[1]);
          let out = &mut conn.parser.wbuf;
          let Some(key) = part_str(out, raw[1]) else {
@@ -1081,7 +1341,8 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
             out.extend_from_slice(b"$-1\r\n");
          }
          return;
-      } else if id == CmdId::Del && raw.len() == 2 {
+      }
+      CmdId::Del if raw.len() == 2 => {
          let out = &mut conn.parser.wbuf;
          let Some(key) = part_str(out, raw[1]) else {
             return;
@@ -1093,8 +1354,7 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
          }
          return;
       }
-   } else if cmd_len == 4 {
-      if id == CmdId::Hget && raw.len() == 3 {
+      CmdId::Hget if raw.len() == 3 => {
          let out = &mut conn.parser.wbuf;
          let Some(key) = part_str(out, raw[1]) else {
             return;
@@ -1108,7 +1368,8 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
             Err(_) => crate::utils::resp::write_wrong_type(out),
          }
          return;
-      } else if id == CmdId::Hset && raw.len() >= 4 && (raw.len() - 2).is_multiple_of(2) {
+      }
+      CmdId::Hset if raw.len() >= 4 && (raw.len() - 2).is_multiple_of(2) => {
          let out = &mut conn.parser.wbuf;
          let Some(key) = part_str(out, raw[1]) else {
             return;
@@ -1146,7 +1407,8 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
             conn.store.record_current_value(key);
          }
          return;
-      } else if id == CmdId::Ping {
+      }
+      CmdId::Ping => {
          if raw.len() == 1 {
             conn.parser.wbuf.extend_from_slice(crate::utils::resp::PONG);
             return;
@@ -1155,7 +1417,8 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
             crate::utils::resp::write_bulk_bytes(&mut conn.parser.wbuf, msg);
             return;
          }
-      } else if id == CmdId::Incr && raw.len() == 2 {
+      }
+      CmdId::Incr if raw.len() == 2 => {
          let out = &mut conn.parser.wbuf;
          let Some(key) = part_str(out, raw[1]) else {
             return;
@@ -1170,7 +1433,8 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
             Err(e) => crate::utils::resp::write_err(&mut conn.parser.wbuf, e),
          }
          return;
-      } else if id == CmdId::Rpop && raw.len() == 2 {
+      }
+      CmdId::Rpop if raw.len() == 2 => {
          let out = &mut conn.parser.wbuf;
          let Some(key) = part_str(out, raw[1]) else {
             return;
@@ -1185,7 +1449,8 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
             Err(_) => crate::utils::resp::write_wrong_type(&mut conn.parser.wbuf),
          }
          return;
-      } else if id == CmdId::Lpop && raw.len() == 2 {
+      }
+      CmdId::Lpop if raw.len() == 2 => {
          let out = &mut conn.parser.wbuf;
          let Some(key) = part_str(out, raw[1]) else {
             return;
@@ -1200,7 +1465,8 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
             Err(_) => crate::utils::resp::write_wrong_type(&mut conn.parser.wbuf),
          }
          return;
-      } else if id == CmdId::Sadd && raw.len() >= 3 {
+      }
+      CmdId::Sadd if raw.len() >= 3 => {
          let out = &mut conn.parser.wbuf;
          let Some(key) = part_str(out, raw[1]) else {
             return;
@@ -1221,54 +1487,55 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
             return;
          }
       }
-   } else if cmd_len == 6 && id == CmdId::Expire && raw.len() == 3 {
-      let out = &mut conn.parser.wbuf;
-      let Some(key) = part_str(out, raw[1]) else {
-         return;
-      };
-      let Some(secs) = part_str(out, raw[2]) else {
-         return;
-      };
-      // Bad input and out-of-range overflow produce the same error the
-      // generic path reports, so the fast arm stays protocol-identical.
-      let reply = match secs
-         .parse::<u64>()
-         .ok()
-         .and_then(crate::storage::value::expiry_from_secs)
-      {
-         Some(exp) => {
-            let ok = conn.store.expire_ms(key, exp);
-            if conn.store.has_replication() {
-               conn.store.record_current_value(key);
+      CmdId::Expire if raw.len() == 3 => {
+         let out = &mut conn.parser.wbuf;
+         let Some(key) = part_str(out, raw[1]) else {
+            return;
+         };
+         let Some(secs) = part_str(out, raw[2]) else {
+            return;
+         };
+         let reply = match secs
+            .parse::<u64>()
+            .ok()
+            .and_then(crate::storage::value::expiry_from_secs)
+         {
+            Some(exp) => {
+               let ok = conn.store.expire_ms(key, exp);
+               if conn.store.has_replication() {
+                  conn.store.record_current_value(key);
+               }
+               if ok {
+                  crate::utils::resp::ONE
+               } else {
+                  crate::utils::resp::ZERO
+               }
             }
-            if ok {
-               crate::utils::resp::ONE
-            } else {
-               crate::utils::resp::ZERO
-            }
-         }
-         None => b"-ERR invalid expire time in 'expire' command\r\n" as &[u8],
-      };
-      conn.parser.wbuf.extend_from_slice(reply);
-      return;
-   } else if cmd_len == 5 && id == CmdId::Lpush && raw.len() == 3 {
-      let out = &mut conn.parser.wbuf;
-      let Some(key) = part_str(out, raw[1]) else {
+            None => b"-ERR invalid expire time in 'expire' command\r\n" as &[u8],
+         };
+         conn.parser.wbuf.extend_from_slice(reply);
          return;
-      };
-      let Some(value) = part_str(out, raw[2]) else {
-         return;
-      };
-      match conn.store.lpush(key, &[value]) {
-         Ok(n) => {
-            if conn.store.has_replication() {
-               conn.store.record_current_value(key);
-            }
-            crate::utils::resp::write_integer(&mut conn.parser.wbuf, n as i64)
-         }
-         Err(_) => crate::utils::resp::write_wrong_type(&mut conn.parser.wbuf),
       }
-      return;
+      CmdId::Lpush if raw.len() == 3 => {
+         let out = &mut conn.parser.wbuf;
+         let Some(key) = part_str(out, raw[1]) else {
+            return;
+         };
+         let Some(value) = part_str(out, raw[2]) else {
+            return;
+         };
+         match conn.store.lpush(key, &[value]) {
+            Ok(n) => {
+               if conn.store.has_replication() {
+                  conn.store.record_current_value(key);
+               }
+               crate::utils::resp::write_integer(&mut conn.parser.wbuf, n as i64)
+            }
+            Err(_) => crate::utils::resp::write_wrong_type(&mut conn.parser.wbuf),
+         }
+         return;
+      }
+      _ => {}
    }
    if cmd_len == 9
       && (cmd.eq_ignore_ascii_case(b"FT.SEARCH") || cmd.eq_ignore_ascii_case(b"FT.HYBRID"))

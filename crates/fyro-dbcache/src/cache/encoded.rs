@@ -46,27 +46,26 @@ impl EncodedResult {
       &self.wire[..self.split0 as usize]
    }
    #[inline]
-   pub(crate) fn data_rows(&self) -> &[u8] {
+   pub fn data_rows(&self) -> &[u8] {
       &self.wire[self.split0 as usize..self.split1 as usize]
    }
    #[inline]
-   pub(crate) fn command_complete(&self) -> &[u8] {
+   pub fn command_complete(&self) -> &[u8] {
       &self.wire[self.split1 as usize..]
    }
 
    // Simple-query response: RowDescription, rows, CommandComplete, ReadyForQuery.
+   #[inline(always)]
    pub fn write_simple_response(&self, out: &mut Vec<u8>) {
-      out.reserve(self.wire.len() + protocol::READY_IDLE.len());
+      out.reserve(self.wire.len() + 6);
       out.extend_from_slice(&self.wire);
       out.extend_from_slice(&protocol::READY_IDLE);
    }
 
    // Extended-protocol Execute response: rows plus CommandComplete.
+   #[inline(always)]
    pub fn write_execute_response(&self, out: &mut Vec<u8>) {
-      let payload = self.data_rows().len() + self.command_complete().len();
-      out.reserve(payload);
-      out.extend_from_slice(self.data_rows());
-      out.extend_from_slice(self.command_complete());
+      out.extend_from_slice(&self.wire[self.split0 as usize..]);
    }
 }
 

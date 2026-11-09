@@ -61,8 +61,8 @@ pub struct PoolLimits {
 impl Default for PoolLimits {
    fn default() -> Self {
       Self {
-         max_idle: 8,
-         idle_timeout: Duration::from_secs(30),
+         max_idle: 10,
+         idle_timeout: Duration::from_secs(60),
       }
    }
 }
@@ -88,7 +88,8 @@ impl UpstreamPool {
       }
    }
 
-   // Takes a matching idle connection, pinging it before handing it out.
+   // Takes a matching idle connection (LIFO order to keep hot connections active),
+   // pinging it before handing it out if idle for too long.
    pub fn checkout(
       &self,
       key: &PoolKey,
@@ -99,7 +100,7 @@ impl UpstreamPool {
          let now = Instant::now();
          let candidate = {
             let mut idle = self.idle.lock();
-            let index = idle.iter().position(|slot| {
+            let index = idle.iter().rposition(|slot| {
                &slot.key == key
                   && now.duration_since(slot.idle_since) <= self.limits.idle_timeout
                   && (!require_passwordless || !slot.required_password)
@@ -108,7 +109,7 @@ impl UpstreamPool {
          };
          let idle_since = candidate.idle_since;
          let mut connection = candidate.connection;
-         if idle_since.elapsed() > Duration::from_secs(5) && connection.ping().is_err() {
+         if idle_since.elapsed() > Duration::from_secs(10) && connection.ping().is_err() {
             continue;
          }
          if connection.apply_session_params(application_name).is_err() {

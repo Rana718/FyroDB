@@ -9,7 +9,7 @@
 
 A Redis-compatible in-memory KV store **and** a PostgreSQL query caching proxy — both in one Rust binary. The KV engine speaks RESP2/RESP3; any Redis client works. The proxy speaks full PostgreSQL wire protocol; any Postgres driver works.
 
-**v0.3.0** — zero-allocation hot paths across the KV engine, cluster slot accelerations, mio proxy event loop, +32% extended-protocol throughput, deep proxy test coverage. → [Changelog](https://fyrodb.vercel.app/docs/changelog-0-3-0)
+**v0.3.1** — Redis Lua scripting engine, zero-allocation write run coalescing, in-process L1 proxy caching, right-sized shard memory, and pub/sub fanout pipeline scaling. → [Changelog](https://fyrodb.vercel.app/docs/changelog-0-3-1)
 
 ---
 

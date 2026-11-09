@@ -3,7 +3,6 @@ use crate::storage::{
    value::{SmallStr, StoreValue, expiry_from_ms, expiry_from_secs},
 };
 use crate::utils::resp;
-use crate::utils::util::format_float;
 use crate::{parse_float, parse_int, store_ok, wt};
 
 pub fn set(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
@@ -57,8 +56,8 @@ pub fn set(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
       // key is absent, which falls to the insert path below.
       let result = store.data.update_with(key, |current| {
          let key_exists = !current.is_expired();
-         let old_val = if key_exists {
-            current.value.as_string().map(|s| s.to_string())
+         let old_val = if key_exists && get {
+            current.value.as_string().cloned()
          } else {
             None
          };
@@ -78,14 +77,20 @@ pub fn set(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
       match result {
          Some((true, old_val)) => {
             if get {
-               resp::write_opt_bulk(out, old_val);
+               match old_val {
+                  Some(s) => s.write_resp(out),
+                  None => resp::write_nil(out),
+               }
             } else {
                resp::write_ok(out);
             }
          }
          Some((false, old_val)) => {
             if get {
-               resp::write_opt_bulk(out, old_val);
+               match old_val {
+                  Some(s) => s.write_resp(out),
+                  None => resp::write_nil(out),
+               }
             } else {
                resp::write_nil(out);
             }
@@ -94,8 +99,8 @@ pub fn set(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
             if xx {
                return resp::write_nil(out);
             }
-            store.data.insert(
-               key.to_string(),
+            store.data.insert_str(
+               key,
                StoreValue {
                   value: crate::storage::value::FyroDB::String(SmallStr::new(value)),
                   expires_ms,
@@ -139,7 +144,7 @@ pub fn setex(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
       value: crate::storage::value::FyroDB::String(SmallStr::new(value)),
       expires_ms: exp,
    };
-   match store.try_set_value(key.to_string(), sv) {
+   match store.try_set_value(key, sv) {
       Ok(_) => resp::write_ok(out),
       Err(e) => resp::write_err(out, &e.to_string()),
    }
@@ -160,7 +165,7 @@ pub fn psetex(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
       value: crate::storage::value::FyroDB::String(SmallStr::new(value)),
       expires_ms: exp,
    };
-   match store.try_set_value(key.to_string(), sv) {
+   match store.try_set_value(key, sv) {
       Ok(_) => resp::write_ok(out),
       Err(e) => resp::write_err(out, &e.to_string()),
    }
@@ -179,14 +184,20 @@ pub fn get(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
 
 pub fn getdel(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
    match parts {
-      [_, key] => resp::write_opt_bulk(out, store.getdel(key)),
+      [_, key] => match store.getdel(key) {
+         Some(s) => s.write_resp(out),
+         None => resp::write_nil(out),
+      },
       _ => resp::write_wrong_args(out, "getdel"),
    }
 }
 
 pub fn getset(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
    match parts {
-      [_, key, value] => resp::write_opt_bulk(out, store.getset(key, value)),
+      [_, key, value] => match store.getset(key, value) {
+         Some(s) => s.write_resp(out),
+         None => resp::write_nil(out),
+      },
       _ => resp::write_wrong_args(out, "getset"),
    }
 }
@@ -196,7 +207,10 @@ pub fn getex(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
       return resp::write_wrong_args(out, "getex");
    };
    if rest.is_empty() {
-      return resp::write_opt_bulk(out, store.get(key));
+      if !store.get_to_buf(key, out) {
+         resp::write_nil(out);
+      }
+      return;
    }
    let expires_ms: u64 = match rest {
       [opt] if opt.eq_ignore_ascii_case("PERSIST") => 0,
@@ -225,7 +239,10 @@ pub fn getex(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
          return;
       }
    };
-   resp::write_opt_bulk(out, store.getex_ms(key, expires_ms));
+   match store.getex_ms(key, expires_ms) {
+      Some(s) => s.write_resp(out),
+      None => resp::write_nil(out),
+   }
 }
 
 pub fn mset(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
@@ -248,9 +265,9 @@ pub fn msetnx(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
 
          for (i, &[key, val]) in pairs.iter().enumerate() {
             let store_val = StoreValue {
-               value: crate::storage::value::FyroDB::String(
-                  crate::storage::value::SmallStr::new(val),
-               ),
+               value: crate::storage::value::FyroDB::String(crate::storage::value::SmallStr::new(
+                  val,
+               )),
                expires_ms: 0,
             };
             if !store.data.insert_if_absent_str(key, store_val) {
@@ -322,10 +339,7 @@ pub fn incrbyfloat(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
       return resp::write_wrong_args(out, "incrbyfloat");
    };
    let n = parse_float!(out, by);
-   resp::write_bulk(
-      out,
-      &format_float(store_ok!(out, store.incrbyfloat(key, n))),
-   );
+   resp::write_float(out, store_ok!(out, store.incrbyfloat(key, n)));
 }
 
 pub fn append(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
@@ -348,7 +362,7 @@ pub fn getrange(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
    };
    let s = parse_int!(out, start);
    let e = parse_int!(out, end);
-   resp::write_bulk(out, &store.getrange(key, s, e));
+   store.getrange_to_buf(key, s, e, out);
 }
 
 pub fn setrange(parts: &[&str], store: &Store, out: &mut Vec<u8>) {

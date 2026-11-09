@@ -3,6 +3,58 @@ use crate::storage::value::{FyroDB, SetInner, StoreValue};
 use foldhash::{HashSet, HashSetExt};
 
 impl Store {
+   /// Single-member SADD run under one lock, writes per-command `:1\r\n` / `:0\r\n` directly to `out`.
+   pub fn sadd_added_flags_into(
+      &self,
+      key: &str,
+      members: &[&str],
+      out: &mut Vec<u8>,
+   ) -> Result<(), &'static str> {
+      out.reserve(members.len() * 4);
+      let result = self.data.update_with(key, |val| {
+         if val.is_expired() {
+            let mut set = SetInner::with_capacity(members.len());
+            for m in members {
+               let added = set.insert_str(m);
+               out.extend_from_slice(if added { b":1\r\n" } else { b":0\r\n" });
+            }
+            val.value = FyroDB::Set(Box::new(set));
+            val.expires_ms = 0;
+            return Ok(());
+         }
+         match val.value.as_set_mut() {
+            Some(s) => {
+               s.reserve(members.len());
+               for m in members {
+                  let added = s.insert_str(m);
+                  out.extend_from_slice(if added { b":1\r\n" } else { b":0\r\n" });
+               }
+               Ok(())
+            }
+            None => Err("WRONGTYPE"),
+         }
+      });
+
+      match result {
+         Some(r) => r,
+         None => {
+            let mut set = SetInner::with_capacity(members.len());
+            for m in members {
+               let added = set.insert_str(m);
+               out.extend_from_slice(if added { b":1\r\n" } else { b":0\r\n" });
+            }
+            self.data.insert_str(
+               key,
+               StoreValue {
+                  value: FyroDB::Set(Box::new(set)),
+                  expires_ms: 0,
+               },
+            );
+            Ok(())
+         }
+      }
+   }
+
    /// Single-member SADD run under one lock, per-command added flags;
    /// sadd cannot recover per-command flags from a total.
    pub fn sadd_added_flags(&self, key: &str, members: &[&str]) -> Result<Vec<bool>, &'static str> {
@@ -367,14 +419,14 @@ impl Store {
       let add_result = self.data.update_with(dst, |val| {
          if val.is_expired() {
             let mut set = SetInner::new();
-            set.insert(member.to_string());
+            set.insert_str(member);
             val.value = FyroDB::Set(Box::new(set));
             val.expires_ms = 0;
             return Ok(());
          }
          match val.value.as_set_mut() {
             Some(s) => {
-               s.insert(member.to_string());
+               s.insert_str(member);
                Ok(())
             }
             None => Err("WRONGTYPE"),
@@ -385,9 +437,15 @@ impl Store {
          Some(Ok(())) => Ok(true),
          Some(Err(e)) => Err(e),
          None => {
-            let mut s = HashSet::new();
-            s.insert(member.to_string());
-            self.data.insert(dst.to_string(), StoreValue::set(s));
+            let mut set = SetInner::new();
+            set.insert_str(member);
+            self.data.insert_str(
+               dst,
+               StoreValue {
+                  value: FyroDB::Set(Box::new(set)),
+                  expires_ms: 0,
+               },
+            );
             Ok(true)
          }
       }
@@ -477,7 +535,7 @@ impl Store {
       let members = self.sunion(keys)?;
       let count = members.len();
       let s: HashSet<String> = members.into_iter().collect();
-      self.data.insert(dst.to_string(), StoreValue::set(s));
+      self.data.insert_str(dst, StoreValue::set(s));
       Ok(count)
    }
 
@@ -485,7 +543,7 @@ impl Store {
       let members = self.sinter(keys)?;
       let count = members.len();
       let s: HashSet<String> = members.into_iter().collect();
-      self.data.insert(dst.to_string(), StoreValue::set(s));
+      self.data.insert_str(dst, StoreValue::set(s));
       Ok(count)
    }
 
@@ -493,7 +551,7 @@ impl Store {
       let members = self.sdiff(keys)?;
       let count = members.len();
       let s: HashSet<String> = members.into_iter().collect();
-      self.data.insert(dst.to_string(), StoreValue::set(s));
+      self.data.insert_str(dst, StoreValue::set(s));
       Ok(count)
    }
 

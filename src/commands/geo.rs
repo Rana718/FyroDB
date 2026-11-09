@@ -1,7 +1,6 @@
 use crate::storage::geo::{GeoCenter, GeoShape, GeoUnit};
 use crate::storage::store::Store;
 use crate::utils::resp;
-use crate::utils::util::format_float;
 use crate::{parse_float, parse_int, store_ok, wt};
 
 pub fn geoadd(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
@@ -80,8 +79,8 @@ pub fn geopos(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
             match pos {
                Some((lon, lat)) => {
                   resp::write_array_header(out, 2);
-                  resp::write_bulk(out, &format_float(lon));
-                  resp::write_bulk(out, &format_float(lat));
+                  resp::write_float(out, lon);
+                  resp::write_float(out, lat);
                }
                None => resp::write_nil(out),
             }
@@ -104,7 +103,7 @@ pub fn geodist(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
       _ => return resp::write_wrong_args(out, "geodist"),
    };
    match store.geodist(key, m1, m2, unit) {
-      Ok(Some(d)) => resp::write_bulk(out, &format_float(d)),
+      Ok(Some(d)) => resp::write_float(out, d),
       Ok(None) => resp::write_nil(out),
       Err(e) => resp::write_store_err(out, e),
    }
@@ -234,12 +233,12 @@ pub fn geosearch(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
          resp::write_array_header(out, fields);
          resp::write_bulk(out, &r.member);
          if withdist {
-            resp::write_bulk(out, &format_float(r.dist));
+            resp::write_float(out, r.dist);
          }
          if withcoord {
             resp::write_array_header(out, 2);
-            resp::write_bulk(out, &format_float(r.lon));
-            resp::write_bulk(out, &format_float(r.lat));
+            resp::write_float(out, r.lon);
+            resp::write_float(out, r.lat);
          }
       } else {
          resp::write_bulk(out, &r.member);

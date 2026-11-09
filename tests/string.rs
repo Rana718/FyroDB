@@ -136,7 +136,7 @@ fn append_to_missing_creates_key() {
 #[test]
 fn append_wrong_type_errors() {
    let s = store();
-   s.set("k".into(), StoreValue::hash(HashMap::new()));
+   s.set("k", StoreValue::hash(HashMap::new()));
    assert!(s.append("k", "x").is_err());
 }
 
@@ -251,7 +251,7 @@ fn incr_errors_on_non_integer() {
 #[test]
 fn incr_errors_on_wrong_type() {
    let s = store();
-   s.set("k".into(), StoreValue::hash(HashMap::new()));
+   s.set("k", StoreValue::hash(HashMap::new()));
    assert!(s.incr("k").is_err());
 }
 

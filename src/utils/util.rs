@@ -1,10 +1,3 @@
-pub fn format_float(f: f64) -> String {
-   let s = format!("{:.17}", f);
-   let s = s.trim_end_matches('0');
-   let s = s.trim_end_matches('.');
-   s.to_string()
-}
-
 pub fn glob_match(pattern: &str, input: &str) -> bool {
    glob_match_bytes(pattern.as_bytes(), input.as_bytes())
 }

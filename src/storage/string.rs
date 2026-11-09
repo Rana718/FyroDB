@@ -2,7 +2,6 @@ use crate::storage::{
    store::Store,
    value::{SmallStr, StoreValue},
 };
-use crate::utils::util::format_float;
 use customhash::Full;
 
 const MAX_STRING_BYTES: usize = 512 * 1024 * 1024;
@@ -55,36 +54,44 @@ fn hirschberg(a: &[u8], b: &[u8], out: &mut Vec<u8>) {
 }
 
 impl Store {
-   pub fn set(&self, key: String, value: StoreValue) {
+   pub fn set(&self, key: &str, value: StoreValue) {
       if value.expires_ms != 0 {
          self.add_ttl();
       }
-      self.data.insert(key, value);
+      self.data.insert_str(key, value);
    }
 
-   pub fn try_set_value(&self, key: String, value: StoreValue) -> Result<(), Full> {
+   pub fn try_set_value(&self, key: &str, value: StoreValue) -> Result<(), Full> {
       if value.expires_ms != 0 {
          self.add_ttl();
       }
-      self.data.try_insert(key, value)?;
+      self.data.try_set_str(key, value)?;
       Ok(())
    }
 
-   #[inline]
+   #[inline(always)]
    pub fn set_string(&self, key: &str, value: &str, expires_ms: u64) {
       self.set_string_hinted(key, None, value, expires_ms);
    }
 
-   #[inline]
+   #[inline(always)]
    pub fn set_string_hinted(&self, key: &str, hash: Option<u64>, value: &str, expires_ms: u64) {
+      let (h, idx) = match hash {
+         Some(h) => (h, self.data.shard_of(h)),
+         None => self.data.locate_key(key),
+      };
       let store_val = StoreValue {
          value: crate::storage::value::FyroDB::String(SmallStr::new(value)),
          expires_ms,
       };
-      self.data.set_str_hinted(key, hash, store_val);
-      if expires_ms != 0 {
-         self.add_ttl();
+      if self.data.insert_slot_fast_located(h, idx, key, store_val) {
+         self.data.touched(key);
+         if expires_ms != 0 {
+            self.add_ttl();
+         }
+         return;
       }
+      self.set_string_hinted_pinned(key, Some(h), value, expires_ms);
    }
 
    #[inline(always)]
@@ -114,11 +121,15 @@ impl Store {
       value: &str,
       expires_ms: u64,
    ) {
+      let idx = self.data.shard_of(hash);
       let store_val = StoreValue {
          value: crate::storage::value::FyroDB::String(SmallStr::new(value)),
          expires_ms,
       };
-      if self.data.insert_slot_fast(hash, key, store_val) {
+      if self
+         .data
+         .insert_slot_fast_located(hash, idx, key, store_val)
+      {
          self.data.touched(key);
          if expires_ms != 0 {
             self.add_ttl();
@@ -170,6 +181,21 @@ impl Store {
 
    pub fn get(&self, key: &str) -> Option<String> {
       let (h, idx) = self.data.locate_key(key);
+      let p = self.data.probe_slot_entry(h, idx);
+      if !p.is_null() {
+         let e = unsafe { &*p };
+         let state = e.state.load(std::sync::atomic::Ordering::Acquire);
+         let expected = ((h as u32 as u64) << 32) | customhash::STATE_OCCUPIED;
+         if (state & customhash::STATE_MATCH_MASK) == expected && e.key.eq_str(key) {
+            let val = unsafe { (*e.value.get()).assume_init_ref() };
+            if val.expires_ms == 0 || !val.is_expired() {
+               return val.value.as_string().map(|s| s.to_string());
+            } else {
+               self.data.remove(key);
+               return None;
+            }
+         }
+      }
       let result = self.data.with_entry(key, h, idx, |val| {
          if val.is_expired() {
             return Err(());
@@ -190,31 +216,35 @@ impl Store {
       self.get_to_buf_hinted(key, None, out)
    }
 
-   #[inline]
+   #[inline(always)]
    pub fn get_to_buf_hinted(&self, key: &str, hash: Option<u64>, out: &mut Vec<u8>) -> bool {
+      self.get_to_buf_hinted_bytes(key.as_bytes(), hash, out)
+   }
+
+   #[inline(always)]
+   pub fn get_to_buf_hinted_bytes(&self, key: &[u8], hash: Option<u64>, out: &mut Vec<u8>) -> bool {
       let (h, idx) = match hash {
          Some(h) => (h, self.data.shard_of(h)),
-         None => self.data.locate_key(key),
-      };
-      let found = self.data.with_entry(key, h, idx, |val| {
-         if val.is_expired() {
-            return Err(());
-         }
-         match &val.value {
-            crate::storage::value::FyroDB::String(s) => {
-               s.write_resp(out);
-               Ok(true)
+         None => {
+            if let Ok(s) = std::str::from_utf8(key) {
+               self.data.locate_key(s)
+            } else {
+               return false;
             }
-            _ => Ok(false),
          }
-      });
-      match found {
-         Some(Ok(true)) => true,
-         Some(Err(())) => {
-            self.data.remove(key);
-            false
+      };
+      let p = self.data.probe_slot_entry(h, idx);
+      if !p.is_null() {
+         unsafe {
+            if self.get_to_buf_fast_entry_bytes(key, h, p, out) {
+               return true;
+            }
          }
-         _ => false,
+      }
+      if let Ok(s) = std::str::from_utf8(key) {
+         self.get_to_buf_fallback(s, h, out)
+      } else {
+         false
       }
    }
 
@@ -245,18 +275,31 @@ impl Store {
    ///
    /// `p` must be null or point to a valid `Entry<StoreValue>`.
    #[inline(always)]
-   pub unsafe fn get_to_buf_fast_entry(
+   pub unsafe fn get_to_buf_fast_entry_bytes(
       &self,
-      key: &str,
+      key: &[u8],
       hash: u64,
       p: *const customhash::Entry<StoreValue>,
       out: &mut Vec<u8>,
    ) -> bool {
       if !p.is_null() {
          let e = unsafe { &*p };
-         let state = e.state.load(std::sync::atomic::Ordering::Acquire);
+         let state = e.state.load(std::sync::atomic::Ordering::Relaxed);
          let expected = ((hash as u32 as u64) << 32) | customhash::STATE_OCCUPIED;
-         if (state & customhash::STATE_MATCH_MASK) == expected && e.key.eq_str(key) {
+         if (state & (0xFFFF_FFFF_0000_0000 | customhash::STATE_OCCUPIED)) == expected
+            && e.key.eq_bytes(key)
+         {
+            if state & customhash::STATE_LOCK != 0 {
+               let mut cur = state;
+               while cur & customhash::STATE_LOCK != 0 {
+                  std::hint::spin_loop();
+                  cur = e.state.load(std::sync::atomic::Ordering::Acquire);
+               }
+               if cur & customhash::STATE_OCCUPIED == 0 {
+                  return false;
+               }
+            }
+            std::sync::atomic::fence(std::sync::atomic::Ordering::Acquire);
             let val = unsafe { (*e.value.get()).assume_init_ref() };
             if val.expires_ms == 0 || !val.is_expired() {
                if let crate::storage::value::FyroDB::String(s) = &val.value {
@@ -264,12 +307,32 @@ impl Store {
                   return true;
                }
             } else {
-               self.data.remove(key);
+               if let Ok(key_str) = std::str::from_utf8(key) {
+                  self.data.remove(key_str);
+               }
                return false;
             }
          }
       }
-      self.get_to_buf_fallback(key, hash, out)
+      if let Ok(key_str) = std::str::from_utf8(key) {
+         self.get_to_buf_fallback(key_str, hash, out)
+      } else {
+         false
+      }
+   }
+
+   /// # Safety
+   ///
+   /// `p` must be null or point to a valid `Entry<StoreValue>`.
+   #[inline(always)]
+   pub unsafe fn get_to_buf_fast_entry(
+      &self,
+      key: &str,
+      hash: u64,
+      p: *const customhash::Entry<StoreValue>,
+      out: &mut Vec<u8>,
+   ) -> bool {
+      unsafe { self.get_to_buf_fast_entry_bytes(key.as_bytes(), hash, p, out) }
    }
 
    /// # Safety
@@ -286,10 +349,16 @@ impl Store {
    ) {
       if !p.is_null() {
          let e = unsafe { &*p };
-         let expected = ((hash as u32 as u64) << 32) | customhash::STATE_OCCUPIED;
-         let mut current = e.state.load(std::sync::atomic::Ordering::Relaxed);
-         if (current & customhash::STATE_MATCH_MASK) == expected && e.key.eq_str(key) {
-            for _ in 0..4 {
+         if e.key.eq_str(key) {
+            let mut current = e.state.load(std::sync::atomic::Ordering::Relaxed);
+            for _ in 0..32 {
+               while current & customhash::STATE_LOCK != 0 {
+                  std::hint::spin_loop();
+                  current = e.state.load(std::sync::atomic::Ordering::Relaxed);
+               }
+               if (current & customhash::STATE_OCCUPIED) == 0 {
+                  break;
+               }
                let locked = customhash::bump_seq(current) | customhash::STATE_LOCK;
                match e.state.compare_exchange_weak(
                   current,
@@ -300,16 +369,15 @@ impl Store {
                   Ok(_) => {
                      self.data.snap_before_write(e);
                      let val = unsafe { (*e.value.get()).assume_init_mut() };
-                     val.expires_ms = expires_ms;
+                     if val.expires_ms != expires_ms {
+                        val.expires_ms = expires_ms;
+                     }
                      if let crate::storage::value::FyroDB::String(ref mut s) = val.value {
                         s.overwrite_str(value);
                      } else {
                         val.value = crate::storage::value::FyroDB::String(SmallStr::new(value));
                      }
-                     let unlocked = (customhash::bump_seq(locked) & !customhash::STATE_LOCK)
-                        | customhash::STATE_OCCUPIED;
-                     e.state
-                        .store(unlocked, std::sync::atomic::Ordering::Release);
+                     customhash::unlock_write(&e.state, locked, true);
                      self.data.touched(key);
                      if expires_ms != 0 {
                         self.add_ttl();
@@ -318,9 +386,6 @@ impl Store {
                   }
                   Err(observed) => {
                      current = observed;
-                     if (current & customhash::STATE_MATCH_MASK) != expected {
-                        break;
-                     }
                      std::hint::spin_loop();
                   }
                }
@@ -350,6 +415,21 @@ impl Store {
          Some(h) => h,
          None => self.data.locate_key(key).0,
       };
+      let idx = self.data.shard_of(hash);
+      let store_val = StoreValue {
+         value: crate::storage::value::FyroDB::String(SmallStr::new(value)),
+         expires_ms,
+      };
+      if self
+         .data
+         .insert_slot_fast_located(hash, idx, key, store_val)
+      {
+         self.data.touched(key);
+         if expires_ms != 0 {
+            self.add_ttl();
+         }
+         return;
+      }
       match self.data.probe_or_insert_fast(hash, key, || StoreValue {
          value: crate::storage::value::FyroDB::String(SmallStr::new(value)),
          expires_ms,
@@ -364,6 +444,25 @@ impl Store {
             }
          }
          customhash::FastSet::Retry => self.set_string_fallback(key, hash, value, expires_ms),
+      }
+   }
+
+   #[inline(always)]
+   pub fn set_string_fast_bytes(&self, key: &str, hash: u64, val_bytes: &[u8]) {
+      let idx = self.data.shard_of(hash);
+      let store_val = StoreValue {
+         value: crate::storage::value::FyroDB::String(SmallStr::from_slice(val_bytes)),
+         expires_ms: 0,
+      };
+      if self
+         .data
+         .insert_slot_fast_located(hash, idx, key, store_val)
+      {
+         self.data.touched(key);
+         return;
+      }
+      if let Ok(val_str) = std::str::from_utf8(val_bytes) {
+         self.set_string_auto(key, Some(hash), std::ptr::null(), val_str, 0);
       }
    }
 
@@ -409,6 +508,17 @@ impl Store {
    }
 
    #[inline(always)]
+   pub fn get_to_buf_with_hint_bytes(
+      &self,
+      key: &[u8],
+      hash: u64,
+      entry_hint: *const (),
+      out: &mut Vec<u8>,
+   ) -> bool {
+      unsafe { self.get_to_buf_fast_entry_bytes(key, hash, entry_hint.cast(), out) }
+   }
+
+   #[inline(always)]
    pub fn get_to_buf_hinted_pinned(&self, key: &str, hash: Option<u64>, out: &mut Vec<u8>) -> bool {
       let (h, idx) = match hash {
          Some(h) => (h, self.data.shard_of(h)),
@@ -433,20 +543,23 @@ impl Store {
       matched.unwrap_or(false)
    }
 
-   pub fn getdel(&self, key: &str) -> Option<String> {
+   pub fn getdel(&self, key: &str) -> Option<SmallStr> {
       let entry = self.data.remove(key)?;
       if entry.is_expired() {
          return None;
       }
-      entry.value.as_string().map(|s| s.to_string())
+      match entry.value {
+         crate::storage::value::FyroDB::String(s) => Some(s),
+         _ => None,
+      }
    }
 
-   pub fn getset(&self, key: &str, new_value: &str) -> Option<String> {
+   pub fn getset(&self, key: &str, new_value: &str) -> Option<SmallStr> {
       let result = self.data.update_with(key, |val| {
          let old = if val.is_expired() {
             None
          } else {
-            val.value.as_string().map(|s| s.to_string())
+            val.value.as_string().cloned()
          };
          val.value = crate::storage::value::FyroDB::String(SmallStr::new(new_value));
          val.expires_ms = 0;
@@ -457,18 +570,18 @@ impl Store {
          None => {
             self
                .data
-               .insert_str(key, StoreValue::string(new_value.to_string()));
+               .insert_str(key, StoreValue::string_small(SmallStr::new(new_value)));
             None
          }
       }
    }
 
-   pub fn getex_ms(&self, key: &str, expires_ms: u64) -> Option<String> {
+   pub fn getex_ms(&self, key: &str, expires_ms: u64) -> Option<SmallStr> {
       let (result, ttl_change) = self.data.update_with(key, |val| {
          if val.is_expired() {
             return (None, 0i8);
          }
-         let Some(s) = val.value.as_string().map(|s| s.to_string()) else {
+         let Some(s) = val.value.as_string().cloned() else {
             return (None, 0);
          };
          let ttl_change = match (val.expires_ms == 0, expires_ms == 0) {
@@ -555,6 +668,55 @@ impl Store {
       }
    }
 
+   pub fn getrange_to_buf(&self, key: &str, start: i64, end: i64, out: &mut Vec<u8>) -> bool {
+      let entry = match self.data.get_ref(key) {
+         Some(e) if !e.is_expired() => e,
+         _ => {
+            crate::utils::resp::write_bulk(out, "");
+            return true;
+         }
+      };
+      let s = match entry.value.as_string() {
+         Some(s) => s,
+         None => {
+            crate::utils::resp::write_bulk(out, "");
+            return true;
+         }
+      };
+
+      let len = s.len() as i64;
+      if len == 0 {
+         crate::utils::resp::write_bulk(out, "");
+         return true;
+      }
+
+      let mut start = if start < 0 {
+         (len + start).max(0)
+      } else {
+         start.min(len)
+      } as usize;
+      let mut end = if end < 0 {
+         (len + end).max(0)
+      } else {
+         end.min(len - 1)
+      } as usize;
+
+      if start > end {
+         crate::utils::resp::write_bulk(out, "");
+         return true;
+      }
+
+      while start > 0 && !s.is_char_boundary(start) {
+         start -= 1;
+      }
+      end += 1;
+      while end < s.len() && !s.is_char_boundary(end) {
+         end += 1;
+      }
+      crate::utils::resp::write_bulk(out, &s[start..end]);
+      true
+   }
+
    pub fn getrange(&self, key: &str, start: i64, end: i64) -> String {
       let entry = match self.data.get_ref(key) {
          Some(e) if !e.is_expired() => e,
@@ -612,19 +774,13 @@ impl Store {
                   bytes.resize(needed, 0u8);
                }
                bytes[offset..offset + value.len()].copy_from_slice(value.as_bytes());
-               match String::from_utf8(bytes) {
-                  Ok(new_s) => {
-                     let len = new_s.len();
-                     *s = SmallStr::from_string(new_s);
-                     Ok(len)
-                  }
-                  Err(e) => {
-                     *s = SmallStr::from_string(unsafe {
-                        String::from_utf8_unchecked(e.into_bytes())
-                     });
-                     Err("result would not be valid UTF-8")
-                  }
+               if std::str::from_utf8(&bytes).is_err() {
+                  *s = SmallStr::from_bytes(bytes);
+                  return Err("result would not be valid UTF-8");
                }
+               let len = bytes.len();
+               *s = SmallStr::from_bytes(bytes);
+               Ok(len)
             }
             None => Err("WRONGTYPE"),
          });
@@ -634,14 +790,14 @@ impl Store {
          None => {
             let mut bytes = vec![0u8; needed];
             bytes[offset..].copy_from_slice(value.as_bytes());
-            let new_s = match String::from_utf8(bytes) {
-               Ok(s) => s,
-               Err(_) => return Err("result would not be valid UTF-8"),
-            };
-            let len = new_s.len();
+            if std::str::from_utf8(&bytes).is_err() {
+               return Err("result would not be valid UTF-8");
+            }
+            let len = bytes.len();
+            let new_str = SmallStr::from_bytes(bytes);
             if self
                .data
-               .insert_if_absent(key.to_string(), StoreValue::string(new_s))
+               .insert_if_absent_str(key, StoreValue::string_small(new_str))
             {
                Ok(len)
             } else {
@@ -720,8 +876,7 @@ impl Store {
                   Err(_) => return Err("value is not a valid float"),
                };
                let new = n + by;
-               val.value =
-                  crate::storage::value::FyroDB::String(SmallStr::from_string(format_float(new)));
+               val.value = crate::storage::value::FyroDB::String(SmallStr::from_float(new));
                Ok(new)
             }
             None => Err("WRONGTYPE"),
@@ -732,7 +887,7 @@ impl Store {
          None => {
             self
                .data
-               .insert_str(key, StoreValue::string(format_float(by)));
+               .insert_str(key, StoreValue::string_small(SmallStr::from_float(by)));
             Ok(by)
          }
       }
@@ -741,19 +896,22 @@ impl Store {
 
 impl Store {
    pub fn lcs(&self, key1: &str, key2: &str) -> Result<String, &'static str> {
-      let s1 = match self.data.get_ref(key1) {
-         None => String::new(),
-         Some(e) if e.is_expired() => String::new(),
+      let ref1 = self.data.get_ref(key1);
+      let ref2 = self.data.get_ref(key2);
+
+      let s1 = match ref1.as_deref() {
+         None => "",
+         Some(e) if e.is_expired() => "",
          Some(e) => match e.value.as_string() {
-            Some(s) => s.to_string(),
+            Some(s) => s.as_str(),
             None => return Err("WRONGTYPE"),
          },
       };
-      let s2 = match self.data.get_ref(key2) {
-         None => String::new(),
-         Some(e) if e.is_expired() => String::new(),
+      let s2 = match ref2.as_deref() {
+         None => "",
+         Some(e) if e.is_expired() => "",
          Some(e) => match e.value.as_string() {
-            Some(s) => s.to_string(),
+            Some(s) => s.as_str(),
             None => return Err("WRONGTYPE"),
          },
       };

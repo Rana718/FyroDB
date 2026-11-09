@@ -207,7 +207,7 @@ impl Store {
          z.insert(score, r.member.as_str());
       }
       let n = z.len();
-      self.data.insert(dst.to_string(), StoreValue::zset(z));
+      self.data.insert_str(dst, StoreValue::zset(z));
       Ok(n)
    }
 }

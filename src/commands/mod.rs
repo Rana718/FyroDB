@@ -234,6 +234,10 @@ string_enum! {
         FTCURSOR => "FT.CURSOR",
         FTCONFIG => "FT.CONFIG",
         FTALIST => "FT._LIST",
+
+        EVAL => "EVAL",
+        EVALSHA => "EVALSHA",
+        SCRIPT => "SCRIPT",
     }
 }
 
@@ -477,6 +481,10 @@ pub fn execute(parts: &[&str], store: &Arc<Store>, out: &mut Vec<u8>) {
       | ComdType::FTCONFIG
       | ComdType::FTALIST => ft::execute_ft(parts, store, out),
 
+      ComdType::EVAL => script::eval(parts, store, out),
+      ComdType::EVALSHA => script::evalsha(parts, store, out),
+      ComdType::SCRIPT => script::script_cmd(parts, store, out),
+
       _ => out.extend_from_slice(b"-ERR unknown command\r\n"),
    }
 }
@@ -491,6 +499,7 @@ pub mod json;
 pub mod keys;
 pub mod list;
 pub mod scan;
+pub mod script;
 pub mod set;
 pub mod stream;
 pub mod string;

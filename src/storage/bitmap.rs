@@ -39,10 +39,9 @@ impl Store {
             if value {
                bytes[byte_idx] |= 1 << bit_idx;
             }
-            self.data.insert_str(
-               key,
-               StoreValue::string(unsafe { String::from_utf8_unchecked(bytes) }),
-            );
+            self
+               .data
+               .insert_str(key, StoreValue::string_small(SmallStr::from_bytes(bytes)));
             Ok(0)
          }
       }
@@ -245,9 +244,7 @@ impl Store {
       }
 
       if buffers.is_empty() {
-         self
-            .data
-            .insert(dest.to_string(), StoreValue::string(String::new()));
+         self.data.insert_str(dest, StoreValue::string_str(""));
          return Ok(0);
       }
 
@@ -292,10 +289,9 @@ impl Store {
       }
 
       let len = result.len();
-      self.data.insert(
-         dest.to_string(),
-         StoreValue::string(unsafe { String::from_utf8_unchecked(result) }),
-      );
+      self
+         .data
+         .insert_str(dest, StoreValue::string_small(SmallStr::from_bytes(result)));
       Ok(len)
    }
 }

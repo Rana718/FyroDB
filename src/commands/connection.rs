@@ -918,7 +918,7 @@ pub fn sort_cmd(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
       let l: std::collections::VecDeque<String> = items.into_iter().collect();
       store
          .data
-         .insert(dst.to_string(), crate::storage::value::StoreValue::list(l));
+         .insert_str(dst, crate::storage::value::StoreValue::list(l));
       resp::write_integer(out, len as i64);
    } else {
       resp::write_array(out, &items);

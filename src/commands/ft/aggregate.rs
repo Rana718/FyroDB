@@ -92,7 +92,10 @@ impl Acc {
    }
 
    fn finish(&self) -> Value {
-      let f = |x: f64| Value::Bulk(crate::utils::util::format_float(x).into_bytes());
+      let f = |x: f64| {
+         let mut buffer = ryu::Buffer::new();
+         Value::Bulk(buffer.format(x).as_bytes().to_vec())
+      };
       match self {
          Acc::Count(n) => f(*n as f64),
          Acc::Distinct(s) => f(s.len() as f64),

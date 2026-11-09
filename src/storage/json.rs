@@ -120,6 +120,32 @@ impl Store {
       paths: &[&str],
       out: &mut Vec<u8>,
    ) -> Result<bool, &'static str> {
+      let is_root = paths.is_empty()
+         || (paths.len() == 1 && (paths[0] == "." || paths[0] == "$" || paths[0].is_empty()));
+      if is_root {
+         let (h, idx) = self.data.locate_key(key);
+         let p = self.data.probe_slot_entry(h, idx);
+         if !p.is_null() {
+            let e = unsafe { &*p };
+            let state = e.state.load(std::sync::atomic::Ordering::Acquire);
+            let expected = ((h as u32 as u64) << 32) | customhash::STATE_OCCUPIED;
+            if (state & customhash::STATE_MATCH_MASK) == expected && e.key.eq_str(key) {
+               let val = unsafe { (*e.value.get()).assume_init_ref() };
+               if val.expires_ms == 0 || !val.is_expired() {
+                  let raw = match val.value.as_json_str() {
+                     Some(s) => s,
+                     None => return Err("WRONGTYPE"),
+                  };
+                  crate::utils::resp::write_bulk(out, raw);
+                  return Ok(true);
+               } else {
+                  self.data.remove(key);
+                  return Ok(false);
+               }
+            }
+         }
+      }
+
       match self.data.get_ref(key) {
          None => Ok(false),
          Some(e) if e.is_expired() => Ok(false),

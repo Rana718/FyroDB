@@ -91,14 +91,25 @@ impl ZSetData {
       if cap > 0 {
          chunks.push(Vec::with_capacity(cap.clamp(4, CHUNK_MAX)));
       }
+      let index = if cap > INDEX_ON {
+         Some(Box::new(Index::with_capacity_and_hasher(
+            cap,
+            Default::default(),
+         )))
+      } else {
+         None
+      };
       Self {
          chunks,
-         index: None,
+         index,
          len: 0,
       }
    }
 
    pub fn reserve(&mut self, additional: usize) {
+      if self.len + additional > INDEX_ON && self.index.is_none() {
+         self.sync_index();
+      }
       if let Some(ix) = &mut self.index {
          ix.reserve(additional);
       }
@@ -243,7 +254,7 @@ impl ZSetData {
       };
       if self.chunks[ci].len() > CHUNK_MAX {
          if ci + 1 == self.chunks.len() {
-            let mut new_chunk = Vec::with_capacity(CHUNK_MAX / 2);
+            let mut new_chunk = Vec::with_capacity(CHUNK_MAX);
             new_chunk.push(self.chunks[ci].pop().unwrap());
             self.chunks.push(new_chunk);
          } else {

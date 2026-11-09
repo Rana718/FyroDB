@@ -351,7 +351,8 @@ impl UpstreamConnection {
 
    // Cheap liveness probe for a pooled connection.
    pub fn ping(&mut self) -> io::Result<()> {
-      let outcome = self.forward_query("", &mut Vec::new(), false)?;
+      let mut sink = Vec::with_capacity(64);
+      let outcome = self.forward_query("", &mut sink, false)?;
       if outcome.error || outcome.status != b'I' {
          return Err(io::Error::other("pooled upstream connection is not idle"));
       }

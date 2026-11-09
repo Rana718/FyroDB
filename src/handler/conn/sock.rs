@@ -112,6 +112,10 @@ impl<'a> Conn<'a> {
                      prefetched = self.parser.pos;
                      continue;
                   }
+                  if id == CmdId::JsonGet && dispatch_json_get_run(self, raw) {
+                     prefetched = self.parser.pos;
+                     continue;
+                  }
 
                   if id.is_queue() && is_coalescible_queue(raw, id) {
                      match dispatch_queue_run(self, raw) {
@@ -175,8 +179,12 @@ impl<'a> Conn<'a> {
                      slot.drain_into_limit(&mut self.parser.wbuf, SUB_WRITE_BATCH_BYTES);
                      continue;
                   }
-                  if self.parser.wbuf.capacity() > RETAINED_WRITE_BUFFER {
-                     self.parser.wbuf.shrink_to(RETAINED_WRITE_BUFFER);
+                  let retained = match self.mode {
+                     ConnMode::Subscribed { .. } => SUB_WRITE_BATCH_BYTES,
+                     ConnMode::Normal => RETAINED_WRITE_BUFFER,
+                  };
+                  if self.parser.wbuf.capacity() > retained {
+                     self.parser.wbuf.shrink_to(retained);
                   }
                   return true;
                }

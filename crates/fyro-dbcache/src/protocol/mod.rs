@@ -366,8 +366,6 @@ fn take_cstr<'a>(body: &'a [u8], pos: &mut usize) -> io::Result<&'a str> {
 
 // ---------------------------------------------------------------- encoding
 
-pub const READY_IDLE: [u8; 6] = [b'Z', 0, 0, 0, 5, b'I'];
-
 // Requests backend to flush buffered extended-protocol replies.
 pub const FLUSH_REQUEST: [u8; 5] = [b'H', 0, 0, 0, 4];
 
@@ -488,12 +486,25 @@ pub fn encode_result(
    (row_description, data_rows, rows.len() as u32)
 }
 
+#[inline]
+pub fn put_command_complete(out: &mut Vec<u8>, tag: &str) {
+   let body_len = tag.len() + 1;
+   let total = body_len + 5;
+   let old = out.len();
+   out.reserve(total);
+   unsafe {
+      let p = out.as_mut_ptr().add(old);
+      *p = b'C';
+      std::ptr::copy_nonoverlapping(((body_len + 4) as i32).to_be_bytes().as_ptr(), p.add(1), 4);
+      std::ptr::copy_nonoverlapping(tag.as_bytes().as_ptr(), p.add(5), tag.len());
+      *p.add(5 + tag.len()) = 0;
+      out.set_len(old + total);
+   }
+}
+
 pub fn encode_command_complete(tag: &str) -> Vec<u8> {
-   let mut body = Vec::with_capacity(tag.len() + 1);
-   body.extend_from_slice(tag.as_bytes());
-   body.push(0);
-   let mut out = Vec::with_capacity(body.len() + 5);
-   put_message(&mut out, b'C', &body);
+   let mut out = Vec::with_capacity(tag.len() + 6);
+   put_command_complete(&mut out, tag);
    out
 }
 
@@ -538,24 +549,38 @@ pub fn encode_bind(
    out
 }
 
+pub const PARSE_COMPLETE: [u8; 5] = [b'1', 0, 0, 0, 4];
+pub const BIND_COMPLETE: [u8; 5] = [b'2', 0, 0, 0, 4];
+pub const CLOSE_COMPLETE: [u8; 5] = [b'3', 0, 0, 0, 4];
+pub const NO_DATA: [u8; 5] = [b'n', 0, 0, 0, 4];
+pub const EMPTY_QUERY: [u8; 5] = [b'I', 0, 0, 0, 4];
+pub const READY_IDLE: [u8; 6] = [b'Z', 0, 0, 0, 5, b'I'];
+pub const READY_TX: [u8; 6] = [b'Z', 0, 0, 0, 5, b'T'];
+pub const READY_ERR: [u8; 6] = [b'Z', 0, 0, 0, 5, b'E'];
+
+#[inline(always)]
 pub fn put_parse_complete(out: &mut Vec<u8>) {
-   put_message(out, b'1', &[]);
+   out.extend_from_slice(&PARSE_COMPLETE);
 }
 
+#[inline(always)]
 pub fn put_bind_complete(out: &mut Vec<u8>) {
-   put_message(out, b'2', &[]);
+   out.extend_from_slice(&BIND_COMPLETE);
 }
 
+#[inline(always)]
 pub fn put_close_complete(out: &mut Vec<u8>) {
-   put_message(out, b'3', &[]);
+   out.extend_from_slice(&CLOSE_COMPLETE);
 }
 
+#[inline(always)]
 pub fn put_no_data(out: &mut Vec<u8>) {
-   put_message(out, b'n', &[]);
+   out.extend_from_slice(&NO_DATA);
 }
 
+#[inline(always)]
 pub fn put_empty_query(out: &mut Vec<u8>) {
-   put_message(out, b'I', &[]);
+   out.extend_from_slice(&EMPTY_QUERY);
 }
 
 pub fn put_parameter_description(out: &mut Vec<u8>, oids: &[u32]) {
@@ -567,8 +592,22 @@ pub fn put_parameter_description(out: &mut Vec<u8>, oids: &[u32]) {
    put_message(out, b't', &body);
 }
 
+#[inline]
+pub fn put_ready_for_query(out: &mut Vec<u8>, status: u8) {
+   let slice = match status {
+      b'E' => &READY_ERR,
+      b'T' => &READY_TX,
+      _ => &READY_IDLE,
+   };
+   out.extend_from_slice(slice);
+}
+
 pub fn encode_ready(status: u8) -> [u8; 6] {
-   [b'Z', 0, 0, 0, 5, status]
+   match status {
+      b'E' => READY_ERR,
+      b'T' => READY_TX,
+      _ => READY_IDLE,
+   }
 }
 
 pub fn encode_error(severity: &str, code: &str, message: &str) -> Vec<u8> {
@@ -608,29 +647,30 @@ pub fn write_startup_ok<W: Write>(writer: &mut W) -> io::Result<()> {
 }
 
 pub fn write_parameter_status<W: Write>(writer: &mut W, name: &str, val: &str) -> io::Result<()> {
-   let mut payload = Vec::new();
-   payload.extend_from_slice(name.as_bytes());
-   payload.push(0);
-   payload.extend_from_slice(val.as_bytes());
-   payload.push(0);
-
-   let len = (payload.len() + 4) as i32;
+   let total_len = (4 + name.len() + 1 + val.len() + 1) as i32;
    writer.write_all(b"S")?;
-   writer.write_all(&len.to_be_bytes())?;
-   writer.write_all(&payload)
+   writer.write_all(&total_len.to_be_bytes())?;
+   writer.write_all(name.as_bytes())?;
+   writer.write_all(b"\0")?;
+   writer.write_all(val.as_bytes())?;
+   writer.write_all(b"\0")
 }
 
 pub fn write_ready_for_query<W: Write>(writer: &mut W, status: u8) -> io::Result<()> {
-   writer.write_all(&[b'Z', 0, 0, 0, 5, status])
+   let slice = match status {
+      b'E' => &READY_ERR,
+      b'T' => &READY_TX,
+      _ => &READY_IDLE,
+   };
+   writer.write_all(slice)
 }
 
 pub fn write_command_complete<W: Write>(writer: &mut W, tag: &str) -> io::Result<()> {
-   let mut body = Vec::with_capacity(tag.len() + 1);
-   body.extend_from_slice(tag.as_bytes());
-   body.push(0);
+   let total_len = (4 + tag.len() + 1) as i32;
    writer.write_all(b"C")?;
-   writer.write_all(&((body.len() + 4) as i32).to_be_bytes())?;
-   writer.write_all(&body)
+   writer.write_all(&total_len.to_be_bytes())?;
+   writer.write_all(tag.as_bytes())?;
+   writer.write_all(b"\0")
 }
 
 pub fn write_result_set<W: Write>(

@@ -35,14 +35,16 @@ fn drain(slot: &SubSlot) -> Vec<u8> {
 
 #[test]
 fn sub_reply_format() {
-   let r = encode_sub_reply("subscribe", "news", 1);
-   assert_eq!(r, b"*3\r\n$9\r\nsubscribe\r\n$4\r\nnews\r\n:1\r\n");
+   let mut out = Vec::new();
+   encode_sub_reply("subscribe", "news", 1, &mut out);
+   assert_eq!(out, b"*3\r\n$9\r\nsubscribe\r\n$4\r\nnews\r\n:1\r\n");
 }
 
 #[test]
 fn sub_reply_zero_count() {
-   let r = encode_sub_reply("unsubscribe", "", 0);
-   assert_eq!(r, b"*3\r\n$11\r\nunsubscribe\r\n$0\r\n\r\n:0\r\n");
+   let mut out = Vec::new();
+   encode_sub_reply("unsubscribe", "", 0, &mut out);
+   assert_eq!(out, b"*3\r\n$11\r\nunsubscribe\r\n$0\r\n\r\n:0\r\n");
 }
 
 #[test]

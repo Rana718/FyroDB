@@ -312,10 +312,7 @@ impl Store {
                crate::utils::resp::write_array_header(out, members.len());
                for m in members {
                   match z.get_score(m) {
-                     Some(score) => crate::utils::resp::write_bulk(
-                        out,
-                        &crate::utils::util::format_float(score),
-                     ),
+                     Some(score) => crate::utils::resp::write_float(out, score),
                      None => crate::utils::resp::write_nil(out),
                   }
                }
@@ -472,10 +469,7 @@ impl Store {
                for entry in z.range_by_rank(s, e_idx + 1) {
                   entry.member.write_resp(out);
                   if withscores {
-                     crate::utils::resp::write_bulk(
-                        out,
-                        &crate::utils::util::format_float(entry.score),
-                     );
+                     crate::utils::resp::write_float(out, entry.score);
                   }
                }
                Ok(n)
@@ -510,10 +504,7 @@ impl Store {
                for entry in z.iter_rev().skip(s).take(n) {
                   entry.member.write_resp(out);
                   if withscores {
-                     crate::utils::resp::write_bulk(
-                        out,
-                        &crate::utils::util::format_float(entry.score),
-                     );
+                     crate::utils::resp::write_float(out, entry.score);
                   }
                }
                Ok(n)
@@ -689,7 +680,7 @@ impl Store {
          }
       }
       let count = result.len();
-      self.data.insert(dst.to_string(), StoreValue::zset(result));
+      self.data.insert_str(dst, StoreValue::zset(result));
       Ok(count)
    }
 
@@ -701,23 +692,17 @@ impl Store {
       aggregate: ZAggregate,
    ) -> Result<usize, &'static str> {
       if keys.is_empty() {
-         self
-            .data
-            .insert(dst.to_string(), StoreValue::zset(ZSetData::new()));
+         self.data.insert_str(dst, StoreValue::zset(ZSetData::new()));
          return Ok(0);
       }
       // Collect first set's members without cloning the full ZSetData.
       let first_members: Vec<(SmallStr, f64)> = match self.data.get_ref(keys[0]) {
          None => {
-            self
-               .data
-               .insert(dst.to_string(), StoreValue::zset(ZSetData::new()));
+            self.data.insert_str(dst, StoreValue::zset(ZSetData::new()));
             return Ok(0);
          }
          Some(e) if e.is_expired() => {
-            self
-               .data
-               .insert(dst.to_string(), StoreValue::zset(ZSetData::new()));
+            self.data.insert_str(dst, StoreValue::zset(ZSetData::new()));
             return Ok(0);
          }
          Some(e) => match e.value.as_zset() {
@@ -740,15 +725,11 @@ impl Store {
          // Collect other set's scores without cloning full ZSetData.
          let other_scores: Vec<(SmallStr, f64)> = match self.data.get_ref(k) {
             None => {
-               self
-                  .data
-                  .insert(dst.to_string(), StoreValue::zset(ZSetData::new()));
+               self.data.insert_str(dst, StoreValue::zset(ZSetData::new()));
                return Ok(0);
             }
             Some(e) if e.is_expired() => {
-               self
-                  .data
-                  .insert(dst.to_string(), StoreValue::zset(ZSetData::new()));
+               self.data.insert_str(dst, StoreValue::zset(ZSetData::new()));
                return Ok(0);
             }
             Some(e) => match e.value.as_zset() {
@@ -775,7 +756,7 @@ impl Store {
       }
 
       let count = result.len();
-      self.data.insert(dst.to_string(), StoreValue::zset(result));
+      self.data.insert_str(dst, StoreValue::zset(result));
       Ok(count)
    }
 
@@ -931,7 +912,7 @@ impl Store {
          z.insert(*score, member.as_str());
       }
       let count = z.len();
-      self.data.insert(dst.to_string(), StoreValue::zset(z));
+      self.data.insert_str(dst, StoreValue::zset(z));
       Ok(count)
    }
 

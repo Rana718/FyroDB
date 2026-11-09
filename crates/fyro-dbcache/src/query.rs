@@ -787,20 +787,21 @@ pub fn make_cache_key_inline<'a>(
       return "";
    }
    let mut pos = 0;
-   buf[pos..pos + p.len()].copy_from_slice(p);
-   pos += p.len();
-   buf[pos..pos + t.len()].copy_from_slice(t);
-   pos += t.len();
-   buf[pos] = b':';
-   pos += 1;
-   let b = fingerprint.to_be_bytes();
-   for byte in b {
-      buf[pos] = HEX[(byte >> 4) as usize];
-      buf[pos + 1] = HEX[(byte & 0xF) as usize];
-      pos += 2;
+   unsafe {
+      std::ptr::copy_nonoverlapping(p.as_ptr(), buf.as_mut_ptr(), p.len());
+      pos += p.len();
+      std::ptr::copy_nonoverlapping(t.as_ptr(), buf.as_mut_ptr().add(pos), t.len());
+      pos += t.len();
+      *buf.as_mut_ptr().add(pos) = b':';
+      pos += 1;
+      let b = fingerprint.to_be_bytes();
+      for byte in b {
+         *buf.as_mut_ptr().add(pos) = HEX[(byte >> 4) as usize];
+         *buf.as_mut_ptr().add(pos + 1) = HEX[(byte & 0xF) as usize];
+         pos += 2;
+      }
+      std::str::from_utf8_unchecked(&buf[..pos])
    }
-   // SAFETY: all bytes are ASCII.
-   unsafe { std::str::from_utf8_unchecked(&buf[..pos]) }
 }
 
 // Sharded SQL analysis cache: parsing is the dominant cost on the hot path,
@@ -828,7 +829,7 @@ struct ParsedL1Entry {
 }
 
 thread_local! {
-   static PARSED_L1: std::cell::RefCell<[Option<ParsedL1Entry>; 64]> = const { std::cell::RefCell::new([const { None }; 64]) };
+   static PARSED_L1: std::cell::RefCell<[Option<ParsedL1Entry>; 256]> = const { std::cell::RefCell::new([const { None }; 256]) };
 }
 
 impl ParsedQueryCache {
@@ -846,7 +847,7 @@ impl ParsedQueryCache {
 
    pub fn get_or_parse(&self, sql: &str) -> Arc<ParsedQuery> {
       let hash = hash_sql(sql);
-      let idx = (hash as usize) & 63;
+      let idx = (hash as usize) & 255;
       if let Some(parsed) = PARSED_L1.with(|c| {
          let b = c.borrow();
          if let Some(slot) = &b[idx]

@@ -4,8 +4,7 @@ use std::sync::Arc;
 struct CachedBatch {
    channel: String,
    msg_count: usize,
-   msg_ptr: *const u8,
-   msg_len: usize,
+   msg_bytes: Vec<u8>,
    frame: Arc<[u8]>,
 }
 
@@ -40,8 +39,17 @@ pub fn encode_message(channel: &str, message: &str) -> Arc<[u8]> {
    let msg_bytes = message.as_bytes();
    let ch_len = ch_bytes.len();
    let msg_len = msg_bytes.len();
-   let total =
-      15 + 1 + resp_int_len(ch_len) + 2 + ch_len + 2 + 1 + resp_int_len(msg_len) + 2 + msg_len + 2;
+   let total = b"*3\r\n$7\r\nmessage\r\n".len()
+      + 1
+      + resp_int_len(ch_len)
+      + 2
+      + ch_len
+      + 2
+      + 1
+      + resp_int_len(msg_len)
+      + 2
+      + msg_len
+      + 2;
    let mut out = Vec::with_capacity(total);
    out.extend_from_slice(b"*3\r\n$7\r\nmessage\r\n");
    bulk_into(&mut out, ch_bytes);
@@ -55,17 +63,15 @@ pub fn encode_batch(channel: &str, messages: &[&str]) -> Arc<[u8]> {
    }
 
    let first = messages[0];
-   let is_uniform_ptr = messages
-      .iter()
-      .all(|m| std::ptr::eq(m.as_ptr(), first.as_ptr()) && m.len() == first.len());
+   let first_bytes = first.as_bytes();
+   let is_uniform = messages.iter().all(|m| m.as_bytes() == first_bytes);
 
-   if is_uniform_ptr {
+   if is_uniform {
       let cached = BATCH_CACHE.with_borrow(|cache| {
          if let Some(c) = cache.as_ref()
             && c.msg_count == messages.len()
-            && c.msg_ptr == first.as_ptr()
-            && c.msg_len == first.len()
             && c.channel == channel
+            && c.msg_bytes.as_slice() == first_bytes
          {
             return Some(Arc::clone(&c.frame));
          }
@@ -118,7 +124,7 @@ pub fn encode_batch(channel: &str, messages: &[&str]) -> Arc<[u8]> {
    let prefix = &prefix_buf[..prefix_len];
 
    let first_len = first.len();
-   let uniform = is_uniform_ptr || messages.iter().all(|m| m.len() == first_len);
+   let uniform = is_uniform || messages.iter().all(|m| m.len() == first_len);
 
    if uniform {
       let mut hdr_buf = [0u8; 96];
@@ -158,7 +164,7 @@ pub fn encode_batch(channel: &str, messages: &[&str]) -> Arc<[u8]> {
       let mut dst = Arc::get_mut(&mut arc).unwrap().as_mut_ptr() as *mut u8;
 
       let mut block_buf = [0u8; 128];
-      if block_len <= 128 && is_uniform_ptr {
+      if block_len <= 128 && is_uniform {
          unsafe {
             std::ptr::copy_nonoverlapping(
                combined_hdr.as_ptr(),
@@ -195,13 +201,12 @@ pub fn encode_batch(channel: &str, messages: &[&str]) -> Arc<[u8]> {
          }
       }
       let frame = unsafe { arc.assume_init() };
-      if is_uniform_ptr {
+      if is_uniform {
          BATCH_CACHE.with_borrow_mut(|c| {
             *c = Some(CachedBatch {
                channel: channel.to_string(),
                msg_count: messages.len(),
-               msg_ptr: first.as_ptr(),
-               msg_len: first.len(),
+               msg_bytes: first_bytes.to_vec(),
                frame: Arc::clone(&frame),
             });
          });
@@ -239,7 +244,7 @@ pub fn encode_pmessage(pattern: &str, channel: &str, message: &str) -> Arc<[u8]>
    let pat_len = pattern.len();
    let ch_len = channel.len();
    let msg_len = message.len();
-   let total = 17
+   let total = "*4\r\n$8\r\npmessage\r\n".len()
       + 1
       + resp_int_len(pat_len)
       + 2
@@ -263,15 +268,14 @@ pub fn encode_pmessage(pattern: &str, channel: &str, message: &str) -> Arc<[u8]>
    out.into()
 }
 
-pub fn encode_sub_reply(kind: &str, channel: &str, count: usize) -> Vec<u8> {
-   let mut out = Vec::with_capacity(32 + kind.len() + channel.len());
+pub fn encode_sub_reply(kind: &str, channel: &str, count: usize, out: &mut Vec<u8>) {
+   out.reserve(32 + kind.len() + channel.len());
    out.extend_from_slice(b"*3\r\n");
-   bulk_into(&mut out, kind.as_bytes());
-   bulk_into(&mut out, channel.as_bytes());
+   bulk_into(out, kind.as_bytes());
+   bulk_into(out, channel.as_bytes());
    out.push(b':');
-   push_usize(&mut out, count);
+   push_usize(out, count);
    out.extend_from_slice(b"\r\n");
-   out
 }
 
 #[inline(always)]

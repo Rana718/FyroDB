@@ -486,6 +486,11 @@ impl DbCacheManager {
       self.generation.fetch_add(1, Ordering::Release);
    }
 
+   pub fn invalidate_key(&self, key: &str) {
+      self.encoded_shard(key).write().remove(key);
+      self.generation.fetch_add(1, Ordering::Release);
+   }
+
    pub fn invalidate_tables(&self, tables: &[String]) -> usize {
       let mut to_delete = Vec::new();
       let mut markers = Vec::new();

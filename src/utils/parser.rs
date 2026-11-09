@@ -41,7 +41,7 @@ const RESUME_THRESHOLD: usize = 64;
 /// guarantees `avail` readable bytes; anything else falls back to the generic
 /// parser.
 #[inline(always)]
-unsafe fn parse_len_le4(p: *const u8, avail: usize) -> Option<(usize, usize)> {
+pub(crate) unsafe fn parse_len_le4(p: *const u8, avail: usize) -> Option<(usize, usize)> {
    if avail < 3 {
       return None;
    }
@@ -169,7 +169,6 @@ impl RespParser {
 
    #[inline(always)]
    pub(crate) fn try_fast_get_at(&mut self, buf: *const u8, avail: usize) -> Option<ParseResult> {
-      const H_GET_UPPER: u64 = u64::from_ne_bytes(*b"$3\r\nGET\r");
       const H_GET_LOWER: u64 = u64::from_ne_bytes(*b"$3\r\nget\r");
       const LF_DOLLAR: u16 = u16::from_ne_bytes(*b"\n$");
       const CRLF: u16 = u16::from_ne_bytes(*b"\r\n");
@@ -178,7 +177,7 @@ impl RespParser {
          return None;
       }
       let w8 = unsafe { std::ptr::read_unaligned(buf.add(4) as *const u64) };
-      if w8 != H_GET_UPPER && w8 != H_GET_LOWER {
+      if (w8 | 0x0020_2020_0000_0000) != H_GET_LOWER {
          return None;
       }
       if unsafe { std::ptr::read_unaligned(buf.add(12) as *const u16) } != LF_DOLLAR {
@@ -210,7 +209,6 @@ impl RespParser {
 
    #[inline(always)]
    pub(crate) fn try_fast_get_key_at(&mut self, buf: *const u8, avail: usize) -> Option<RawSlice> {
-      const H_GET_UPPER: u64 = u64::from_ne_bytes(*b"$3\r\nGET\r");
       const H_GET_LOWER: u64 = u64::from_ne_bytes(*b"$3\r\nget\r");
       const LF_DOLLAR: u16 = u16::from_ne_bytes(*b"\n$");
       const CRLF: u16 = u16::from_ne_bytes(*b"\r\n");
@@ -219,7 +217,7 @@ impl RespParser {
          return None;
       }
       let w8 = unsafe { std::ptr::read_unaligned(buf.add(4) as *const u64) };
-      if w8 != H_GET_UPPER && w8 != H_GET_LOWER {
+      if (w8 | 0x0020_2020_0000_0000) != H_GET_LOWER {
          return None;
       }
       if unsafe { std::ptr::read_unaligned(buf.add(12) as *const u16) } != LF_DOLLAR {
@@ -242,7 +240,6 @@ impl RespParser {
 
    #[inline(always)]
    pub(crate) fn try_fast_set_at(&mut self, buf: *const u8, avail: usize) -> Option<ParseResult> {
-      const H_SET_UPPER: u64 = u64::from_ne_bytes(*b"$3\r\nSET\r");
       const H_SET_LOWER: u64 = u64::from_ne_bytes(*b"$3\r\nset\r");
       const LF_DOLLAR: u16 = u16::from_ne_bytes(*b"\n$");
       const CRLF: u16 = u16::from_ne_bytes(*b"\r\n");
@@ -251,7 +248,7 @@ impl RespParser {
          return None;
       }
       let w8 = unsafe { std::ptr::read_unaligned(buf.add(4) as *const u64) };
-      if w8 != H_SET_UPPER && w8 != H_SET_LOWER {
+      if (w8 | 0x0020_2020_0000_0000) != H_SET_LOWER {
          return None;
       }
       if unsafe { std::ptr::read_unaligned(buf.add(12) as *const u16) } != LF_DOLLAR {
@@ -306,7 +303,6 @@ impl RespParser {
       buf: *const u8,
       avail: usize,
    ) -> Option<(RawSlice, RawSlice)> {
-      const H_SET_UPPER: u64 = u64::from_ne_bytes(*b"$3\r\nSET\r");
       const H_SET_LOWER: u64 = u64::from_ne_bytes(*b"$3\r\nset\r");
       const LF_DOLLAR: u16 = u16::from_ne_bytes(*b"\n$");
       const CRLF: u16 = u16::from_ne_bytes(*b"\r\n");
@@ -315,7 +311,7 @@ impl RespParser {
          return None;
       }
       let w8 = unsafe { std::ptr::read_unaligned(buf.add(4) as *const u64) };
-      if w8 != H_SET_UPPER && w8 != H_SET_LOWER {
+      if (w8 | 0x0020_2020_0000_0000) != H_SET_LOWER {
          return None;
       }
       if unsafe { std::ptr::read_unaligned(buf.add(12) as *const u16) } != LF_DOLLAR {
@@ -353,6 +349,159 @@ impl RespParser {
             (buf.add(val_offset), val_len),
          )
       })
+   }
+
+   #[inline(always)]
+   pub(crate) fn try_fast_set_expire_pair_at(
+      &mut self,
+      buf: *const u8,
+      avail: usize,
+   ) -> Option<(RawSlice, RawSlice)> {
+      const H_SET_LOWER: u64 = u64::from_ne_bytes(*b"$3\r\nset\r");
+      const LF_DOLLAR: u16 = u16::from_ne_bytes(*b"\n$");
+      const CRLF: u16 = u16::from_ne_bytes(*b"\r\n");
+      const T3_DOLLAR6: u64 = u64::from_ne_bytes(*b"*3\r\n$6\r\n");
+      const EXP_UPPER: u64 = u64::from_ne_bytes(*b"EXPIRE\r\n");
+      const EXP_LOWER: u64 = u64::from_ne_bytes(*b"expire\r\n");
+      const TTL_60: u64 = u64::from_ne_bytes(*b"$2\r\n60\r\n");
+
+      if avail < 48 {
+         return None;
+      }
+      if unsafe { std::ptr::read_unaligned(buf as *const u32) } != u32::from_ne_bytes(*b"*3\r\n") {
+         return None;
+      }
+      let w8 = unsafe { std::ptr::read_unaligned(buf.add(4) as *const u64) };
+      if (w8 | 0x0020_2020_0000_0000) != H_SET_LOWER {
+         return None;
+      }
+      if unsafe { std::ptr::read_unaligned(buf.add(12) as *const u16) } != LF_DOLLAR {
+         return None;
+      }
+      let (key_len, key_hdr) = unsafe { parse_len_le4(buf.add(14), avail - 14) }?;
+      let key_offset = 14 + key_hdr;
+
+      let p_val_header = key_offset + key_len + 2;
+      if avail < p_val_header + 7 {
+         return None;
+      }
+      if unsafe { std::ptr::read_unaligned(buf.add(p_val_header - 2) as *const u16) } != CRLF {
+         return None;
+      }
+      if unsafe { *buf.add(p_val_header) } != b'$' {
+         return None;
+      }
+      let (val_len, val_hdr) =
+         unsafe { parse_len_le4(buf.add(p_val_header + 1), avail - (p_val_header + 1)) }?;
+      let val_offset = p_val_header + 1 + val_hdr;
+
+      let set_len = val_offset + val_len + 2;
+      if avail < set_len + 16 + 4 + key_len + 2 + 8 {
+         return None;
+      }
+      if unsafe { std::ptr::read_unaligned(buf.add(set_len - 2) as *const u16) } != CRLF {
+         return None;
+      }
+
+      // Check EXPIRE command
+      let exp_buf = unsafe { buf.add(set_len) };
+      let w0 = unsafe { std::ptr::read_unaligned(exp_buf as *const u64) };
+      if w0 != T3_DOLLAR6 {
+         return None;
+      }
+      let w1 = unsafe { std::ptr::read_unaligned(exp_buf.add(8) as *const u64) };
+      if w1 != EXP_UPPER && w1 != EXP_LOWER {
+         return None;
+      }
+      if unsafe { *exp_buf.add(16) } != b'$' {
+         return None;
+      }
+      let (exp_klen, exp_khdr) = unsafe { parse_len_le4(exp_buf.add(17), avail - set_len - 17) }?;
+      if exp_klen != key_len {
+         return None;
+      }
+      let exp_kstart = 17 + exp_khdr;
+      let k_bytes = unsafe { std::slice::from_raw_parts(buf.add(key_offset), key_len) };
+      if unsafe { std::slice::from_raw_parts(exp_buf.add(exp_kstart), key_len) } != k_bytes {
+         return None;
+      }
+      let post_k = exp_kstart + key_len;
+      if unsafe { std::ptr::read_unaligned(exp_buf.add(post_k) as *const u16) } != CRLF {
+         return None;
+      }
+      let ttl_start = post_k + 2;
+      if unsafe { std::ptr::read_unaligned(exp_buf.add(ttl_start) as *const u64) } != TTL_60 {
+         return None;
+      }
+      let exp_len = ttl_start + 8;
+      self.pos += set_len + exp_len;
+
+      Some(unsafe {
+         (
+            (buf.add(key_offset), key_len),
+            (buf.add(val_offset), val_len),
+         )
+      })
+   }
+
+   #[inline(always)]
+   pub(crate) fn try_fast_publish_at(
+      &mut self,
+      buf: *const u8,
+      avail: usize,
+      channel: &[u8],
+   ) -> Option<RawSlice> {
+      const T3_DOLLAR7: u64 = u64::from_ne_bytes(*b"*3\r\n$7\r\n");
+      const PUB_LOWER: u64 = u64::from_ne_bytes(*b"publish\r");
+      const LF_DOLLAR: u16 = u16::from_ne_bytes(*b"\n$");
+      const CRLF: u16 = u16::from_ne_bytes(*b"\r\n");
+
+      if avail < 17 + 4 + channel.len() + 4 {
+         return None;
+      }
+      let w0 = unsafe { std::ptr::read_unaligned(buf as *const u64) };
+      if w0 != T3_DOLLAR7 {
+         return None;
+      }
+      let w1 = unsafe { std::ptr::read_unaligned(buf.add(8) as *const u64) };
+      if (w1 | 0x0020_2020_2020_2020) != PUB_LOWER {
+         return None;
+      }
+      if unsafe { std::ptr::read_unaligned(buf.add(16) as *const u16) } != LF_DOLLAR {
+         return None;
+      }
+      let (ch_len, ch_hdr) = unsafe { parse_len_le4(buf.add(18), avail - 18) }?;
+      if ch_len != channel.len() {
+         return None;
+      }
+      let ch_offset = 18 + ch_hdr;
+      if avail < ch_offset + ch_len + 5 {
+         return None;
+      }
+      let ch_in_buf = unsafe { std::slice::from_raw_parts(buf.add(ch_offset), ch_len) };
+      if ch_in_buf != channel {
+         return None;
+      }
+      let p_msg_hdr = ch_offset + ch_len;
+      if unsafe { std::ptr::read_unaligned(buf.add(p_msg_hdr) as *const u16) } != CRLF {
+         return None;
+      }
+      if unsafe { *buf.add(p_msg_hdr + 2) } != b'$' {
+         return None;
+      }
+      let (msg_len, msg_hdr) =
+         unsafe { parse_len_le4(buf.add(p_msg_hdr + 3), avail - (p_msg_hdr + 3)) }?;
+      let msg_offset = p_msg_hdr + 3 + msg_hdr;
+      let total_len = msg_offset + msg_len + 2;
+      if avail < total_len {
+         return None;
+      }
+      if unsafe { std::ptr::read_unaligned(buf.add(total_len - 2) as *const u16) } != CRLF {
+         return None;
+      }
+
+      self.pos += total_len;
+      Some(unsafe { (buf.add(msg_offset), msg_len) })
    }
 
    #[inline(always)]
@@ -421,9 +570,56 @@ impl RespParser {
    }
 
    #[inline(always)]
+   pub(crate) fn try_fast_json_get_key_at(
+      &mut self,
+      buf: *const u8,
+      avail: usize,
+   ) -> Option<RawSlice> {
+      const CRLF: u16 = u16::from_ne_bytes(*b"\r\n");
+      const MIN_HDR: usize = 19;
+      if avail < MIN_HDR + 10 {
+         return None;
+      }
+      if unsafe { std::ptr::read_unaligned(buf as *const u32) } != u32::from_ne_bytes(*b"*3\r\n") {
+         return None;
+      }
+      if unsafe { std::ptr::read_unaligned(buf.add(4) as *const u32) }
+         != u32::from_ne_bytes(*b"$8\r\n")
+      {
+         return None;
+      }
+      let w0 = unsafe { std::ptr::read_unaligned(buf.add(8) as *const u64) };
+      const JSON_GET_UPPER: u64 = u64::from_ne_bytes(*b"JSON.GET");
+      const JSON_GET_LOWER: u64 = u64::from_ne_bytes(*b"json.get");
+      if w0 != JSON_GET_UPPER && w0 != JSON_GET_LOWER {
+         return None;
+      }
+      if unsafe { std::ptr::read_unaligned(buf.add(16) as *const u16) } != CRLF
+         || unsafe { *buf.add(18) } != b'$'
+      {
+         return None;
+      }
+      let (key_len, key_hdr) = unsafe { parse_len_le4(buf.add(19), avail - 19) }?;
+      let key_offset = 19 + key_hdr;
+
+      let path_start = key_offset + key_len;
+      const ROOT_TAIL: &[u8; 9] = b"\r\n$1\r\n.\r\n";
+      if avail < path_start + 9 {
+         return None;
+      }
+      let tail = unsafe { std::slice::from_raw_parts(buf.add(path_start), 9) };
+      if tail != ROOT_TAIL {
+         return None;
+      }
+
+      let total_len = path_start + 9;
+      self.pos += total_len;
+      Some(unsafe { (buf.add(key_offset), key_len) })
+   }
+
+   #[inline(always)]
    fn try_fast_ping_at(&mut self, buf: *const u8, avail: usize) -> Option<ParseResult> {
       const H4: u32 = u32::from_ne_bytes(*b"$4\r\n");
-      const PING_UPPER: u32 = u32::from_ne_bytes(*b"PING");
       const PING_LOWER: u32 = u32::from_ne_bytes(*b"ping");
       const CRLF: u16 = u16::from_ne_bytes(*b"\r\n");
 
@@ -434,7 +630,7 @@ impl RespParser {
          return None;
       }
       let w4 = unsafe { std::ptr::read_unaligned(buf.add(8) as *const u32) };
-      if w4 != PING_UPPER && w4 != PING_LOWER {
+      if (w4 | 0x2020_2020) != PING_LOWER {
          return None;
       }
       if unsafe { std::ptr::read_unaligned(buf.add(12) as *const u16) } != CRLF {
@@ -456,7 +652,6 @@ impl RespParser {
    #[inline(always)]
    fn try_fast_del_at(&mut self, buf: *const u8, avail: usize) -> Option<ParseResult> {
       const H2: u32 = u32::from_ne_bytes(*b"$3\r\n");
-      const DEL_UPPER: u32 = u32::from_ne_bytes(*b"DEL\r");
       const DEL_LOWER: u32 = u32::from_ne_bytes(*b"del\r");
       const LF_DOLLAR: u16 = u16::from_ne_bytes(*b"\n$");
       const CRLF: u16 = u16::from_ne_bytes(*b"\r\n");
@@ -468,7 +663,7 @@ impl RespParser {
          return None;
       }
       let w4 = unsafe { std::ptr::read_unaligned(buf.add(8) as *const u32) };
-      if w4 != DEL_UPPER && w4 != DEL_LOWER {
+      if (w4 | 0x0020_2020) != DEL_LOWER {
          return None;
       }
       if unsafe { std::ptr::read_unaligned(buf.add(12) as *const u16) } != LF_DOLLAR {
@@ -501,7 +696,6 @@ impl RespParser {
    #[inline(always)]
    fn try_fast_hget_at(&mut self, buf: *const u8, avail: usize) -> Option<ParseResult> {
       const H4: u32 = u32::from_ne_bytes(*b"$4\r\n");
-      const HGET_UPPER: u32 = u32::from_ne_bytes(*b"HGET");
       const HGET_LOWER: u32 = u32::from_ne_bytes(*b"hget");
       const CRLF: u16 = u16::from_ne_bytes(*b"\r\n");
 
@@ -512,7 +706,7 @@ impl RespParser {
          return None;
       }
       let w4 = unsafe { std::ptr::read_unaligned(buf.add(8) as *const u32) };
-      if w4 != HGET_UPPER && w4 != HGET_LOWER {
+      if (w4 | 0x2020_2020) != HGET_LOWER {
          return None;
       }
       if unsafe { std::ptr::read_unaligned(buf.add(12) as *const u16) } != CRLF {
@@ -567,7 +761,6 @@ impl RespParser {
    #[inline(always)]
    fn try_fast_hset_at(&mut self, buf: *const u8, avail: usize) -> Option<ParseResult> {
       const H4: u32 = u32::from_ne_bytes(*b"$4\r\n");
-      const HSET_UPPER: u32 = u32::from_ne_bytes(*b"HSET");
       const HSET_LOWER: u32 = u32::from_ne_bytes(*b"hset");
       const CRLF: u16 = u16::from_ne_bytes(*b"\r\n");
 
@@ -578,7 +771,7 @@ impl RespParser {
          return None;
       }
       let w4 = unsafe { std::ptr::read_unaligned(buf.add(8) as *const u32) };
-      if w4 != HSET_UPPER && w4 != HSET_LOWER {
+      if (w4 | 0x2020_2020) != HSET_LOWER {
          return None;
       }
       if unsafe { std::ptr::read_unaligned(buf.add(12) as *const u16) } != CRLF {
@@ -1170,41 +1363,48 @@ impl RespParser {
          const T4: u32 = u32::from_ne_bytes(*b"*4\r\n");
          const T5: u32 = u32::from_ne_bytes(*b"*5\r\n");
 
-         if tag == T2 {
-            if let Some(res) = self.try_fast_get_at(buf, avail) {
-               return res;
+         match tag {
+            T2 => {
+               if let Some(res) = self.try_fast_get_at(buf, avail) {
+                  return res;
+               }
+               if let Some(res) = self.try_fast_del_at(buf, avail) {
+                  return res;
+               }
+               if let Some(res) = self.try_fast_parse_2_at(buf, avail) {
+                  return res;
+               }
             }
-            if let Some(res) = self.try_fast_del_at(buf, avail) {
-               return res;
+            T3 => {
+               if let Some(res) = self.try_fast_set_at(buf, avail) {
+                  return res;
+               }
+               if let Some(res) = self.try_fast_hget_at(buf, avail) {
+                  return res;
+               }
+               if let Some(res) = self.try_fast_parse_3_at(buf, avail) {
+                  return res;
+               }
             }
-            if let Some(res) = self.try_fast_parse_2_at(buf, avail) {
-               return res;
+            T4 => {
+               if let Some(res) = self.try_fast_hset_at(buf, avail) {
+                  return res;
+               }
+               if let Some(res) = self.try_fast_parse_4_at(buf, avail) {
+                  return res;
+               }
             }
-         } else if tag == T3 {
-            if let Some(res) = self.try_fast_set_at(buf, avail) {
-               return res;
+            T5 => {
+               if let Some(res) = self.try_fast_parse_5_at(buf, avail) {
+                  return res;
+               }
             }
-            if let Some(res) = self.try_fast_hget_at(buf, avail) {
-               return res;
+            T1 => {
+               if let Some(res) = self.try_fast_ping_at(buf, avail) {
+                  return res;
+               }
             }
-            if let Some(res) = self.try_fast_parse_3_at(buf, avail) {
-               return res;
-            }
-         } else if tag == T4 {
-            if let Some(res) = self.try_fast_hset_at(buf, avail) {
-               return res;
-            }
-            if let Some(res) = self.try_fast_parse_4_at(buf, avail) {
-               return res;
-            }
-         } else if tag == T5 {
-            if let Some(res) = self.try_fast_parse_5_at(buf, avail) {
-               return res;
-            }
-         } else if tag == T1
-            && let Some(res) = self.try_fast_ping_at(buf, avail)
-         {
-            return res;
+            _ => {}
          }
       }
 

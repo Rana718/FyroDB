@@ -4,7 +4,7 @@
 
 FyroDB is a two-engine system in a single Rust binary:
 
-**KV Engine** — Redis-compatible in-memory key-value store. Speaks RESP2/RESP3 so any Redis client works unchanged. Uses a thread-per-core mio event loop, a lock-free concurrent hash map with epoch-based reclamation and per-key seqlock, zero-copy RESP parsing, and direct-write response building. Vector, full-text and hybrid search (`FT.*`) run on a separate persistent thread pool so heavy queries never stall the network workers.
+**KV Engine** — Redis-compatible in-memory key-value store. Speaks RESP2/RESP3 so any Redis client works unchanged. Uses a thread-per-core mio event loop, a lock-free concurrent hash map with epoch-based reclamation and per-key seqlock, zero-copy RESP parsing, embedded Lua 5.4 scripting runtime with SHA1 caching, and direct-write response building. Vector, full-text and hybrid search (`FT.*`) run on a separate persistent thread pool so heavy queries never stall the network workers.
 
 **DB Cache Proxy** — PostgreSQL wire-protocol caching proxy. Applications connect to it exactly as they would to PostgreSQL (no driver or code changes). The proxy serves `SELECT` results from the shared in-memory store in ~1 µs. Misses are forwarded to the real upstream, results cached, and served instantly on every subsequent call. Both engines run with fully independent mio event loops — neither can block the other.
 
@@ -26,19 +26,23 @@ FyroDB is a two-engine system in a single Rust binary:
 | Allocator           | libc malloc                   | mimalloc with zero-overhead hot path and periodic RSS tracking (strictly < 900MB ceiling)   |
 | Memory search       | Naive byte scan               | SIMD memchr (AVX2) for newline scanning                                                      |
 | Write batching      | Per-command write             | Batched: all events read first, then flush all writes                                        |
-| Pub/Sub fan-out     | Per-message frame copy        | Single Arc frame shared to all subscribers; dense fan-outs group per worker into one queue entry |
+| Pub/Sub fan-out     | Per-message frame copy        | Single Arc frame shared to all subscribers; dense fan-outs group per worker into one queue entry; batched TCP delivery & 1MB SO_SNDBUF |
 | Pipelined hot keys  | One lock per command          | Run coalescing: a run of ≤512 consecutive same-key commands takes one entry lock (265ms on 10M hot key ops) |
-| SET + EXPIRE pairs  | Two commands, two locks       | Adjacent pair fused into one atomic set-with-TTL under a single lock                          |
-| Hash probe step     | Deref entry to compare key    | 15-bit hash tag packed into the slot pointer — reject a non-match without touching the entry |
+| Pipelined write run | Parse + allocate per op       | Zero-alloc `try_fast_tail` verifies wire prefix in 1 comparison, extracts args into stack arrays (`QUEUE_RUN_MAX * 3`) |
+| SET + EXPIRE pairs  | Two commands, two locks       | Greedy parser absorption: adjacent pair fused into one atomic set-with-TTL under a single lock |
+| Lua Scripting       | Single-thread blocking engine | Isolated Lua 5.4 runtime (`mlua`), pre-compiled SHA1 digest cache, generational GC, zero-alloc RESP conversions |
+| Hash probe step     | Deref entry to compare key    | 15-bit hash tag packed into the slot pointer — reject a non-match without touching the entry; _mm_prefetch during table rebuilds |
+| Shard memory sizing | Static large allocation       | Right-sized 32,768 initial capacity (saves >100MB RAM across 128 shards), adaptive buffer retention (32KB normal / 256KB subscriber) |
 | Pipelined lookups   | One dependent miss per command | Look-ahead batches up to 256 queued commands (`BATCH = 256`), prefetches slots & entries in parallel, with redundant prefetch bypass |
 | Geospatial encode   | Multi-step coordinate division| 5-instruction Morton bit-interleaving (`spread26`) replaces 52-step division loop             |
 | Stream append       | Per-entry stream node alloc   | Coalesced varint append into 4KB packed nodes (`WriteOp::Xadd` + `Store::xadd_batch`)         |
 | Blocking commands   | Per-client blocked state      | Parked connections: waiters registered per key, woken through the owning worker's queue       |
 | Snapshots           | fork() + copy-on-write pages  | Forkless point-in-time snapshot: one state bit per entry, writers save pre-images            |
-| Lock contention     | Single-threaded, none         | Test-and-test-and-set with exponential backoff, then yield                                   |
+| Lock contention     | Single-threaded, none         | Exponential backoff with thread yield on contended spinlocks to guarantee forward progress    |
 | Cluster slot lookup | Flat `slots[16384]` array     | Same: shared routing table, revalidated per connection with one atomic load                  |
 | Proxy connections   | Thread per connection         | mio event loop — N worker threads, `SO_REUSEPORT`, no thread spawning per client             |
 | Proxy cache hit     | N/A                           | `ActiveState` inline in mio thread, coalesced `flush_out_batched` (32 KB), ~1 µs, no blocking pool |
+| Proxy L1 routing    | Loopback TCP socket           | Direct in-process memory routing between PG proxy and KV store, bypassing network stack      |
 | Memory accounting   | `zmalloc_used_memory` counter | Per-CPU striped counters, so `used_memory` is real and drives purge/defrag                   |
 
 ---
@@ -58,10 +62,10 @@ CustomMap<V>
   └── snap: Arc<SnapCtl<V>>              (forkless snapshot control)
 
 Shard<V>  (cache-padded counters)
-  ├── table: AtomicPtr<SlotTable<V>>     (swapped atomically on growth)
+  ├── table: AtomicPtr<SlotTable<V>>     (swapped atomically on growth; initial capacity 32,768)
   ├── len: CachePadded<AtomicUsize>      (occupied slots)
   ├── insert_gate: CachePadded<AtomicUsize>  (concurrent insert counter + GROWING flag)
-  ├── grow_lock: Mutex<()>               (serializes growth/compaction per shard)
+  ├── grow_lock: Mutex<()>               (serializes growth/compaction per shard; prefetch hints on rebuild)
   ├── hasher: RandomState                (recomputes hashes on growth; entries store none)
   └── snap: Arc<SnapCtl<V>>              (shared snapshot parity + pre-image sink)
 
@@ -77,7 +81,7 @@ Entry<V>  (per key, heap-allocated, exactly 64 bytes for StoreValue)
 
 ```
 1. Find entry via lock-free linear probe
-2. Acquire per-key spinlock (single atomic CAS, Acquire ordering)
+2. Acquire per-key spinlock (single atomic CAS, Acquire ordering; exponential backoff with thread::yield_now under contention)
 3. Increment the packed sequence to odd (signals "write in progress")
 4. Mutate value in-place (zero clone, zero allocation)
 5. Store final state: increment seq to even + release lock (single atomic store)
@@ -231,14 +235,21 @@ per message.
 
 A pipelined run of same-channel PUBLISH commands never repeats the snapshot
 scan: `publish_batch` encodes every frame up front and hands each receiving
-worker one `FanEntry` carrying the whole run. Pattern (PSUBSCRIBE) subscribers
-stay on the per-message path, since their frames embed the matched pattern.
+worker one `FanEntry` carrying the whole run. Outbound frames use `CachedFrame`
+to share byte representations across all channel subscribers, and subscriber sockets
+configure a 1 MB `SO_SNDBUF` to prevent TCP pipeline backpressure under multi-gigabit
+fanout bursts. Pattern (PSUBSCRIBE) subscribers stay on the per-message path,
+since their frames embed the matched pattern.
 
 ### Subscribe/Unsubscribe (Copy-on-Write)
 
 Rebuilds the channel list under a brief mutex, atomically swaps the Arc
 snapshot pointer, and registers the connection token in the owning worker's
-local `channel → tokens` map used by grouped fan-out delivery. Publishers
+local `channel → tokens` map used by grouped fan-out delivery. In accordance
+with the Redis protocol specification, subscribe and unsubscribe confirmations
+are framed and emitted individually per channel directly into the connection
+buffer, eliminating temporary `Vec` allocations during multi-channel subscriptions.
+Publishers holding the old snapshot keep it alive until they finish.
 holding the old snapshot keep it alive until they finish.
 
 ---
@@ -413,6 +424,39 @@ MAXLEN or MINID, exact or approximate, with LIMIT.
 
 ---
 
+## Redis Lua Scripting Engine
+
+FyroDB provides a Redis-compatible Lua scripting subsystem embedded directly into the server process.
+
+```
+Client (EVAL / EVALSHA)
+  │
+  ▼
+SHA1 Digest Lookup ──(hit)──► Cached Lua Chunk
+  │                                │
+  │ (miss: compile & cache)        ▼
+  └────────────────────────► Execute in Lua 5.4 Runtime (mlua)
+                                   │
+                                   ├── redis.call / redis.pcall
+                                   │     │
+                                   │     ▼
+                                   │   Re-entrant In-Process Command Dispatch
+                                   │   (direct store access, zero network hop)
+                                   │
+                                   ▼
+                             Zero-Alloc RESP Serialization → Connection Write Buffer
+```
+
+### Key Design Principles
+
+1. **Embedded Lua 5.4 via `mlua`**: Uses Lua 5.4 compiled into the binary with memory limits and sandbox isolation.
+2. **SHA1 Chunk Caching**: Scripts loaded via `SCRIPT LOAD` or `EVAL` are compiled once and stored in a shared script cache keyed by 40-character hexadecimal SHA1 digest. Subsequent `EVALSHA` invocations skip parsing and compilation entirely.
+3. **Re-entrant Execution**: `redis.call` and `redis.pcall` execute commands through the same lock-free storage interfaces used by normal RESP clients. Re-entrant calls share the calling worker's context with zero thread handoff or IPC overhead.
+4. **Generational Garbage Collection**: Generational GC mode keeps Lua state allocation low and minimizes GC pause latency during high-frequency script execution.
+5. **Zero-Allocation RESP Conversions**: Conversions between RESP protocol frames and Lua data structures (numbers, strings, booleans, tables) use direct streaming serialization, avoiding intermediate string or vector allocations.
+
+---
+
 ## Request Lifecycle
 
 ```
@@ -458,10 +502,10 @@ client that pipelined K commands has not seen any response yet, so it cannot
 observe interleaving — the run is a valid linearization and the reply stream
 is byte-identical to sequential execution.
 
-Detection is a look-ahead over already-parsed RESP parts: the collector keeps
-calling `parse_one` and matches op + key across the parsed commands (plus a
-fixed-width byte-prefix peek for the SET+EXPIRE pair). A run breaks on any
-mismatch and the breaking command dispatches normally.
+Detection uses zero-copy fast-tail parsers over the socket read buffer:
+- **`try_fast_tail`**: Rather than calling `parse_one` in a loop, `try_fast_tail` verifies command wire prefixes via a single 64-bit comparison and extracts argument slices directly into fixed stack arrays (`[RawSlice; QUEUE_RUN_MAX * 3]`). This eliminates argument heap allocations for `ZADD`, `SADD`, `HSET`, `PFADD`, `GEOADD`, `XADD`, and `LPUSH`/`RPOP`.
+- **Greedy SET+EXPIRE Absorption**: `try_fast_set_expire_pair_at` directly parses adjacent `SET k v` and `EXPIRE k ttl` wire representations from the socket buffer (up to 128 pairs in a single burst), fusing them into an atomic set-with-TTL under a single entry lock.
+- **Pipelined JSON.GET Dispatch**: `try_fast_json_get_key_at` and `dispatch_json_get_run` prefetch cache slots and entry pointers in parallel, emitting raw bulk bytes directly to the connection write buffer via `write_bulk_raw`.
 
 | Run shape                  | Executes as                              | Reply synthesis                                          |
 | -------------------------- | ---------------------------------------- | -------------------------------------------------------- |
@@ -470,7 +514,8 @@ mismatch and the breaking command dispatches normally.
 | `SET k v` + `EXPIRE k t`   | one atomic `set_string(k, v, ttl)`       | `+OK`, `:1` (or the generic error, byte-identical)       |
 | Same-key SET ×K            | one store (last value wins)              | `+OK` ×K                                                 |
 | Same-key INCR ×K           | one `incrby(key, K)`                     | consecutive counter values (overflow → sequential)       |
-| Same-key HSET/SADD/ZADD ×K | one lock, per-command added flags        | `:1`/`:0` per command                                    |
+| Same-key HSET/SADD/ZADD ×K | one lock, per-command added flags        | `:1`/`:0` per command (direct buffer streaming)          |
+| Pipelined JSON.GET ×K      | parallel prefetch + raw bulk streaming   | raw JSON payload bulks                                   |
 | Same-channel PUBLISH ×K    | one snapshot scan + one fan-out per worker | subscriber count per command                           |
 
 Correctness rules every collector obeys:
@@ -622,6 +667,15 @@ No blocking pool.                       return socket to mio via Waker
 ```
 
 Cache-hit traffic — the dominant steady-state path — is handled entirely inline in the mio worker. No thread pool, no mutex, no context switch.
+
+### In-Process L1 Cache Routing & Extended Protocol Optimizations
+
+The proxy and KV storage engine reside in the same process memory space, enabling direct in-process query caching:
+
+- **In-Process L1 Routing**: Rather than issuing loopback network queries to retrieve cached results, the proxy directly queries the shared in-memory storage. Cache hits bypass TCP loopback overhead entirely.
+- **8-Slot Hot Query Cache**: Each active proxy connection maintains an 8-slot direct-mapped hot query cache to bypass full fingerprint lookups on repetitive queries.
+- **Zero-Allocation Parameter Decoding**: Extended protocol parameters are decoded directly from incoming buffer slices into stack descriptors, eliminating temporary `Vec` allocations during query parsing.
+- **Unnamed Portal Fast-Path**: Unnamed portals (extensively used by ORMs and connection poolers like PgBouncer) bypass named portal lookup tables for direct execution.
 
 ### Session Context Fingerprinting
 

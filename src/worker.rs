@@ -167,9 +167,7 @@ pub fn run_worker(
                   }
                }
                fanout_seen.resize(conns.len(), false);
-               for seen in fanout_seen.iter_mut() {
-                  *seen = false;
-               }
+               fanout_seen.fill(false);
                for &id in &sub_dirty {
                   if id < fanout_seen.len() {
                      fanout_seen[id] = true;
@@ -213,13 +211,8 @@ pub fn run_worker(
                      let wants_writable = conn.has_pending_write();
                      if wants_writable {
                         dirty.push(id);
-                     } else if conn.writable_registered
-                        && poll
-                           .registry()
-                           .reregister(&mut conn.stream, Token(id), Interest::READABLE)
-                           .is_ok()
-                     {
-                        conn.writable_registered = false;
+                     } else if conn.writable_registered {
+                        sync_write_interest(&mut conns, &mut poll, id);
                      }
                   }
                }
@@ -230,9 +223,9 @@ pub fn run_worker(
          }
       }
 
-      if crate::handler::conn::park::next_deadline().is_some() {
+      crate::handler::conn::park::take_expired_into(&mut expired);
+      if !expired.is_empty() {
          let now = std::time::Instant::now();
-         crate::handler::conn::park::take_expired(now, &mut expired);
          for (token, uid) in expired.drain(..) {
             let keep = match conns.get_mut(token).and_then(|s| s.as_mut()) {
                Some(conn) => conn.on_timeout(uid, now),
@@ -247,7 +240,13 @@ pub fn run_worker(
       }
 
       crate::storage::persistence::aof::flush_local();
-      if dirty.len() > 1 {
+      if dirty.len() == 2 {
+         if dirty[0] == dirty[1] {
+            dirty.pop();
+         } else if dirty[0] > dirty[1] {
+            dirty.swap(0, 1);
+         }
+      } else if dirty.len() > 2 {
          dirty.sort_unstable();
          dirty.dedup();
       }
@@ -316,6 +315,14 @@ pub fn run_worker(
          }
       }
 
+      flush_fanout(
+         &notifier,
+         &mut conns,
+         &mut sub_dirty,
+         &mut fanout_scratch,
+         &mut fanout_seen,
+      );
+
       let mut i = 0;
       while i < sub_dirty.len() {
          let id = sub_dirty[i];
@@ -362,6 +369,29 @@ fn is_slow_subscriber(conn: &Conn) -> bool {
    }
 }
 
+#[inline]
+fn flush_fanout(
+   notifier: &Arc<crate::pubsub::WorkerNotifier>,
+   conns: &mut [Option<Conn>],
+   sub_dirty: &mut Vec<usize>,
+   scratch: &mut Vec<crate::pubsub::FanEntry>,
+   seen: &mut Vec<bool>,
+) {
+   if notifier.fanout.is_empty() {
+      return;
+   }
+   if conns.len() > seen.len() {
+      seen.resize(conns.len(), false);
+   }
+   seen.fill(false);
+   for &id in sub_dirty.iter() {
+      if id < seen.len() {
+         seen[id] = true;
+      }
+   }
+   deliver_fanout(notifier, conns, sub_dirty, scratch, seen);
+}
+
 /// Frames append straight to wbuf (memcpy); a connection past the batch
 /// cap spills into its slot queue (backlog drain, shedding intact).
 fn deliver_fanout(
@@ -379,6 +409,51 @@ fn deliver_fanout(
       return;
    }
    notifier.with_local_subs(|subs| {
+      if scratch.len() > 1 && scratch.iter().all(|e| e.channel == scratch[0].channel) {
+         let ch = &scratch[0].channel;
+         let Some(tokens) = subs.get(ch.as_ref()) else {
+            return;
+         };
+         let total_frame_len: usize = scratch.iter().map(|e| e.frame.len()).sum();
+         for &token in tokens {
+            let Some(Some(conn)) = conns.get_mut(token) else {
+               continue;
+            };
+            let subscribed = matches!(
+                &conn.mode,
+                crate::handler::conn::ConnMode::Subscribed { channels, .. }
+                    if channels.contains(ch.as_ref())
+            );
+            if !subscribed {
+               continue;
+            }
+            if conn.parser.wbuf.len() + total_frame_len
+               <= crate::handler::conn::SUB_WRITE_BATCH_BYTES
+            {
+               conn.parser.wbuf.reserve(total_frame_len);
+               for entry in scratch.iter() {
+                  conn.parser.wbuf.extend_from_slice(&entry.frame);
+               }
+            } else {
+               for entry in scratch.iter() {
+                  if conn.parser.wbuf.len() + entry.frame.len()
+                     <= crate::handler::conn::SUB_WRITE_BATCH_BYTES
+                  {
+                     conn.parser.wbuf.extend_from_slice(&entry.frame);
+                  } else if let crate::handler::conn::ConnMode::Subscribed { slot, .. } = &conn.mode
+                  {
+                     slot.push(Arc::clone(&entry.frame));
+                  }
+               }
+            }
+            if !seen[token] {
+               seen[token] = true;
+               sub_dirty.push(token);
+            }
+         }
+         return;
+      }
+
       for entry in scratch.iter() {
          let Some(tokens) = subs.get(entry.channel.as_ref()) else {
             continue;
@@ -387,8 +462,6 @@ fn deliver_fanout(
             let Some(Some(conn)) = conns.get_mut(token) else {
                continue;
             };
-            // Conn's subscription set is the authority: tokens are reused after
-            // close, so the local map alone could misroute.
             let subscribed = matches!(
                 &conn.mode,
                 crate::handler::conn::ConnMode::Subscribed { channels, .. }
