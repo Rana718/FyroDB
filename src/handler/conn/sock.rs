@@ -175,8 +175,12 @@ impl<'a> Conn<'a> {
                      slot.drain_into_limit(&mut self.parser.wbuf, SUB_WRITE_BATCH_BYTES);
                      continue;
                   }
-                  if self.parser.wbuf.capacity() > RETAINED_WRITE_BUFFER {
-                     self.parser.wbuf.shrink_to(RETAINED_WRITE_BUFFER);
+                  let retained = match self.mode {
+                     ConnMode::Subscribed { .. } => SUB_WRITE_BATCH_BYTES,
+                     ConnMode::Normal => RETAINED_WRITE_BUFFER,
+                  };
+                  if self.parser.wbuf.capacity() > retained {
+                     self.parser.wbuf.shrink_to(retained);
                   }
                   return true;
                }

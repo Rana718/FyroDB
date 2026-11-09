@@ -30,7 +30,7 @@ pub(crate) fn stored_hash(state: u64) -> u64 {
 pub(crate) const LOAD_NUM: usize = 2;
 pub(crate) const LOAD_DEN: usize = 3;
 // Keep idle shards tiny; tables grow lock-free as keys arrive.
-pub(crate) const INITIAL_SHARD_CAPACITY: usize = 131_072;
+pub(crate) const INITIAL_SHARD_CAPACITY: usize = 32_768;
 pub(crate) const GROWING: usize = 1usize << (usize::BITS - 1);
 
 /// Smallest power-of-two capacity holding `live + 1` entries below load factor.
@@ -1436,7 +1436,7 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
          let mut new_cap = (old_cap * 2).max(capacity_for(live));
          if live < old_table.threshold {
             new_cap = old_cap;
-         } else if old_cap < 32_768 {
+         } else if old_cap <= 32_768 {
             new_cap = (old_cap * 4).next_power_of_two();
          }
          self.rebuild_to(old_ptr, new_cap);
@@ -1475,7 +1475,24 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
       let new_slots = new_table.slots;
       let new_mask = new_table.mask;
 
+      const PREFETCH_AHEAD: usize = 16;
       for idx in 0..old_cap {
+         if idx + PREFETCH_AHEAD < old_cap {
+            let next_word =
+               unsafe { (*old_slots.add(idx + PREFETCH_AHEAD)).0.load(Ordering::Relaxed) }
+                  as usize;
+            if next_word != 0 {
+               let next_p = TaggedSlot::<V>::decode(next_word);
+               #[cfg(target_arch = "x86_64")]
+               unsafe {
+                  std::arch::x86_64::_mm_prefetch(
+                     next_p as *const i8,
+                     std::arch::x86_64::_MM_HINT_T0,
+                  );
+               }
+            }
+         }
+
          let slot = unsafe { &*old_slots.add(idx) };
          let word = slot.0.load(Ordering::Relaxed) as usize;
          if word == 0 {
