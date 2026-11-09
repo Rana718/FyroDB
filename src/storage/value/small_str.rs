@@ -164,9 +164,7 @@ impl SmallStr {
          let ptr_val = unsafe { std::ptr::read_unaligned(self.data.as_ptr().cast::<*mut u8>()) };
          let len_val = Self::read_heap_len(&self.data);
          let boxed = unsafe {
-            Box::from_raw(
-               std::ptr::slice_from_raw_parts_mut(ptr_val, len_val) as *mut str,
-            )
+            Box::from_raw(std::ptr::slice_from_raw_parts_mut(ptr_val, len_val) as *mut str)
          };
          std::mem::forget(self);
          boxed.into()
@@ -200,9 +198,15 @@ impl SmallStr {
             } else if len == 1 {
                *dst = *src;
             } else if len == 2 {
-               std::ptr::write_unaligned(dst.cast::<u16>(), std::ptr::read_unaligned(src.cast::<u16>()));
+               std::ptr::write_unaligned(
+                  dst.cast::<u16>(),
+                  std::ptr::read_unaligned(src.cast::<u16>()),
+               );
             } else if len == 3 {
-               std::ptr::write_unaligned(dst.cast::<u16>(), std::ptr::read_unaligned(src.cast::<u16>()));
+               std::ptr::write_unaligned(
+                  dst.cast::<u16>(),
+                  std::ptr::read_unaligned(src.cast::<u16>()),
+               );
                *dst.add(2) = *src.add(2);
             }
          }
@@ -420,9 +424,15 @@ impl SmallStr {
             } else if len == 1 {
                *dst = *src;
             } else if len == 2 {
-               std::ptr::write_unaligned(dst.cast::<u16>(), std::ptr::read_unaligned(src.cast::<u16>()));
+               std::ptr::write_unaligned(
+                  dst.cast::<u16>(),
+                  std::ptr::read_unaligned(src.cast::<u16>()),
+               );
             } else if len == 3 {
-               std::ptr::write_unaligned(dst.cast::<u16>(), std::ptr::read_unaligned(src.cast::<u16>()));
+               std::ptr::write_unaligned(
+                  dst.cast::<u16>(),
+                  std::ptr::read_unaligned(src.cast::<u16>()),
+               );
                *dst.add(2) = *src.add(2);
             }
          }
@@ -481,8 +491,7 @@ impl Drop for SmallStr {
          let len_val = Self::read_heap_len(&self.data);
          unsafe {
             drop(Box::from_raw(std::ptr::slice_from_raw_parts_mut(
-               ptr_val,
-               len_val,
+               ptr_val, len_val,
             )));
          }
       }

@@ -99,10 +99,16 @@ fn bench_frame_codec() {
       let start = Instant::now();
       for _ in 0..OPS {
          wire.clear();
-         codec.write_frame(&mut wire, black_box(&frame)).expect("encode");
+         codec
+            .write_frame(&mut wire, black_box(&frame))
+            .expect("encode");
          black_box(wire.len());
       }
-      print_bench(&format!("frame_codec encode ({size}B)"), OPS, start.elapsed());
+      print_bench(
+         &format!("frame_codec encode ({size}B)"),
+         OPS,
+         start.elapsed(),
+      );
 
       let mut wire = Vec::with_capacity(size + 64);
       codec.write_frame(&mut wire, &frame).expect("encode");
@@ -112,7 +118,11 @@ fn bench_frame_codec() {
          let frame = codec.read_frame(&mut cursor).expect("decode");
          black_box(frame.payload.len());
       }
-      print_bench(&format!("frame_codec decode ({size}B)"), OPS, start.elapsed());
+      print_bench(
+         &format!("frame_codec decode ({size}B)"),
+         OPS,
+         start.elapsed(),
+      );
    }
 }
 

@@ -1,25 +1,32 @@
-use std::time::Instant;
-use std::sync::Arc;
 use fyro_dbcache::EncodedResult;
-use fyro_dbcache::query::{parse_sql, make_cache_key_inline};
+use fyro_dbcache::query::{make_cache_key_inline, parse_sql};
 use fyro_dbcache::{ColumnInfo, DbResultSet, DbRow, DbValue};
+use std::sync::Arc;
+use std::time::Instant;
 
 fn make_sample_result() -> DbResultSet {
    DbResultSet {
       columns: vec![
-         ColumnInfo { name: "id".to_string(), type_oid: 23 },
-         ColumnInfo { name: "username".to_string(), type_oid: 25 },
-         ColumnInfo { name: "email".to_string(), type_oid: 25 },
-      ],
-      rows: vec![
-         DbRow {
-            values: vec![
-               DbValue::Int(42),
-               DbValue::Text("alice".to_string()),
-               DbValue::Text("alice@example.com".to_string()),
-            ],
+         ColumnInfo {
+            name: "id".to_string(),
+            type_oid: 23,
+         },
+         ColumnInfo {
+            name: "username".to_string(),
+            type_oid: 25,
+         },
+         ColumnInfo {
+            name: "email".to_string(),
+            type_oid: 25,
          },
       ],
+      rows: vec![DbRow {
+         values: vec![
+            DbValue::Int(42),
+            DbValue::Text("alice".to_string()),
+            DbValue::Text("alice@example.com".to_string()),
+         ],
+      }],
       rows_affected: 1,
    }
 }
@@ -67,7 +74,9 @@ fn bench_dbcache_proxy_path_optimizations() {
             (sql_b, fp_b, &encoded_b)
          };
 
-         if slot_fp == cur_fp && let Some(entry) = &slot_encoded {
+         if slot_fp == cur_fp
+            && let Some(entry) = &slot_encoded
+         {
             out_before.clear();
             entry.write_simple_response(&mut out_before);
             before_hits += 1;
@@ -91,7 +100,8 @@ fn bench_dbcache_proxy_path_optimizations() {
          fp: u64,
          encoded: Arc<EncodedResult>,
       }
-      let mut hot_slots: [Option<HotQuerySlot>; 8] = [None, None, None, None, None, None, None, None];
+      let mut hot_slots: [Option<HotQuerySlot>; 8] =
+         [None, None, None, None, None, None, None, None];
       let mut after_hits = 0usize;
       let mut _after_misses = 0usize;
 
@@ -103,7 +113,9 @@ fn bench_dbcache_proxy_path_optimizations() {
          };
 
          let slot_idx = (cur_fp as usize) & 7;
-         if let Some(slot) = &hot_slots[slot_idx] && slot.fp == cur_fp {
+         if let Some(slot) = &hot_slots[slot_idx]
+            && slot.fp == cur_fp
+         {
             out_after.clear();
             slot.encoded.write_simple_response(&mut out_after);
             after_hits += 1;
@@ -121,19 +133,25 @@ fn bench_dbcache_proxy_path_optimizations() {
       let elapsed_after = start_after.elapsed();
 
       println!("Benchmark 1: Alternating Queries (200k iterations)");
-      println!("  • Before (1-slot hot cache):  {:.2?} ({:.2}M QPS, Hit rate: {:.1}%)",
+      println!(
+         "  • Before (1-slot hot cache):  {:.2?} ({:.2}M QPS, Hit rate: {:.1}%)",
          elapsed_before,
          (ITERATIONS as f64 / elapsed_before.as_secs_f64()) / 1_000_000.0,
-         (before_hits as f64 / ITERATIONS as f64) * 100.0);
-      println!("  • After  (8-slot hot cache):  {:.2?} ({:.2}M QPS, Hit rate: {:.1}%)",
+         (before_hits as f64 / ITERATIONS as f64) * 100.0
+      );
+      println!(
+         "  • After  (8-slot hot cache):  {:.2?} ({:.2}M QPS, Hit rate: {:.1}%)",
          elapsed_after,
          (ITERATIONS as f64 / elapsed_after.as_secs_f64()) / 1_000_000.0,
-         (after_hits as f64 / ITERATIONS as f64) * 100.0);
+         (after_hits as f64 / ITERATIONS as f64) * 100.0
+      );
       let speedup = elapsed_before.as_secs_f64() / elapsed_after.as_secs_f64();
-      println!("  ==> SPEEDUP: {:.2}x faster! (Latency dropped from {:.2} ns/op to {:.2} ns/op)\n",
+      println!(
+         "  ==> SPEEDUP: {:.2}x faster! (Latency dropped from {:.2} ns/op to {:.2} ns/op)\n",
          speedup,
          elapsed_before.as_nanos() as f64 / ITERATIONS as f64,
-         elapsed_after.as_nanos() as f64 / ITERATIONS as f64);
+         elapsed_after.as_nanos() as f64 / ITERATIONS as f64
+      );
    }
 
    // -------------------------------------------------------------------------
@@ -162,10 +180,22 @@ fn bench_dbcache_proxy_path_optimizations() {
          let name = "";
          let portal_name = "";
          // Parse:
-         stmts_map.insert(name.to_string(), Stmt { sql: "SELECT 1".to_string(), fp: i as u64 });
+         stmts_map.insert(
+            name.to_string(),
+            Stmt {
+               sql: "SELECT 1".to_string(),
+               fp: i as u64,
+            },
+         );
          // Bind:
          let s = stmts_map.get(name).unwrap();
-         portals_map.insert(portal_name.to_string(), Portal { stmt: name.to_string(), fp: s.fp });
+         portals_map.insert(
+            portal_name.to_string(),
+            Portal {
+               stmt: name.to_string(),
+               fp: s.fp,
+            },
+         );
          // Execute:
          let p = portals_map.get_mut(portal_name).unwrap();
          std::hint::black_box(p.fp);
@@ -181,35 +211,67 @@ fn bench_dbcache_proxy_path_optimizations() {
          let portal_name = "";
          // Parse:
          if name.is_empty() {
-            unnamed_stmt = Some(Stmt { sql: "SELECT 1".to_string(), fp: i as u64 });
+            unnamed_stmt = Some(Stmt {
+               sql: "SELECT 1".to_string(),
+               fp: i as u64,
+            });
          } else {
-            stmts_map.insert(name.to_string(), Stmt { sql: "SELECT 1".to_string(), fp: i as u64 });
+            stmts_map.insert(
+               name.to_string(),
+               Stmt {
+                  sql: "SELECT 1".to_string(),
+                  fp: i as u64,
+               },
+            );
          }
          // Bind:
-         let s = if name.is_empty() { unnamed_stmt.as_ref().unwrap() } else { stmts_map.get(name).unwrap() };
-         if portal_name.is_empty() {
-            unnamed_portal = Some(Portal { stmt: name.to_string(), fp: s.fp });
+         let s = if name.is_empty() {
+            unnamed_stmt.as_ref().unwrap()
          } else {
-            portals_map.insert(portal_name.to_string(), Portal { stmt: name.to_string(), fp: s.fp });
+            stmts_map.get(name).unwrap()
+         };
+         if portal_name.is_empty() {
+            unnamed_portal = Some(Portal {
+               stmt: name.to_string(),
+               fp: s.fp,
+            });
+         } else {
+            portals_map.insert(
+               portal_name.to_string(),
+               Portal {
+                  stmt: name.to_string(),
+                  fp: s.fp,
+               },
+            );
          }
          // Execute:
-         let p = if portal_name.is_empty() { unnamed_portal.as_mut().unwrap() } else { portals_map.get_mut(portal_name).unwrap() };
+         let p = if portal_name.is_empty() {
+            unnamed_portal.as_mut().unwrap()
+         } else {
+            portals_map.get_mut(portal_name).unwrap()
+         };
          std::hint::black_box(p.fp);
       }
       let elapsed_after = start_after.elapsed();
 
       println!("Benchmark 2: Unnamed Statement/Portal Extended Protocol (1M cycles)");
-      println!("  • Before (HashMap<String, Stmt> + allocations): {:.2?} ({:.2}M ops/s)",
+      println!(
+         "  • Before (HashMap<String, Stmt> + allocations): {:.2?} ({:.2}M ops/s)",
          elapsed_before,
-         (ITERATIONS as f64 / elapsed_before.as_secs_f64()) / 1_000_000.0);
-      println!("  • After  (Option<Stmt> O(1) zero-alloc slots):   {:.2?} ({:.2}M ops/s)",
+         (ITERATIONS as f64 / elapsed_before.as_secs_f64()) / 1_000_000.0
+      );
+      println!(
+         "  • After  (Option<Stmt> O(1) zero-alloc slots):   {:.2?} ({:.2}M ops/s)",
          elapsed_after,
-         (ITERATIONS as f64 / elapsed_after.as_secs_f64()) / 1_000_000.0);
+         (ITERATIONS as f64 / elapsed_after.as_secs_f64()) / 1_000_000.0
+      );
       let speedup = elapsed_before.as_secs_f64() / elapsed_after.as_secs_f64();
-      println!("  ==> SPEEDUP: {:.2}x faster! (Latency dropped from {:.2} ns/op to {:.2} ns/op)\n",
+      println!(
+         "  ==> SPEEDUP: {:.2}x faster! (Latency dropped from {:.2} ns/op to {:.2} ns/op)\n",
          speedup,
          elapsed_before.as_nanos() as f64 / ITERATIONS as f64,
-         elapsed_after.as_nanos() as f64 / ITERATIONS as f64);
+         elapsed_after.as_nanos() as f64 / ITERATIONS as f64
+      );
    }
 
    // -------------------------------------------------------------------------
@@ -244,17 +306,23 @@ fn bench_dbcache_proxy_path_optimizations() {
       let elapsed_new = start_new.elapsed();
 
       println!("Benchmark 3: Execute Response Wire Serialization (5M iterations)");
-      println!("  • Before (calculate lens + 2 slice calls): {:.2?} ({:.2}M ops/s)",
+      println!(
+         "  • Before (calculate lens + 2 slice calls): {:.2?} ({:.2}M ops/s)",
          elapsed_old,
-         (ITERATIONS as f64 / elapsed_old.as_secs_f64()) / 1_000_000.0);
-      println!("  • After  (single contiguous slice write):  {:.2?} ({:.2}M ops/s)",
+         (ITERATIONS as f64 / elapsed_old.as_secs_f64()) / 1_000_000.0
+      );
+      println!(
+         "  • After  (single contiguous slice write):  {:.2?} ({:.2}M ops/s)",
          elapsed_new,
-         (ITERATIONS as f64 / elapsed_new.as_secs_f64()) / 1_000_000.0);
+         (ITERATIONS as f64 / elapsed_new.as_secs_f64()) / 1_000_000.0
+      );
       let speedup = elapsed_old.as_secs_f64() / elapsed_new.as_secs_f64();
-      println!("  ==> SPEEDUP: {:.2}x faster! (Latency dropped from {:.2} ns/op to {:.2} ns/op)\n",
+      println!(
+         "  ==> SPEEDUP: {:.2}x faster! (Latency dropped from {:.2} ns/op to {:.2} ns/op)\n",
          speedup,
          elapsed_old.as_nanos() as f64 / ITERATIONS as f64,
-         elapsed_new.as_nanos() as f64 / ITERATIONS as f64);
+         elapsed_new.as_nanos() as f64 / ITERATIONS as f64
+      );
    }
 
    // -------------------------------------------------------------------------
@@ -290,17 +358,23 @@ fn bench_dbcache_proxy_path_optimizations() {
       let elapsed_after = start_after.elapsed();
 
       println!("Benchmark 4: Command Complete Framing (5M iterations)");
-      println!("  • Before (temporary Vec allocations):  {:.2?} ({:.2}M ops/s)",
+      println!(
+         "  • Before (temporary Vec allocations):  {:.2?} ({:.2}M ops/s)",
          elapsed_before,
-         (ITERATIONS as f64 / elapsed_before.as_secs_f64()) / 1_000_000.0);
-      println!("  • After  (zero-alloc direct buffer write): {:.2?} ({:.2}M ops/s)",
+         (ITERATIONS as f64 / elapsed_before.as_secs_f64()) / 1_000_000.0
+      );
+      println!(
+         "  • After  (zero-alloc direct buffer write): {:.2?} ({:.2}M ops/s)",
          elapsed_after,
-         (ITERATIONS as f64 / elapsed_after.as_secs_f64()) / 1_000_000.0);
+         (ITERATIONS as f64 / elapsed_after.as_secs_f64()) / 1_000_000.0
+      );
       let speedup = elapsed_before.as_secs_f64() / elapsed_after.as_secs_f64();
-      println!("  ==> SPEEDUP: {:.2}x faster! (Latency dropped from {:.2} ns/op to {:.2} ns/op)\n",
+      println!(
+         "  ==> SPEEDUP: {:.2}x faster! (Latency dropped from {:.2} ns/op to {:.2} ns/op)\n",
          speedup,
          elapsed_before.as_nanos() as f64 / ITERATIONS as f64,
-         elapsed_after.as_nanos() as f64 / ITERATIONS as f64);
+         elapsed_after.as_nanos() as f64 / ITERATIONS as f64
+      );
    }
 
    // -------------------------------------------------------------------------
@@ -321,10 +395,12 @@ fn bench_dbcache_proxy_path_optimizations() {
       let elapsed = start.elapsed();
 
       println!("Benchmark 5: Inline Cache Key Generation (5M iterations)");
-      println!("  • Optimized make_cache_key_inline: {:.2?} ({:.2}M ops/s, {:.2} ns/op)",
+      println!(
+         "  • Optimized make_cache_key_inline: {:.2?} ({:.2}M ops/s, {:.2} ns/op)",
          elapsed,
          (ITERATIONS as f64 / elapsed.as_secs_f64()) / 1_000_000.0,
-         elapsed.as_nanos() as f64 / ITERATIONS as f64);
+         elapsed.as_nanos() as f64 / ITERATIONS as f64
+      );
    }
    println!("==========================================================================\n");
 }

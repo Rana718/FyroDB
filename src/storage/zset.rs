@@ -692,23 +692,17 @@ impl Store {
       aggregate: ZAggregate,
    ) -> Result<usize, &'static str> {
       if keys.is_empty() {
-         self
-            .data
-            .insert_str(dst, StoreValue::zset(ZSetData::new()));
+         self.data.insert_str(dst, StoreValue::zset(ZSetData::new()));
          return Ok(0);
       }
       // Collect first set's members without cloning the full ZSetData.
       let first_members: Vec<(SmallStr, f64)> = match self.data.get_ref(keys[0]) {
          None => {
-            self
-               .data
-               .insert_str(dst, StoreValue::zset(ZSetData::new()));
+            self.data.insert_str(dst, StoreValue::zset(ZSetData::new()));
             return Ok(0);
          }
          Some(e) if e.is_expired() => {
-            self
-               .data
-               .insert_str(dst, StoreValue::zset(ZSetData::new()));
+            self.data.insert_str(dst, StoreValue::zset(ZSetData::new()));
             return Ok(0);
          }
          Some(e) => match e.value.as_zset() {
@@ -731,15 +725,11 @@ impl Store {
          // Collect other set's scores without cloning full ZSetData.
          let other_scores: Vec<(SmallStr, f64)> = match self.data.get_ref(k) {
             None => {
-               self
-                  .data
-                  .insert_str(dst, StoreValue::zset(ZSetData::new()));
+               self.data.insert_str(dst, StoreValue::zset(ZSetData::new()));
                return Ok(0);
             }
             Some(e) if e.is_expired() => {
-               self
-                  .data
-                  .insert_str(dst, StoreValue::zset(ZSetData::new()));
+               self.data.insert_str(dst, StoreValue::zset(ZSetData::new()));
                return Ok(0);
             }
             Some(e) => match e.value.as_zset() {

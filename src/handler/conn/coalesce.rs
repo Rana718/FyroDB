@@ -1,3 +1,5 @@
+#![allow(clippy::chunks_exact_to_as_chunks, clippy::collapsible_if)]
+
 use super::*;
 
 /// Max same-key queue commands per coalesced run (one lock acquisition).
@@ -132,9 +134,15 @@ pub(super) fn dispatch_set_expire_pair(
       if let Some((k_slice, v_slice)) = conn.parser.try_fast_set_expire_pair_at(buf, avail) {
          let (hint, entry) = conn.hint_for(k_slice);
          let out = &mut conn.parser.wbuf;
-         let Some(k_str) = part_str(out, k_slice) else { return PairOutcome::ConnError; };
-         let Some(v_str) = part_str(out, v_slice) else { return PairOutcome::ConnError; };
-         conn.store.set_string_auto(k_str, hint, entry, v_str, exp_60);
+         let Some(k_str) = part_str(out, k_slice) else {
+            return PairOutcome::ConnError;
+         };
+         let Some(v_str) = part_str(out, v_slice) else {
+            return PairOutcome::ConnError;
+         };
+         conn
+            .store
+            .set_string_auto(k_str, hint, entry, v_str, exp_60);
          if conn.store.has_replication() {
             conn.store.record_current_value(k_str);
          }
@@ -250,7 +258,9 @@ pub(super) fn execute_publish_run(
             dst = dst.add(single_len);
          }
       }
-      unsafe { out.set_len(old_len + cmds * single_len); }
+      unsafe {
+         out.set_len(old_len + cmds * single_len);
+      }
    }
    Ok(())
 }
@@ -333,7 +343,7 @@ fn try_fast_tail(
    out_parts: &mut [(*const u8, usize)],
 ) -> Option<usize> {
    let mut offset = prefix_len;
-   for i in 0..tail_len {
+   for out_part in out_parts.iter_mut().take(tail_len) {
       if avail < offset + 4 {
          return None;
       }
@@ -352,7 +362,7 @@ fn try_fast_tail(
       {
          return None;
       }
-      out_parts[i] = (unsafe { buf.add(data_offset) }, len);
+      *out_part = (unsafe { buf.add(data_offset) }, len);
       offset = next_offset;
    }
    Some(offset)
@@ -374,7 +384,8 @@ pub(super) fn dispatch_write_run(
    let key_bytes = key.as_bytes();
 
    let tail_len = op.arity() - 2;
-   let mut parts: [(*const u8, usize); QUEUE_RUN_MAX * 3] = [(std::ptr::null(), 0); QUEUE_RUN_MAX * 3];
+   let mut parts: [(*const u8, usize); QUEUE_RUN_MAX * 3] =
+      [(std::ptr::null(), 0); QUEUE_RUN_MAX * 3];
    for (i, &p) in first[2..].iter().enumerate() {
       parts[i] = p;
    }

@@ -165,7 +165,11 @@ fn bench_hnsw() {
          qi = (qi + 1) % queries.len();
          black_box(graph50.search(&queries[qi], 10, ef));
       }
-      print_bench(&format!("HNSW search 50k 128d (ef={ef})"), SEARCH_OPS, start.elapsed());
+      print_bench(
+         &format!("HNSW search 50k 128d (ef={ef})"),
+         SEARCH_OPS,
+         start.elapsed(),
+      );
    }
 
    const FLAT_OPS: u64 = 100;

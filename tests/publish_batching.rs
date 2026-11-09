@@ -175,9 +175,15 @@ fn batched_subscription_generates_incrementing_answers() {
    let (mut s, mut r) = conn(port);
    s.write_all(&cmd(&["SUBSCRIBE", "a", "b"])).unwrap();
    let ans = read_reply(&mut r);
-   assert_eq!(String::from_utf8(ans).unwrap(), "*3\r\n$9\r\nsubscribe\r\n$1\r\na\r\n:1\r\n");
+   assert_eq!(
+      String::from_utf8(ans).unwrap(),
+      "*3\r\n$9\r\nsubscribe\r\n$1\r\na\r\n:1\r\n"
+   );
    let ans = read_reply(&mut r);
-   assert_eq!(String::from_utf8(ans).unwrap(), "*3\r\n$9\r\nsubscribe\r\n$1\r\nb\r\n:2\r\n");
+   assert_eq!(
+      String::from_utf8(ans).unwrap(),
+      "*3\r\n$9\r\nsubscribe\r\n$1\r\nb\r\n:2\r\n"
+   );
 }
 
 #[test]
@@ -189,9 +195,15 @@ fn batched_unsubscription_generates_decrementing_answers() {
    s.write_all(&cmd(&["UNSUBSCRIBE", "a", "b"])).unwrap();
    let _ = read_reply(&mut r);
    let ans = read_reply(&mut r);
-   assert_eq!(String::from_utf8(ans).unwrap(), "*3\r\n$11\r\nunsubscribe\r\n$1\r\na\r\n:1\r\n");
+   assert_eq!(
+      String::from_utf8(ans).unwrap(),
+      "*3\r\n$11\r\nunsubscribe\r\n$1\r\na\r\n:1\r\n"
+   );
    let ans = read_reply(&mut r);
-   assert_eq!(String::from_utf8(ans).unwrap(), "*3\r\n$11\r\nunsubscribe\r\n$1\r\nb\r\n:0\r\n");
+   assert_eq!(
+      String::from_utf8(ans).unwrap(),
+      "*3\r\n$11\r\nunsubscribe\r\n$1\r\nb\r\n:0\r\n"
+   );
 }
 
 // Workers block in poll(); they exit with the test process.

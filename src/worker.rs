@@ -440,7 +440,8 @@ fn deliver_fanout(
                      <= crate::handler::conn::SUB_WRITE_BATCH_BYTES
                   {
                      conn.parser.wbuf.extend_from_slice(&entry.frame);
-                  } else if let crate::handler::conn::ConnMode::Subscribed { slot, .. } = &conn.mode {
+                  } else if let crate::handler::conn::ConnMode::Subscribed { slot, .. } = &conn.mode
+                  {
                      slot.push(Arc::clone(&entry.frame));
                   }
                }

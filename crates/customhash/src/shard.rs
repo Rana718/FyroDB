@@ -684,7 +684,9 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
       if (w0 >> TAG_SHIFT) as u16 == expected_hi {
          let p = (w0 & PTR_MASK) as *mut Entry<V>;
          let e = unsafe { &*p };
-         if (e.state.load(Ordering::Relaxed) & STATE_MATCH_MASK) == expected_match && e.key.eq_str(key) {
+         if (e.state.load(Ordering::Relaxed) & STATE_MATCH_MASK) == expected_match
+            && e.key.eq_str(key)
+         {
             std::sync::atomic::fence(Ordering::Acquire);
             return Some(unsafe { (*e.value.get()).assume_init_ref().clone() });
          }
@@ -693,7 +695,9 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
       } else if (w0 & TAG_FLAG) == 0 {
          let p = w0 as *mut Entry<V>;
          let e = unsafe { &*p };
-         if (e.state.load(Ordering::Relaxed) & STATE_MATCH_MASK) == expected_match && e.key.eq_str(key) {
+         if (e.state.load(Ordering::Relaxed) & STATE_MATCH_MASK) == expected_match
+            && e.key.eq_str(key)
+         {
             std::sync::atomic::fence(Ordering::Acquire);
             return Some(unsafe { (*e.value.get()).assume_init_ref().clone() });
          }
@@ -703,7 +707,9 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
       if (w1 >> TAG_SHIFT) as u16 == expected_hi {
          let p = (w1 & PTR_MASK) as *mut Entry<V>;
          let e = unsafe { &*p };
-         if (e.state.load(Ordering::Relaxed) & STATE_MATCH_MASK) == expected_match && e.key.eq_str(key) {
+         if (e.state.load(Ordering::Relaxed) & STATE_MATCH_MASK) == expected_match
+            && e.key.eq_str(key)
+         {
             std::sync::atomic::fence(Ordering::Acquire);
             return Some(unsafe { (*e.value.get()).assume_init_ref().clone() });
          }
@@ -712,7 +718,9 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
       } else if (w1 & TAG_FLAG) == 0 {
          let p = w1 as *mut Entry<V>;
          let e = unsafe { &*p };
-         if (e.state.load(Ordering::Relaxed) & STATE_MATCH_MASK) == expected_match && e.key.eq_str(key) {
+         if (e.state.load(Ordering::Relaxed) & STATE_MATCH_MASK) == expected_match
+            && e.key.eq_str(key)
+         {
             std::sync::atomic::fence(Ordering::Acquire);
             return Some(unsafe { (*e.value.get()).assume_init_ref().clone() });
          }
@@ -722,7 +730,9 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
       if (w2 >> TAG_SHIFT) as u16 == expected_hi {
          let p = (w2 & PTR_MASK) as *mut Entry<V>;
          let e = unsafe { &*p };
-         if (e.state.load(Ordering::Relaxed) & STATE_MATCH_MASK) == expected_match && e.key.eq_str(key) {
+         if (e.state.load(Ordering::Relaxed) & STATE_MATCH_MASK) == expected_match
+            && e.key.eq_str(key)
+         {
             std::sync::atomic::fence(Ordering::Acquire);
             return Some(unsafe { (*e.value.get()).assume_init_ref().clone() });
          }
@@ -731,7 +741,9 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
       } else if (w2 & TAG_FLAG) == 0 {
          let p = w2 as *mut Entry<V>;
          let e = unsafe { &*p };
-         if (e.state.load(Ordering::Relaxed) & STATE_MATCH_MASK) == expected_match && e.key.eq_str(key) {
+         if (e.state.load(Ordering::Relaxed) & STATE_MATCH_MASK) == expected_match
+            && e.key.eq_str(key)
+         {
             std::sync::atomic::fence(Ordering::Acquire);
             return Some(unsafe { (*e.value.get()).assume_init_ref().clone() });
          }
@@ -741,7 +753,9 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
       if (w3 >> TAG_SHIFT) as u16 == expected_hi {
          let p = (w3 & PTR_MASK) as *mut Entry<V>;
          let e = unsafe { &*p };
-         if (e.state.load(Ordering::Relaxed) & STATE_MATCH_MASK) == expected_match && e.key.eq_str(key) {
+         if (e.state.load(Ordering::Relaxed) & STATE_MATCH_MASK) == expected_match
+            && e.key.eq_str(key)
+         {
             std::sync::atomic::fence(Ordering::Acquire);
             return Some(unsafe { (*e.value.get()).assume_init_ref().clone() });
          }
@@ -750,7 +764,9 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
       } else if (w3 & TAG_FLAG) == 0 {
          let p = w3 as *mut Entry<V>;
          let e = unsafe { &*p };
-         if (e.state.load(Ordering::Relaxed) & STATE_MATCH_MASK) == expected_match && e.key.eq_str(key) {
+         if (e.state.load(Ordering::Relaxed) & STATE_MATCH_MASK) == expected_match
+            && e.key.eq_str(key)
+         {
             std::sync::atomic::fence(Ordering::Acquire);
             return Some(unsafe { (*e.value.get()).assume_init_ref().clone() });
          }
@@ -761,7 +777,9 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
          if (w >> TAG_SHIFT) as u16 == expected_hi {
             let p = (w & PTR_MASK) as *mut Entry<V>;
             let e = unsafe { &*p };
-            if (e.state.load(Ordering::Relaxed) & STATE_MATCH_MASK) == expected_match && e.key.eq_str(key) {
+            if (e.state.load(Ordering::Relaxed) & STATE_MATCH_MASK) == expected_match
+               && e.key.eq_str(key)
+            {
                std::sync::atomic::fence(Ordering::Acquire);
                return Some(unsafe { (*e.value.get()).assume_init_ref().clone() });
             }
@@ -770,7 +788,9 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
          } else if (w & TAG_FLAG) == 0 {
             let p = w as *mut Entry<V>;
             let e = unsafe { &*p };
-            if (e.state.load(Ordering::Relaxed) & STATE_MATCH_MASK) == expected_match && e.key.eq_str(key) {
+            if (e.state.load(Ordering::Relaxed) & STATE_MATCH_MASK) == expected_match
+               && e.key.eq_str(key)
+            {
                std::sync::atomic::fence(Ordering::Acquire);
                return Some(unsafe { (*e.value.get()).assume_init_ref().clone() });
             }
@@ -797,7 +817,9 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
          if (w >> TAG_SHIFT) as u16 == expected_hi {
             let p = (w & PTR_MASK) as *mut Entry<V>;
             let e = unsafe { &*p };
-            if (e.state.load(Ordering::Relaxed) & STATE_MATCH_MASK) == expected_match && e.key.eq_str(key) {
+            if (e.state.load(Ordering::Relaxed) & STATE_MATCH_MASK) == expected_match
+               && e.key.eq_str(key)
+            {
                std::sync::atomic::fence(Ordering::Acquire);
                return Some(unsafe { (*e.value.get()).assume_init_ref().clone() });
             }
@@ -806,7 +828,9 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
          } else if (w & TAG_FLAG) == 0 {
             let p = w as *mut Entry<V>;
             let e = unsafe { &*p };
-            if (e.state.load(Ordering::Relaxed) & STATE_MATCH_MASK) == expected_match && e.key.eq_str(key) {
+            if (e.state.load(Ordering::Relaxed) & STATE_MATCH_MASK) == expected_match
+               && e.key.eq_str(key)
+            {
                std::sync::atomic::fence(Ordering::Acquire);
                return Some(unsafe { (*e.value.get()).assume_init_ref().clone() });
             }
@@ -1478,9 +1502,11 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
       const PREFETCH_AHEAD: usize = 16;
       for idx in 0..old_cap {
          if idx + PREFETCH_AHEAD < old_cap {
-            let next_word =
-               unsafe { (*old_slots.add(idx + PREFETCH_AHEAD)).0.load(Ordering::Relaxed) }
-                  as usize;
+            let next_word = unsafe {
+               (*old_slots.add(idx + PREFETCH_AHEAD))
+                  .0
+                  .load(Ordering::Relaxed)
+            } as usize;
             if next_word != 0 {
                let next_p = TaggedSlot::<V>::decode(next_word);
                #[cfg(target_arch = "x86_64")]

@@ -14,10 +14,7 @@ pub fn set_str(s: &Store, key: &str, val: &str) {
 pub fn set_expiring(s: &Store, key: &str, val: &str, secs: u64) {
    s.set(
       key,
-      StoreValue::string_str_with_expiry(
-         val,
-         Some(Instant::now() + Duration::from_secs(secs)),
-      ),
+      StoreValue::string_str_with_expiry(val, Some(Instant::now() + Duration::from_secs(secs))),
    );
 }
 

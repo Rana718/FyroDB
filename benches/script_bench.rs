@@ -57,37 +57,65 @@ fn main() {
    let mut load_out = Vec::new();
    commands::execute(&["SCRIPT", "LOAD", "return 42"], &store, &mut load_out);
    let sha_basic = String::from_utf8(load_out.clone()).unwrap();
-   let sha_basic = sha_basic.trim_start_matches("$40\r\n").trim_end_matches("\r\n");
+   let sha_basic = sha_basic
+      .trim_start_matches("$40\r\n")
+      .trim_end_matches("\r\n");
 
    bench_rate("EVALSHA 'return 42' (precompiled)", 100_000, || {
       run_eval(&store, &["EVALSHA", sha_basic, "0"], &mut out);
    });
 
    // 3. EVALSHA with KEYS and ARGV
-   commands::execute(&["SCRIPT", "LOAD", "return {KEYS[1], ARGV[1]}"], &store, &mut load_out);
+   commands::execute(
+      &["SCRIPT", "LOAD", "return {KEYS[1], ARGV[1]}"],
+      &store,
+      &mut load_out,
+   );
    let sha_keys = String::from_utf8(load_out.clone()).unwrap();
-   let sha_keys = sha_keys.trim_start_matches("$40\r\n").trim_end_matches("\r\n");
+   let sha_keys = sha_keys
+      .trim_start_matches("$40\r\n")
+      .trim_end_matches("\r\n");
 
    bench_rate("EVALSHA KEYS[1] + ARGV[1]", 100_000, || {
-      run_eval(&store, &["EVALSHA", sha_keys, "1", "bench:key", "arg_val"], &mut out);
+      run_eval(
+         &store,
+         &["EVALSHA", sha_keys, "1", "bench:key", "arg_val"],
+         &mut out,
+      );
    });
 
    // 4. EVALSHA with redis.call('GET', KEYS[1])
-   commands::execute(&["SCRIPT", "LOAD", "return redis.call('GET', KEYS[1])"], &store, &mut load_out);
+   commands::execute(
+      &["SCRIPT", "LOAD", "return redis.call('GET', KEYS[1])"],
+      &store,
+      &mut load_out,
+   );
    let sha_get = String::from_utf8(load_out.clone()).unwrap();
-   let sha_get = sha_get.trim_start_matches("$40\r\n").trim_end_matches("\r\n");
+   let sha_get = sha_get
+      .trim_start_matches("$40\r\n")
+      .trim_end_matches("\r\n");
 
    bench_rate("EVALSHA redis.call('GET', key)", 100_000, || {
       run_eval(&store, &["EVALSHA", sha_get, "1", "bench:key"], &mut out);
    });
 
    // 5. EVALSHA with redis.call('INCR', KEYS[1])
-   commands::execute(&["SCRIPT", "LOAD", "return redis.call('INCR', KEYS[1])"], &store, &mut load_out);
+   commands::execute(
+      &["SCRIPT", "LOAD", "return redis.call('INCR', KEYS[1])"],
+      &store,
+      &mut load_out,
+   );
    let sha_incr = String::from_utf8(load_out.clone()).unwrap();
-   let sha_incr = sha_incr.trim_start_matches("$40\r\n").trim_end_matches("\r\n");
+   let sha_incr = sha_incr
+      .trim_start_matches("$40\r\n")
+      .trim_end_matches("\r\n");
 
    bench_rate("EVALSHA redis.call('INCR', key)", 100_000, || {
-      run_eval(&store, &["EVALSHA", sha_incr, "1", "bench:counter"], &mut out);
+      run_eval(
+         &store,
+         &["EVALSHA", sha_incr, "1", "bench:counter"],
+         &mut out,
+      );
    });
 
    // 6. EVALSHA CAS (Compare-And-Swap) pattern
@@ -102,10 +130,16 @@ fn main() {
    "#;
    commands::execute(&["SCRIPT", "LOAD", cas_script], &store, &mut load_out);
    let sha_cas = String::from_utf8(load_out.clone()).unwrap();
-   let sha_cas = sha_cas.trim_start_matches("$40\r\n").trim_end_matches("\r\n");
+   let sha_cas = sha_cas
+      .trim_start_matches("$40\r\n")
+      .trim_end_matches("\r\n");
 
    bench_rate("EVALSHA CAS (GET + compare + SET)", 100_000, || {
-      run_eval(&store, &["EVALSHA", sha_cas, "1", "bench:key", "100", "100"], &mut out);
+      run_eval(
+         &store,
+         &["EVALSHA", sha_cas, "1", "bench:key", "100", "100"],
+         &mut out,
+      );
    });
 
    // 7. Multi-threaded concurrent EVALSHA

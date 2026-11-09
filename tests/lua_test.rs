@@ -19,34 +19,19 @@ fn test_lua_eval_basic_returns() {
    );
 
    // Integer
-   assert_eq!(
-      run_cmd(&store, &["EVAL", "return 42", "0"]),
-      ":42\r\n"
-   );
+   assert_eq!(run_cmd(&store, &["EVAL", "return 42", "0"]), ":42\r\n");
 
    // Float truncated
-   assert_eq!(
-      run_cmd(&store, &["EVAL", "return 42.9", "0"]),
-      ":42\r\n"
-   );
+   assert_eq!(run_cmd(&store, &["EVAL", "return 42.9", "0"]), ":42\r\n");
 
    // Boolean true -> 1
-   assert_eq!(
-      run_cmd(&store, &["EVAL", "return true", "0"]),
-      ":1\r\n"
-   );
+   assert_eq!(run_cmd(&store, &["EVAL", "return true", "0"]), ":1\r\n");
 
    // Boolean false -> nil ($-1\r\n)
-   assert_eq!(
-      run_cmd(&store, &["EVAL", "return false", "0"]),
-      "$-1\r\n"
-   );
+   assert_eq!(run_cmd(&store, &["EVAL", "return false", "0"]), "$-1\r\n");
 
    // Nil -> nil ($-1\r\n)
-   assert_eq!(
-      run_cmd(&store, &["EVAL", "return nil", "0"]),
-      "$-1\r\n"
-   );
+   assert_eq!(run_cmd(&store, &["EVAL", "return nil", "0"]), "$-1\r\n");
 
    // Array table
    assert_eq!(
@@ -61,7 +46,10 @@ fn test_lua_keys_and_argv() {
 
    let script = "return {KEYS[1], KEYS[2], ARGV[1], ARGV[2]}";
    let res = run_cmd(&store, &["EVAL", script, "2", "k1", "k2", "a1", "a2"]);
-   assert_eq!(res, "*4\r\n$2\r\nk1\r\n$2\r\nk2\r\n$2\r\na1\r\n$2\r\na2\r\n");
+   assert_eq!(
+      res,
+      "*4\r\n$2\r\nk1\r\n$2\r\nk2\r\n$2\r\na1\r\n$2\r\na2\r\n"
+   );
 }
 
 #[test]
@@ -136,7 +124,10 @@ fn test_lua_status_and_error_replies() {
 
    // error_reply
    assert_eq!(
-      run_cmd(&store, &["EVAL", "return redis.error_reply('Custom Error')", "0"]),
+      run_cmd(
+         &store,
+         &["EVAL", "return redis.error_reply('Custom Error')", "0"]
+      ),
       "-ERR Custom Error\r\n"
    );
 }
@@ -147,7 +138,10 @@ fn test_lua_sha1hex() {
 
    // Standard SHA1 of "hello world" is 2aae6c35c94fcfb415dbe95f408b9ce91ee846ed
    assert_eq!(
-      run_cmd(&store, &["EVAL", "return redis.sha1hex('hello world')", "0"]),
+      run_cmd(
+         &store,
+         &["EVAL", "return redis.sha1hex('hello world')", "0"]
+      ),
       "$40\r\n2aae6c35c94fcfb415dbe95f408b9ce91ee846ed\r\n"
    );
 }
@@ -202,7 +196,15 @@ fn test_script_load_exists_flush_evalsha() {
    let sha1 = load_res.trim().lines().nth(1).unwrap().trim();
 
    // 2. SCRIPT EXISTS
-   let exists_res = run_cmd(&store, &["SCRIPT", "EXISTS", sha1, "0000000000000000000000000000000000000000"]);
+   let exists_res = run_cmd(
+      &store,
+      &[
+         "SCRIPT",
+         "EXISTS",
+         sha1,
+         "0000000000000000000000000000000000000000",
+      ],
+   );
    assert_eq!(exists_res, "*2\r\n:1\r\n:0\r\n");
 
    // 3. EVALSHA
@@ -215,7 +217,10 @@ fn test_script_load_exists_flush_evalsha() {
 
    // 5. EVALSHA after flush returns NOSCRIPT
    let no_script_res = run_cmd(&store, &["EVALSHA", sha1, "0", "21"]);
-   assert_eq!(no_script_res, "-NOSCRIPT No matching script. Please use EVAL.\r\n");
+   assert_eq!(
+      no_script_res,
+      "-NOSCRIPT No matching script. Please use EVAL.\r\n"
+   );
 }
 
 #[test]
@@ -266,14 +271,20 @@ fn test_lua_rate_limiter_and_conditional_cas() {
 
    // Wrong expected value -> returns 0, no update
    assert_eq!(
-      run_cmd(&store, &["EVAL", cas, "1", "cas_key", "wrong_val", "version2"]),
+      run_cmd(
+         &store,
+         &["EVAL", cas, "1", "cas_key", "wrong_val", "version2"]
+      ),
       ":0\r\n"
    );
    assert_eq!(run_cmd(&store, &["GET", "cas_key"]), "$8\r\nversion1\r\n");
 
    // Correct expected value -> returns 1, updates
    assert_eq!(
-      run_cmd(&store, &["EVAL", cas, "1", "cas_key", "version1", "version2"]),
+      run_cmd(
+         &store,
+         &["EVAL", cas, "1", "cas_key", "version1", "version2"]
+      ),
       ":1\r\n"
    );
    assert_eq!(run_cmd(&store, &["GET", "cas_key"]), "$8\r\nversion2\r\n");
@@ -285,7 +296,9 @@ fn test_lua_precompiled_bytecode_reuse_and_throughput() {
 
    let script = "return redis.call('INCR', KEYS[1])";
    let load_res = run_cmd(&store, &["SCRIPT", "LOAD", script]);
-   let sha = load_res.trim_start_matches("$40\r\n").trim_end_matches("\r\n");
+   let sha = load_res
+      .trim_start_matches("$40\r\n")
+      .trim_end_matches("\r\n");
 
    let start = std::time::Instant::now();
    for i in 1..=5_000 {
@@ -294,7 +307,11 @@ fn test_lua_precompiled_bytecode_reuse_and_throughput() {
    }
    let elapsed = start.elapsed();
    // 5,000 in-memory Redis calls inside Lua scripts should execute under 250ms
-   assert!(elapsed.as_millis() < 250, "5,000 iterations took {:?}", elapsed);
+   assert!(
+      elapsed.as_millis() < 250,
+      "5,000 iterations took {:?}",
+      elapsed
+   );
 }
 
 #[test]
@@ -303,7 +320,9 @@ fn test_lua_uppercase_sha1_and_normalization() {
 
    let script = "return 999";
    let load_res = run_cmd(&store, &["SCRIPT", "LOAD", script]);
-   let sha = load_res.trim_start_matches("$40\r\n").trim_end_matches("\r\n");
+   let sha = load_res
+      .trim_start_matches("$40\r\n")
+      .trim_end_matches("\r\n");
    let sha_upper = sha.to_ascii_uppercase();
 
    // SCRIPT EXISTS with uppercase SHA
@@ -313,10 +332,7 @@ fn test_lua_uppercase_sha1_and_normalization() {
    );
 
    // EVALSHA with uppercase SHA
-   assert_eq!(
-      run_cmd(&store, &["EVALSHA", &sha_upper, "0"]),
-      ":999\r\n"
-   );
+   assert_eq!(run_cmd(&store, &["EVALSHA", &sha_upper, "0"]), ":999\r\n");
 }
 
 #[test]
@@ -325,9 +341,14 @@ fn test_lua_script_flush_epoch_invalidation() {
 
    let script = "return 'epoch_test'";
    let sha_res = run_cmd(&store, &["SCRIPT", "LOAD", script]);
-   let sha = sha_res.trim_start_matches("$40\r\n").trim_end_matches("\r\n");
+   let sha = sha_res
+      .trim_start_matches("$40\r\n")
+      .trim_end_matches("\r\n");
 
-   assert_eq!(run_cmd(&store, &["EVALSHA", sha, "0"]), "$10\r\nepoch_test\r\n");
+   assert_eq!(
+      run_cmd(&store, &["EVALSHA", sha, "0"]),
+      "$10\r\nepoch_test\r\n"
+   );
 
    // SCRIPT FLUSH
    assert_eq!(run_cmd(&store, &["SCRIPT", "FLUSH"]), "+OK\r\n");
@@ -360,7 +381,13 @@ fn test_non_scripting_paths_unaffected() {
    // Normal paths after script continue to function with zero interference
    assert_eq!(run_cmd(&store, &["GET", "normal_k1"]), "$4\r\nval1\r\n");
    assert_eq!(run_cmd(&store, &["GET", "normal_k2"]), "$4\r\nval2\r\n");
-   assert_eq!(run_cmd(&store, &["GET", "script_k"]), "$11\r\nfrom_script\r\n");
-   assert_eq!(run_cmd(&store, &["MGET", "normal_k1", "normal_k2"]), "*2\r\n$4\r\nval1\r\n$4\r\nval2\r\n");
+   assert_eq!(
+      run_cmd(&store, &["GET", "script_k"]),
+      "$11\r\nfrom_script\r\n"
+   );
+   assert_eq!(
+      run_cmd(&store, &["MGET", "normal_k1", "normal_k2"]),
+      "*2\r\n$4\r\nval1\r\n$4\r\nval2\r\n"
+   );
    assert_eq!(run_cmd(&store, &["PING"]), "+PONG\r\n");
 }

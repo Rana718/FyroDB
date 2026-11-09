@@ -222,10 +222,9 @@ impl Store {
          None => {
             let mut encoded = encode_hll(&HllData::new()).into_bytes();
             let flags = apply(&mut encoded);
-            self.data.insert_str(
-               key,
-               StoreValue::string_small(SmallStr::from_bytes(encoded)),
-            );
+            self
+               .data
+               .insert_str(key, StoreValue::string_small(SmallStr::from_bytes(encoded)));
             Ok(flags)
          }
       }

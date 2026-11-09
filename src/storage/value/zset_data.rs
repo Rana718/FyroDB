@@ -92,7 +92,10 @@ impl ZSetData {
          chunks.push(Vec::with_capacity(cap.clamp(4, CHUNK_MAX)));
       }
       let index = if cap > INDEX_ON {
-         Some(Box::new(Index::with_capacity_and_hasher(cap, Default::default())))
+         Some(Box::new(Index::with_capacity_and_hasher(
+            cap,
+            Default::default(),
+         )))
       } else {
          None
       };

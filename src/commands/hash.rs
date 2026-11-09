@@ -58,7 +58,10 @@ pub fn hset_raw(conn_key: &str, raw_pairs: &[(&[u8], &[u8])], store: &Store, out
    if raw_pairs.is_empty() {
       return resp::write_wrong_args(out, "hset");
    }
-   resp::write_integer(out, wt!(out, store.hset_bytes_raw(conn_key, raw_pairs)) as i64);
+   resp::write_integer(
+      out,
+      wt!(out, store.hset_bytes_raw(conn_key, raw_pairs)) as i64,
+   );
 }
 
 pub fn hgetall(parts: &[&str], store: &Store, out: &mut Vec<u8>) {

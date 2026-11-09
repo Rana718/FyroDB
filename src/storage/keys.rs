@@ -150,10 +150,7 @@ impl Store {
       }
       match self.data.remove(old_key) {
          Some(entry) if !entry.is_expired() => {
-            if self
-               .data
-               .insert_if_absent_str(new_key, entry.clone())
-            {
+            if self.data.insert_if_absent_str(new_key, entry.clone()) {
                true
             } else {
                self.data.insert_str(old_key, entry);

@@ -265,9 +265,9 @@ pub fn msetnx(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
 
          for (i, &[key, val]) in pairs.iter().enumerate() {
             let store_val = StoreValue {
-               value: crate::storage::value::FyroDB::String(
-                  crate::storage::value::SmallStr::new(val),
-               ),
+               value: crate::storage::value::FyroDB::String(crate::storage::value::SmallStr::new(
+                  val,
+               )),
                expires_ms: 0,
             };
             if !store.data.insert_if_absent_str(key, store_val) {

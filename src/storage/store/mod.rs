@@ -128,7 +128,8 @@ impl Store {
             return;
          }
       }
-      self.script_cache
+      self
+         .script_cache
          .write()
          .insert(Arc::from(sha1), Arc::from(script));
    }
@@ -152,7 +153,9 @@ impl Store {
 
    pub fn flush_scripts(&self) {
       self.script_cache.write().clear();
-      self.script_epoch.fetch_add(1, std::sync::atomic::Ordering::Release);
+      self
+         .script_epoch
+         .fetch_add(1, std::sync::atomic::Ordering::Release);
    }
 
    // Exposes the PostgreSQL proxy's cache manager to the RESP port so stats

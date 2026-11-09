@@ -1,5 +1,5 @@
-use mlua::prelude::*;
 use mlua::LuaSerdeExt;
+use mlua::prelude::*;
 use sha1::{Digest, Sha1};
 use std::cell::Cell;
 use std::sync::Arc;
@@ -153,15 +153,13 @@ fn setup_lua_env(lua: &Lua) -> LuaResult<()> {
    let redis_table = lua.create_table()?;
 
    // redis.call
-   let call_fn = lua.create_function(|lua, args: LuaMultiValue| {
-      execute_redis_call(lua, args, false)
-   })?;
+   let call_fn =
+      lua.create_function(|lua, args: LuaMultiValue| execute_redis_call(lua, args, false))?;
    redis_table.set("call", call_fn)?;
 
    // redis.pcall
-   let pcall_fn = lua.create_function(|lua, args: LuaMultiValue| {
-      execute_redis_call(lua, args, true)
-   })?;
+   let pcall_fn =
+      lua.create_function(|lua, args: LuaMultiValue| execute_redis_call(lua, args, true))?;
    redis_table.set("pcall", pcall_fn)?;
 
    // redis.error_reply
@@ -181,15 +179,12 @@ fn setup_lua_env(lua: &Lua) -> LuaResult<()> {
    redis_table.set("status_reply", status_reply_fn)?;
 
    // redis.sha1hex
-   let sha1hex_fn = lua.create_function(|_lua, s: LuaString| {
-      Ok(compute_sha1_hex(&s.as_bytes()))
-   })?;
+   let sha1hex_fn =
+      lua.create_function(|_lua, s: LuaString| Ok(compute_sha1_hex(&s.as_bytes())))?;
    redis_table.set("sha1hex", sha1hex_fn)?;
 
    // redis.log
-   let log_fn = lua.create_function(|_lua, (_level, _msg): (i32, String)| {
-      Ok(())
-   })?;
+   let log_fn = lua.create_function(|_lua, (_level, _msg): (i32, String)| Ok(()))?;
    redis_table.set("log", log_fn)?;
    redis_table.set("LOG_DEBUG", 0)?;
    redis_table.set("LOG_VERBOSE", 1)?;
@@ -211,7 +206,8 @@ fn setup_lua_env(lua: &Lua) -> LuaResult<()> {
    cjson.set(
       "encode",
       lua.create_function(|lua, val: LuaValue| {
-         let json_val: serde_json::Value = lua.from_value(val)
+         let json_val: serde_json::Value = lua
+            .from_value(val)
             .map_err(|e| LuaError::RuntimeError(format!("cjson encode error: {e}")))?;
          serde_json::to_string(&json_val)
             .map_err(|e| LuaError::RuntimeError(format!("cjson encode error: {e}")))
@@ -241,10 +237,7 @@ fn setup_lua_env(lua: &Lua) -> LuaResult<()> {
       "bxor",
       lua.create_function(|_lua, (a, b): (i64, i64)| Ok(a ^ b))?,
    )?;
-   bit.set(
-      "bnot",
-      lua.create_function(|_lua, a: i64| Ok(!a))?,
-   )?;
+   bit.set("bnot", lua.create_function(|_lua, a: i64| Ok(!a))?)?;
    bit.set(
       "lshift",
       lua.create_function(|_lua, (a, n): (i64, u32)| Ok(a << (n % 64)))?,
@@ -258,11 +251,7 @@ fn setup_lua_env(lua: &Lua) -> LuaResult<()> {
    Ok(())
 }
 
-fn execute_redis_call(
-   lua: &Lua,
-   args: LuaMultiValue,
-   is_pcall: bool,
-) -> LuaResult<LuaValue> {
+fn execute_redis_call(lua: &Lua, args: LuaMultiValue, is_pcall: bool) -> LuaResult<LuaValue> {
    let store_ptr = CURRENT_STORE.get();
    if store_ptr.is_null() {
       return Err(LuaError::RuntimeError(
@@ -349,7 +338,8 @@ fn execute_redis_call(
    if args_len <= STACK_ARGS_CAP {
       let mut stack_parts: [&str; STACK_ARGS_CAP] = [""; STACK_ARGS_CAP];
       let mut num_bufs = [[0u8; 32]; STACK_ARGS_CAP];
-      let mut borrowed_strs: [Option<mlua::BorrowedStr>; STACK_ARGS_CAP] = [const { None }; STACK_ARGS_CAP];
+      let mut borrowed_strs: [Option<mlua::BorrowedStr>; STACK_ARGS_CAP] =
+         [const { None }; STACK_ARGS_CAP];
 
       for (i, (val, buf)) in args.iter().zip(num_bufs.iter_mut()).enumerate() {
          match val {
@@ -427,7 +417,9 @@ fn execute_redis_call(
                   scratch.num_strings.push(f.to_string());
                }
                LuaValue::Boolean(b) => {
-                  scratch.num_strings.push(if *b { "1".into() } else { "0".into() });
+                  scratch
+                     .num_strings
+                     .push(if *b { "1".into() } else { "0".into() });
                }
                LuaValue::Nil => {
                   scratch.num_strings.push(String::new());
@@ -539,11 +531,7 @@ fn parse_i64_fast(bytes: &[u8]) -> Option<i64> {
    Some(if neg { -n } else { n })
 }
 
-pub fn parse_resp(
-   lua: &Lua,
-   input: &mut &[u8],
-   is_pcall: bool,
-) -> LuaResult<LuaValue> {
+pub fn parse_resp(lua: &Lua, input: &mut &[u8], is_pcall: bool) -> LuaResult<LuaValue> {
    if input.is_empty() {
       return Ok(LuaValue::Nil);
    }
@@ -553,9 +541,8 @@ pub fn parse_resp(
 
    match prefix {
       b'+' => {
-         let line = read_crlf_line(input).ok_or_else(|| {
-            LuaError::RuntimeError("unexpected end of status reply".into())
-         })?;
+         let line = read_crlf_line(input)
+            .ok_or_else(|| LuaError::RuntimeError("unexpected end of status reply".into()))?;
          let t = lua.create_table_with_capacity(0, 1)?;
          if line == b"OK" {
             t.raw_set("ok", "OK")?;
@@ -566,9 +553,8 @@ pub fn parse_resp(
          Ok(LuaValue::Table(t))
       }
       b'-' => {
-         let line = read_crlf_line(input).ok_or_else(|| {
-            LuaError::RuntimeError("unexpected end of error reply".into())
-         })?;
+         let line = read_crlf_line(input)
+            .ok_or_else(|| LuaError::RuntimeError("unexpected end of error reply".into()))?;
          let err_msg = std::str::from_utf8(line).unwrap_or("ERR unknown");
          if is_pcall {
             let t = lua.create_table_with_capacity(0, 1)?;
@@ -580,25 +566,31 @@ pub fn parse_resp(
       }
       b':' => {
          let bytes = *input;
-         if bytes.len() >= 3 && bytes[0].is_ascii_digit() && bytes[1] == b'\r' && bytes[2] == b'\n' {
+         if bytes.len() >= 3 && bytes[0].is_ascii_digit() && bytes[1] == b'\r' && bytes[2] == b'\n'
+         {
             *input = &bytes[3..];
             return Ok(LuaValue::Integer((bytes[0] - b'0') as i64));
          }
-         let line = read_crlf_line(input).ok_or_else(|| {
-            LuaError::RuntimeError("unexpected end of integer reply".into())
-         })?;
+         let line = read_crlf_line(input)
+            .ok_or_else(|| LuaError::RuntimeError("unexpected end of integer reply".into()))?;
          let n = parse_i64_fast(line).unwrap_or(0);
          Ok(LuaValue::Integer(n))
       }
       b'$' => {
          let bytes = *input;
          // Fast path 1: Null bulk string "$-1\r\n"
-         if bytes.len() >= 4 && bytes[0] == b'-' && bytes[1] == b'1' && bytes[2] == b'\r' && bytes[3] == b'\n' {
+         if bytes.len() >= 4
+            && bytes[0] == b'-'
+            && bytes[1] == b'1'
+            && bytes[2] == b'\r'
+            && bytes[3] == b'\n'
+         {
             *input = &bytes[4..];
             return Ok(LuaValue::Boolean(false));
          }
          // Fast path 2: Short bulk string with single-digit length "$<len>\r\n<data>\r\n"
-         if bytes.len() >= 3 && bytes[0].is_ascii_digit() && bytes[1] == b'\r' && bytes[2] == b'\n' {
+         if bytes.len() >= 3 && bytes[0].is_ascii_digit() && bytes[1] == b'\r' && bytes[2] == b'\n'
+         {
             let len = (bytes[0] - b'0') as usize;
             let total = 3 + len + 2;
             if bytes.len() >= total && bytes[3 + len] == b'\r' && bytes[3 + len + 1] == b'\n' {
@@ -607,9 +599,8 @@ pub fn parse_resp(
                return Ok(LuaValue::String(lua.create_string(data)?));
             }
          }
-         let line = read_crlf_line(input).ok_or_else(|| {
-            LuaError::RuntimeError("unexpected end of bulk string header".into())
-         })?;
+         let line = read_crlf_line(input)
+            .ok_or_else(|| LuaError::RuntimeError("unexpected end of bulk string header".into()))?;
          let len = parse_i64_fast(line).unwrap_or(-1);
          if len < 0 {
             // In Redis, null bulk string is boolean false in Lua
@@ -627,9 +618,8 @@ pub fn parse_resp(
          }
       }
       b'*' => {
-         let line = read_crlf_line(input).ok_or_else(|| {
-            LuaError::RuntimeError("unexpected end of array header".into())
-         })?;
+         let line = read_crlf_line(input)
+            .ok_or_else(|| LuaError::RuntimeError("unexpected end of array header".into()))?;
          let count = parse_i64_fast(line).unwrap_or(-1);
          if count < 0 {
             Ok(LuaValue::Boolean(false))
@@ -648,15 +638,13 @@ pub fn parse_resp(
          Ok(LuaValue::Boolean(false))
       }
       b'#' => {
-         let line = read_crlf_line(input).ok_or_else(|| {
-            LuaError::RuntimeError("unexpected end of boolean reply".into())
-         })?;
+         let line = read_crlf_line(input)
+            .ok_or_else(|| LuaError::RuntimeError("unexpected end of boolean reply".into()))?;
          Ok(LuaValue::Boolean(line == b"t"))
       }
       b',' => {
-         let line = read_crlf_line(input).ok_or_else(|| {
-            LuaError::RuntimeError("unexpected end of float reply".into())
-         })?;
+         let line = read_crlf_line(input)
+            .ok_or_else(|| LuaError::RuntimeError("unexpected end of float reply".into()))?;
          let f = std::str::from_utf8(line)
             .ok()
             .and_then(|s| s.parse::<f64>().ok())
@@ -697,7 +685,10 @@ pub fn lua_to_resp(val: LuaValue, out: &mut Vec<u8>) {
             if let Ok(LuaValue::String(s)) = t.raw_get::<LuaValue>("err") {
                let msg = s.to_str();
                let msg_ref = msg.as_deref().unwrap_or("ERR unknown");
-               if msg_ref.starts_with("ERR") || msg_ref.starts_with("WRONGTYPE") || msg_ref.starts_with("NOSCRIPT") {
+               if msg_ref.starts_with("ERR")
+                  || msg_ref.starts_with("WRONGTYPE")
+                  || msg_ref.starts_with("NOSCRIPT")
+               {
                   out.extend_from_slice(b"-");
                   out.extend_from_slice(msg_ref.as_bytes());
                   out.extend_from_slice(b"\r\n");
@@ -776,7 +767,9 @@ fn eval_internal(
 ) -> bool {
    LUA.with(|lua| {
       // 1. Check epoch for SCRIPT FLUSH synchronization
-      let store_epoch = store.script_epoch.load(std::sync::atomic::Ordering::Acquire);
+      let store_epoch = store
+         .script_epoch
+         .load(std::sync::atomic::Ordering::Acquire);
       if LOCAL_SCRIPT_EPOCH.get() != store_epoch {
          SCRIPTS_TABLE.with_borrow_mut(|opt| {
             if let Some(t) = opt {
@@ -787,9 +780,8 @@ fn eval_internal(
       }
 
       // 2. Fast path: Fetch precompiled function directly from thread-local registry without cloning
-      let cached_func: Option<LuaFunction> = SCRIPTS_TABLE.with_borrow(|opt| {
-         opt.as_ref().and_then(|t| t.raw_get(sha1).ok())
-      });
+      let cached_func: Option<LuaFunction> =
+         SCRIPTS_TABLE.with_borrow(|opt| opt.as_ref().and_then(|t| t.raw_get(sha1).ok()));
 
       // 3. Fallback: If not cached in thread-local VM, compile or retrieve from Store
       let func: LuaFunction = match cached_func {
@@ -804,7 +796,10 @@ fn eval_internal(
                         let t = match lua.create_table() {
                            Ok(t) => t,
                            Err(e) => {
-                              resp::write_err(out, &format!("ERR failed to access script cache: {e}"));
+                              resp::write_err(
+                                 out,
+                                 &format!("ERR failed to access script cache: {e}"),
+                              );
                               return true;
                            }
                         };

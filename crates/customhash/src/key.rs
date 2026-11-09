@@ -101,9 +101,15 @@ impl CompactKey {
             } else if len == 1 {
                *dst = *src;
             } else if len == 2 {
-               std::ptr::write_unaligned(dst.cast::<u16>(), std::ptr::read_unaligned(src.cast::<u16>()));
+               std::ptr::write_unaligned(
+                  dst.cast::<u16>(),
+                  std::ptr::read_unaligned(src.cast::<u16>()),
+               );
             } else if len == 3 {
-               std::ptr::write_unaligned(dst.cast::<u16>(), std::ptr::read_unaligned(src.cast::<u16>()));
+               std::ptr::write_unaligned(
+                  dst.cast::<u16>(),
+                  std::ptr::read_unaligned(src.cast::<u16>()),
+               );
                *dst.add(2) = *src.add(2);
             }
          }
@@ -123,9 +129,7 @@ impl CompactKey {
       } else {
          let ptr_val = unsafe { std::ptr::read_unaligned(self.data.as_ptr().cast::<*const u8>()) };
          let len_val = Self::read_heap_len(&self.data);
-         unsafe {
-            std::str::from_utf8_unchecked(std::slice::from_raw_parts(ptr_val, len_val))
-         }
+         unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(ptr_val, len_val)) }
       }
    }
 

@@ -85,7 +85,7 @@ const DIGITS100: &[u8; 200] = b"0001020304050607080910111213141516171819\
 8081828384858687888990919293949596979899";
 
 #[inline(always)]
-pub fn format_usize_digits<'a>(mut n: usize, buf: &'a mut [u8]) -> &'a [u8] {
+pub fn format_usize_digits(mut n: usize, buf: &mut [u8]) -> &[u8] {
    if n == 0 {
       buf[0] = b'0';
       return &buf[..1];
@@ -99,6 +99,9 @@ pub fn format_usize_digits<'a>(mut n: usize, buf: &'a mut [u8]) -> &'a [u8] {
    &buf[i..]
 }
 
+/// # Safety
+///
+/// Caller must ensure `dst` has enough capacity to hold the formatted RESP bulk header, payload, and CRLF.
 #[inline(always)]
 pub unsafe fn write_bulk_raw(dst: *mut u8, s: &[u8]) -> usize {
    unsafe {

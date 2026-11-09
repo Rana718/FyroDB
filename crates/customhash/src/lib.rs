@@ -235,13 +235,20 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
       while i + 8 <= n {
          unsafe {
             let (h0, idx0) = self.locate(std::str::from_utf8_unchecked((*k_ptr.add(i)).as_ref()));
-            let (h1, idx1) = self.locate(std::str::from_utf8_unchecked((*k_ptr.add(i + 1)).as_ref()));
-            let (h2, idx2) = self.locate(std::str::from_utf8_unchecked((*k_ptr.add(i + 2)).as_ref()));
-            let (h3, idx3) = self.locate(std::str::from_utf8_unchecked((*k_ptr.add(i + 3)).as_ref()));
-            let (h4, idx4) = self.locate(std::str::from_utf8_unchecked((*k_ptr.add(i + 4)).as_ref()));
-            let (h5, idx5) = self.locate(std::str::from_utf8_unchecked((*k_ptr.add(i + 5)).as_ref()));
-            let (h6, idx6) = self.locate(std::str::from_utf8_unchecked((*k_ptr.add(i + 6)).as_ref()));
-            let (h7, idx7) = self.locate(std::str::from_utf8_unchecked((*k_ptr.add(i + 7)).as_ref()));
+            let (h1, idx1) =
+               self.locate(std::str::from_utf8_unchecked((*k_ptr.add(i + 1)).as_ref()));
+            let (h2, idx2) =
+               self.locate(std::str::from_utf8_unchecked((*k_ptr.add(i + 2)).as_ref()));
+            let (h3, idx3) =
+               self.locate(std::str::from_utf8_unchecked((*k_ptr.add(i + 3)).as_ref()));
+            let (h4, idx4) =
+               self.locate(std::str::from_utf8_unchecked((*k_ptr.add(i + 4)).as_ref()));
+            let (h5, idx5) =
+               self.locate(std::str::from_utf8_unchecked((*k_ptr.add(i + 5)).as_ref()));
+            let (h6, idx6) =
+               self.locate(std::str::from_utf8_unchecked((*k_ptr.add(i + 6)).as_ref()));
+            let (h7, idx7) =
+               self.locate(std::str::from_utf8_unchecked((*k_ptr.add(i + 7)).as_ref()));
 
             *h_ptr.add(i) = h0;
             *h_ptr.add(i + 1) = h1;
@@ -261,14 +268,38 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
             let sf6 = &*sf_base.add(idx6);
             let sf7 = &*sf_base.add(idx7);
 
-            let s0 = sf0.slots.load(Ordering::Relaxed).add((h0 as usize) & sf0.mask.load(Ordering::Relaxed));
-            let s1 = sf1.slots.load(Ordering::Relaxed).add((h1 as usize) & sf1.mask.load(Ordering::Relaxed));
-            let s2 = sf2.slots.load(Ordering::Relaxed).add((h2 as usize) & sf2.mask.load(Ordering::Relaxed));
-            let s3 = sf3.slots.load(Ordering::Relaxed).add((h3 as usize) & sf3.mask.load(Ordering::Relaxed));
-            let s4 = sf4.slots.load(Ordering::Relaxed).add((h4 as usize) & sf4.mask.load(Ordering::Relaxed));
-            let s5 = sf5.slots.load(Ordering::Relaxed).add((h5 as usize) & sf5.mask.load(Ordering::Relaxed));
-            let s6 = sf6.slots.load(Ordering::Relaxed).add((h6 as usize) & sf6.mask.load(Ordering::Relaxed));
-            let s7 = sf7.slots.load(Ordering::Relaxed).add((h7 as usize) & sf7.mask.load(Ordering::Relaxed));
+            let s0 = sf0
+               .slots
+               .load(Ordering::Relaxed)
+               .add((h0 as usize) & sf0.mask.load(Ordering::Relaxed));
+            let s1 = sf1
+               .slots
+               .load(Ordering::Relaxed)
+               .add((h1 as usize) & sf1.mask.load(Ordering::Relaxed));
+            let s2 = sf2
+               .slots
+               .load(Ordering::Relaxed)
+               .add((h2 as usize) & sf2.mask.load(Ordering::Relaxed));
+            let s3 = sf3
+               .slots
+               .load(Ordering::Relaxed)
+               .add((h3 as usize) & sf3.mask.load(Ordering::Relaxed));
+            let s4 = sf4
+               .slots
+               .load(Ordering::Relaxed)
+               .add((h4 as usize) & sf4.mask.load(Ordering::Relaxed));
+            let s5 = sf5
+               .slots
+               .load(Ordering::Relaxed)
+               .add((h5 as usize) & sf5.mask.load(Ordering::Relaxed));
+            let s6 = sf6
+               .slots
+               .load(Ordering::Relaxed)
+               .add((h6 as usize) & sf6.mask.load(Ordering::Relaxed));
+            let s7 = sf7
+               .slots
+               .load(Ordering::Relaxed)
+               .add((h7 as usize) & sf7.mask.load(Ordering::Relaxed));
 
             prefetch_line(s0);
             prefetch_line(s1);
@@ -321,13 +352,20 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
       while i + 8 <= n {
          unsafe {
             let (h0, idx0) = self.locate(std::str::from_utf8_unchecked((*k_ptr.add(i)).as_ref()));
-            let (h1, idx1) = self.locate(std::str::from_utf8_unchecked((*k_ptr.add(i + 1)).as_ref()));
-            let (h2, idx2) = self.locate(std::str::from_utf8_unchecked((*k_ptr.add(i + 2)).as_ref()));
-            let (h3, idx3) = self.locate(std::str::from_utf8_unchecked((*k_ptr.add(i + 3)).as_ref()));
-            let (h4, idx4) = self.locate(std::str::from_utf8_unchecked((*k_ptr.add(i + 4)).as_ref()));
-            let (h5, idx5) = self.locate(std::str::from_utf8_unchecked((*k_ptr.add(i + 5)).as_ref()));
-            let (h6, idx6) = self.locate(std::str::from_utf8_unchecked((*k_ptr.add(i + 6)).as_ref()));
-            let (h7, idx7) = self.locate(std::str::from_utf8_unchecked((*k_ptr.add(i + 7)).as_ref()));
+            let (h1, idx1) =
+               self.locate(std::str::from_utf8_unchecked((*k_ptr.add(i + 1)).as_ref()));
+            let (h2, idx2) =
+               self.locate(std::str::from_utf8_unchecked((*k_ptr.add(i + 2)).as_ref()));
+            let (h3, idx3) =
+               self.locate(std::str::from_utf8_unchecked((*k_ptr.add(i + 3)).as_ref()));
+            let (h4, idx4) =
+               self.locate(std::str::from_utf8_unchecked((*k_ptr.add(i + 4)).as_ref()));
+            let (h5, idx5) =
+               self.locate(std::str::from_utf8_unchecked((*k_ptr.add(i + 5)).as_ref()));
+            let (h6, idx6) =
+               self.locate(std::str::from_utf8_unchecked((*k_ptr.add(i + 6)).as_ref()));
+            let (h7, idx7) =
+               self.locate(std::str::from_utf8_unchecked((*k_ptr.add(i + 7)).as_ref()));
 
             *h_ptr.add(i) = h0;
             *h_ptr.add(i + 1) = h1;
@@ -347,14 +385,38 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
             let sf6 = &*sf_base.add(idx6);
             let sf7 = &*sf_base.add(idx7);
 
-            let s0 = sf0.slots.load(Ordering::Relaxed).add((h0 as usize) & sf0.mask.load(Ordering::Relaxed));
-            let s1 = sf1.slots.load(Ordering::Relaxed).add((h1 as usize) & sf1.mask.load(Ordering::Relaxed));
-            let s2 = sf2.slots.load(Ordering::Relaxed).add((h2 as usize) & sf2.mask.load(Ordering::Relaxed));
-            let s3 = sf3.slots.load(Ordering::Relaxed).add((h3 as usize) & sf3.mask.load(Ordering::Relaxed));
-            let s4 = sf4.slots.load(Ordering::Relaxed).add((h4 as usize) & sf4.mask.load(Ordering::Relaxed));
-            let s5 = sf5.slots.load(Ordering::Relaxed).add((h5 as usize) & sf5.mask.load(Ordering::Relaxed));
-            let s6 = sf6.slots.load(Ordering::Relaxed).add((h6 as usize) & sf6.mask.load(Ordering::Relaxed));
-            let s7 = sf7.slots.load(Ordering::Relaxed).add((h7 as usize) & sf7.mask.load(Ordering::Relaxed));
+            let s0 = sf0
+               .slots
+               .load(Ordering::Relaxed)
+               .add((h0 as usize) & sf0.mask.load(Ordering::Relaxed));
+            let s1 = sf1
+               .slots
+               .load(Ordering::Relaxed)
+               .add((h1 as usize) & sf1.mask.load(Ordering::Relaxed));
+            let s2 = sf2
+               .slots
+               .load(Ordering::Relaxed)
+               .add((h2 as usize) & sf2.mask.load(Ordering::Relaxed));
+            let s3 = sf3
+               .slots
+               .load(Ordering::Relaxed)
+               .add((h3 as usize) & sf3.mask.load(Ordering::Relaxed));
+            let s4 = sf4
+               .slots
+               .load(Ordering::Relaxed)
+               .add((h4 as usize) & sf4.mask.load(Ordering::Relaxed));
+            let s5 = sf5
+               .slots
+               .load(Ordering::Relaxed)
+               .add((h5 as usize) & sf5.mask.load(Ordering::Relaxed));
+            let s6 = sf6
+               .slots
+               .load(Ordering::Relaxed)
+               .add((h6 as usize) & sf6.mask.load(Ordering::Relaxed));
+            let s7 = sf7
+               .slots
+               .load(Ordering::Relaxed)
+               .add((h7 as usize) & sf7.mask.load(Ordering::Relaxed));
 
             prefetch_line_write(s0);
             prefetch_line_write(s1);

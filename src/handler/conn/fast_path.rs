@@ -1,3 +1,5 @@
+#![allow(clippy::collapsible_if)]
+
 use super::*;
 
 const OK_BLOCK: [u8; 256 * 5] = {
@@ -246,7 +248,9 @@ pub(super) fn dispatch_get_run(conn: &mut Conn<'_>, first_key: (*const u8, usize
          let e = unsafe { &*p.cast::<customhash::Entry<crate::storage::value::StoreValue>>() };
          let state = e.state.load(std::sync::atomic::Ordering::Relaxed);
          let expected = ((hashes[i] as u32 as u64) << 32) | customhash::STATE_OCCUPIED;
-         if (state & (0xFFFF_FFFF_0000_0000 | customhash::STATE_OCCUPIED)) == expected && e.key.eq_bytes(keys[i]) {
+         if (state & (0xFFFF_FFFF_0000_0000 | customhash::STATE_OCCUPIED)) == expected
+            && e.key.eq_bytes(keys[i])
+         {
             if state & customhash::STATE_LOCK != 0 {
                let mut cur = state;
                while cur & customhash::STATE_LOCK != 0 {
@@ -272,7 +276,11 @@ pub(super) fn dispatch_get_run(conn: &mut Conn<'_>, first_key: (*const u8, usize
                   if run_len > 1 {
                      for step in 1..run_len {
                         unsafe {
-                           std::ptr::copy_nonoverlapping(out_ptr, out_ptr.add(step * written), written);
+                           std::ptr::copy_nonoverlapping(
+                              out_ptr,
+                              out_ptr.add(step * written),
+                              written,
+                           );
                         }
                      }
                   }
@@ -307,7 +315,10 @@ pub(super) fn dispatch_get_run(conn: &mut Conn<'_>, first_key: (*const u8, usize
             continue;
          };
          let start_offset = out.len();
-         if !conn.store.get_to_buf_auto(key_str, Some(hashes[i]), entries[i], out) {
+         if !conn
+            .store
+            .get_to_buf_auto(key_str, Some(hashes[i]), entries[i], out)
+         {
             out.extend_from_slice(b"$-1\r\n");
          }
          let single_len = out.len() - start_offset;
@@ -322,7 +333,9 @@ pub(super) fn dispatch_get_run(conn: &mut Conn<'_>, first_key: (*const u8, usize
                   dst = dst.add(single_len);
                }
             }
-            unsafe { out.set_len(out.len() + add_bytes); }
+            unsafe {
+               out.set_len(out.len() + add_bytes);
+            }
          }
          out_ptr = unsafe { out.as_mut_ptr().add(out.len()) };
       }
@@ -424,7 +437,9 @@ pub(super) fn dispatch_set_run(
          let e = unsafe { &*p.cast::<customhash::Entry<crate::storage::value::StoreValue>>() };
          let mut current = e.state.load(std::sync::atomic::Ordering::Relaxed);
          let expected = ((hashes[i] as u32 as u64) << 32) | customhash::STATE_OCCUPIED;
-         if (current & (0xFFFF_FFFF_0000_0000 | customhash::STATE_OCCUPIED)) == expected && e.key.eq_bytes(keys[i]) {
+         if (current & (0xFFFF_FFFF_0000_0000 | customhash::STATE_OCCUPIED)) == expected
+            && e.key.eq_bytes(keys[i])
+         {
             let last_val = vals[end - 1];
             let val_bytes = unsafe { std::slice::from_raw_parts(last_val.0, last_val.1) };
             let mut backoff = 1u32;
@@ -490,7 +505,9 @@ pub(super) fn dispatch_set_run(
             };
             let val_bytes = unsafe { std::slice::from_raw_parts(vals[k].0, vals[k].1) };
             if entries[k].is_null() && !conn.store.has_replication() {
-               conn.store.set_string_fast_bytes(key_str, hashes[k], val_bytes);
+               conn
+                  .store
+                  .set_string_fast_bytes(key_str, hashes[k], val_bytes);
             } else {
                let Ok(val_str) = std::str::from_utf8(val_bytes) else {
                   crate::utils::resp::write_err(out, "invalid UTF-8 in request");
@@ -678,7 +695,9 @@ pub(super) fn dispatch_json_get_run(conn: &mut Conn<'_>, first_raw: &[(*const u8
          let e = unsafe { &*p.cast::<customhash::Entry<crate::storage::value::StoreValue>>() };
          let state = e.state.load(std::sync::atomic::Ordering::Relaxed);
          let expected = ((hashes[i] as u32 as u64) << 32) | customhash::STATE_OCCUPIED;
-         if (state & (0xFFFF_FFFF_0000_0000 | customhash::STATE_OCCUPIED)) == expected && e.key.eq_bytes(keys[i]) {
+         if (state & (0xFFFF_FFFF_0000_0000 | customhash::STATE_OCCUPIED)) == expected
+            && e.key.eq_bytes(keys[i])
+         {
             if state & customhash::STATE_LOCK != 0 {
                let mut cur = state;
                while cur & customhash::STATE_LOCK != 0 {
@@ -697,7 +716,8 @@ pub(super) fn dispatch_json_get_run(conn: &mut Conn<'_>, first_raw: &[(*const u8
             let val = unsafe { (*e.value.get()).assume_init_ref() };
             if val.expires_ms == 0 || !val.is_expired() {
                if let Some(raw) = val.value.as_json_str() {
-                  let written = unsafe { crate::utils::resp::write_bulk_raw(out_ptr, raw.as_bytes()) };
+                  let written =
+                     unsafe { crate::utils::resp::write_bulk_raw(out_ptr, raw.as_bytes()) };
                   out_ptr = unsafe { out_ptr.add(written) };
                   found = true;
                }
@@ -1117,9 +1137,7 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
                .store
                .geodist(key, m1, m2, crate::storage::geo::GeoUnit::M)
             {
-               Ok(Some(d)) => {
-                  crate::utils::resp::write_float(out, d)
-               }
+               Ok(Some(d)) => crate::utils::resp::write_float(out, d),
                Ok(None) => crate::utils::resp::write_nil(out),
                Err(e) => crate::utils::resp::write_store_err(out, e),
             }

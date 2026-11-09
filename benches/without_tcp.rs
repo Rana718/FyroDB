@@ -152,20 +152,74 @@ fn exec_insert_batch<const N: usize>(
    let mut j = 0;
    while j + 8 <= len {
       unsafe {
-         store.set_string_hinted_slot((*k_ptr.add(j)).as_str(), *h_ptr.add(j), *t_ptr.add(j), "value", 0);
-         store.set_string_hinted_slot((*k_ptr.add(j + 1)).as_str(), *h_ptr.add(j + 1), *t_ptr.add(j + 1), "value", 0);
-         store.set_string_hinted_slot((*k_ptr.add(j + 2)).as_str(), *h_ptr.add(j + 2), *t_ptr.add(j + 2), "value", 0);
-         store.set_string_hinted_slot((*k_ptr.add(j + 3)).as_str(), *h_ptr.add(j + 3), *t_ptr.add(j + 3), "value", 0);
-         store.set_string_hinted_slot((*k_ptr.add(j + 4)).as_str(), *h_ptr.add(j + 4), *t_ptr.add(j + 4), "value", 0);
-         store.set_string_hinted_slot((*k_ptr.add(j + 5)).as_str(), *h_ptr.add(j + 5), *t_ptr.add(j + 5), "value", 0);
-         store.set_string_hinted_slot((*k_ptr.add(j + 6)).as_str(), *h_ptr.add(j + 6), *t_ptr.add(j + 6), "value", 0);
-         store.set_string_hinted_slot((*k_ptr.add(j + 7)).as_str(), *h_ptr.add(j + 7), *t_ptr.add(j + 7), "value", 0);
+         store.set_string_hinted_slot(
+            (*k_ptr.add(j)).as_str(),
+            *h_ptr.add(j),
+            *t_ptr.add(j),
+            "value",
+            0,
+         );
+         store.set_string_hinted_slot(
+            (*k_ptr.add(j + 1)).as_str(),
+            *h_ptr.add(j + 1),
+            *t_ptr.add(j + 1),
+            "value",
+            0,
+         );
+         store.set_string_hinted_slot(
+            (*k_ptr.add(j + 2)).as_str(),
+            *h_ptr.add(j + 2),
+            *t_ptr.add(j + 2),
+            "value",
+            0,
+         );
+         store.set_string_hinted_slot(
+            (*k_ptr.add(j + 3)).as_str(),
+            *h_ptr.add(j + 3),
+            *t_ptr.add(j + 3),
+            "value",
+            0,
+         );
+         store.set_string_hinted_slot(
+            (*k_ptr.add(j + 4)).as_str(),
+            *h_ptr.add(j + 4),
+            *t_ptr.add(j + 4),
+            "value",
+            0,
+         );
+         store.set_string_hinted_slot(
+            (*k_ptr.add(j + 5)).as_str(),
+            *h_ptr.add(j + 5),
+            *t_ptr.add(j + 5),
+            "value",
+            0,
+         );
+         store.set_string_hinted_slot(
+            (*k_ptr.add(j + 6)).as_str(),
+            *h_ptr.add(j + 6),
+            *t_ptr.add(j + 6),
+            "value",
+            0,
+         );
+         store.set_string_hinted_slot(
+            (*k_ptr.add(j + 7)).as_str(),
+            *h_ptr.add(j + 7),
+            *t_ptr.add(j + 7),
+            "value",
+            0,
+         );
       }
       j += 8;
    }
    while j < len {
       unsafe {
-         store.set_string_hinted_slot((*k_ptr.add(j)).as_str(), *h_ptr.add(j), *t_ptr.add(j), "value", 0);
+         store.set_string_hinted_slot(
+            (*k_ptr.add(j)).as_str(),
+            *h_ptr.add(j),
+            *t_ptr.add(j),
+            "value",
+            0,
+         );
       }
       j += 1;
    }
@@ -185,20 +239,74 @@ fn exec_pipelined_set<const N: usize>(
    let mut j = 0;
    while j + 8 <= len {
       unsafe {
-         store.set_string_with_hint((*k_ptr.add(j)).as_str(), *h_ptr.add(j), *e_ptr.add(j), "value", 0);
-         store.set_string_with_hint((*k_ptr.add(j + 1)).as_str(), *h_ptr.add(j + 1), *e_ptr.add(j + 1), "value", 0);
-         store.set_string_with_hint((*k_ptr.add(j + 2)).as_str(), *h_ptr.add(j + 2), *e_ptr.add(j + 2), "value", 0);
-         store.set_string_with_hint((*k_ptr.add(j + 3)).as_str(), *h_ptr.add(j + 3), *e_ptr.add(j + 3), "value", 0);
-         store.set_string_with_hint((*k_ptr.add(j + 4)).as_str(), *h_ptr.add(j + 4), *e_ptr.add(j + 4), "value", 0);
-         store.set_string_with_hint((*k_ptr.add(j + 5)).as_str(), *h_ptr.add(j + 5), *e_ptr.add(j + 5), "value", 0);
-         store.set_string_with_hint((*k_ptr.add(j + 6)).as_str(), *h_ptr.add(j + 6), *e_ptr.add(j + 6), "value", 0);
-         store.set_string_with_hint((*k_ptr.add(j + 7)).as_str(), *h_ptr.add(j + 7), *e_ptr.add(j + 7), "value", 0);
+         store.set_string_with_hint(
+            (*k_ptr.add(j)).as_str(),
+            *h_ptr.add(j),
+            *e_ptr.add(j),
+            "value",
+            0,
+         );
+         store.set_string_with_hint(
+            (*k_ptr.add(j + 1)).as_str(),
+            *h_ptr.add(j + 1),
+            *e_ptr.add(j + 1),
+            "value",
+            0,
+         );
+         store.set_string_with_hint(
+            (*k_ptr.add(j + 2)).as_str(),
+            *h_ptr.add(j + 2),
+            *e_ptr.add(j + 2),
+            "value",
+            0,
+         );
+         store.set_string_with_hint(
+            (*k_ptr.add(j + 3)).as_str(),
+            *h_ptr.add(j + 3),
+            *e_ptr.add(j + 3),
+            "value",
+            0,
+         );
+         store.set_string_with_hint(
+            (*k_ptr.add(j + 4)).as_str(),
+            *h_ptr.add(j + 4),
+            *e_ptr.add(j + 4),
+            "value",
+            0,
+         );
+         store.set_string_with_hint(
+            (*k_ptr.add(j + 5)).as_str(),
+            *h_ptr.add(j + 5),
+            *e_ptr.add(j + 5),
+            "value",
+            0,
+         );
+         store.set_string_with_hint(
+            (*k_ptr.add(j + 6)).as_str(),
+            *h_ptr.add(j + 6),
+            *e_ptr.add(j + 6),
+            "value",
+            0,
+         );
+         store.set_string_with_hint(
+            (*k_ptr.add(j + 7)).as_str(),
+            *h_ptr.add(j + 7),
+            *e_ptr.add(j + 7),
+            "value",
+            0,
+         );
       }
       j += 8;
    }
    while j < len {
       unsafe {
-         store.set_string_with_hint((*k_ptr.add(j)).as_str(), *h_ptr.add(j), *e_ptr.add(j), "value", 0);
+         store.set_string_with_hint(
+            (*k_ptr.add(j)).as_str(),
+            *h_ptr.add(j),
+            *e_ptr.add(j),
+            "value",
+            0,
+         );
       }
       j += 1;
    }
@@ -220,28 +328,73 @@ fn exec_pipelined_get<const N: usize>(
    while j + 8 <= len {
       unsafe {
          out.clear();
-         let _ = store.get_to_buf_with_hint_bytes((*k_ptr.add(j)).as_bytes(), *h_ptr.add(j), *e_ptr.add(j), out);
+         let _ = store.get_to_buf_with_hint_bytes(
+            (*k_ptr.add(j)).as_bytes(),
+            *h_ptr.add(j),
+            *e_ptr.add(j),
+            out,
+         );
          out.clear();
-         let _ = store.get_to_buf_with_hint_bytes((*k_ptr.add(j + 1)).as_bytes(), *h_ptr.add(j + 1), *e_ptr.add(j + 1), out);
+         let _ = store.get_to_buf_with_hint_bytes(
+            (*k_ptr.add(j + 1)).as_bytes(),
+            *h_ptr.add(j + 1),
+            *e_ptr.add(j + 1),
+            out,
+         );
          out.clear();
-         let _ = store.get_to_buf_with_hint_bytes((*k_ptr.add(j + 2)).as_bytes(), *h_ptr.add(j + 2), *e_ptr.add(j + 2), out);
+         let _ = store.get_to_buf_with_hint_bytes(
+            (*k_ptr.add(j + 2)).as_bytes(),
+            *h_ptr.add(j + 2),
+            *e_ptr.add(j + 2),
+            out,
+         );
          out.clear();
-         let _ = store.get_to_buf_with_hint_bytes((*k_ptr.add(j + 3)).as_bytes(), *h_ptr.add(j + 3), *e_ptr.add(j + 3), out);
+         let _ = store.get_to_buf_with_hint_bytes(
+            (*k_ptr.add(j + 3)).as_bytes(),
+            *h_ptr.add(j + 3),
+            *e_ptr.add(j + 3),
+            out,
+         );
          out.clear();
-         let _ = store.get_to_buf_with_hint_bytes((*k_ptr.add(j + 4)).as_bytes(), *h_ptr.add(j + 4), *e_ptr.add(j + 4), out);
+         let _ = store.get_to_buf_with_hint_bytes(
+            (*k_ptr.add(j + 4)).as_bytes(),
+            *h_ptr.add(j + 4),
+            *e_ptr.add(j + 4),
+            out,
+         );
          out.clear();
-         let _ = store.get_to_buf_with_hint_bytes((*k_ptr.add(j + 5)).as_bytes(), *h_ptr.add(j + 5), *e_ptr.add(j + 5), out);
+         let _ = store.get_to_buf_with_hint_bytes(
+            (*k_ptr.add(j + 5)).as_bytes(),
+            *h_ptr.add(j + 5),
+            *e_ptr.add(j + 5),
+            out,
+         );
          out.clear();
-         let _ = store.get_to_buf_with_hint_bytes((*k_ptr.add(j + 6)).as_bytes(), *h_ptr.add(j + 6), *e_ptr.add(j + 6), out);
+         let _ = store.get_to_buf_with_hint_bytes(
+            (*k_ptr.add(j + 6)).as_bytes(),
+            *h_ptr.add(j + 6),
+            *e_ptr.add(j + 6),
+            out,
+         );
          out.clear();
-         let _ = store.get_to_buf_with_hint_bytes((*k_ptr.add(j + 7)).as_bytes(), *h_ptr.add(j + 7), *e_ptr.add(j + 7), out);
+         let _ = store.get_to_buf_with_hint_bytes(
+            (*k_ptr.add(j + 7)).as_bytes(),
+            *h_ptr.add(j + 7),
+            *e_ptr.add(j + 7),
+            out,
+         );
       }
       j += 8;
    }
    while j < len {
       unsafe {
          out.clear();
-         let _ = store.get_to_buf_with_hint_bytes((*k_ptr.add(j)).as_bytes(), *h_ptr.add(j), *e_ptr.add(j), out);
+         let _ = store.get_to_buf_with_hint_bytes(
+            (*k_ptr.add(j)).as_bytes(),
+            *h_ptr.add(j),
+            *e_ptr.add(j),
+            out,
+         );
       }
       j += 1;
    }
@@ -809,8 +962,11 @@ fn run_mix(store: &Arc<Store>, results: &mut Vec<BenchResult>) {
                      store.prefetch_batch(&slices[..b], &mut hashes[..b]);
                      for j in 0..b {
                         out.clear();
-                        let _ =
-                           store.get_to_buf_hinted_bytes(keys[j].as_bytes(), Some(hashes[j]), &mut out);
+                        let _ = store.get_to_buf_hinted_bytes(
+                           keys[j].as_bytes(),
+                           Some(hashes[j]),
+                           &mut out,
+                        );
                      }
                   }
                }

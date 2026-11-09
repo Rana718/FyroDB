@@ -109,7 +109,6 @@ fn main() {
       sum
    });
 
-
    // Build helper so each variant gets its own independent map + warmup.
    let make_custom = || {
       let c: CustomMap<u64> = CustomMap::with_capacity(128, N);
@@ -190,5 +189,4 @@ fn main() {
          cm.len()
       });
    }
-
 }
