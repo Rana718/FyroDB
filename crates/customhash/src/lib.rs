@@ -29,7 +29,8 @@ use std::hash::BuildHasher;
 
 use shard::*;
 pub use shard::{
-   Entry, FastSet, STATE_LOCK, STATE_MATCH_MASK, STATE_OCCUPIED, bump_seq, unlock_write,
+   Entry, FastSet, InsertFastResult, STATE_LOCK, STATE_MATCH_MASK, STATE_OCCUPIED, bump_seq,
+   unlock_write,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -207,6 +208,15 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
    #[inline(always)]
    pub fn shard_of(&self, hash: u64) -> usize {
       ((hash >> self.shift) as usize) & self.shard_mask
+   }
+
+   #[inline(always)]
+   pub fn probe_slot_entry(&self, hash: u64, idx: usize) -> *mut Entry<V> {
+      let sf = unsafe { &*self.shard_fast.as_ptr().add(idx) };
+      let slots = sf.slots.load(Ordering::Relaxed);
+      let mask = sf.mask.load(Ordering::Relaxed);
+      let base = unsafe { slots.add((hash as usize) & mask) };
+      unsafe { TaggedSlot::probe_from_base(base, hash, 16) }
    }
 
    #[inline(always)]
@@ -753,35 +763,36 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
       is_new
    }
 
-   /// `insert` for borrowed keys: no key allocation for inline (≤15 byte)
-   /// keys, one boxed allocation for longer ones.
-   #[inline]
+   /// `insert` for borrowed keys: fast lock-free slot probe first, falls
+   /// back to full insertion on exhaustion.
+   #[inline(always)]
    pub fn insert_str(&self, key: &str, value: V) -> bool {
       let (h, idx) = self.locate(key);
-      let is_new = unsafe { self.shards.get_unchecked(idx) }.insert_hashed_key(
-         CompactKey::from_str(key),
-         value,
-         h,
-      );
-      if is_new {
-         self.bump(idx, true);
-      }
-      self.touched(key);
-      is_new
+      self.insert_str_hashed(key, value, h, idx)
    }
 
-   #[inline]
+   #[inline(always)]
    pub fn insert_str_hashed(&self, key: &str, value: V, h: u64, idx: usize) -> bool {
-      let is_new = unsafe { self.shards.get_unchecked(idx) }.insert_hashed_key(
-         CompactKey::from_str(key),
-         value,
-         h,
-      );
-      if is_new {
-         self.bump(idx, true);
+      let shard = unsafe { self.shards.get_unchecked(idx) };
+      match shard.insert_or_update_slot_fast(h, key, value) {
+         InsertFastResult::Inserted => {
+            self.bump(idx, true);
+            self.touched(key);
+            true
+         }
+         InsertFastResult::Updated => {
+            self.touched(key);
+            false
+         }
+         InsertFastResult::Fallback(val) => {
+            let is_new = shard.insert_hashed_key(CompactKey::from_str(key), val, h);
+            if is_new {
+               self.bump(idx, true);
+            }
+            self.touched(key);
+            is_new
+         }
       }
-      self.touched(key);
-      is_new
    }
 
    #[inline]
@@ -840,12 +851,20 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
    #[inline(always)]
    pub fn insert_slot_fast(&self, hash: u64, key: &str, value: V) -> bool {
       let idx = self.shard_of(hash);
+      self.insert_slot_fast_located(hash, idx, key, value)
+   }
+
+   #[inline(always)]
+   pub fn insert_slot_fast_located(&self, hash: u64, idx: usize, key: &str, value: V) -> bool {
       let shard = unsafe { self.shards.get_unchecked(idx) };
-      if shard.insert_slot_fast(hash, key, value) {
-         self.bump(idx, true);
-         return true;
+      match shard.insert_or_update_slot_fast(hash, key, value) {
+         InsertFastResult::Inserted => {
+            self.bump(idx, true);
+            true
+         }
+         InsertFastResult::Updated => true,
+         InsertFastResult::Fallback(_) => false,
       }
-      false
    }
 
    /// Probes for key; inserts make_value() on miss or returns existing entry.

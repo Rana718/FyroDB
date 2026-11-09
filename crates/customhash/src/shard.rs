@@ -53,6 +53,14 @@ pub struct Entry<V> {
    pub value: UnsafeCell<std::mem::MaybeUninit<V>>,
 }
 
+/// Result of a fused fast slot insert-or-update probe.
+#[derive(Debug)]
+pub enum InsertFastResult<V> {
+   Inserted,
+   Updated,
+   Fallback(V),
+}
+
 /// Result of a fused lookup-or-insert probe.
 pub enum FastSet<V> {
    /// The key is present; the caller must overwrite this entry.
@@ -342,7 +350,21 @@ impl<V> TaggedSlot<V> {
       if word1 == 0 {
          return ptr::null_mut();
       }
-      for j in 2..max_probes {
+      let word2 = unsafe { (*base.add(2)).0.load(Ordering::Relaxed) } as usize;
+      if (word2 >> TAG_SHIFT) as u16 == expected_hi {
+         return (word2 & PTR_MASK) as *mut Entry<V>;
+      }
+      if word2 == 0 {
+         return ptr::null_mut();
+      }
+      let word3 = unsafe { (*base.add(3)).0.load(Ordering::Relaxed) } as usize;
+      if (word3 >> TAG_SHIFT) as u16 == expected_hi {
+         return (word3 & PTR_MASK) as *mut Entry<V>;
+      }
+      if word3 == 0 {
+         return ptr::null_mut();
+      }
+      for j in 4..max_probes {
          let word = unsafe { (*base.add(j)).0.load(Ordering::Relaxed) } as usize;
          if (word >> TAG_SHIFT) as u16 == expected_hi {
             return (word & PTR_MASK) as *mut Entry<V>;
@@ -827,17 +849,23 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
       None
    }
 
-   #[allow(dead_code)]
    #[inline(always)]
-   pub(crate) fn insert_slot_fast(&self, hash: u64, key: &str, value: V) -> bool {
+   pub(crate) fn insert_or_update_slot_fast(
+      &self,
+      hash: u64,
+      key: &str,
+      value: V,
+   ) -> InsertFastResult<V> {
       if self.insert_gate.load(Ordering::Relaxed) & GROWING != 0 {
-         return false;
+         return InsertFastResult::Fallback(value);
       }
       let mask = self.mask.load(Ordering::Relaxed);
       let slots = self.slots.load(Ordering::Relaxed);
       let base_idx = (hash as usize) & mask;
+      let expected_hi = (hash_tag(hash) | (1 << TAG_BITS)) as u16;
+      let expected_match = hash_bits(hash) | STATE_OCCUPIED;
 
-      for offset in 0..8 {
+      for offset in 0..16 {
          let slot = unsafe { &*slots.add((base_idx + offset) & mask) };
          let word = slot.0.load(Ordering::Relaxed) as usize;
          if word == 0 {
@@ -851,15 +879,43 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
                if new_len >= self.threshold.load(Ordering::Relaxed) {
                   self.grow();
                }
-               return true;
+               return InsertFastResult::Inserted;
             }
+            let val = unsafe { (*(*entry).value.get()).assume_init_read() };
             unsafe {
                rust_zmalloc::dealloc_raw(entry.cast(), std::alloc::Layout::new::<Entry<V>>());
             }
-            return false;
+            return InsertFastResult::Fallback(val);
+         } else if (word >> TAG_SHIFT) as u16 == expected_hi {
+            let p = (word & PTR_MASK) as *mut Entry<V>;
+            let e = unsafe { &*p };
+            let current = e.state.load(Ordering::Relaxed);
+            if (current & STATE_MATCH_MASK) == expected_match && e.key.eq_str(key) {
+               let locked = bump_seq(current) | STATE_LOCK;
+               if e
+                  .state
+                  .compare_exchange_weak(current, locked, Ordering::Acquire, Ordering::Relaxed)
+                  .is_ok()
+               {
+                  self.snap.before_write(e);
+                  unsafe { (*e.value.get()).assume_init_drop() };
+                  unsafe { (*e.value.get()).write(value) };
+                  unlock_write(&e.state, locked, true);
+                  return InsertFastResult::Updated;
+               }
+            }
          }
       }
-      false
+      InsertFastResult::Fallback(value)
+   }
+
+   #[allow(dead_code)]
+   #[inline(always)]
+   pub(crate) fn insert_slot_fast(&self, hash: u64, key: &str, value: V) -> bool {
+      match self.insert_or_update_slot_fast(hash, key, value) {
+         InsertFastResult::Inserted | InsertFastResult::Updated => true,
+         InsertFastResult::Fallback(_) => false,
+      }
    }
 
    /// Single-pass lookup-or-insert: returns existing entry or claims empty slot.
@@ -1282,14 +1338,7 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
    fn rebuild_locked(&self) {
       let old_ptr = self.table.load(Ordering::Acquire);
       let old_table = unsafe { &*old_ptr };
-      let mut live = 0usize;
-      for slot in old_table.slots().iter() {
-         let p = slot.load(Ordering::Acquire);
-         if !p.is_null() && state_occupied(&unsafe { &*p }.state, Ordering::Acquire) {
-            live += 1;
-         }
-      }
-
+      let live = self.live.load(Ordering::Relaxed);
       let mut new_cap = capacity_for(live).max(old_table.capacity());
       if new_cap > old_table.capacity() && old_table.capacity() < 32_768 {
          new_cap = (old_table.capacity() * 4).next_power_of_two();

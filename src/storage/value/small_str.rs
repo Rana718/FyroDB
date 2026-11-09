@@ -45,6 +45,20 @@ pub struct SmallStr {
    len: Tag,
 }
 
+const RESP_SINGLE_DIGIT: [u32; 10] = [
+   u32::from_ne_bytes(*b"$0\r\n"),
+   u32::from_ne_bytes(*b"$1\r\n"),
+   u32::from_ne_bytes(*b"$2\r\n"),
+   u32::from_ne_bytes(*b"$3\r\n"),
+   u32::from_ne_bytes(*b"$4\r\n"),
+   u32::from_ne_bytes(*b"$5\r\n"),
+   u32::from_ne_bytes(*b"$6\r\n"),
+   u32::from_ne_bytes(*b"$7\r\n"),
+   u32::from_ne_bytes(*b"$8\r\n"),
+   u32::from_ne_bytes(*b"$9\r\n"),
+];
+const CRLF_U16: u16 = u16::from_ne_bytes(*b"\r\n");
+
 impl SmallStr {
    #[inline]
    fn store_heap_len(data: &mut [u8; SMALL_STR_CAP], len: usize) {
@@ -248,18 +262,12 @@ impl SmallStr {
          let total = 6 + len;
          unsafe {
             let p = out.as_mut_ptr().add(old_len);
-            p.cast::<u32>().write_unaligned(u32::from_ne_bytes([
-               b'$',
-               b'0' + len as u8,
-               b'\r',
-               b'\n',
-            ]));
+            p.cast::<u32>()
+               .write_unaligned(*RESP_SINGLE_DIGIT.get_unchecked(len));
             p.add(4)
                .cast::<u64>()
                .write_unaligned(self.data.as_ptr().cast::<u64>().read_unaligned());
-            p.add(4 + len)
-               .cast::<u16>()
-               .write_unaligned(u16::from_ne_bytes(*b"\r\n"));
+            p.add(4 + len).cast::<u16>().write_unaligned(CRLF_U16);
             out.set_len(old_len + total);
          }
          return;
@@ -299,14 +307,43 @@ impl SmallStr {
       bytes.into_vec()
    }
 
-   #[inline]
+   #[inline(always)]
    pub fn from_slice(bytes: &[u8]) -> Self {
-      if bytes.len() <= SMALL_STR_CAP {
+      let len = bytes.len();
+      if len <= SMALL_STR_CAP {
          let mut data = [0u8; SMALL_STR_CAP];
-         data[..bytes.len()].copy_from_slice(bytes);
+         unsafe {
+            let src = bytes.as_ptr();
+            let dst = data.as_mut_ptr();
+            if len >= 16 {
+               let w1 = std::ptr::read_unaligned(src.cast::<u64>());
+               let w2 = std::ptr::read_unaligned(src.add(8).cast::<u64>());
+               let w3 = std::ptr::read_unaligned(src.add(len - 8).cast::<u64>());
+               std::ptr::write_unaligned(dst.cast::<u64>(), w1);
+               std::ptr::write_unaligned(dst.add(8).cast::<u64>(), w2);
+               std::ptr::write_unaligned(dst.add(len - 8).cast::<u64>(), w3);
+            } else if len >= 8 {
+               let w1 = std::ptr::read_unaligned(src.cast::<u64>());
+               let w2 = std::ptr::read_unaligned(src.add(len - 8).cast::<u64>());
+               std::ptr::write_unaligned(dst.cast::<u64>(), w1);
+               std::ptr::write_unaligned(dst.add(len - 8).cast::<u64>(), w2);
+            } else if len >= 4 {
+               let w1 = std::ptr::read_unaligned(src.cast::<u32>());
+               let w2 = std::ptr::read_unaligned(src.add(len - 4).cast::<u32>());
+               std::ptr::write_unaligned(dst.cast::<u32>(), w1);
+               std::ptr::write_unaligned(dst.add(len - 4).cast::<u32>(), w2);
+            } else if len == 1 {
+               *dst = *src;
+            } else if len == 2 {
+               std::ptr::write_unaligned(dst.cast::<u16>(), std::ptr::read_unaligned(src.cast::<u16>()));
+            } else if len == 3 {
+               std::ptr::write_unaligned(dst.cast::<u16>(), std::ptr::read_unaligned(src.cast::<u16>()));
+               *dst.add(2) = *src.add(2);
+            }
+         }
          Self {
             data,
-            len: Tag::inline(bytes.len()),
+            len: Tag::inline(len),
          }
       } else {
          let len = bytes.len();

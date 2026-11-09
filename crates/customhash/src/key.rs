@@ -86,7 +86,26 @@ impl CompactKey {
       if len <= INLINE_CAP {
          let mut data = [0u8; INLINE_CAP];
          unsafe {
-            std::ptr::copy_nonoverlapping(s.as_bytes().as_ptr(), data.as_mut_ptr(), len);
+            let src = s.as_bytes().as_ptr();
+            let dst = data.as_mut_ptr();
+            if len >= 8 {
+               let w1 = std::ptr::read_unaligned(src.cast::<u64>());
+               let w2 = std::ptr::read_unaligned(src.add(len - 8).cast::<u64>());
+               std::ptr::write_unaligned(dst.cast::<u64>(), w1);
+               std::ptr::write_unaligned(dst.add(len - 8).cast::<u64>(), w2);
+            } else if len >= 4 {
+               let w1 = std::ptr::read_unaligned(src.cast::<u32>());
+               let w2 = std::ptr::read_unaligned(src.add(len - 4).cast::<u32>());
+               std::ptr::write_unaligned(dst.cast::<u32>(), w1);
+               std::ptr::write_unaligned(dst.add(len - 4).cast::<u32>(), w2);
+            } else if len == 1 {
+               *dst = *src;
+            } else if len == 2 {
+               std::ptr::write_unaligned(dst.cast::<u16>(), std::ptr::read_unaligned(src.cast::<u16>()));
+            } else if len == 3 {
+               std::ptr::write_unaligned(dst.cast::<u16>(), std::ptr::read_unaligned(src.cast::<u16>()));
+               *dst.add(2) = *src.add(2);
+            }
          }
          Self {
             data,

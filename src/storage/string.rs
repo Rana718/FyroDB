@@ -69,21 +69,29 @@ impl Store {
       Ok(())
    }
 
-   #[inline]
+   #[inline(always)]
    pub fn set_string(&self, key: &str, value: &str, expires_ms: u64) {
       self.set_string_hinted(key, None, value, expires_ms);
    }
 
-   #[inline]
+   #[inline(always)]
    pub fn set_string_hinted(&self, key: &str, hash: Option<u64>, value: &str, expires_ms: u64) {
+      let (h, idx) = match hash {
+         Some(h) => (h, self.data.shard_of(h)),
+         None => self.data.locate_key(key),
+      };
       let store_val = StoreValue {
          value: crate::storage::value::FyroDB::String(SmallStr::new(value)),
          expires_ms,
       };
-      self.data.set_str_hinted(key, hash, store_val);
-      if expires_ms != 0 {
-         self.add_ttl();
+      if self.data.insert_slot_fast_located(h, idx, key, store_val) {
+         self.data.touched(key);
+         if expires_ms != 0 {
+            self.add_ttl();
+         }
+         return;
       }
+      self.set_string_hinted_pinned(key, Some(h), value, expires_ms);
    }
 
    #[inline(always)]
@@ -169,6 +177,21 @@ impl Store {
 
    pub fn get(&self, key: &str) -> Option<String> {
       let (h, idx) = self.data.locate_key(key);
+      let p = self.data.probe_slot_entry(h, idx);
+      if !p.is_null() {
+         let e = unsafe { &*p };
+         let state = e.state.load(std::sync::atomic::Ordering::Acquire);
+         let expected = ((h as u32 as u64) << 32) | customhash::STATE_OCCUPIED;
+         if (state & customhash::STATE_MATCH_MASK) == expected && e.key.eq_str(key) {
+            let val = unsafe { (*e.value.get()).assume_init_ref() };
+            if val.expires_ms == 0 || !val.is_expired() {
+               return val.value.as_string().map(|s| s.to_string());
+            } else {
+               self.data.remove(key);
+               return None;
+            }
+         }
+      }
       let result = self.data.with_entry(key, h, idx, |val| {
          if val.is_expired() {
             return Err(());
@@ -189,32 +212,21 @@ impl Store {
       self.get_to_buf_hinted(key, None, out)
    }
 
-   #[inline]
+   #[inline(always)]
    pub fn get_to_buf_hinted(&self, key: &str, hash: Option<u64>, out: &mut Vec<u8>) -> bool {
       let (h, idx) = match hash {
          Some(h) => (h, self.data.shard_of(h)),
          None => self.data.locate_key(key),
       };
-      let found = self.data.with_entry(key, h, idx, |val| {
-         if val.is_expired() {
-            return Err(());
-         }
-         match &val.value {
-            crate::storage::value::FyroDB::String(s) => {
-               s.write_resp(out);
-               Ok(true)
+      let p = self.data.probe_slot_entry(h, idx);
+      if !p.is_null() {
+         unsafe {
+            if self.get_to_buf_fast_entry(key, h, p, out) {
+               return true;
             }
-            _ => Ok(false),
          }
-      });
-      match found {
-         Some(Ok(true)) => true,
-         Some(Err(())) => {
-            self.data.remove(key);
-            false
-         }
-         _ => false,
       }
+      self.get_to_buf_fallback(key, h, out)
    }
 
    #[cold]
@@ -299,7 +311,9 @@ impl Store {
                   Ok(_) => {
                      self.data.snap_before_write(e);
                      let val = unsafe { (*e.value.get()).assume_init_mut() };
-                     val.expires_ms = expires_ms;
+                     if val.expires_ms != expires_ms {
+                        val.expires_ms = expires_ms;
+                     }
                      if let crate::storage::value::FyroDB::String(ref mut s) = val.value {
                         s.overwrite_str(value);
                      } else {

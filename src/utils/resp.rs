@@ -64,6 +64,20 @@ static INT_CACHE: [&[u8]; 10] = [
    b":8\r\n", b":9\r\n",
 ];
 
+const RESP_BULK_HEADERS: [u32; 10] = [
+   u32::from_ne_bytes(*b"$0\r\n"),
+   u32::from_ne_bytes(*b"$1\r\n"),
+   u32::from_ne_bytes(*b"$2\r\n"),
+   u32::from_ne_bytes(*b"$3\r\n"),
+   u32::from_ne_bytes(*b"$4\r\n"),
+   u32::from_ne_bytes(*b"$5\r\n"),
+   u32::from_ne_bytes(*b"$6\r\n"),
+   u32::from_ne_bytes(*b"$7\r\n"),
+   u32::from_ne_bytes(*b"$8\r\n"),
+   u32::from_ne_bytes(*b"$9\r\n"),
+];
+const CRLF_U16: u16 = u16::from_ne_bytes(*b"\r\n");
+
 const DIGITS100: &[u8; 200] = b"0001020304050607080910111213141516171819\
 2021222324252627282930313233343536373839\
 4041424344454647484950515253545556575859\
@@ -113,16 +127,10 @@ pub fn write_bulk_bytes(out: &mut Vec<u8>, s: &[u8]) {
       }
       unsafe {
          let p = out.as_mut_ptr().add(old_len);
-         p.cast::<u32>().write_unaligned(u32::from_ne_bytes([
-            b'$',
-            b'0' + len as u8,
-            b'\r',
-            b'\n',
-         ]));
+         p.cast::<u32>()
+            .write_unaligned(*RESP_BULK_HEADERS.get_unchecked(len));
          std::ptr::copy_nonoverlapping(s.as_ptr(), p.add(4), len);
-         p.add(4 + len)
-            .cast::<u16>()
-            .write_unaligned(u16::from_ne_bytes(*b"\r\n"));
+         p.add(4 + len).cast::<u16>().write_unaligned(CRLF_U16);
          out.set_len(old_len + total);
       }
       return;
