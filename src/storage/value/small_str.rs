@@ -65,33 +65,9 @@ impl SmallStr {
    /// Formats an integer into the inline buffer. i64 never exceeds 20 ASCII
    /// digits, so this allocates only when the digits exceed SMALL_STR_CAP.
    #[inline]
-   pub fn from_int(mut n: i64) -> Self {
+   pub fn from_int(n: i64) -> Self {
       let mut buf = [0u8; 20];
-      let neg = n < 0;
-      if neg {
-         // i64::MIN handled without overflow: negate digit-wise below.
-         let mut m = (n as i128).unsigned_abs();
-         let mut i = buf.len();
-         while m >= 10 {
-            i -= 1;
-            buf[i] = b'0' + (m % 10) as u8;
-            m /= 10;
-         }
-         i -= 1;
-         buf[i] = b'0' + m as u8;
-         i -= 1;
-         buf[i] = b'-';
-         return Self::new(unsafe { std::str::from_utf8_unchecked(&buf[i..]) });
-      }
-      let mut i = buf.len();
-      while n >= 10 {
-         i -= 1;
-         buf[i] = b'0' + (n % 10) as u8;
-         n /= 10;
-      }
-      i -= 1;
-      buf[i] = b'0' + n as u8;
-      Self::new(unsafe { std::str::from_utf8_unchecked(&buf[i..]) })
+      Self::new(crate::utils::int_format::write_i64_to(&mut buf, n))
    }
 
    #[inline]
@@ -111,7 +87,6 @@ impl SmallStr {
          let mut data = [0u8; SMALL_STR_CAP];
          data[..s.len()].copy_from_slice(s.as_bytes());
          let len = Tag::inline(s.len());
-         drop(s);
          Self { data, len }
       } else {
          let ptr = Box::into_raw(s.into_boxed_str());

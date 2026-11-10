@@ -20,13 +20,13 @@ pub enum SetInner {
 fn compact_find(v: &[SmallStr], field: &str) -> Result<usize, usize> {
    let n = v.len() / 2;
    if n <= 4 {
-      for i in 0..n {
-         let f = unsafe { v.get_unchecked(i * 2).as_str() };
+      for i in (0..n * 2).step_by(2) {
+         let f = unsafe { v.get_unchecked(i).as_str() };
          if f == field {
-            return Ok(i);
+            return Ok(i / 2);
          }
          if f > field {
-            return Err(i);
+            return Err(i / 2);
          }
       }
       return Err(n);
@@ -35,7 +35,7 @@ fn compact_find(v: &[SmallStr], field: &str) -> Result<usize, usize> {
    let mut hi = n;
    while lo < hi {
       let mid = lo + (hi - lo) / 2;
-      match v[mid * 2].as_str().cmp(field) {
+      match unsafe { v.get_unchecked(mid * 2).as_str().cmp(field) } {
          std::cmp::Ordering::Less => lo = mid + 1,
          std::cmp::Ordering::Equal => return Ok(mid),
          std::cmp::Ordering::Greater => hi = mid,
@@ -109,13 +109,8 @@ impl HashInner {
             }
             Err(pos) => {
                let idx = pos * 2;
-               if idx == v.len() {
-                  v.push(SmallStr::new(field));
-                  v.push(value);
-               } else {
-                  v.insert(idx, SmallStr::new(field));
-                  v.insert(idx + 1, value);
-               }
+               v.insert(idx, SmallStr::new(field));
+               v.insert(idx + 1, value);
                if v.len() / 2 > COMPACT_THRESHOLD {
                   self.promote_hash();
                }
@@ -164,7 +159,7 @@ impl HashInner {
                let idx = pair_idx * 2;
                v.remove(idx);
                let val = v.remove(idx).into_string();
-               if v.capacity() > v.len().saturating_mul(2).max(8) {
+               if v.capacity() / 2 > v.len().max(4) {
                   v.shrink_to_fit();
                }
                Some(val)
@@ -223,12 +218,10 @@ impl HashInner {
    fn promote_hash(&mut self) {
       if let Self::Compact(v) = self {
          let mut map = HashMap::with_capacity(v.len() / 2);
-         let mut i = 0;
-         while i < v.len() {
-            let val = std::mem::take(&mut v[i + 1]);
+         for i in (0..v.len()).step_by(2) {
             let key = std::mem::take(&mut v[i]);
+            let val = std::mem::take(&mut v[i + 1]);
             map.insert(key, val);
-            i += 2;
          }
          *self = Self::Full(Box::new(map));
       }
@@ -484,10 +477,11 @@ impl SetMemberRef<'_> {
    pub fn len(self) -> usize {
       match self {
          Self::String(s) => s.len(),
-         Self::Integer(n) => {
-            let mut buf = [0u8; 20];
-            crate::storage::value::write_int_to(&mut buf, n).len()
-         }
+         Self::Integer(n) => match n {
+            0 => 1,
+            1.. => n.ilog10() as usize + 1,
+            _ => n.unsigned_abs().ilog10() as usize + 2,
+         },
       }
    }
    pub fn is_empty(self) -> bool {
@@ -507,7 +501,7 @@ impl SetMemberRef<'_> {
          Self::String(s) => s.write_resp(out),
          Self::Integer(n) => {
             let mut buf = [0u8; 20];
-            let s = crate::storage::value::write_int_to(&mut buf, n);
+            let s = crate::utils::int_format::write_i64_to(&mut buf, n);
             crate::utils::resp::write_bulk(out, s);
          }
       }

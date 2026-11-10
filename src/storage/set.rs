@@ -143,10 +143,7 @@ impl Store {
          }
       });
 
-      match result {
-         Some(r) => r,
-         None => Ok(0),
-      }
+      result.unwrap_or(Ok(0))
    }
 
    pub fn sismember(&self, key: &str, member: &str) -> Result<bool, &'static str> {
@@ -221,10 +218,7 @@ impl Store {
             None => Err("WRONGTYPE"),
          }
       });
-      match result {
-         Some(r) => r,
-         None => Ok(vec![]),
-      }
+      result.unwrap_or_else(|| Ok(vec![]))
    }
 
    /// Bulk elements stream into `out`; truncation keeps retries idempotent.
@@ -292,10 +286,7 @@ impl Store {
          }
       });
 
-      match result {
-         Some(r) => r,
-         None => Ok(vec![]),
-      }
+      result.unwrap_or_else(|| Ok(vec![]))
    }
 
    pub fn srandmember(&self, key: &str, count: i64) -> Result<Vec<String>, &'static str> {
