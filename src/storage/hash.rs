@@ -410,10 +410,7 @@ impl Store {
             None => Err("WRONGTYPE"),
          }
       });
-      match result {
-         Some(r) => r,
-         None => Ok(vec![]),
-      }
+      result.unwrap_or_else(|| Ok(vec![]))
    }
 
    /// Bulk elements stream into `out`; truncation keeps retries idempotent.
@@ -463,10 +460,7 @@ impl Store {
          }
       });
 
-      match result {
-         Some(r) => r,
-         None => Ok(0),
-      }
+      result.unwrap_or(Ok(0))
    }
 
    pub fn hexists(&self, key: &str, field: &str) -> Result<bool, &'static str> {
@@ -501,10 +495,7 @@ impl Store {
             None => Err("WRONGTYPE"),
          }
       });
-      match result {
-         Some(r) => r,
-         None => Ok(vec![]),
-      }
+      result.unwrap_or_else(|| Ok(vec![]))
    }
 
    pub fn hkeys_to_buf(&self, key: &str, out: &mut Vec<u8>) -> Result<usize, &'static str> {
@@ -575,14 +566,11 @@ impl Store {
             None => Err("WRONGTYPE"),
          }
       });
-      match result {
-         Some(r) => r,
-         None => {
-            out.truncate(start_len);
-            crate::utils::resp::write_array_header(out, 0);
-            Ok(0)
-         }
-      }
+      result.unwrap_or_else(|| {
+         out.truncate(start_len);
+         crate::utils::resp::write_array_header(out, 0);
+         Ok(0)
+      })
    }
 
    pub fn hincrby(&self, key: &str, field: &str, by: i64) -> Result<i64, &'static str> {

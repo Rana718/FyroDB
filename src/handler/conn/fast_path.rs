@@ -797,11 +797,7 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
             let Some(key) = part_str(out, raw[1]) else {
                return;
             };
-            if conn.store.del(key) {
-               out.extend_from_slice(b":1\r\n");
-            } else {
-               out.extend_from_slice(b":0\r\n");
-            }
+            crate::utils::resp::write_boolean(out, conn.store.del(key));
             return;
          }
          CmdId::Hget if raw.len() == 3 => {

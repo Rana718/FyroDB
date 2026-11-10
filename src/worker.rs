@@ -75,10 +75,8 @@ pub fn run_worker(
 
    loop {
       if SHUTDOWN.load(Ordering::Acquire) {
-         for id in 0..conns.len() {
-            if let Some(Some(conn)) = conns.get_mut(id) {
-               let _ = conn.do_write();
-            }
+         for conn in conns.iter_mut().flatten() {
+            let _ = conn.do_write();
          }
          #[cfg(feature = "unix-sockets")]
          #[allow(clippy::collapsible_if)]
@@ -90,22 +88,19 @@ pub fn run_worker(
          return;
       }
 
-      let mut timeout = if sub_dirty.is_empty() {
-         None
-      } else {
-         Some(std::time::Duration::from_micros(50))
-      };
-      // Wake for the earliest blocked-command deadline.
-      if let Some(deadline) = crate::handler::conn::park::next_deadline() {
-         let until = deadline.saturating_duration_since(std::time::Instant::now());
-         timeout = Some(timeout.map_or(until, |t| t.min(until)));
-      }
-
-      if let Some(window) = busy_window
+      let timeout = if let Some(window) = busy_window
          && last_active.elapsed() < window
       {
-         timeout = Some(std::time::Duration::ZERO);
-      }
+         Some(std::time::Duration::ZERO)
+      } else {
+         let mut timeout = (!sub_dirty.is_empty()).then_some(std::time::Duration::from_micros(50));
+         // Wake for the earliest blocked-command deadline.
+         if let Some(deadline) = crate::handler::conn::park::next_deadline() {
+            let until = deadline.saturating_duration_since(std::time::Instant::now());
+            timeout = Some(timeout.map_or(until, |t| t.min(until)));
+         }
+         timeout
+      };
 
       match poll.poll(&mut events, timeout) {
          Ok(_) => {}
@@ -213,15 +208,9 @@ pub fn run_worker(
 
             token => {
                let id = token.0;
-               let mut close = false;
                if let Some(conn) = conns.get_mut(id).and_then(|s| s.as_mut()) {
-                  if event.is_readable() && !conn.do_read() {
-                     close = true;
-                  }
-                  // Retry WouldBlock writes when writable
-                  if !close && event.is_writable() && !conn.do_write() {
-                     close = true;
-                  }
+                  let close = (event.is_readable() && !conn.do_read())
+                     || (event.is_writable() && !conn.do_write());
                   if !close {
                      let wants_writable = conn.has_pending_write();
                      if wants_writable {
@@ -229,10 +218,9 @@ pub fn run_worker(
                      } else if conn.writable_registered {
                         sync_write_interest(&mut conns, &mut poll, id);
                      }
+                  } else {
+                     close_conn(&mut conns, &mut poll, &mut free, id);
                   }
-               }
-               if close {
-                  close_conn(&mut conns, &mut poll, &mut free, id);
                }
             }
          }
@@ -410,7 +398,7 @@ fn flush_fanout(
 /// Frames append straight to wbuf (memcpy); a connection past the batch
 /// cap spills into its slot queue (backlog drain, shedding intact).
 fn deliver_fanout(
-   notifier: &Arc<crate::pubsub::WorkerNotifier>,
+   notifier: &WorkerNotifier,
    conns: &mut [Option<Conn>],
    sub_dirty: &mut Vec<usize>,
    scratch: &mut Vec<crate::pubsub::FanEntry>,
