@@ -50,7 +50,7 @@ impl Store {
             let mut root = JsonValue::Object(Vec::new());
             if root.set_path(path, parsed.clone()) {
                val.value.set_json(root);
-               val.expires_ms = 0;
+               val.set_expires_ms(0);
                Ok(true)
             } else {
                Err("ERR path does not exist")
@@ -131,7 +131,7 @@ impl Store {
             let expected = ((h as u32 as u64) << 32) | customhash::STATE_OCCUPIED;
             if (state & customhash::STATE_MATCH_MASK) == expected && e.key.eq_str(key) {
                let val = unsafe { (*e.value.get()).assume_init_ref() };
-               if val.expires_ms == 0 || !val.is_expired() {
+               if !val.is_expired() {
                   let raw = match val.value.as_json_str() {
                      Some(s) => s,
                      None => return Err("WRONGTYPE"),

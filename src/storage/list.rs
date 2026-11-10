@@ -19,7 +19,7 @@ impl Store {
                let mut l = ListInner::new();
                let n = push(&mut l);
                val.value = FyroDB::List(Box::new(l));
-               val.expires_ms = 0;
+               val.set_expires_ms(0);
                return Ok(n);
             }
             match val.value.as_list_mut() {
@@ -32,10 +32,7 @@ impl Store {
          }
          let mut l = ListInner::new();
          let n = push(&mut l);
-         let v = StoreValue {
-            value: FyroDB::List(Box::new(l)),
-            expires_ms: 0,
-         };
+         let v = StoreValue::list_inner(l);
          if self.data.insert_if_absent_str(key, v) {
             return Ok(n);
          }

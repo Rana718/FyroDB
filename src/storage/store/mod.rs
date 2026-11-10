@@ -324,10 +324,10 @@ mod tests {
       let store = Store::with_config(1, 16);
       let key = b"ttl-key";
       let slot = crate::cluster::hash_slot(key);
-      let expiring = StoreValue {
-         value: crate::storage::value::FyroDB::String(crate::storage::value::SmallStr::new("one")),
-         expires_ms: u64::MAX,
-      };
+      let expiring = StoreValue::string_small_with_expiry(
+         crate::storage::value::SmallStr::new("one"),
+         u64::MAX,
+      );
       let persistent = StoreValue::string("two".to_owned());
 
       let replace = |offset, value: &StoreValue| crate::cluster::MutationRecord {

@@ -55,14 +55,14 @@ fn hirschberg(a: &[u8], b: &[u8], out: &mut Vec<u8>) {
 
 impl Store {
    pub fn set(&self, key: &str, value: StoreValue) {
-      if value.expires_ms != 0 {
+      if value.get_expires_ms().is_some() {
          self.add_ttl();
       }
       self.data.insert_str(key, value);
    }
 
    pub fn try_set_value(&self, key: &str, value: StoreValue) -> Result<(), Full> {
-      if value.expires_ms != 0 {
+      if value.get_expires_ms().is_some() {
          self.add_ttl();
       }
       self.data.try_set_str(key, value)?;
@@ -80,10 +80,7 @@ impl Store {
          Some(h) => (h, self.data.shard_of(h)),
          None => self.data.locate_key(key),
       };
-      let store_val = StoreValue {
-         value: crate::storage::value::FyroDB::String(SmallStr::new(value)),
-         expires_ms,
-      };
+      let store_val = StoreValue::string_small_with_expiry(SmallStr::new(value), expires_ms);
       if self.data.insert_slot_fast_located(h, idx, key, store_val) {
          self.data.touched(key);
          if expires_ms != 0 {
@@ -102,10 +99,7 @@ impl Store {
       value: &str,
       expires_ms: u64,
    ) {
-      let store_val = StoreValue {
-         value: crate::storage::value::FyroDB::String(SmallStr::new(value)),
-         expires_ms,
-      };
+      let store_val = StoreValue::string_small_with_expiry(SmallStr::new(value), expires_ms);
       self.data.set_str_hinted_pinned(key, hash, store_val);
       if expires_ms != 0 {
          self.add_ttl();
@@ -122,10 +116,7 @@ impl Store {
       expires_ms: u64,
    ) {
       let idx = self.data.shard_of(hash);
-      let store_val = StoreValue {
-         value: crate::storage::value::FyroDB::String(SmallStr::new(value)),
-         expires_ms,
-      };
+      let store_val = StoreValue::string_small_with_expiry(SmallStr::new(value), expires_ms);
       if self
          .data
          .insert_slot_fast_located(hash, idx, key, store_val)
@@ -142,10 +133,7 @@ impl Store {
    #[cold]
    #[inline(never)]
    fn set_string_fallback(&self, key: &str, hash: u64, value: &str, expires_ms: u64) {
-      let store_val = StoreValue {
-         value: crate::storage::value::FyroDB::String(SmallStr::new(value)),
-         expires_ms,
-      };
+      let store_val = StoreValue::string_small_with_expiry(SmallStr::new(value), expires_ms);
       self.data.set_str_hinted_pinned(key, Some(hash), store_val);
       if expires_ms != 0 {
          self.add_ttl();
@@ -168,10 +156,7 @@ impl Store {
 
    #[inline]
    pub fn try_set_string(&self, key: &str, value: &str, expires_ms: u64) -> Result<(), Full> {
-      let store_val = StoreValue {
-         value: crate::storage::value::FyroDB::String(SmallStr::new(value)),
-         expires_ms,
-      };
+      let store_val = StoreValue::string_small_with_expiry(SmallStr::new(value), expires_ms);
       self.data.try_set_str(key, store_val)?;
       if expires_ms != 0 {
          self.add_ttl();
@@ -188,7 +173,7 @@ impl Store {
          let expected = ((h as u32 as u64) << 32) | customhash::STATE_OCCUPIED;
          if (state & customhash::STATE_MATCH_MASK) == expected && e.key.eq_str(key) {
             let val = unsafe { (*e.value.get()).assume_init_ref() };
-            if val.expires_ms == 0 || !val.is_expired() {
+            if !val.is_expired() {
                return val.value.as_string().map(|s| s.to_string());
             } else {
                self.data.remove(key);
@@ -254,7 +239,7 @@ impl Store {
       let (h, idx) = (hash, self.data.shard_of(hash));
       let mut expired = false;
       let matched = self.data.with_entry_pinned(key, h, idx, |val| {
-         if val.expires_ms != 0 && val.is_expired() {
+         if val.is_expired() {
             expired = true;
             return false;
          }
@@ -301,7 +286,7 @@ impl Store {
             }
             std::sync::atomic::fence(std::sync::atomic::Ordering::Acquire);
             let val = unsafe { (*e.value.get()).assume_init_ref() };
-            if val.expires_ms == 0 || !val.is_expired() {
+            if !val.is_expired() {
                if let crate::storage::value::FyroDB::String(s) = &val.value {
                   s.write_resp(out);
                   return true;
@@ -369,9 +354,7 @@ impl Store {
                   Ok(_) => {
                      self.data.snap_before_write(e);
                      let val = unsafe { (*e.value.get()).assume_init_mut() };
-                     if val.expires_ms != expires_ms {
-                        val.expires_ms = expires_ms;
-                     }
+                     val.set_expires_ms(expires_ms);
                      if let crate::storage::value::FyroDB::String(ref mut s) = val.value {
                         s.overwrite_str(value);
                      } else {
@@ -416,10 +399,7 @@ impl Store {
          None => self.data.locate_key(key).0,
       };
       let idx = self.data.shard_of(hash);
-      let store_val = StoreValue {
-         value: crate::storage::value::FyroDB::String(SmallStr::new(value)),
-         expires_ms,
-      };
+      let store_val = StoreValue::string_small_with_expiry(SmallStr::new(value), expires_ms);
       if self
          .data
          .insert_slot_fast_located(hash, idx, key, store_val)
@@ -430,9 +410,8 @@ impl Store {
          }
          return;
       }
-      match self.data.probe_or_insert_fast(hash, key, || StoreValue {
-         value: crate::storage::value::FyroDB::String(SmallStr::new(value)),
-         expires_ms,
+      match self.data.probe_or_insert_fast(hash, key, || {
+         StoreValue::string_small_with_expiry(SmallStr::new(value), expires_ms)
       }) {
          customhash::FastSet::Existing(entry) => unsafe {
             self.set_string_fast_entry(key, hash, entry, value, expires_ms);
@@ -450,10 +429,7 @@ impl Store {
    #[inline(always)]
    pub fn set_string_fast_bytes(&self, key: &str, hash: u64, val_bytes: &[u8]) {
       let idx = self.data.shard_of(hash);
-      let store_val = StoreValue {
-         value: crate::storage::value::FyroDB::String(SmallStr::from_slice(val_bytes)),
-         expires_ms: 0,
-      };
+      let store_val = StoreValue::string_small(SmallStr::from_slice(val_bytes));
       if self
          .data
          .insert_slot_fast_located(hash, idx, key, store_val)
@@ -526,7 +502,7 @@ impl Store {
       };
       let mut expired = false;
       let matched = self.data.with_entry_pinned(key, h, idx, |val| {
-         if val.expires_ms != 0 && val.is_expired() {
+         if val.is_expired() {
             expired = true;
             return false;
          }
@@ -561,8 +537,7 @@ impl Store {
          } else {
             val.value.as_string().cloned()
          };
-         val.value = crate::storage::value::FyroDB::String(SmallStr::new(new_value));
-         val.expires_ms = 0;
+         *val = StoreValue::string_small(SmallStr::new(new_value));
          old
       });
       match result {
@@ -584,12 +559,12 @@ impl Store {
          let Some(s) = val.value.as_string().cloned() else {
             return (None, 0);
          };
-         let ttl_change = match (val.expires_ms == 0, expires_ms == 0) {
+         let ttl_change = match (val.get_expires_ms().is_none(), expires_ms == 0) {
             (true, false) => 1,
             (false, true) => -1,
             _ => 0,
          };
-         val.expires_ms = expires_ms;
+         val.set_expires_ms(expires_ms);
          (Some(s), ttl_change)
       })?;
       match ttl_change {
@@ -603,8 +578,7 @@ impl Store {
    pub fn setnx(&self, key: &str, value: &str) -> bool {
       let result = self.data.update_with(key, |current| {
          if current.is_expired() {
-            current.value = crate::storage::value::FyroDB::String(SmallStr::new(value));
-            current.expires_ms = 0;
+            *current = StoreValue::string_small(SmallStr::new(value));
             true
          } else {
             false
@@ -613,13 +587,8 @@ impl Store {
       match result {
          Some(did_set) => did_set,
          None => {
-            self.data.insert_str(
-               key,
-               StoreValue {
-                  value: crate::storage::value::FyroDB::String(SmallStr::new(value)),
-                  expires_ms: 0,
-               },
-            );
+            let sv = StoreValue::string_small(SmallStr::new(value));
+            self.data.insert_str(key, sv);
             true
          }
       }
@@ -628,8 +597,7 @@ impl Store {
    pub fn append(&self, key: &str, suffix: &str) -> Result<usize, &'static str> {
       let result = self.data.update_with(key, |val| {
          if val.is_expired() {
-            val.value = crate::storage::value::FyroDB::String(SmallStr::new(suffix));
-            val.expires_ms = 0;
+            *val = StoreValue::string_small(SmallStr::new(suffix));
             return Ok(suffix.len());
          }
          match val.value.as_string_mut() {
@@ -645,13 +613,8 @@ impl Store {
          Some(r) => r,
          None => {
             let len = suffix.len();
-            self.data.insert_str(
-               key,
-               StoreValue {
-                  value: crate::storage::value::FyroDB::String(SmallStr::new(suffix)),
-                  expires_ms: 0,
-               },
-            );
+            let sv = StoreValue::string_small(SmallStr::new(suffix));
+            self.data.insert_str(key, sv);
             Ok(len)
          }
       }

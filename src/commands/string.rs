@@ -69,8 +69,7 @@ pub fn set(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
             return (false, None);
          }
 
-         current.value = crate::storage::value::FyroDB::String(SmallStr::new(value));
-         current.expires_ms = expires_ms;
+         *current = StoreValue::string_small_with_expiry(SmallStr::new(value), expires_ms);
          (true, old_val)
       });
 
@@ -101,10 +100,7 @@ pub fn set(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
             }
             store.data.insert_str(
                key,
-               StoreValue {
-                  value: crate::storage::value::FyroDB::String(SmallStr::new(value)),
-                  expires_ms,
-               },
+               StoreValue::string_small_with_expiry(SmallStr::new(value), expires_ms),
             );
             if get {
                resp::write_nil(out);
@@ -140,10 +136,7 @@ pub fn setex(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
    let Some(exp) = expiry_from_secs(s) else {
       return resp::write_err(out, "invalid expire time in 'setex' command");
    };
-   let sv = StoreValue {
-      value: crate::storage::value::FyroDB::String(SmallStr::new(value)),
-      expires_ms: exp,
-   };
+   let sv = StoreValue::string_small_with_expiry(SmallStr::new(value), exp);
    match store.try_set_value(key, sv) {
       Ok(_) => resp::write_ok(out),
       Err(e) => resp::write_err(out, &e.to_string()),
@@ -161,10 +154,7 @@ pub fn psetex(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
    let Some(exp) = expiry_from_ms(m) else {
       return resp::write_err(out, "invalid expire time in 'psetex' command");
    };
-   let sv = StoreValue {
-      value: crate::storage::value::FyroDB::String(SmallStr::new(value)),
-      expires_ms: exp,
-   };
+   let sv = StoreValue::string_small_with_expiry(SmallStr::new(value), exp);
    match store.try_set_value(key, sv) {
       Ok(_) => resp::write_ok(out),
       Err(e) => resp::write_err(out, &e.to_string()),
@@ -264,12 +254,7 @@ pub fn msetnx(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
          let mut failed_idx = None;
 
          for (i, &[key, val]) in pairs.iter().enumerate() {
-            let store_val = StoreValue {
-               value: crate::storage::value::FyroDB::String(crate::storage::value::SmallStr::new(
-                  val,
-               )),
-               expires_ms: 0,
-            };
+            let store_val = StoreValue::string_small(SmallStr::new(val));
             if !store.data.insert_if_absent_str(key, store_val) {
                failed_idx = Some(i);
                break;

@@ -36,11 +36,12 @@ impl Store {
          if val.is_expired() {
             return None;
          }
-         let was_persistent = val.expires_ms == 0;
-         val.expires_ms = now_ms() + duration.as_millis() as u64;
-         Some((was_persistent, val.expires_ms))
+         let was_persistent = val.get_expires_ms().is_none();
+         let new_expiry = now_ms() + duration.as_millis() as u64;
+         val.set_expires_ms(new_expiry);
+         Some((was_persistent, new_expiry))
       });
-      let Some((was_persistent, expires_ms)) = result.flatten() else {
+      let Some((was_persistent, expire_at_ms)) = result.flatten() else {
          return false;
       };
       if was_persistent {
@@ -54,7 +55,7 @@ impl Store {
             kind: crate::cluster::MutationKind::Expire,
             key: key.as_bytes().to_vec(),
             value: Vec::new(),
-            expire_at_ms: Some(expires_ms),
+            expire_at_ms: std::num::NonZeroU64::new(expire_at_ms),
          });
       }
       was_persistent
@@ -67,8 +68,8 @@ impl Store {
             if val.is_expired() {
                return false;
             }
-            let was_persistent = val.expires_ms == 0;
-            val.expires_ms = abs_ms;
+            let was_persistent = val.get_expires_ms().is_none();
+            val.set_expires_ms(abs_ms);
             was_persistent
          })
          .unwrap_or(false);
@@ -82,7 +83,7 @@ impl Store {
                kind: crate::cluster::MutationKind::Expire,
                key: key.as_bytes().to_vec(),
                value: Vec::new(),
-               expire_at_ms: Some(abs_ms),
+               expire_at_ms: std::num::NonZeroU64::new(abs_ms),
             });
          }
       }
@@ -93,10 +94,10 @@ impl Store {
       let ok = self
          .data
          .update_with(key, |val| {
-            if val.is_expired() || val.expires_ms == 0 {
+            if val.is_expired() || val.get_expires_ms().is_none() {
                return false;
             }
-            val.expires_ms = 0;
+            val.set_expires_ms(0);
             true
          })
          .unwrap_or(false);

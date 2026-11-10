@@ -1,7 +1,7 @@
 use super::*;
 
 fn write_record(w: &mut impl Write, key: &str, val: &StoreValue) -> io::Result<()> {
-   let ttl_ms = val.expires_ms;
+   let ttl_ms = val.get_expires_ms().unwrap_or(0u64);
    let head = |w: &mut dyn Write, ty: u8| -> io::Result<()> {
       w.write_all(&[ty])?;
       w.write_all(&ttl_ms.to_le_bytes())?;
@@ -141,7 +141,7 @@ pub fn encode_single_value(value: &StoreValue) -> io::Result<Vec<u8>> {
       FyroDB::Json(json) => Vec::with_capacity(13 + json.len()),
       _ => Vec::new(),
    };
-   write_u64(&mut out, value.expires_ms)?;
+   write_u64(&mut out, value.get_expires_ms().unwrap_or(0))?;
    match &value.value {
       FyroDB::String(s) => {
          write_u8(&mut out, TYPE_STRING)?;

@@ -1,5 +1,5 @@
 use crate::storage::store::Store;
-use crate::storage::value::{FyroDB, SmallStr, StoreValue};
+use crate::storage::value::{SmallStr, StoreValue};
 
 const HLL_REGISTERS: usize = 16384;
 const HLL_HEADER: usize = 4;
@@ -123,15 +123,9 @@ impl Store {
       let result = self.data.update_with(key, |val| {
          if val.is_expired() {
             let mut hll = HllData::new();
-            let mut changed = false;
-            for elem in elements {
-               if hll.add(elem.as_bytes()) {
-                  changed = true;
-               }
-            }
+            let changed = elements.iter().any(|elem| hll.add(elem.as_bytes()));
             let encoded = encode_hll(&hll);
-            val.value = FyroDB::String(encoded);
-            val.expires_ms = 0;
+            *val = StoreValue::string_small(encoded);
             return Ok(changed);
          }
          match val.value.as_string_mut() {
@@ -195,10 +189,7 @@ impl Store {
          if val.is_expired() {
             let mut encoded = encode_hll(&HllData::new()).into_bytes();
             let flags = apply(&mut encoded);
-            val.value = FyroDB::String(SmallStr::from_string(unsafe {
-               String::from_utf8_unchecked(encoded)
-            }));
-            val.expires_ms = 0;
+            *val = StoreValue::string(unsafe { String::from_utf8_unchecked(encoded) });
             return Ok(flags);
          }
          match val.value.as_string_mut() {

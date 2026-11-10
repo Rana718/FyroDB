@@ -122,34 +122,28 @@ pub fn expiretime(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
    let [_, key] = parts else {
       return resp::write_wrong_args(out, "expiretime");
    };
-   match store.data.get_ref(key) {
-      None => resp::write_integer(out, -2),
-      Some(e) if e.is_expired() => resp::write_integer(out, -2),
-      Some(e) => {
-         if e.expires_ms == 0 {
-            resp::write_integer(out, -1);
-         } else {
-            resp::write_integer(out, (e.expires_ms / 1000) as i64);
-         }
-      }
-   }
+   resp::write_integer(
+      out,
+      match store.data.get_ref(key) {
+         Some(e) if e.is_expired() => -2,
+         Some(e) => e.get_expires_ms().map(|t| (t / 1000) as i64).unwrap_or(-1),
+         _ => -2,
+      },
+   );
 }
 
 pub fn pexpiretime(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
    let [_, key] = parts else {
       return resp::write_wrong_args(out, "pexpiretime");
    };
-   match store.data.get_ref(key) {
-      None => resp::write_integer(out, -2),
-      Some(e) if e.is_expired() => resp::write_integer(out, -2),
-      Some(e) => {
-         if e.expires_ms == 0 {
-            resp::write_integer(out, -1);
-         } else {
-            resp::write_integer(out, e.expires_ms as i64);
-         }
-      }
-   }
+   resp::write_integer(
+      out,
+      match store.data.get_ref(key) {
+         Some(e) if e.is_expired() => -2,
+         Some(e) => e.get_expires_ms().map(|t| t as i64).unwrap_or(-1),
+         _ => -2,
+      },
+   );
 }
 
 pub fn touch(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
