@@ -252,6 +252,22 @@ impl Inner {
             off += 64;
          }
       }
+      #[cfg(target_arch = "aarch64")]
+      unsafe {
+         use std::arch::asm;
+         let p = self.base(id) as *const i8;
+         // Cap explicit hints; the streamer covers the tail of long vectors.
+         let bytes = (self.pay * 4).min(1024);
+         let mut off = 0;
+         while off < bytes {
+            asm!(
+            "prfm pldl1keep, [{addr}]",
+            addr = in(reg) p.add(off),
+            options(nostack, readonly)
+            );
+            off += 64;
+         }
+      }
    }
 
    /// Hint the level-0 link line of `id` (the next node to expand).
@@ -261,6 +277,12 @@ impl Inner {
       unsafe {
          use std::arch::x86_64::{_MM_HINT_T0, _mm_prefetch};
          _mm_prefetch(self.base(id).add(self.pay) as *const i8, _MM_HINT_T0);
+      }
+      #[cfg(target_arch = "aarch64")]
+      unsafe {
+         use std::arch::asm;
+         let p = self.base(id).add(self.pay) as *const i8;
+         asm!("prfm pldl1keep, [{addr}]", addr = in(reg) p, options(nostack, readonly));
       }
    }
 
@@ -277,6 +299,22 @@ impl Inner {
          let mut off = 0;
          while off < bytes {
             _mm_prefetch(p.add(off), _MM_HINT_T0);
+            off += 64;
+         }
+      }
+      #[cfg(target_arch = "aarch64")]
+      unsafe {
+         use std::arch::asm;
+         let p = self.flat_int8.as_ptr().add(id as usize * self.dims);
+         let bytes = self.dims.min(1024);
+
+         let mut off = 0;
+         while off < bytes {
+            asm!(
+            "prfm pldl1keep, [{addr}]",
+            addr = in(reg) p.add(off),
+            options(nostack, readonly)
+            );
             off += 64;
          }
       }
