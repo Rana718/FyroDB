@@ -107,12 +107,10 @@ pub fn set(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
             if xx {
                return resp::write_nil(out);
             }
-            let sv = if expires_ms == 0 {
-               StoreValue::string_small(SmallStr::new(value))
-            } else {
-               StoreValue::string_small_with_expiry(SmallStr::new(value), expires_ms)
-            };
-            store.data.insert_str(key, sv);
+            store.data.insert_str(
+               key,
+               StoreValue::string_small_with_expiry(SmallStr::new(value), expires_ms),
+            );
             if get {
                resp::write_nil(out);
             } else {

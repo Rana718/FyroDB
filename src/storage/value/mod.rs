@@ -292,11 +292,14 @@ impl StoreValue {
    }
 
    #[inline(always)]
-   pub fn string_small_with_expiry(s: SmallStr, _expire_ms: u64) -> Self {
+   pub fn string_small_with_expiry(s: SmallStr, expire_ms: u64) -> Self {
+      #[cfg(not(feature = "expiration"))]
+      let _ = expire_ms;
+
       Self {
          value: FyroDB::String(s),
          #[cfg(feature = "expiration")]
-         expires_ms: std::num::NonZeroU64::new(_expire_ms),
+         expires_ms: std::num::NonZeroU64::new(expire_ms),
       }
    }
 
