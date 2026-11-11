@@ -57,10 +57,10 @@ FYRODB_RDB_INTERVAL=300          # auto-save interval (seconds)
 
 ## Disable Persistence
 
-Set a very large interval to effectively disable auto-save:
+Set the interval to zero to disable automatic snapshots:
 
 ```bash
-FYRODB_RDB_INTERVAL=999999999
+FYRODB_RDB_INTERVAL=0
 ```
 
 Manual saves via `BGSAVE` still work.

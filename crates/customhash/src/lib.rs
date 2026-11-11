@@ -7,13 +7,33 @@ pub use snap::SnapSink;
 
 #[repr(align(128))]
 #[derive(Default)]
-pub struct Flag(AtomicBool);
+pub struct Flag(AtomicUsize);
 
-impl Deref for Flag {
-   type Target = AtomicBool;
+impl Flag {
    #[inline(always)]
-   fn deref(&self) -> &AtomicBool {
-      &self.0
+   pub fn load(&self, order: Ordering) -> bool {
+      self.0.load(order) != 0
+   }
+
+   pub fn store(&self, on: bool, order: Ordering) {
+      self.set_bit(1, on, order);
+   }
+
+   pub fn set_watching(&self, on: bool) {
+      self.set_bit(2, on, Ordering::Release);
+   }
+
+   #[inline]
+   pub fn is_watching(&self) -> bool {
+      self.0.load(Ordering::Relaxed) & 2 != 0
+   }
+
+   fn set_bit(&self, bit: usize, on: bool, order: Ordering) {
+      if on {
+         self.0.fetch_or(bit, order);
+      } else {
+         self.0.fetch_and(!bit, order);
+      }
    }
 }
 
@@ -75,7 +95,7 @@ pub struct CustomMap<V> {
    /// One relaxed load on every write when nothing observes. Shared so
    /// the observer's owner can toggle it without a map reference.
    observing: std::sync::Arc<Flag>,
-   observing_ptr: *const AtomicBool,
+   observing_ptr: *const Flag,
    snap_active: AtomicBool,
    snap: std::sync::Arc<snap::SnapCtl<V>>,
 }
@@ -178,7 +198,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
          s.fast.store(sf_ptr, Ordering::Relaxed);
       }
       let observing = std::sync::Arc::new(Flag::default());
-      let observing_ptr: *const AtomicBool = (&*observing) as &AtomicBool as *const AtomicBool;
+      let observing_ptr = std::sync::Arc::as_ptr(&observing);
       CustomMap {
          shift: (u64::BITS - n.trailing_zeros()).min(63),
          shard_mask: n - 1,

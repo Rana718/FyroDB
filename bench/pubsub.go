@@ -30,6 +30,7 @@ func runPubSub(addr string) {
 	messageFrameBytes := int64(len(buildMessageFrame(channel, msgPayload)))
 
 	var received int64
+	var incomplete int64
 
 	startSignal := make(chan struct{})
 	var subReady sync.WaitGroup
@@ -68,8 +69,8 @@ func runPubSub(addr string) {
 			buf := make([]byte, 256*1024)
 			bytesRead, err := io.CopyBuffer(io.Discard, io.LimitReader(conn, totalMsgs*messageFrameBytes), buf)
 			localCount := bytesRead / messageFrameBytes
-			if err == nil {
-				localCount = totalMsgs
+			if err != nil || bytesRead != totalMsgs*messageFrameBytes {
+				atomic.AddInt64(&incomplete, 1)
 			}
 			atomic.AddInt64(&received, localCount)
 		})
@@ -141,6 +142,10 @@ func runPubSub(addr string) {
 
 	for _, c := range subConns {
 		c.Close()
+	}
+	recvDone.Wait()
+	if got := atomic.LoadInt64(&received); got != totalExpected || atomic.LoadInt64(&incomplete) != 0 {
+		panic(fmt.Sprintf("incomplete pub/sub delivery: received %d of %d messages", got, totalExpected))
 	}
 
 	pubRate := rate(published, pubElapsed)

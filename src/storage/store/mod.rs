@@ -9,14 +9,18 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 mod cluster;
 mod dbcache;
 mod fence;
+mod isolation;
 mod memory;
 mod ttl;
+mod watch;
 
 use cluster::ClusterMetrics;
 use fence::WriteFence;
 pub use fence::{WriteFenceGuard, WriteTicket};
+pub use isolation::CommandGuard;
 pub use memory::*;
 use ttl::TtlCounters;
+pub use watch::WatchedKey;
 
 pub struct Store {
    pub(crate) data: CustomMap<StoreValue>,
@@ -40,6 +44,8 @@ pub struct Store {
    dbcache_manager: OnceLock<std::sync::Arc<fyro_dbcache::DbCacheManager>>,
    pub(crate) script_cache: parking_lot::RwLock<foldhash::HashMap<Arc<str>, Arc<str>>>,
    pub(crate) script_epoch: std::sync::atomic::AtomicU64,
+   isolation: isolation::Isolation,
+   watches: Arc<watch::WatchRegistry>,
 }
 
 impl Default for Store {
@@ -77,11 +83,12 @@ impl Store {
       let failure_quorum = cluster.failure_quorum;
       let data = CustomMap::with_capacity(shards, max_keys);
       let search = crate::search::SearchState::new();
-      // Incremental index maintenance: the map reports every write to the
-      // search hooks, gated by a flag that is on only while an index exists.
-      data.set_observer(Box::new(crate::search::hooks::HookObserver(
-         std::sync::Arc::clone(&search.hooks),
-      )));
+      // Enable the existing write hook only for active indexes or watches.
+      let watches = Arc::new(watch::WatchRegistry::new(data.observing_handle()));
+      data.set_observer(Box::new(watch::StoreObserver {
+         search: crate::search::hooks::HookObserver(Arc::clone(&search.hooks)),
+         watches: Arc::clone(&watches),
+      }));
       search.hooks.attach(data.observing_handle());
       Self {
          data,
@@ -112,6 +119,8 @@ impl Store {
          dbcache_manager: OnceLock::new(),
          script_cache: Default::default(),
          script_epoch: std::sync::atomic::AtomicU64::new(0),
+         isolation: isolation::Isolation::new(workers),
+         watches,
       }
    }
 

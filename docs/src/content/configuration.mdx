@@ -18,7 +18,7 @@ All configuration is via environment variables. Every setting has a production-r
 | `FYRODB_MAX_CLIENTS`  | `10000`         | Max concurrent KV connections                                               |
 | `FYRODB_AUTH`         | (none)          | Password for AUTH command — empty = no auth required                        |
 | `FYRODB_RDB_PATH`     | `fyrodb.rdb`    | RDB snapshot file path                                                      |
-| `FYRODB_RDB_INTERVAL` | `300`           | Auto-save interval in seconds                                               |
+| `FYRODB_RDB_INTERVAL` | `300`           | Auto-save interval in seconds; `0` disables automatic snapshots              |
 | `FYRODB_BUSY_POLL_US` | `0` (disabled)  | Spin-poll window in microseconds before sleeping in epoll — `0` = off      |
 
 ### KV Engine Examples

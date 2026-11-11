@@ -248,7 +248,13 @@ pub fn execute(parts: &[&str], store: &Arc<Store>, out: &mut Vec<u8>) {
    }
 
    let cmd = ComdType::from(parts[0]);
+   let _guard = if matches!(cmd, ComdType::EVAL | ComdType::EVALSHA) {
+      store.atomic_command_guard()
+   } else {
+      store.command_guard(usize::MAX)
+   };
    match cmd {
+      ComdType::Exec if parts[0].eq_ignore_ascii_case("EXEC") => transaction::exec_empty(out),
       ComdType::PING => connection::ping(parts, out),
       ComdType::ECHO => connection::echo(parts, out),
       ComdType::INFO => connection::info(store, out),

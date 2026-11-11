@@ -123,6 +123,9 @@ func startFastNullServer(t *testing.T) (string, func()) {
 }
 
 func TestNetworkBottleneckAnalysis(t *testing.T) {
+	if testing.Short() {
+		t.Skip("network ceiling measurement")
+	}
 	fmt.Println("\n================================================================================")
 	fmt.Println("             SCIENTIFIC LAYER-BY-LAYER BOTTLENECK ANALYSIS                      ")
 	fmt.Println("================================================================================")

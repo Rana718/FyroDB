@@ -64,17 +64,38 @@ mod fast_path;
 pub mod park;
 mod prefetch;
 mod sock;
+mod transaction;
 
 use coalesce::*;
 use fast_path::*;
 
 pub enum ConnMode {
    Normal,
+   Transaction(Box<transaction::Transaction>),
    Subscribed {
       slot: Arc<SubSlot>,
-      channels: HashSet<String>,
+      channels: Box<Channels>,
       patterns: HashSet<String>,
    },
+}
+
+#[derive(Default)]
+pub struct Channels {
+   pub(crate) keys: HashSet<String>,
+   pub(crate) transaction: Option<Box<transaction::Transaction>>,
+}
+
+impl std::ops::Deref for Channels {
+   type Target = HashSet<String>;
+   fn deref(&self) -> &Self::Target {
+      &self.keys
+   }
+}
+
+impl std::ops::DerefMut for Channels {
+   fn deref_mut(&mut self) -> &mut Self::Target {
+      &mut self.keys
+   }
 }
 
 pub struct Conn<'a> {
