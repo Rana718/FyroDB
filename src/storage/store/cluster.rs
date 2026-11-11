@@ -75,7 +75,7 @@ impl Store {
          slot,
          key.as_bytes().to_vec(),
          encoded,
-         std::num::NonZeroU64::new(value.get_expires_ms().unwrap_or(0)),
+         value.expires_at(),
       ));
    }
 
@@ -157,17 +157,14 @@ impl Store {
          crate::cluster::MutationKind::Replace => {
             let value = crate::storage::rdb::decode_single_value(&record.value)
                .map_err(|_| crate::cluster::ApplyError::InvalidValue)?;
-            let old_has_ttl = self
-               .data
-               .get_ref(key)
-               .is_some_and(|old| old.get_expires_ms().is_some());
+            let old_has_ttl = self.data.get_ref(key).is_some_and(|old| old.has_expiry());
             if value.is_expired() {
                self.data.remove_no_clone(key);
                if old_has_ttl {
                   self.sub_ttl();
                }
             } else {
-               let new_has_ttl = value.get_expires_ms().is_some();
+               let new_has_ttl = value.has_expiry();
                self.data.insert_str(key, value);
                self.adjust_replaced_ttl(old_has_ttl, new_has_ttl);
             }
@@ -176,14 +173,11 @@ impl Store {
             let value = std::str::from_utf8(&record.value)
                .map_err(|_| crate::cluster::ApplyError::InvalidValue)?;
             let expires_ms = record.expire_at_ms;
-            let store_value = StoreValue::string_small_with_expiry(
+            let store_value = StoreValue::string_small_with_expiry_opt(
                crate::storage::value::SmallStr::new(value),
-               expires_ms.map(|exp| exp.get()).unwrap_or(0),
+               expires_ms,
             );
-            let old_has_ttl = self
-               .data
-               .get_ref(key)
-               .is_some_and(|old| old.get_expires_ms().is_some());
+            let old_has_ttl = self.data.get_ref(key).is_some_and(|old| old.has_expiry());
             if store_value.is_expired() {
                self.data.remove_no_clone(key);
                if old_has_ttl {
@@ -195,10 +189,7 @@ impl Store {
             }
          }
          crate::cluster::MutationKind::Delete => {
-            let old_has_ttl = self
-               .data
-               .get_ref(key)
-               .is_some_and(|old| old.get_expires_ms().is_some());
+            let old_has_ttl = self.data.get_ref(key).is_some_and(|old| old.has_expiry());
             self.data.remove_no_clone(key);
             if old_has_ttl {
                self.sub_ttl();
@@ -211,8 +202,8 @@ impl Store {
             let became_ttl = self
                .data
                .update_with(key, |value| {
-                  let persistent = value.get_expires_ms().is_none();
-                  value.set_expires_ms(expires_ms.get());
+                  let persistent = value.is_persistent();
+                  value.set_expires_ms_opt(Some(expires_ms));
                   persistent
                })
                .unwrap_or(false);
@@ -282,7 +273,7 @@ impl Store {
                slot,
                key.as_bytes().to_vec(),
                encoded,
-               std::num::NonZeroU64::new(value.get_expires_ms().unwrap_or(0)),
+               value.expires_at(),
             ));
          }
       });
@@ -298,7 +289,7 @@ impl Store {
          if crate::cluster::hash_slot(key.as_bytes()) != slot {
             return true;
          }
-         if value.get_expires_ms().is_some() {
+         if value.has_expiry() {
             self.sub_ttl();
          }
          removed += 1;

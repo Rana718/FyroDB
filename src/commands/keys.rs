@@ -126,8 +126,11 @@ pub fn expiretime(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
       out,
       match store.data.get_ref(key) {
          Some(e) if e.is_expired() => -2,
-         Some(e) => e.get_expires_ms().map(|t| (t / 1000) as i64).unwrap_or(-1),
-         _ => -2,
+         Some(e) => match e.expires_at() {
+            Some(exp) => (exp.get() / 1000) as i64,
+            None => -1,
+         },
+         None => -2,
       },
    );
 }
@@ -140,8 +143,11 @@ pub fn pexpiretime(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
       out,
       match store.data.get_ref(key) {
          Some(e) if e.is_expired() => -2,
-         Some(e) => e.get_expires_ms().map(|t| t as i64).unwrap_or(-1),
-         _ => -2,
+         Some(e) => match e.expires_at() {
+            Some(exp) => exp.get() as i64,
+            None => -1,
+         },
+         None => -2,
       },
    );
 }

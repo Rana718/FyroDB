@@ -55,14 +55,14 @@ fn hirschberg(a: &[u8], b: &[u8], out: &mut Vec<u8>) {
 
 impl Store {
    pub fn set(&self, key: &str, value: StoreValue) {
-      if value.get_expires_ms().is_some() {
+      if value.has_expiry() {
          self.add_ttl();
       }
       self.data.insert_str(key, value);
    }
 
    pub fn try_set_value(&self, key: &str, value: StoreValue) -> Result<(), Full> {
-      if value.get_expires_ms().is_some() {
+      if value.has_expiry() {
          self.add_ttl();
       }
       self.data.try_set_str(key, value)?;
@@ -354,7 +354,11 @@ impl Store {
                   Ok(_) => {
                      self.data.snap_before_write(e);
                      let val = unsafe { (*e.value.get()).assume_init_mut() };
-                     val.set_expires_ms(expires_ms);
+                     if expires_ms == 0 {
+                        val.clear_expiry();
+                     } else {
+                        val.set_expires_ms(expires_ms);
+                     }
                      if let crate::storage::value::FyroDB::String(ref mut s) = val.value {
                         s.overwrite_str(value);
                      } else {
@@ -399,7 +403,11 @@ impl Store {
          None => self.data.locate_key(key).0,
       };
       let idx = self.data.shard_of(hash);
-      let store_val = StoreValue::string_small_with_expiry(SmallStr::new(value), expires_ms);
+      let store_val = if expires_ms == 0 {
+         StoreValue::string_small(SmallStr::new(value))
+      } else {
+         StoreValue::string_small_with_expiry(SmallStr::new(value), expires_ms)
+      };
       if self
          .data
          .insert_slot_fast_located(hash, idx, key, store_val)
@@ -411,7 +419,11 @@ impl Store {
          return;
       }
       match self.data.probe_or_insert_fast(hash, key, || {
-         StoreValue::string_small_with_expiry(SmallStr::new(value), expires_ms)
+         if expires_ms == 0 {
+            StoreValue::string_small(SmallStr::new(value))
+         } else {
+            StoreValue::string_small_with_expiry(SmallStr::new(value), expires_ms)
+         }
       }) {
          customhash::FastSet::Existing(entry) => unsafe {
             self.set_string_fast_entry(key, hash, entry, value, expires_ms);
@@ -559,7 +571,7 @@ impl Store {
          let Some(s) = val.value.as_string().cloned() else {
             return (None, 0);
          };
-         let ttl_change = match (val.get_expires_ms().is_none(), expires_ms == 0) {
+         let ttl_change = match (val.is_persistent(), expires_ms == 0) {
             (true, false) => 1,
             (false, true) => -1,
             _ => 0,

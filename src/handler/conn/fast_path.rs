@@ -466,7 +466,7 @@ pub(super) fn dispatch_set_run(
                   Ok(_) => {
                      conn.store.data.snap_before_write(e);
                      let val = unsafe { (*e.value.get()).assume_init_mut() };
-                     val.set_expires_ms(0);
+                     val.clear_expiry();
                      if let crate::storage::value::FyroDB::String(ref mut s) = val.value {
                         s.overwrite_bytes(val_bytes);
                      } else {

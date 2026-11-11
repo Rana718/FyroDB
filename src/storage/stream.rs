@@ -1166,7 +1166,7 @@ impl Store {
                let mut s = StreamData::new();
                let out = f(&mut s)?;
                val.value = FyroDB::Stream(Box::new(s));
-               val.set_expires_ms(0);
+               val.clear_expiry();
                return Ok(out);
             }
             match val.value.as_stream_mut() {

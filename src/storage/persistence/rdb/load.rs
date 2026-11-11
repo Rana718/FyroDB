@@ -208,7 +208,9 @@ fn load_with_policy(store: &Store, path: &str, strict: bool) -> io::Result<usize
          }
       };
 
-      store_value.get_expires_ms().inspect(|_| store.add_ttl());
+      if store_value.has_expiry() {
+         store.add_ttl();
+      }
       store.data.insert(key, store_value);
       count += 1;
    }

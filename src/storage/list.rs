@@ -19,7 +19,7 @@ impl Store {
                let mut l = ListInner::new();
                let n = push(&mut l);
                val.value = FyroDB::List(Box::new(l));
-               val.set_expires_ms(0);
+               val.clear_expiry();
                return Ok(n);
             }
             match val.value.as_list_mut() {
