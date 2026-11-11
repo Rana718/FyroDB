@@ -336,16 +336,22 @@ impl Store {
          let e = unsafe { &*p };
          if e.key.eq_str(key) {
             let mut current = e.state.load(std::sync::atomic::Ordering::Relaxed);
-            for _ in 0..32 {
+            let mut backoff = 1u32;
+            for _ in 0..64 {
                while current & customhash::STATE_LOCK != 0 {
-                  std::hint::spin_loop();
+                  for _ in 0..backoff {
+                     std::hint::spin_loop();
+                  }
+                  if backoff < 64 {
+                     backoff <<= 1;
+                  }
                   current = e.state.load(std::sync::atomic::Ordering::Relaxed);
                }
                if (current & customhash::STATE_OCCUPIED) == 0 {
                   break;
                }
                let locked = customhash::bump_seq(current) | customhash::STATE_LOCK;
-               match e.state.compare_exchange_weak(
+               match e.state.compare_exchange(
                   current,
                   locked,
                   std::sync::atomic::Ordering::Acquire,
@@ -373,7 +379,12 @@ impl Store {
                   }
                   Err(observed) => {
                      current = observed;
-                     std::hint::spin_loop();
+                     for _ in 0..backoff {
+                        std::hint::spin_loop();
+                     }
+                     if backoff < 64 {
+                        backoff <<= 1;
+                     }
                   }
                }
             }

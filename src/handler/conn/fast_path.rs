@@ -443,7 +443,7 @@ pub(super) fn dispatch_set_run(
             let last_val = vals[end - 1];
             let val_bytes = unsafe { std::slice::from_raw_parts(last_val.0, last_val.1) };
             let mut backoff = 1u32;
-            for _ in 0..32 {
+            for _ in 0..64 {
                while current & customhash::STATE_LOCK != 0 {
                   for _ in 0..backoff {
                      std::hint::spin_loop();
@@ -457,7 +457,7 @@ pub(super) fn dispatch_set_run(
                   break;
                }
                let locked = customhash::bump_seq(current) | customhash::STATE_LOCK;
-               match e.state.compare_exchange_weak(
+               match e.state.compare_exchange(
                   current,
                   locked,
                   std::sync::atomic::Ordering::Acquire,
