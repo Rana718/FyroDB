@@ -80,7 +80,11 @@ impl Store {
          Some(h) => (h, self.data.shard_of(h)),
          None => self.data.locate_key(key),
       };
-      let store_val = StoreValue::string_small_with_expiry(SmallStr::new(value), expires_ms);
+      let store_val = if expires_ms == 0 {
+         StoreValue::string_small(SmallStr::new(value))
+      } else {
+         StoreValue::string_small_with_expiry(SmallStr::new(value), expires_ms)
+      };
       if self.data.insert_slot_fast_located(h, idx, key, store_val) {
          self.data.touched(key);
          if expires_ms != 0 {
@@ -99,7 +103,11 @@ impl Store {
       value: &str,
       expires_ms: u64,
    ) {
-      let store_val = StoreValue::string_small_with_expiry(SmallStr::new(value), expires_ms);
+      let store_val = if expires_ms == 0 {
+         StoreValue::string_small(SmallStr::new(value))
+      } else {
+         StoreValue::string_small_with_expiry(SmallStr::new(value), expires_ms)
+      };
       self.data.set_str_hinted_pinned(key, hash, store_val);
       if expires_ms != 0 {
          self.add_ttl();
@@ -116,7 +124,11 @@ impl Store {
       expires_ms: u64,
    ) {
       let idx = self.data.shard_of(hash);
-      let store_val = StoreValue::string_small_with_expiry(SmallStr::new(value), expires_ms);
+      let store_val = if expires_ms == 0 {
+         StoreValue::string_small(SmallStr::new(value))
+      } else {
+         StoreValue::string_small_with_expiry(SmallStr::new(value), expires_ms)
+      };
       if self
          .data
          .insert_slot_fast_located(hash, idx, key, store_val)
@@ -133,7 +145,11 @@ impl Store {
    #[cold]
    #[inline(never)]
    fn set_string_fallback(&self, key: &str, hash: u64, value: &str, expires_ms: u64) {
-      let store_val = StoreValue::string_small_with_expiry(SmallStr::new(value), expires_ms);
+      let store_val = if expires_ms == 0 {
+         StoreValue::string_small(SmallStr::new(value))
+      } else {
+         StoreValue::string_small_with_expiry(SmallStr::new(value), expires_ms)
+      };
       self.data.set_str_hinted_pinned(key, Some(hash), store_val);
       if expires_ms != 0 {
          self.add_ttl();
@@ -156,7 +172,11 @@ impl Store {
 
    #[inline]
    pub fn try_set_string(&self, key: &str, value: &str, expires_ms: u64) -> Result<(), Full> {
-      let store_val = StoreValue::string_small_with_expiry(SmallStr::new(value), expires_ms);
+      let store_val = if expires_ms == 0 {
+         StoreValue::string_small(SmallStr::new(value))
+      } else {
+         StoreValue::string_small_with_expiry(SmallStr::new(value), expires_ms)
+      };
       self.data.try_set_str(key, store_val)?;
       if expires_ms != 0 {
          self.add_ttl();

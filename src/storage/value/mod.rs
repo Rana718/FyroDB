@@ -492,9 +492,15 @@ impl StoreValue {
    #[cfg(feature = "expiration")]
    pub fn is_expired(&self) -> bool {
       match self.expires_ms {
-         Some(expires_ms) => approx_now_ms() >= expires_ms.get(),
+         Some(expires_ms) => Self::is_expired_slow(expires_ms),
          None => false,
       }
+   }
+   #[cold]
+   #[inline(never)]
+   #[cfg(feature = "expiration")]
+   fn is_expired_slow(expires_ms: std::num::NonZeroU64) -> bool {
+      approx_now_ms() >= expires_ms.get()
    }
    #[inline(always)]
    #[cfg(not(feature = "expiration"))]
@@ -522,9 +528,15 @@ impl StoreValue {
    #[cfg(feature = "expiration")]
    pub fn is_expired_precise(&self) -> bool {
       match self.expires_ms {
-         Some(expires_ms) => now_ms() >= expires_ms.get(),
+         Some(expires_ms) => Self::is_expired_precise_slow(expires_ms),
          None => false,
       }
+   }
+   #[cold]
+   #[inline(never)]
+   #[cfg(feature = "expiration")]
+   fn is_expired_precise_slow(expires_ms: std::num::NonZeroU64) -> bool {
+      now_ms() >= expires_ms.get()
    }
    #[inline(always)]
    #[cfg(not(feature = "expiration"))]
@@ -536,13 +548,17 @@ impl StoreValue {
    #[cfg(feature = "expiration")]
    pub fn ttl_ms(&self) -> Option<u64> {
       match self.expires_ms {
-         Some(expires_ms) => {
-            let exp = expires_ms.get();
-            let now = now_ms();
-            if exp > now { Some(exp - now) } else { None }
-         }
+         Some(expires_ms) => Self::ttl_ms_slow(expires_ms),
          None => None,
       }
+   }
+   #[cold]
+   #[inline(never)]
+   #[cfg(feature = "expiration")]
+   fn ttl_ms_slow(expires_ms: std::num::NonZeroU64) -> Option<u64> {
+      let exp = expires_ms.get();
+      let now = now_ms();
+      if exp > now { Some(exp - now) } else { None }
    }
    #[inline(always)]
    #[cfg(not(feature = "expiration"))]

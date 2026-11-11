@@ -1,6 +1,6 @@
 use crate::storage::{
    store::Store,
-   value::{SmallStr, StoreValue, expiry_from_ms, expiry_from_secs},
+   value::{FyroDB, SmallStr, StoreValue, expiry_from_ms, expiry_from_secs},
 };
 use crate::utils::resp;
 use crate::{parse_float, parse_int, store_ok, wt};
@@ -69,7 +69,16 @@ pub fn set(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
             return (false, None);
          }
 
-         *current = StoreValue::string_small_with_expiry(SmallStr::new(value), expires_ms);
+         if expires_ms == 0 {
+            current.clear_expiry();
+         } else {
+            current.set_expires_ms(expires_ms);
+         }
+         if let FyroDB::String(ref mut s) = current.value {
+            s.overwrite_str(value);
+         } else {
+            current.value = FyroDB::String(SmallStr::new(value));
+         }
          (true, old_val)
       });
 
@@ -98,10 +107,12 @@ pub fn set(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
             if xx {
                return resp::write_nil(out);
             }
-            store.data.insert_str(
-               key,
-               StoreValue::string_small_with_expiry(SmallStr::new(value), expires_ms),
-            );
+            let sv = if expires_ms == 0 {
+               StoreValue::string_small(SmallStr::new(value))
+            } else {
+               StoreValue::string_small_with_expiry(SmallStr::new(value), expires_ms)
+            };
+            store.data.insert_str(key, sv);
             if get {
                resp::write_nil(out);
             } else {
