@@ -53,7 +53,7 @@ volumes:
   fyrodb-data:
 ```
 
-**Key numbers (6-core i5-11400H, 100 clients, 1M ops):**
+**Historical reported rates (6-core i5-11400H, 100 clients, best of three):**
 
 | Benchmark | FyroDB | Redis Cluster (12 nodes) | Speedup |
 |---|---|---|---|
@@ -65,6 +65,27 @@ volumes:
 | Hot Key contention | 37.68M ops/sec | 1.61M ops/sec | 23.4× |
 
 Full benchmark table → [Benchmarks docs](https://fyrodb.vercel.app/docs/benchmarks)
+
+The current harness uses 10M operations per KV phase, 2M per mixed phase, and 10M for the hot-key phase. The benchmark docs repeat some figures under both TCP and in-process headings; treat the table above as a historical reference, not a matched current measurement. In-process batched storage calls also credit equivalent logical operations and are not TCP request/reply rates.
+
+For repeatable TCP measurements with fixed CPU placement, discarded warmups, seven alternating runs, raw samples, confidence intervals, and memory readings:
+
+```bash
+task bench-stable
+# Compare another saved binary using the same workload:
+task bench-stable -- --server baseline=/absolute/path/to/fyro_db --out temp/bench/comparison
+```
+
+Results are written to `temp/bench/stable/summary.json`. Compare medians and variability, not the fastest individual sample. The runner starts isolated servers on free loopback ports, waits up to 60 seconds for a quiet host, and rejects incomplete pub/sub delivery. Use a fresh `--out` directory for another run. Host pressure and server CPU time per completed operation are retained with the samples.
+
+For a sustained hot-key check, add `--modes hotkey --hotkey-seconds 8 --inner 1`. CPU time per completed request helps distinguish a server optimization from a client or host bottleneck.
+
+Measure the direct engine separately:
+
+```bash
+mkdir -p temp/bench
+cargo bench --bench without_tcp -- -m bench --json temp/bench/direct.json
+```
 
 **Data types:** String · Hash · List · Set · Sorted Set · JSON · Stream · Bitmap · HyperLogLog · Geospatial · Vector Search · Full-Text Search
 

@@ -179,6 +179,10 @@ func pgBenchSimple(addr string, clients, opsEach int) {
 	fmt.Printf("   ops:     %d\n", got)
 	fmt.Printf("   elapsed: %s\n", elapsed.Round(time.Millisecond))
 	fmt.Printf("   ops/sec: %s\n\n", fmtRate(rate(got, elapsed)))
+	if got != totalOps {
+		panic(fmt.Sprintf("incomplete PG simple benchmark: %d of %d", got, totalOps))
+	}
+	mixResults = append(mixResults, benchResult{"PG Simple Query", got, elapsed})
 }
 
 // ── Extended protocol benchmark ────────────────────────────────────────────
@@ -243,6 +247,10 @@ func pgBenchExtended(addr string, clients, opsEach int) {
 	fmt.Printf("   ops:     %d\n", got)
 	fmt.Printf("   elapsed: %s\n", elapsed.Round(time.Millisecond))
 	fmt.Printf("   ops/sec: %s\n\n", fmtRate(rate(got, elapsed)))
+	if got != totalOps {
+		panic(fmt.Sprintf("incomplete PG extended benchmark: %d of %d", got, totalOps))
+	}
+	mixResults = append(mixResults, benchResult{"PG Extended Protocol", got, elapsed})
 }
 
 // b_S is 'S' as a byte constant for use in composite literals.

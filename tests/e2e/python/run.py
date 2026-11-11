@@ -11,7 +11,7 @@ binary = Path(sys.argv[1] if len(sys.argv) > 1 else os.environ.get("FYRODB_BIN",
 if not binary.is_file():
     raise SystemExit(f"Server binary does not exist: {binary}")
 
-for name in ["blocking", "stream", "search", "text"]:
+for name in ["blocking", "stream", "search", "text", "isolation"]:
     with tempfile.TemporaryDirectory(prefix="fyrodb-e2e-") as work:
         with socket.socket() as reservation:
             reservation.bind(("127.0.0.1", 0))

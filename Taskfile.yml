@@ -140,6 +140,14 @@ tasks:
       cmds:
          - python3 scripts/bench_compare.py {{.CLI_ARGS}}
 
+   bench-stable:
+      desc: "Pinned TCP samples with warmups, alternating binaries, variability, and README references"
+      cmds:
+         - task: build
+         - mkdir -p temp/bench
+         - cd bench && go build -o ../temp/bench/fyrobench .
+         - python3 scripts/bench_stable.py --server current=target/release/fyro_db --tcp-bench temp/bench/fyrobench --wait-idle 60 --out temp/bench/stable {{.CLI_ARGS}}
+
    bench-rust:
       desc: "Criterion micro-benchmarks: RESP parse, GET/SET, distance kernels, HNSW build/search"
       cmds:

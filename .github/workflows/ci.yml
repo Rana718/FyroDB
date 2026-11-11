@@ -32,5 +32,8 @@ jobs:
       - name: Test
         run: cargo test
 
+      - name: Script and transaction isolation
+        run: python3 tests/e2e/python/isolation_e2e.py target/debug/fyro_db --seconds 1
+
       - name: Clippy
         run: cargo clippy -- -D warnings

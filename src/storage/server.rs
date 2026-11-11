@@ -10,6 +10,7 @@ fn record_peak_allocated(current: usize) -> usize {
 
 impl Store {
    pub fn cleanup_expired(&self) {
+      let _guard = self.command_guard(usize::MAX);
       tick_clock();
       let now = now_ms();
       let generation = self.ttl_generation();
@@ -33,6 +34,7 @@ impl Store {
       start_slot: usize,
       max_slots: usize,
    ) -> (usize, usize, usize, usize) {
+      let _guard = self.command_guard(usize::MAX);
       if !self.has_ttl_keys() {
          return (0, start_slot, 0, 0);
       }

@@ -246,21 +246,8 @@ pub(super) fn execute_publish_run(
    let n = conn.pubsub.publish_batch(channel, &messages[..cmds]);
    let old_len = out.len();
    crate::utils::resp::write_integer(out, n as i64);
-   let single_len = out.len() - old_len;
    if cmds > 1 {
-      let total_add = (cmds - 1) * single_len;
-      out.reserve(total_add);
-      let src = unsafe { out.as_ptr().add(old_len) };
-      let mut dst = unsafe { out.as_mut_ptr().add(out.len()) };
-      for _ in 1..cmds {
-         unsafe {
-            std::ptr::copy_nonoverlapping(src, dst, single_len);
-            dst = dst.add(single_len);
-         }
-      }
-      unsafe {
-         out.set_len(old_len + cmds * single_len);
-      }
+      crate::utils::resp::repeat_reply(out, old_len, cmds);
    }
    Ok(())
 }

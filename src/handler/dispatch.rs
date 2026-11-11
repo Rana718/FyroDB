@@ -20,7 +20,7 @@ pub fn dispatch(conn: &mut Conn<'_>, parts: &[&str]) {
    let cmd = parts[0].as_bytes();
 
    match &conn.mode {
-      ConnMode::Normal => {
+      ConnMode::Normal | ConnMode::Transaction(_) => {
          match cmd.first().map(|b| b.to_ascii_uppercase()) {
             Some(b'S') => {
                if cmd_eq(cmd, b"SET") {

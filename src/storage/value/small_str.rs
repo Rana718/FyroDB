@@ -302,8 +302,8 @@ impl SmallStr {
    ///
    /// # Safety
    ///
-   /// The caller must ensure that `p` points to a valid buffer with at least 64 bytes
-   /// of allocated, writable memory.
+   /// `p` must have at least `max(64, self.len() + 32)` writable bytes,
+   /// including the entire heap-backed payload and its RESP framing.
    #[inline(always)]
    pub unsafe fn write_resp_raw(&self, p: *mut u8) -> usize {
       unsafe {

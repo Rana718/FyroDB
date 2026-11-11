@@ -68,9 +68,14 @@ impl<'a> Conn<'a> {
    /// preserving unparsed bytes. Returns false on protocol error.
    pub fn process_buffered(&mut self) -> bool {
       let _guard = customhash::pin();
+      let store = self.store;
+      let mut batch_guard = Some(store.command_guard(self.worker));
       let mut prefetched = 0usize;
       self.hint_n = 0;
       loop {
+         if batch_guard.is_none() {
+            batch_guard = Some(store.command_guard(self.worker));
+         }
          if self.park.is_some() {
             return true;
          }
@@ -82,15 +87,37 @@ impl<'a> Conn<'a> {
                let raw_ptr = self.parser.parts_raw.as_ptr();
                let raw_len = self.parser.parts_raw.len();
                let raw = unsafe { std::slice::from_raw_parts(raw_ptr, raw_len) };
+               let cmd = if raw.is_empty() {
+                  &[][..]
+               } else {
+                  unsafe { part_bytes(raw[0]) }
+               };
+               let id = cmd_id(cmd);
+               if self.authenticated
+                  && (id == CmdId::Other || id == CmdId::Quit || self.mode.in_transaction())
+                  && !matches!(self.mode, ConnMode::Subscribed { .. })
+                  && !raw.is_empty()
+               {
+                  if cmd.eq_ignore_ascii_case(b"RESET") || cmd.eq_ignore_ascii_case(b"QUIT") {
+                     self.mode.clear_transaction();
+                  }
+                  if self.mode.in_transaction() || transaction::is_control(cmd) {
+                     if transaction::is_atomic(cmd) {
+                        drop(batch_guard.take());
+                     }
+                     transaction::handle(self, raw);
+                     prefetched = self.parser.pos;
+                     continue;
+                  }
+                  if transaction::is_atomic(cmd) {
+                     drop(batch_guard.take());
+                     dispatch_raw(self, raw);
+                     prefetched = self.parser.pos;
+                     continue;
+                  }
+               }
                if self.authenticated && !self.store.cluster.enabled && !self.store.at_key_capacity()
                {
-                  let cmd = if raw.is_empty() {
-                     &[][..]
-                  } else {
-                     unsafe { part_bytes(raw[0]) }
-                  };
-                  let id = cmd_id(cmd);
-
                   if id == CmdId::Get && raw.len() == 2 {
                      dispatch_get_run(self, raw[1]);
                      prefetched = self.parser.pos;
@@ -181,7 +208,7 @@ impl<'a> Conn<'a> {
                   }
                   let retained = match self.mode {
                      ConnMode::Subscribed { .. } => SUB_WRITE_BATCH_BYTES,
-                     ConnMode::Normal => RETAINED_WRITE_BUFFER,
+                     ConnMode::Normal | ConnMode::Transaction(_) => RETAINED_WRITE_BUFFER,
                   };
                   if self.parser.wbuf.capacity() > retained {
                      self.parser.wbuf.shrink_to(retained);

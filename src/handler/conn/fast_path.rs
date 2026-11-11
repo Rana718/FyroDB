@@ -223,6 +223,19 @@ pub(super) fn dispatch_get_run(conn: &mut Conn<'_>, first_key: (*const u8, usize
       return;
    }
 
+   if keys[0] == keys[1] && keys[2..count].iter().all(|&key| key == keys[0]) {
+      let out = &mut conn.parser.wbuf;
+      let start = out.len();
+      if !conn.store.get_to_buf_hinted_bytes(keys[0], None, out) {
+         if std::str::from_utf8(keys[0]).is_ok() {
+            out.extend_from_slice(b"$-1\r\n");
+         } else {
+            crate::utils::resp::write_err(out, "invalid UTF-8 in request");
+         }
+      }
+      crate::utils::resp::repeat_reply(out, start, count);
+      return;
+   }
    conn
       .store
       .prefetch_slots(&keys[..count], &mut hashes[..count], &mut tables[..count]);
@@ -230,9 +243,9 @@ pub(super) fn dispatch_get_run(conn: &mut Conn<'_>, first_key: (*const u8, usize
       .store
       .probe_and_prefetch_entries(&tables[..count], &hashes[..count], &mut entries[..count]);
    let out = &mut conn.parser.wbuf;
+   // This is only an initial estimate. The Vec writers below grow for the
+   // actual payload size, including when a preceding fallback reallocated.
    out.reserve(count * 64);
-   let old_len = out.len();
-   let mut out_ptr = unsafe { out.as_mut_ptr().add(old_len) };
 
    let mut i = 0;
    while i < count {
@@ -241,108 +254,24 @@ pub(super) fn dispatch_get_run(conn: &mut Conn<'_>, first_key: (*const u8, usize
          end += 1;
       }
       let run_len = end - i;
-
-      let p = entries[i];
-      let mut found = false;
-      if !p.is_null() {
-         let e = unsafe { &*p.cast::<customhash::Entry<crate::storage::value::StoreValue>>() };
-         let state = e.state.load(std::sync::atomic::Ordering::Relaxed);
-         let expected = ((hashes[i] as u32 as u64) << 32) | customhash::STATE_OCCUPIED;
-         if (state & (0xFFFF_FFFF_0000_0000 | customhash::STATE_OCCUPIED)) == expected
-            && e.key.eq_bytes(keys[i])
-         {
-            if state & customhash::STATE_LOCK != 0 {
-               let mut cur = state;
-               while cur & customhash::STATE_LOCK != 0 {
-                  std::hint::spin_loop();
-                  cur = e.state.load(std::sync::atomic::Ordering::Acquire);
-               }
-               if cur & customhash::STATE_OCCUPIED == 0 {
-                  for _ in 0..run_len {
-                     unsafe {
-                        std::ptr::copy_nonoverlapping(b"$-1\r\n".as_ptr(), out_ptr, 5);
-                        out_ptr = out_ptr.add(5);
-                     }
-                  }
-                  i = end;
-                  continue;
-               }
-            }
-            std::sync::atomic::fence(std::sync::atomic::Ordering::Acquire);
-            let val = unsafe { (*e.value.get()).assume_init_ref() };
-            if val.expires_ms == 0 || !val.is_expired() {
-               if let crate::storage::value::FyroDB::String(s) = &val.value {
-                  let written = unsafe { s.write_resp_raw(out_ptr) };
-                  if run_len > 1 {
-                     for step in 1..run_len {
-                        unsafe {
-                           std::ptr::copy_nonoverlapping(
-                              out_ptr,
-                              out_ptr.add(step * written),
-                              written,
-                           );
-                        }
-                     }
-                  }
-                  out_ptr = unsafe { out_ptr.add(written * run_len) };
-                  found = true;
-               }
-            } else {
-               if let Ok(key_str) = std::str::from_utf8(keys[i]) {
-                  conn.store.data.remove(key_str);
-               }
-               for _ in 0..run_len {
-                  unsafe {
-                     std::ptr::copy_nonoverlapping(b"$-1\r\n".as_ptr(), out_ptr, 5);
-                     out_ptr = out_ptr.add(5);
-                  }
-               }
-               i = end;
-               continue;
-            }
+      let start_offset = out.len();
+      // process_buffered's epoch guard protects the prefetched entry.
+      let found = unsafe {
+         conn
+            .store
+            .get_to_buf_fast_entry_bytes(keys[i], hashes[i], entries[i].cast(), out)
+      };
+      if !found {
+         if std::str::from_utf8(keys[i]).is_ok() {
+            out.extend_from_slice(b"$-1\r\n");
+         } else {
+            crate::utils::resp::write_err(out, "invalid UTF-8 in request");
          }
       }
-      if !found {
-         unsafe {
-            out.set_len(out_ptr.offset_from(out.as_ptr()) as usize);
-         }
-         let Ok(key_str) = std::str::from_utf8(keys[i]) else {
-            for _ in 0..run_len {
-               crate::utils::resp::write_err(out, "invalid UTF-8 in request");
-            }
-            out_ptr = unsafe { out.as_mut_ptr().add(out.len()) };
-            i = end;
-            continue;
-         };
-         let start_offset = out.len();
-         if !conn
-            .store
-            .get_to_buf_auto(key_str, Some(hashes[i]), entries[i], out)
-         {
-            out.extend_from_slice(b"$-1\r\n");
-         }
-         let single_len = out.len() - start_offset;
-         if run_len > 1 {
-            let add_bytes = (run_len - 1) * single_len;
-            out.reserve(add_bytes);
-            let src = unsafe { out.as_ptr().add(start_offset) };
-            let mut dst = unsafe { out.as_mut_ptr().add(out.len()) };
-            for _ in 1..run_len {
-               unsafe {
-                  std::ptr::copy_nonoverlapping(src, dst, single_len);
-                  dst = dst.add(single_len);
-               }
-            }
-            unsafe {
-               out.set_len(out.len() + add_bytes);
-            }
-         }
-         out_ptr = unsafe { out.as_mut_ptr().add(out.len()) };
+      if run_len > 1 {
+         crate::utils::resp::repeat_reply(out, start_offset, run_len);
       }
       i = end;
-   }
-   unsafe {
-      out.set_len(out_ptr.offset_from(out.as_ptr()) as usize);
    }
 }
 
@@ -685,8 +614,6 @@ pub(super) fn dispatch_json_get_run(conn: &mut Conn<'_>, first_raw: &[(*const u8
 
    let out = &mut conn.parser.wbuf;
    out.reserve(count * 64);
-   let old_len = out.len();
-   let mut out_ptr = unsafe { out.as_mut_ptr().add(old_len) };
 
    for i in 0..count {
       let p = entries[i];
@@ -705,10 +632,7 @@ pub(super) fn dispatch_json_get_run(conn: &mut Conn<'_>, first_raw: &[(*const u8
                   cur = e.state.load(std::sync::atomic::Ordering::Acquire);
                }
                if cur & customhash::STATE_OCCUPIED == 0 {
-                  unsafe {
-                     std::ptr::copy_nonoverlapping(b"$-1\r\n".as_ptr(), out_ptr, 5);
-                     out_ptr = out_ptr.add(5);
-                  }
+                  crate::utils::resp::write_nil(out);
                   continue;
                }
             }
@@ -716,21 +640,15 @@ pub(super) fn dispatch_json_get_run(conn: &mut Conn<'_>, first_raw: &[(*const u8
             let val = unsafe { (*e.value.get()).assume_init_ref() };
             if val.expires_ms == 0 || !val.is_expired() {
                if let Some(raw) = val.value.as_json_str() {
-                  let written =
-                     unsafe { crate::utils::resp::write_bulk_raw(out_ptr, raw.as_bytes()) };
-                  out_ptr = unsafe { out_ptr.add(written) };
+                  crate::utils::resp::write_bulk(out, raw);
                   found = true;
                }
             }
          }
       }
       if !found {
-         unsafe {
-            out.set_len(out_ptr.offset_from(out.as_ptr()) as usize);
-         }
          let Ok(key_str) = std::str::from_utf8(keys[i]) else {
             crate::utils::resp::write_err(out, "invalid UTF-8 in request");
-            out_ptr = unsafe { out.as_mut_ptr().add(out.len()) };
             continue;
          };
          match conn.store.json_get_to_buf(key_str, &["."], out) {
@@ -738,11 +656,7 @@ pub(super) fn dispatch_json_get_run(conn: &mut Conn<'_>, first_raw: &[(*const u8
             Ok(false) => crate::utils::resp::write_nil(out),
             Err(e) => crate::utils::resp::write_store_err(out, e),
          }
-         out_ptr = unsafe { out.as_mut_ptr().add(out.len()) };
       }
-   }
-   unsafe {
-      out.set_len(out_ptr.offset_from(out.as_ptr()) as usize);
    }
    true
 }
@@ -782,7 +696,10 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
       return;
    }
 
-   if !conn.store.cluster.enabled && !conn.store.at_key_capacity() {
+   if !conn.mode.executing_transaction()
+      && !conn.store.cluster.enabled
+      && !conn.store.at_key_capacity()
+   {
       match id {
          CmdId::Get if raw.len() == 2 => {
             dispatch_get_run(conn, raw[1]);
@@ -1185,7 +1102,7 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
             }
             return;
          }
-         CmdId::JsonGet => {
+         CmdId::JsonGet if raw.len() >= 2 => {
             let out = &mut conn.parser.wbuf;
             let Some(key) = part_str(out, raw[1]) else {
                return;
@@ -1299,11 +1216,11 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
       }
    }
 
-   if park::is_blocking_cmd(cmd) {
+   if !conn.mode.executing_transaction() && park::is_blocking_cmd(cmd) {
       park::dispatch_blocking(conn, raw);
       return;
    }
-   if park::is_blocking_stream_read(cmd, raw) {
+   if !conn.mode.executing_transaction() && park::is_blocking_stream_read(cmd, raw) {
       park::dispatch_stream_read(conn, raw);
       return;
    }
@@ -1315,11 +1232,18 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
          let Some(key) = part_str(out, raw[1]) else {
             return;
          };
-         let Some(value) = part_str(out, raw[2]) else {
-            return;
-         };
          if raw.len() == 3 {
-            conn.store.set_string_auto(key, hint, entry, value, 0);
+            let bytes = unsafe { part_bytes(raw[2]) };
+            if let Ok(value) = std::str::from_utf8(bytes) {
+               conn.store.set_string_auto(key, hint, entry, value, 0);
+            } else {
+               conn.store.set(
+                  key,
+                  crate::storage::value::StoreValue::string_small(
+                     crate::storage::value::SmallStr::from_slice(bytes),
+                  ),
+               );
+            }
             if conn.store.has_replication() {
                conn.store.record_current_value(key);
             }
@@ -1539,7 +1463,7 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
    {
       return ft_search_raw(conn, raw);
    }
-   if is_offloaded_ft(cmd) {
+   if !conn.mode.executing_transaction() && is_offloaded_ft(cmd) {
       return ft_offload_generic(conn, raw);
    }
 
@@ -1786,7 +1710,8 @@ pub(super) fn ft_offload_generic(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]
 }
 
 pub(super) fn ft_search_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
-   let inline = !search_offloaded()
+   let inline = conn.mode.executing_transaction()
+      || !search_offloaded()
       || (raw.len() >= 2 && {
          let idx = unsafe { std::str::from_utf8_unchecked(part_bytes(raw[1])) };
          conn.store.search_state().hnsw_graph_is_clean(idx)

@@ -3,18 +3,19 @@ use crate::utils::resp;
 use std::sync::Arc;
 
 pub fn multi(out: &mut Vec<u8>) {
-   resp::write_ok(out);
+   resp::write_err(out, "MULTI requires a client connection");
 }
 
 pub fn discard(out: &mut Vec<u8>) {
-   resp::write_ok(out);
+   resp::write_err(out, "DISCARD without MULTI");
 }
 
 pub fn exec_empty(out: &mut Vec<u8>) {
-   resp::write_array_header(out, 0);
+   resp::write_err(out, "EXEC without MULTI");
 }
 
 pub fn exec(queue: &[Vec<String>], store: &Arc<Store>, out: &mut Vec<u8>) {
+   let _guard = store.atomic_command_guard();
    resp::write_array_header(out, queue.len());
    const STACK_ARGS: usize = 8;
    for cmd_parts in queue {
@@ -32,7 +33,7 @@ pub fn exec(queue: &[Vec<String>], store: &Arc<Store>, out: &mut Vec<u8>) {
 }
 
 pub fn watch(_parts: &[&str], out: &mut Vec<u8>) {
-   resp::write_ok(out);
+   resp::write_err(out, "WATCH requires a client connection");
 }
 
 pub fn unwatch(out: &mut Vec<u8>) {

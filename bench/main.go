@@ -80,6 +80,11 @@ func main() {
 	jsonOut := flag.String("json", "", "write all results (throughput, latency, memory) as JSON to this path")
 
 	flag.IntVar(&PUB_SUBSCRIBERS, "pub-subs", PUB_SUBSCRIBERS, "pub/sub subscribers")
+	flag.IntVar(&CLIENTS, "clients", CLIENTS, "concurrent clients for throughput modes")
+	flag.IntVar(&OPS_CLIENT, "ops", OPS_CLIENT, "KV operations per client")
+	flag.IntVar(&MIX_OPS_CLIENT, "mix-ops", MIX_OPS_CLIENT, "mixed operations per client")
+	flag.IntVar(&MIX_HOTKEY_OPS, "hotkey-ops", MIX_HOTKEY_OPS, "hot-key operations per client")
+	flag.DurationVar(&HOTKEY_DURATION, "hotkey-duration", 0, "measure hot-key throughput for this duration instead of a fixed count")
 	flag.IntVar(&PUB_PUBLISHERS, "pub-pubs", PUB_PUBLISHERS, "pub/sub publishers")
 	flag.IntVar(&PUB_MSGS_EACH, "pub-msgs", PUB_MSGS_EACH, "pub/sub messages per publisher")
 
@@ -108,6 +113,10 @@ func main() {
 	conc := flag.String("ann-conc", "1,8,32", "ann: concurrency sweep")
 	filters := flag.String("ann-filters", "1,10,50", "ann: filter selectivity sweep (percent)")
 	flag.Parse()
+	if CLIENTS < 1 || OPS_CLIENT < 1 || MIX_OPS_CLIENT < 1 || MIX_HOTKEY_OPS < 1 || HOTKEY_DURATION < 0 {
+		fmt.Fprintln(os.Stderr, "client and operation counts must be positive")
+		os.Exit(2)
+	}
 	annCfg.efs = parseIntList(*efs)
 	annCfg.conc = parseIntList(*conc)
 	annCfg.filters = parseIntList(*filters)

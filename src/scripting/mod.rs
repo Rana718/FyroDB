@@ -251,6 +251,25 @@ fn setup_lua_env(lua: &Lua) -> LuaResult<()> {
    Ok(())
 }
 
+#[inline(always)]
+fn disallowed_in_script(command: &[u8]) -> bool {
+   match command.len() {
+      4 => {
+         command.eq_ignore_ascii_case(b"EVAL")
+            || command.eq_ignore_ascii_case(b"EXEC")
+            || command.eq_ignore_ascii_case(b"SAVE")
+      }
+      5 => command.eq_ignore_ascii_case(b"MULTI") || command.eq_ignore_ascii_case(b"WATCH"),
+      6 => command.eq_ignore_ascii_case(b"SCRIPT") || command.eq_ignore_ascii_case(b"BGSAVE"),
+      7 => {
+         command.eq_ignore_ascii_case(b"EVALSHA")
+            || command.eq_ignore_ascii_case(b"DISCARD")
+            || command.eq_ignore_ascii_case(b"UNWATCH")
+      }
+      _ => false,
+   }
+}
+
 fn execute_redis_call(lua: &Lua, args: LuaMultiValue, is_pcall: bool) -> LuaResult<LuaValue> {
    let store_ptr = CURRENT_STORE.get();
    if store_ptr.is_null() {
@@ -281,7 +300,7 @@ fn execute_redis_call(lua: &Lua, args: LuaMultiValue, is_pcall: bool) -> LuaResu
       let b1 = s1.to_str()?;
       let parts: [&str; 2] = [&b0, &b1];
       let cmd_bytes = b0.as_bytes();
-      if cmd_bytes.len() == 4 && cmd_bytes.eq_ignore_ascii_case(b"EVAL") {
+      if disallowed_in_script(cmd_bytes) {
          let err_msg = "ERR This Redis command is not allowed from scripts";
          if is_pcall {
             let t = lua.create_table_with_capacity(0, 1)?;
@@ -309,12 +328,7 @@ fn execute_redis_call(lua: &Lua, args: LuaMultiValue, is_pcall: bool) -> LuaResu
       let b2 = s2.to_str()?;
       let parts: [&str; 3] = [&b0, &b1, &b2];
       let cmd_bytes = b0.as_bytes();
-      let is_disallowed = match cmd_bytes.len() {
-         4 => cmd_bytes.eq_ignore_ascii_case(b"EVAL"),
-         6 => cmd_bytes.eq_ignore_ascii_case(b"SCRIPT"),
-         7 => cmd_bytes.eq_ignore_ascii_case(b"EVALSHA"),
-         _ => false,
-      };
+      let is_disallowed = disallowed_in_script(cmd_bytes);
       if is_disallowed {
          let err_msg = "ERR This Redis command is not allowed from scripts";
          if is_pcall {
@@ -374,12 +388,7 @@ fn execute_redis_call(lua: &Lua, args: LuaMultiValue, is_pcall: bool) -> LuaResu
 
       let parts = &stack_parts[..args_len];
       let first_bytes = parts[0].as_bytes();
-      let is_disallowed = match first_bytes.len() {
-         4 => first_bytes.eq_ignore_ascii_case(b"EVAL"),
-         6 => first_bytes.eq_ignore_ascii_case(b"SCRIPT"),
-         7 => first_bytes.eq_ignore_ascii_case(b"EVALSHA"),
-         _ => false,
-      };
+      let is_disallowed = disallowed_in_script(first_bytes);
       if is_disallowed {
          let err_msg = "ERR This Redis command is not allowed from scripts";
          if is_pcall {
@@ -446,12 +455,7 @@ fn execute_redis_call(lua: &Lua, args: LuaMultiValue, is_pcall: bool) -> LuaResu
          }
 
          let first_bytes = str_parts[0].as_bytes();
-         let is_disallowed = match first_bytes.len() {
-            4 => first_bytes.eq_ignore_ascii_case(b"EVAL"),
-            6 => first_bytes.eq_ignore_ascii_case(b"SCRIPT"),
-            7 => first_bytes.eq_ignore_ascii_case(b"EVALSHA"),
-            _ => false,
-         };
+         let is_disallowed = disallowed_in_script(first_bytes);
          if is_disallowed {
             let err_msg = "ERR This Redis command is not allowed from scripts";
             if is_pcall {
@@ -690,11 +694,11 @@ pub fn lua_to_resp(val: LuaValue, out: &mut Vec<u8>) {
                   || msg_ref.starts_with("NOSCRIPT")
                {
                   out.extend_from_slice(b"-");
-                  out.extend_from_slice(msg_ref.as_bytes());
+                  resp::write_line_bytes(out, msg_ref.as_bytes());
                   out.extend_from_slice(b"\r\n");
                } else {
                   out.extend_from_slice(b"-ERR ");
-                  out.extend_from_slice(msg_ref.as_bytes());
+                  resp::write_line_bytes(out, msg_ref.as_bytes());
                   out.extend_from_slice(b"\r\n");
                }
                return;
@@ -765,6 +769,7 @@ fn eval_internal(
    store: &Arc<Store>,
    out: &mut Vec<u8>,
 ) -> bool {
+   let _isolation = store.atomic_command_guard();
    LUA.with(|lua| {
       // 1. Check epoch for SCRIPT FLUSH synchronization
       let store_epoch = store
@@ -830,7 +835,7 @@ fn eval_internal(
                Err(err) => {
                   let err_msg = err.to_string();
                   out.extend_from_slice(b"-ERR Error compiling script: ");
-                  out.extend_from_slice(err_msg.as_bytes());
+                  resp::write_line_bytes(out, err_msg.as_bytes());
                   out.extend_from_slice(b"\r\n");
                   return true;
                }
@@ -885,7 +890,7 @@ fn eval_internal(
          Err(err) => {
             let err_msg = err.to_string();
             out.extend_from_slice(b"-ERR Error running script: ");
-            out.extend_from_slice(err_msg.as_bytes());
+            resp::write_line_bytes(out, err_msg.as_bytes());
             out.extend_from_slice(b"\r\n");
          }
       }

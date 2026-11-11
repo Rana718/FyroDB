@@ -59,6 +59,24 @@ pub const ZERO: &[u8] = b":0\r\n";
 pub const ONE: &[u8] = b":1\r\n";
 pub const PONG: &[u8] = b"+PONG\r\n";
 
+#[inline(never)]
+pub(crate) fn repeat_reply(out: &mut Vec<u8>, start: usize, copies: usize) {
+   let width = out.len() - start;
+   if copies <= 1 || width == 0 {
+      return;
+   }
+   let additional = width
+      .checked_mul(copies - 1)
+      .expect("reply length overflow");
+   out.reserve(additional);
+   let mut written = 1;
+   while written < copies {
+      let count = written.min(copies - written);
+      out.extend_from_within(start..start + count * width);
+      written += count;
+   }
+}
+
 static INT_CACHE: [&[u8]; 10] = [
    b":0\r\n", b":1\r\n", b":2\r\n", b":3\r\n", b":4\r\n", b":5\r\n", b":6\r\n", b":7\r\n",
    b":8\r\n", b":9\r\n",
@@ -278,7 +296,7 @@ pub fn write_opt_array(out: &mut Vec<u8>, items: &[Option<String>]) {
 #[inline]
 pub fn write_err(out: &mut Vec<u8>, msg: &str) {
    out.extend_from_slice(b"-ERR ");
-   out.extend_from_slice(msg.as_bytes());
+   write_line_bytes(out, msg.as_bytes());
    out.extend_from_slice(b"\r\n");
 }
 
@@ -291,11 +309,22 @@ pub fn write_store_err(out: &mut Vec<u8>, err: &str) {
    let code = err.split(' ').next().unwrap_or("");
    if code.len() >= 3 && err.len() > code.len() && code.bytes().all(|b| b.is_ascii_uppercase()) {
       out.push(b'-');
-      out.extend_from_slice(err.as_bytes());
+      write_line_bytes(out, err.as_bytes());
       out.extend_from_slice(b"\r\n");
    } else {
       write_err(out, err);
    }
+}
+
+#[inline]
+pub(crate) fn write_line_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
+   out.extend(bytes.iter().map(|&byte| {
+      if matches!(byte, b'\r' | b'\n') {
+         b' '
+      } else {
+         byte
+      }
+   }));
 }
 
 #[inline]
@@ -313,7 +342,7 @@ pub fn write_wrong_args(out: &mut Vec<u8>, cmd: &str) {
 #[inline]
 pub fn write_simple(out: &mut Vec<u8>, s: &str) {
    out.push(b'+');
-   out.extend_from_slice(s.as_bytes());
+   write_line_bytes(out, s.as_bytes());
    out.extend_from_slice(b"\r\n");
 }
 

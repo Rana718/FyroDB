@@ -148,6 +148,7 @@ impl Store {
       &self,
       record: &crate::cluster::MutationRecord,
    ) -> Result<(), crate::cluster::ApplyError> {
+      let _guard = self.command_guard(usize::MAX);
       let key =
          std::str::from_utf8(&record.key).map_err(|_| crate::cluster::ApplyError::InvalidKey)?;
       if crate::cluster::hash_slot(record.key.as_slice()) != record.slot {

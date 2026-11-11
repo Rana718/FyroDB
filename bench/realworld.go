@@ -10,15 +10,17 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
 const MIX_PIPE = 500
 
 var (
-	MIX_OPS_CLIENT = 20_000
-	MIX_HOTKEY_OPS = 100_000
-	MIX_QUEUE_OPS  = 20_000
+	MIX_OPS_CLIENT  = 20_000
+	MIX_HOTKEY_OPS  = 100_000
+	MIX_QUEUE_OPS   = 20_000
+	HOTKEY_DURATION time.Duration
 )
 
 var (
@@ -43,9 +45,9 @@ var (
 	jsonSetCmdHdr = []byte("*4\r\n$8\r\nJSON.SET\r\n$")
 	jsonGetCmdHdr = []byte("*3\r\n$8\r\nJSON.GET\r\n$")
 	// $27\r\n + 27-byte doc + \r\n  (path="."; value stored verbatim)
-	jsonDocPart  = []byte("\r\n$1\r\n.\r\n$27\r\n{\"name\":\"test\",\"score\":100}\r\n")
-	jsonGetPath  = []byte("\r\n$1\r\n.\r\n")
-	jsonKeyPfx   = []byte("json:")
+	jsonDocPart = []byte("\r\n$1\r\n.\r\n$27\r\n{\"name\":\"test\",\"score\":100}\r\n")
+	jsonGetPath = []byte("\r\n$1\r\n.\r\n")
+	jsonKeyPfx  = []byte("json:")
 )
 
 type benchResult struct {
@@ -178,7 +180,6 @@ func printSummaryTable() {
 	}
 	fmt.Println()
 }
-
 
 func runBenchMixed() {
 	if len(addrs) > 1 {
@@ -329,6 +330,9 @@ func runBenchHash() {
 				hsets := (batch + 1) / 2
 				hgets := batch / 2
 				totalBytes := hsets*len(singleHset) + hgets*len(singleHget)
+				if batch < MIX_PIPE {
+					copy(fullBatch[hsets*len(singleHset):totalBytes], hgetBatch[:hgets*len(singleHget)])
+				}
 				writeFull(conn, fullBatch[:totalBytes])
 				skipLines(r, hsets)
 				skipGetReplies(r, hgets)
@@ -377,6 +381,9 @@ func runBenchList() {
 				pushes := (batch + 1) / 2
 				pops := batch / 2
 				totalBytes := pushes*len(singleLpush) + pops*len(singleRpop)
+				if batch < MIX_PIPE {
+					copy(fullBatch[pushes*len(singleLpush):totalBytes], rpopBatch[:pops*len(singleRpop)])
+				}
 				writeFull(conn, fullBatch[:totalBytes])
 				skipLines(r, pushes)
 				skipGetReplies(r, pops)
@@ -517,9 +524,10 @@ func runBenchExpire() {
 func runBenchHotKey() {
 	conns := preDialTo(CLIENTS, 0)
 	defer closeAll(conns)
-	total := int64(CLIENTS * MIX_HOTKEY_OPS)
+	var completed int64
 
 	start := time.Now()
+	deadline := start.Add(HOTKEY_DURATION)
 	var wg sync.WaitGroup
 	hotkey := sharedClusterKey("hot")
 	for _, conn := range conns {
@@ -532,19 +540,36 @@ func runBenchHotKey() {
 			getBatch := bytes.Repeat(singleGet, halfPipe)
 			fullBatch := append(append([]byte(nil), setBatch...), getBatch...)
 
-			for sent := 0; sent < MIX_HOTKEY_OPS; {
+			sent := 0
+			for {
 				batch := min(MIX_PIPE, MIX_HOTKEY_OPS-sent)
+				if HOTKEY_DURATION > 0 {
+					if !time.Now().Before(deadline) {
+						break
+					}
+					batch = MIX_PIPE
+				} else if sent >= MIX_HOTKEY_OPS {
+					break
+				}
 				sets := (batch + 1) / 2
 				gets := batch / 2
 				totalBytes := sets*len(singleSet) + gets*len(singleGet)
+				if batch < MIX_PIPE {
+					copy(fullBatch[sets*len(singleSet):totalBytes], getBatch[:gets*len(singleGet)])
+				}
 				writeFull(conn, fullBatch[:totalBytes])
 				discardN(r, sets*5+gets*11)
 				sent += batch
 			}
+			atomic.AddInt64(&completed, int64(sent))
 		})
 	}
 	wg.Wait()
-	recordResult("Hot Key (1 key, contention)", total, time.Since(start))
+	label := "Hot Key (1 key, contention)"
+	if HOTKEY_DURATION > 0 {
+		label += " sustained"
+	}
+	recordResult(label, atomic.LoadInt64(&completed), time.Since(start))
 }
 
 func runBenchQueue() {

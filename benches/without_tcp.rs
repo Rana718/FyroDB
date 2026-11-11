@@ -427,9 +427,13 @@ fn main() {
    let args: Vec<String> = std::env::args().collect();
    let mut mode = "all".to_string();
    let mut cli_workers: Option<usize> = None;
+   let mut json_path = None;
    let mut i = 1;
    while i < args.len() {
-      if args[i] == "-m" && i + 1 < args.len() {
+      if args[i] == "--json" && i + 1 < args.len() {
+         json_path = Some(args[i + 1].clone());
+         i += 2;
+      } else if args[i] == "-m" && i + 1 < args.len() {
          mode = args[i + 1].clone();
          i += 2;
       } else if (args[i] == "-w" || args[i] == "--workers") && i + 1 < args.len() {
@@ -461,19 +465,19 @@ fn main() {
    let mut results: Vec<BenchResult> = Vec::new();
 
    match mode.as_str() {
-      "key" => run_kv(&store, &mut results),
-      "pub" => run_pubsub(&pubsub, &mut results),
-      "mix" => run_mix(&store, &mut results),
+      "key" => run_kv(&store, workers, &mut results),
+      "pub" => run_pubsub(&pubsub, workers, &mut results),
+      "mix" => run_mix(&store, workers, &mut results),
       "vec" => run_vector(&store, workers, &mut results),
       "bench" => {
-         run_kv(&store, &mut results);
-         run_pubsub(&pubsub, &mut results);
-         run_mix(&store, &mut results);
+         run_kv(&store, workers, &mut results);
+         run_pubsub(&pubsub, workers, &mut results);
+         run_mix(&store, workers, &mut results);
       }
       "all" => {
-         run_kv(&store, &mut results);
-         run_pubsub(&pubsub, &mut results);
-         run_mix(&store, &mut results);
+         run_kv(&store, workers, &mut results);
+         run_pubsub(&pubsub, workers, &mut results);
+         run_mix(&store, workers, &mut results);
          run_vector(&store, workers, &mut results);
       }
       other => {
@@ -486,18 +490,31 @@ fn main() {
    }
 
    print_summary_table(&results);
+   if let Some(path) = json_path {
+      let rows: Vec<_> = results
+         .iter()
+         .map(|r| {
+            serde_json::json!({
+               "label": r.label, "ops": r.ops, "elapsed_ns": r.elapsed.as_nanos(),
+               "ops_per_sec": r.ops_per_sec(),
+            })
+         })
+         .collect();
+      let report = serde_json::json!({
+         "transport": "in-process", "workers": workers, "logical_clients": 100,
+         "kv_operations": 10_000_000, "mixed_logical_operations": 2_000_000,
+         "hotkey_logical_operations": 10_000_000, "throughput": rows,
+         "note": "Batched storage calls credit equivalent logical work; these are not TCP request/reply rates.",
+      });
+      std::fs::write(path, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
+   }
 }
 
 // --- KV BENCHMARK ---
-fn run_kv(store: &Arc<Store>, results: &mut Vec<BenchResult>) {
+fn run_kv(store: &Arc<Store>, workers: usize, results: &mut Vec<BenchResult>) {
    let clients = 100usize;
    let ops_client = 100_000usize;
    let total_ops = (clients * ops_client) as i64;
-   let workers = std::env::var("FYRODB_WORKERS")
-      .ok()
-      .and_then(|v| v.parse::<usize>().ok())
-      .filter(|&w| w > 0)
-      .unwrap_or_else(num_cpus::get);
    const BATCH: usize = 64;
 
    // Warmup
@@ -816,7 +833,7 @@ fn run_kv(store: &Arc<Store>, results: &mut Vec<BenchResult>) {
 }
 
 // --- PUBSUB BENCHMARK ---
-fn run_pubsub(pubsub: &Arc<PubSub>, results: &mut Vec<BenchResult>) {
+fn run_pubsub(pubsub: &Arc<PubSub>, workers: usize, results: &mut Vec<BenchResult>) {
    let subscribers = 50usize;
    let publishers = 10usize;
    let msgs_publisher = 20_000usize;
@@ -826,11 +843,6 @@ fn run_pubsub(pubsub: &Arc<PubSub>, results: &mut Vec<BenchResult>) {
    let channel = "pubsub:bench";
    let message_payload = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
-   let workers = std::env::var("FYRODB_WORKERS")
-      .ok()
-      .and_then(|v| v.parse::<usize>().ok())
-      .filter(|&w| w > 0)
-      .unwrap_or_else(num_cpus::get);
    let notifiers: Vec<Arc<WorkerNotifier>> = (0..workers)
       .map(|w_id| {
          let poll = mio::Poll::new().unwrap();
@@ -891,6 +903,10 @@ fn run_pubsub(pubsub: &Arc<PubSub>, results: &mut Vec<BenchResult>) {
       }
    });
    let e2e_elapsed = start_e2e.elapsed();
+   assert_eq!(
+      delivered_count.load(std::sync::atomic::Ordering::Relaxed),
+      total_deliveries as u64
+   );
    results.push(BenchResult {
       label: "Pub/Sub delivery",
       ops: total_deliveries,
@@ -903,16 +919,11 @@ fn run_pubsub(pubsub: &Arc<PubSub>, results: &mut Vec<BenchResult>) {
 }
 
 // --- MIXED WORKLOAD BENCHMARK ---
-fn run_mix(store: &Arc<Store>, results: &mut Vec<BenchResult>) {
+fn run_mix(store: &Arc<Store>, workers: usize, results: &mut Vec<BenchResult>) {
    let clients = 100usize;
    let mix_ops_client = 20_000usize;
    let pipe_size = 500usize;
    let total_mix_ops = (clients * mix_ops_client) as i64;
-   let workers = std::env::var("FYRODB_WORKERS")
-      .ok()
-      .and_then(|v| v.parse::<usize>().ok())
-      .filter(|&w| w > 0)
-      .unwrap_or_else(num_cpus::get);
    let clients_per_worker = clients.div_ceil(workers);
 
    const BATCH: usize = customhash::PREFETCH_BATCH;

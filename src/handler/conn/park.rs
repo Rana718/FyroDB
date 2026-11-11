@@ -139,7 +139,9 @@ impl<'a> Conn<'a> {
          uid: self.uid,
          done: false,
       };
+      let store = Arc::clone(self.store);
       fyro_vector::pool::global().spawn(move || {
+         let _isolation = store.command_guard(usize::MAX);
          let mut out = Vec::with_capacity(256);
          job(&mut out);
          guard.send(out);
@@ -189,11 +191,14 @@ impl<'a> Conn<'a> {
                return true;
             }
             let store = self.store;
-            let served = match &mut self.park {
-               Some(Parked::Blocking(b)) => {
-                  matches!(b.op.attempt(store, &mut self.parser.wbuf), Attempt::Served)
+            let served = {
+               let _guard = store.command_guard(self.worker);
+               match &mut self.park {
+                  Some(Parked::Blocking(b)) => {
+                     matches!(b.op.attempt(store, &mut self.parser.wbuf), Attempt::Served)
+                  }
+                  _ => return true,
                }
-               _ => return true,
             };
             if !served {
                return true;

@@ -69,7 +69,11 @@ impl Drop for SnapshotGuard<'_> {
    }
 }
 
-fn write_keyspace(w: &mut impl Write, store: &Store) -> io::Result<()> {
+fn write_keyspace(
+   w: &mut impl Write,
+   store: &Store,
+   boundary: crate::storage::store::CommandGuard<'_>,
+) -> io::Result<()> {
    let side: std::sync::Arc<parking_lot::Mutex<Vec<u8>>> = Default::default();
    let sink_buf = std::sync::Arc::clone(&side);
    let sink: customhash::SnapSink<StoreValue> =
@@ -83,6 +87,7 @@ fn write_keyspace(w: &mut impl Write, store: &Store) -> io::Result<()> {
    }
    let guard = SnapshotGuard(store);
    *AOF_MARK.lock() = crate::storage::persistence::aof::get().map(|a| a.rotate());
+   drop(boundary);
    for shard in 0..store.data.shard_count() {
       let mut result = Ok(());
       store.data.snapshot_shard(shard, |k, v| {
@@ -100,6 +105,7 @@ fn write_keyspace(w: &mut impl Write, store: &Store) -> io::Result<()> {
 }
 
 pub fn save(store: &Store, path: &str) -> io::Result<()> {
+   let boundary = store.command_guard(usize::MAX);
    let _serial = SAVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
    let tmp = format!("{path}.tmp");
    {
@@ -107,7 +113,7 @@ pub fn save(store: &Store, path: &str) -> io::Result<()> {
       let mut w = BufWriter::with_capacity(1 << 20, f);
       w.write_all(MAGIC)?;
       w.write_all(&[VERSION])?;
-      write_keyspace(&mut w, store)?;
+      write_keyspace(&mut w, store, boundary)?;
       write_search_indexes(&mut w, store)?;
       write_vector_graphs(&mut w, store)?;
       write_u8(&mut w, TYPE_EOF)?;
@@ -190,6 +196,9 @@ pub fn encode_single_value(value: &StoreValue) -> io::Result<Vec<u8>> {
 }
 
 pub fn background_save_loop(store: &Store, path: &str, interval: Duration) {
+   if interval.is_zero() {
+      return;
+   }
    loop {
       std::thread::sleep(interval);
       match save(store, path) {

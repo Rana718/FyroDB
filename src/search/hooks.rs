@@ -129,7 +129,7 @@ impl IndexDirty {
 pub struct SearchHooks {
    indexes: RwLock<Vec<Arc<IndexDirty>>>,
    active: AtomicBool,
-   /// The keyspace's observing flag: on exactly while an index exists.
+   /// Shared observer flag; this hook controls the index bit.
    observing: std::sync::OnceLock<Arc<customhash::Flag>>,
 }
 

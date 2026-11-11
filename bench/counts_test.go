@@ -6,9 +6,11 @@ import (
 	"io"
 	"net"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func setVar[T any](t *testing.T, p *T, v T) {
@@ -102,13 +104,14 @@ func cmdID(name []byte) int {
 }
 
 type fakeServer struct {
-	ln        net.Listener
-	wg        sync.WaitGroup
-	mu        sync.Mutex
-	subs      map[string][]*subConn
-	conns     []*connCounts
-	other     map[string]int64
-	delivered atomic.Int64
+	ln           net.Listener
+	wg           sync.WaitGroup
+	mu           sync.Mutex
+	subs         map[string][]*subConn
+	conns        []*connCounts
+	other        map[string]int64
+	dropMessages bool
+	delivered    atomic.Int64
 }
 
 type connCounts struct {
@@ -206,8 +209,14 @@ func (s *fakeServer) reply(w *bufio.Writer, cc *connCounts, conn net.Conn, id in
 		w.WriteString("+PONG\r\n")
 	case cmdSet, cmdFlush, cmdJsonSet:
 		w.WriteString("+OK\r\n")
-	case cmdGet, cmdHget, cmdRpop, cmdJsonGet:
+	case cmdGet:
 		w.WriteString("$5\r\nvalue\r\n")
+	case cmdHget:
+		w.WriteString(fastHgetFrame)
+	case cmdRpop:
+		w.WriteString(fastPopFrame)
+	case cmdJsonGet:
+		w.WriteString("$27\r\n{\"name\":\"test\",\"score\":100}\r\n")
 	default:
 		w.WriteString(":1\r\n")
 	}
@@ -228,7 +237,14 @@ func (s *fakeServer) fanOut(channel, payload []byte) int {
 	frame := appendMessageFrame(nil, channel, payload)
 	s.mu.Lock()
 	targets := append([]*subConn(nil), s.subs[string(channel)]...)
+	drop := s.dropMessages
 	s.mu.Unlock()
+	if drop {
+		for _, sc := range targets {
+			sc.conn.Close()
+		}
+		return len(targets)
+	}
 	for _, sc := range targets {
 		sc.wmu.Lock()
 		writeAll(sc.conn, frame)
@@ -531,8 +547,8 @@ func TestMixRequestCounts(t *testing.T) {
 		"RPOP":  half * int64(MIX_QUEUE_OPS),
 	})
 	phase("json", runBenchJson, map[string]int64{
-		"JSON.SET": ops/2 + 1,
-		"JSON.GET": ops / 2,
+		"JSON.SET": ops + 1,
+		"JSON.GET": ops,
 	})
 }
 
@@ -617,8 +633,8 @@ func TestFullMixRequestCounts(t *testing.T) {
 		"SADD":     ops,
 		"ZADD":     ops,
 		"EXPIRE":   ops,
-		"JSON.SET": ops/2 + 1,
-		"JSON.GET": ops / 2,
+		"JSON.SET": ops + 1,
+		"JSON.GET": ops,
 		"FLUSHALL": 14,
 		"PING":     14,
 		"XADD":     ops,
@@ -664,5 +680,52 @@ func TestPubSubRequestCounts(t *testing.T) {
 	if got := srv.count("MESSAGE"); got != publishes*int64(PUB_SUBSCRIBERS) {
 		t.Errorf("message frames delivered = %d, want %d",
 			got, publishes*int64(PUB_SUBSCRIBERS))
+	}
+}
+
+func TestPubSubRejectsDisconnectedSubscriber(t *testing.T) {
+	srv := startFakeServer(t)
+	srv.mu.Lock()
+	srv.dropMessages = true
+	srv.mu.Unlock()
+	setVar(t, &PUB_SUBSCRIBERS, 1)
+	setVar(t, &PUB_PUBLISHERS, 1)
+	setVar(t, &PUB_MSGS_EACH, 1)
+	defer func() {
+		failure, ok := recover().(string)
+		if !ok || !strings.Contains(failure, "incomplete pub/sub delivery") {
+			t.Fatalf("expected incomplete-delivery error, got %v", failure)
+		}
+	}()
+	runPubSub(srv.addr())
+}
+
+func TestPartialMixedBatchesHaveCompleteRequests(t *testing.T) {
+	srv := startFakeServer(t)
+	setVar(t, &addrs, []string{srv.addr()})
+	setVar(t, &CLIENTS, 2)
+	setVar(t, &MIX_OPS_CLIENT, 201)
+	setVar(t, &MIX_HOTKEY_OPS, 501)
+	runBenchHash()
+	runBenchList()
+	runBenchHotKey()
+	for command, count := range map[string]int64{"HSET": 202, "HGET": 200, "LPUSH": 202, "RPOP": 200, "SET": 502, "GET": 500} {
+		if got := srv.count(command); got != count {
+			t.Errorf("%s: got %d, expected %d", command, got, count)
+		}
+	}
+}
+
+func TestTimedHotKeyCountsCompletedRequests(t *testing.T) {
+	srv := startFakeServer(t)
+	setVar(t, &addrs, []string{srv.addr()})
+	setVar(t, &CLIENTS, 2)
+	setVar(t, &MIX_HOTKEY_OPS, 1)
+	setVar(t, &HOTKEY_DURATION, 20*time.Millisecond)
+	setVar(t, &mixResults, []benchResult(nil))
+	runBenchHotKey()
+	actual := srv.count("SET") + srv.count("GET")
+	if len(mixResults) != 1 || mixResults[0].ops != actual || actual <= 2 {
+		t.Fatalf("reported work does not match completed wire requests: %v vs %d", mixResults, actual)
 	}
 }
