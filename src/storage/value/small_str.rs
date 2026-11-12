@@ -45,6 +45,19 @@ pub struct SmallStr {
    len: Tag,
 }
 
+#[inline(never)]
+fn copy_medium_payload(destination: &mut [u8], source: &[u8]) {
+   let len = source.len();
+   debug_assert!((65..=256).contains(&len));
+   if len <= 128 {
+      destination[..64].copy_from_slice(&source[..64]);
+      destination[len - 64..len].copy_from_slice(&source[len - 64..len]);
+   } else {
+      destination[..128].copy_from_slice(&source[..128]);
+      destination[len - 128..len].copy_from_slice(&source[len - 128..len]);
+   }
+}
+
 const CRLF_U16: u16 = u16::from_ne_bytes(*b"\r\n");
 
 impl SmallStr {
@@ -193,6 +206,8 @@ impl SmallStr {
          if (32..=64).contains(&len) {
             destination[..32].copy_from_slice(&s[..32]);
             destination[len - 32..len].copy_from_slice(&s[len - 32..len]);
+         } else if (65..=256).contains(&len) {
+            copy_medium_payload(destination, s);
          } else {
             destination.copy_from_slice(s);
          }
@@ -244,7 +259,7 @@ impl SmallStr {
    #[inline(always)]
    pub(crate) fn prefetch_payload(&self) {
       let bytes = self.as_bytes();
-      if !(24..=256).contains(&bytes.len()) {
+      if !(24..=1024).contains(&bytes.len()) {
          return;
       }
       for pointer in [bytes.as_ptr(), bytes.as_ptr().wrapping_add(bytes.len() - 1)] {
