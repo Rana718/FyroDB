@@ -294,11 +294,13 @@ fn vector(
       let cands = graph.search(qv, depth, ef.max(depth));
       if graph.is_quantized() {
          let fetch = |id: usize| {
-            entry
-               .key_for_id(id)
-               .and_then(|k| crate::search::graph::doc_vector(store, def, field, attrs, &k))
+            entry.key_for_id(id).and_then(|k| {
+               crate::search::graph::with_doc_vector(store, def, field, attrs, &k, |v| {
+                  fyro_vector::distance::distance(attrs.metric, qv, v)
+               })
+            })
          };
-         graph.rerank(qv, cands, window, &fetch)
+         graph.rerank_by(cands, window, &fetch)
       } else {
          cands.into_iter().take(window).collect()
       }

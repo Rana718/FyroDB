@@ -9,14 +9,19 @@ pub enum ElemType {
 
 impl ElemType {
    pub fn parse(s: &str) -> Option<Self> {
-      Some(match s.to_ascii_uppercase().as_str() {
-         "FLOAT32" => Self::Float32,
-         "FLOAT16" => Self::Float16,
-         "BFLOAT16" => Self::BFloat16,
-         "INT8" => Self::Int8,
-         "UINT8" => Self::UInt8,
-         _ => return None,
-      })
+      if s.eq_ignore_ascii_case("FLOAT32") {
+         Some(Self::Float32)
+      } else if s.eq_ignore_ascii_case("FLOAT16") {
+         Some(Self::Float16)
+      } else if s.eq_ignore_ascii_case("BFLOAT16") {
+         Some(Self::BFloat16)
+      } else if s.eq_ignore_ascii_case("INT8") {
+         Some(Self::Int8)
+      } else if s.eq_ignore_ascii_case("UINT8") {
+         Some(Self::UInt8)
+      } else {
+         None
+      }
    }
 
    pub fn as_str(self) -> &'static str {
@@ -135,6 +140,24 @@ pub fn f16_to_f32(h: u16) -> f32 {
 #[cfg(test)]
 mod tests {
    use super::*;
+
+   #[test]
+   fn element_type_parsing_preserves_case_insensitivity() {
+      for (name, elem) in [
+         ("FLOAT32", ElemType::Float32),
+         ("FLOAT16", ElemType::Float16),
+         ("BFLOAT16", ElemType::BFloat16),
+         ("INT8", ElemType::Int8),
+         ("UINT8", ElemType::UInt8),
+      ] {
+         assert_eq!(ElemType::parse(name), Some(elem));
+         assert_eq!(ElemType::parse(&name.to_ascii_lowercase()), Some(elem));
+      }
+      assert_eq!(ElemType::parse("fLoAt32"), Some(ElemType::Float32));
+      for invalid in ["", " FLOAT32", "FLOAT32 ", "FLOAT64", "İNT8"] {
+         assert_eq!(ElemType::parse(invalid), None);
+      }
+   }
 
    #[test]
    fn f16_decodes_known_values() {

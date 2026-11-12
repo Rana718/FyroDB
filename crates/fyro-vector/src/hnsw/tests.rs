@@ -2,6 +2,27 @@ use super::*;
 use crate::distance::distance;
 
 #[test]
+fn borrowed_reranking_matches_owned_vectors_and_skips_missing_documents() {
+   let vectors = [v(1.0, 64), v(2.0, 64), v(3.0, 64)];
+   let query = v(1.5, 64);
+   for metric in [
+      DistanceMetric::L2,
+      DistanceMetric::Cosine,
+      DistanceMetric::Ip,
+   ] {
+      let graph = HnswGraph::new(metric, 64, 16, 200);
+      let candidates = vec![(9.0, 0), (4.0, 1), (1.0, 2), (0.0, 3)];
+      let owned = graph.rerank(&query, candidates.clone(), 2, &|id| {
+         vectors.get(id).cloned()
+      });
+      let borrowed = graph.rerank_by(candidates, 2, &|id| {
+         vectors.get(id).map(|v| distance(metric, &query, v))
+      });
+      assert_eq!(borrowed, owned);
+   }
+}
+
+#[test]
 fn flat_arena_omits_edges_and_preserves_vectors_through_dump_and_reorder() {
    let data: Vec<_> = (0..512).map(|i| v(i as f32, 128)).collect();
    let items: Vec<_> = data

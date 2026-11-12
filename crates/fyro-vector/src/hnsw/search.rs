@@ -57,11 +57,21 @@ impl HnswGraph {
       k: usize,
       fetch: &dyn Fn(usize) -> Option<Vec<f32>>,
    ) -> Vec<(f32, usize)> {
+      self.rerank_by(cands, k, &|id| {
+         fetch(id).map(|v| crate::distance::distance(self.metric, q, &v))
+      })
+   }
+
+   /// Scores candidates without requiring an owned vector per fetch.
+   pub fn rerank_by(
+      &self,
+      cands: Vec<(f32, usize)>,
+      k: usize,
+      score: &dyn Fn(usize) -> Option<f32>,
+   ) -> Vec<(f32, usize)> {
       let mut out: Vec<(f32, usize)> = cands
          .into_iter()
-         .filter_map(|(_, id)| {
-            fetch(id).map(|v| (crate::distance::distance(self.metric, q, &v), id))
-         })
+         .filter_map(|(_, id)| score(id).map(|d| (d, id)))
          .collect();
       out.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
       out.truncate(k);

@@ -135,6 +135,17 @@ pub fn doc_vector(
    attrs: &VectorAttrs,
    key: &str,
 ) -> Option<Vec<f32>> {
+   with_doc_vector(store, def, field, attrs, key, <[f32]>::to_vec)
+}
+
+pub(crate) fn with_doc_vector<R>(
+   store: &Store,
+   def: &IndexDef,
+   field: &str,
+   attrs: &VectorAttrs,
+   key: &str,
+   visit: impl FnOnce(&[f32]) -> R,
+) -> Option<R> {
    if !def.matches_key(key) {
       return None;
    }
@@ -143,7 +154,7 @@ pub fn doc_vector(
          return None;
       }
       let h = crate::storage::value::FyroDB::as_hash(&val.value)?;
-      attrs.decode(h.get(field)?.as_bytes())
+      attrs.with_f32_slice(h.get(field)?.as_bytes(), visit)
    })?
 }
 
@@ -167,6 +178,13 @@ fn new_graph(attrs: &VectorAttrs) -> Arc<HnswGraph> {
 
 /// RaBitQ codebook training sample size (every n-th vector of the scan).
 const TRAIN_SAMPLE: usize = 16_384;
+const PREPARE_BYTES: usize = 2 * 1024 * 1024;
+
+fn prepare_vectors(graph: &HnswGraph, vectors: &mut Vec<(usize, Vec<f32>)>) {
+   let items: Vec<_> = vectors.iter().map(|(id, v)| (*id, v.as_slice())).collect();
+   graph.prepare_batch(&items);
+   vectors.clear();
+}
 
 /// Full build: scan keyspace preparing vectors, then parallel link on the pool,
 /// publishing the entry periodically for partial search.
@@ -223,19 +241,23 @@ fn build_graph_entry(
    }
    {
       let mut km = entry.keys.write();
-      let mut vecs: Vec<(usize, Vec<f32>)> = Vec::with_capacity(expected);
+      let batch = (PREPARE_BYTES / (attrs.dims * size_of::<f32>())).clamp(1, 4096);
+      let mut vecs: Vec<(usize, Vec<f32>)> = Vec::with_capacity(expected.min(batch));
       let mut next = 0usize;
       store.data.for_each(|k, val| {
          if let Some(v) = indexable(k, val) {
             km.insert(k.into(), next as u32);
             vecs.push((next, v));
             next += 1;
+            if vecs.len() == batch {
+               prepare_vectors(&graph, &mut vecs);
+            }
          }
       });
-      let items: Vec<(usize, &[f32])> = vecs.iter().map(|(id, v)| (*id, v.as_slice())).collect();
-      graph.prepare_batch(&items);
+      prepare_vectors(&graph, &mut vecs);
    }
    if !linked {
+      rust_zmalloc::purge();
       return entry;
    }
    let ids: Vec<usize> = (0..graph.node_count()).collect();
@@ -247,6 +269,7 @@ fn build_graph_entry(
       }
    });
    if ids.len() < REORDER_MIN {
+      rust_zmalloc::purge();
       return entry;
    }
    let (reordered, map) = graph.reordered();
@@ -719,6 +742,37 @@ mod tests {
          .write()
          .insert(("ready".into(), "vec".into()), Arc::clone(&entry));
       (store, def, entry)
+   }
+
+   #[test]
+   fn bounded_vector_build_keeps_every_document_and_borrows_stored_floats() {
+      let (store, def, _) = fixture("FLAT");
+      let attrs = def.field("vec").unwrap().vector.as_ref().unwrap();
+      for i in 0..5000 {
+         let blob = [i as f32, 1.0].map(f32::to_le_bytes).concat();
+         store
+            .hset_bytes(&format!("doc:{i}"), &[("vec", &blob)])
+            .unwrap();
+      }
+      let entry = build_graph_entry(&store.search, &store, &def, "vec", attrs, &|_| {});
+      assert_eq!(entry.len(), 5000);
+      for i in [0, 4095, 4096, 4999] {
+         let key = format!("doc:{i}");
+         let id = entry.id_for_key(&key).unwrap();
+         assert!(entry.graph.vector_matches(id, &[i as f32, 1.0]));
+         let stored = store.data.get_ref(&key).unwrap();
+         let bytes = stored
+            .value
+            .as_hash()
+            .unwrap()
+            .get("vec")
+            .unwrap()
+            .as_bytes();
+         assert_eq!(
+            with_doc_vector(&store, &def, "vec", attrs, &key, |v| v.as_ptr() as usize),
+            Some(bytes.as_ptr() as usize)
+         );
+      }
    }
 
    #[test]

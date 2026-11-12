@@ -473,13 +473,15 @@ fn knn_search(
       // deeper head and rerank it with the documents' exact vectors.
       let depth = graph.rerank_depth(knn.k, ef);
       let fetch = |id: usize| {
-         entry
-            .key_for_id(id)
-            .and_then(|key| crate::search::graph::doc_vector(store, def, &knn.field, vattrs, &key))
+         entry.key_for_id(id).and_then(|key| {
+            crate::search::graph::with_doc_vector(store, def, &knn.field, vattrs, &key, |v| {
+               fyro_vector::distance::distance(vattrs.metric, qv, v)
+            })
+         })
       };
       let finish = |r: Vec<(f32, usize)>| -> Vec<(f32, usize)> {
          if graph.is_quantized() {
-            graph.rerank(qv, r, knn.k, &fetch)
+            graph.rerank_by(r, knn.k, &fetch)
          } else {
             r
          }
@@ -735,12 +737,14 @@ fn indexed_range(
       // Estimated distances: re-score exactly, then apply the radius.
       let n = hits.len();
       let fetch = |id: usize| {
-         entry
-            .key_for_id(id)
-            .and_then(|k| crate::search::graph::doc_vector(store, def, &range.field, vattrs, &k))
+         entry.key_for_id(id).and_then(|k| {
+            crate::search::graph::with_doc_vector(store, def, &range.field, vattrs, &k, |v| {
+               fyro_vector::distance::distance(vattrs.metric, qv, v)
+            })
+         })
       };
       hits = graph
-         .rerank(qv, hits, n, &fetch)
+         .rerank_by(hits, n, &fetch)
          .into_iter()
          .filter(|h| h.0 <= radius)
          .collect();

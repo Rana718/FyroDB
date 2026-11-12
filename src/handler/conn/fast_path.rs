@@ -165,11 +165,30 @@ pub(super) fn cmd_id(cmd: &[u8]) -> CmdId {
 }
 
 #[inline(always)]
+fn dispatch_get_one(conn: &mut Conn<'_>, key_part: (*const u8, usize)) {
+   let (hint, entry) = conn.hint_for(key_part);
+   let out = &mut conn.parser.wbuf;
+   if out.capacity().saturating_sub(out.len()) < 32 {
+      out.reserve(32);
+   }
+   let Some(key) = part_str(out, key_part) else {
+      return;
+   };
+   if !conn.store.get_to_buf_auto(key, hint, entry, out) {
+      out.extend_from_slice(b"$-1\r\n");
+   }
+}
+
+#[inline(always)]
 pub(super) fn dispatch_get_run(
    conn: &mut Conn<'_>,
    first_key: (*const u8, usize),
    read_only: bool,
 ) {
+   if conn.parser.filled - conn.parser.pos < 20 && !is_null_store() {
+      dispatch_get_one(conn, first_key);
+      return;
+   }
    const BATCH: usize = 256;
    let mut keys: [&[u8]; BATCH] = [&[]; BATCH];
    let mut hashes = [0u64; BATCH];
@@ -216,17 +235,7 @@ pub(super) fn dispatch_get_run(
    }
 
    if count == 1 {
-      let (hint, entry) = conn.hint_for(first_key);
-      let out = &mut conn.parser.wbuf;
-      if out.capacity().saturating_sub(out.len()) < 32 {
-         out.reserve(32);
-      }
-      let Some(key) = part_str(out, first_key) else {
-         return;
-      };
-      if !conn.store.get_to_buf_auto(key, hint, entry, out) {
-         out.extend_from_slice(b"$-1\r\n");
-      }
+      dispatch_get_one(conn, first_key);
       return;
    }
 
@@ -302,11 +311,36 @@ pub(super) fn dispatch_get_run(
 }
 
 #[inline(always)]
+fn dispatch_set_one(
+   conn: &mut Conn<'_>,
+   key_part: (*const u8, usize),
+   value_part: (*const u8, usize),
+) {
+   let (hint, entry) = conn.hint_for(key_part);
+   let out = &mut conn.parser.wbuf;
+   let Some(key) = part_str(out, key_part) else {
+      return;
+   };
+   let Some(value) = part_str(out, value_part) else {
+      return;
+   };
+   conn.store.set_string_auto(key, hint, entry, value, 0);
+   if conn.store.has_replication() {
+      conn.store.record_current_value(key);
+   }
+   out.extend_from_slice(b"+OK\r\n");
+}
+
+#[inline(always)]
 pub(super) fn dispatch_set_run(
    conn: &mut Conn<'_>,
    first_key: (*const u8, usize),
    first_val: (*const u8, usize),
 ) {
+   if conn.parser.filled - conn.parser.pos < 24 && !is_null_store() {
+      dispatch_set_one(conn, first_key, first_val);
+      return;
+   }
    const BATCH: usize = 256;
    let mut keys: [&[u8]; BATCH] = [&[]; BATCH];
    let mut vals: [(*const u8, usize); BATCH] = [(std::ptr::null(), 0); BATCH];
@@ -351,19 +385,7 @@ pub(super) fn dispatch_set_run(
    }
 
    if count == 1 {
-      let (hint, entry) = conn.hint_for(first_key);
-      let out = &mut conn.parser.wbuf;
-      let Some(key) = part_str(out, first_key) else {
-         return;
-      };
-      let Some(value) = part_str(out, first_val) else {
-         return;
-      };
-      conn.store.set_string_auto(key, hint, entry, value, 0);
-      if conn.store.has_replication() {
-         conn.store.record_current_value(key);
-      }
-      out.extend_from_slice(b"+OK\r\n");
+      dispatch_set_one(conn, first_key, first_val);
       return;
    }
 

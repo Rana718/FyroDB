@@ -3,6 +3,32 @@ use foldhash::{HashMap, HashMapExt, HashSet};
 
 pub(crate) const COMPACT_THRESHOLD: usize = 128;
 
+#[cfg(test)]
+mod allocation_tests {
+   use super::*;
+
+   #[test]
+   fn hash_overwrites_reuse_heap_values_and_preserve_clones() {
+      for fields in [3, COMPACT_THRESHOLD + 1] {
+         let mut hash = HashInner::new();
+         for i in 0..fields {
+            assert!(hash.insert_bytes(&format!("field:{i}"), &[b'a'; 256]));
+         }
+         let snapshot = hash.clone();
+         let ptr = hash.get("field:0").unwrap().as_bytes().as_ptr();
+         assert!(!hash.insert_bytes("field:0", &[255; 256]));
+         assert_eq!(hash.get("field:0").unwrap().as_bytes().as_ptr(), ptr);
+         assert_eq!(hash.get("field:0").unwrap().as_bytes(), &[255; 256]);
+         assert_eq!(snapshot.get("field:0").unwrap().as_bytes(), &[b'a'; 256]);
+         assert!(!hash.insert_ref("field:0", "short"));
+         assert_eq!(hash.get("field:0").unwrap().as_str(), "short");
+         assert!(hash.insert_ref("new", "value"));
+         assert_eq!(hash.len(), fields + 1);
+         assert_eq!(hash.get("field:1").unwrap().as_bytes(), &[b'a'; 256]);
+      }
+   }
+}
+
 #[derive(Clone)]
 pub enum HashInner {
    Compact(Vec<SmallStr>),
@@ -92,12 +118,37 @@ impl HashInner {
    /// One scan finds-or-inserts; overwrites avoid two String temporaries.
    #[inline]
    pub fn insert_ref(&mut self, field: &str, value: &str) -> bool {
-      self.insert_field(field, SmallStr::new(value))
+      self.insert_bytes(field, value.as_bytes())
    }
 
    #[inline]
    pub fn insert_bytes(&mut self, field: &str, value: &[u8]) -> bool {
-      self.insert_field(field, SmallStr::from_slice(value))
+      match self {
+         Self::Compact(v) => match compact_find(v, field) {
+            Ok(i) => {
+               v[i * 2 + 1].overwrite_bytes(value);
+               false
+            }
+            Err(i) => {
+               v.insert(i * 2, SmallStr::new(field));
+               v.insert(i * 2 + 1, SmallStr::from_slice(value));
+               if v.len() / 2 > COMPACT_THRESHOLD {
+                  self.promote_hash();
+               }
+               true
+            }
+         },
+         Self::Full(m) => match m.get_mut(field) {
+            Some(slot) => {
+               slot.overwrite_bytes(value);
+               false
+            }
+            None => {
+               m.insert(SmallStr::new(field), SmallStr::from_slice(value));
+               true
+            }
+         },
+      }
    }
 
    pub fn insert_field(&mut self, field: &str, value: SmallStr) -> bool {
