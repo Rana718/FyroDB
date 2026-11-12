@@ -290,6 +290,7 @@ pub(crate) fn write_end(state: &AtomicU64, occupied: bool) {
 
 #[inline(always)]
 pub fn unlock_write(state: &AtomicU64, locked: u64, occupied: bool) {
+   let locked = (locked & !STATE_SNAP) | (state.load(Ordering::Relaxed) & STATE_SNAP);
    let next = if occupied {
       bump_seq(locked) & !STATE_LOCK
    } else {

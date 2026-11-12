@@ -22,6 +22,35 @@ fn binary_values_round_trip_across_inline_and_heap_storage() {
    }
 }
 
+#[test]
+fn raw_bulk_replies_preserve_binary_values_and_destination_bounds() {
+   for size in [
+      0,
+      1,
+      9,
+      10,
+      23,
+      24,
+      64,
+      99,
+      100,
+      999,
+      1000,
+      65536,
+      1024 * 1024,
+   ] {
+      let bytes: Vec<u8> = (0..size).map(|i| (i % 256) as u8).collect();
+      let value = super::SmallStr::from_slice(&bytes);
+      let capacity = (size + 32).max(64);
+      let mut destination = vec![0xa5; capacity + 16];
+      let used = unsafe { value.write_resp_raw(destination.as_mut_ptr()) };
+      let mut expected = Vec::new();
+      crate::utils::resp::write_bulk_bytes(&mut expected, &bytes);
+      assert_eq!(&destination[..used], expected);
+      assert!(destination[capacity..].iter().all(|b| *b == 0xa5));
+   }
+}
+
 use super::SmallStr;
 
 #[test]
@@ -65,12 +94,14 @@ fn push_str_stays_inline_when_it_fits() {
 
 #[test]
 fn same_size_heap_overwrites_reuse_storage_and_preserve_clones() {
-   for size in [24, 64, 4096, 65536] {
+   for size in (24..=66).chain([4096, 65536]) {
       let mut value = SmallStr::from_slice(&vec![b'a'; size]);
       let snapshot = value.clone();
       let allocation = value.as_bytes().as_ptr();
       for byte in [0, 255, b'z'] {
-         let replacement = vec![byte; size];
+         let replacement: Vec<_> = (0..size)
+            .map(|offset| byte.wrapping_add(offset as u8))
+            .collect();
          value.overwrite_bytes(&replacement);
          assert_eq!(value.as_bytes(), replacement);
          assert_eq!(value.as_bytes().as_ptr(), allocation);

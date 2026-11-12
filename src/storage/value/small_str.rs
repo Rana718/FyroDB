@@ -189,7 +189,13 @@ impl SmallStr {
          return;
       }
       if self.len == Tag::Heap && Self::read_heap_len(&self.data) == len {
-         self.as_bytes_mut().copy_from_slice(s);
+         let destination = self.as_bytes_mut();
+         if (32..=64).contains(&len) {
+            destination[..32].copy_from_slice(&s[..32]);
+            destination[len - 32..len].copy_from_slice(&s[len - 32..len]);
+         } else {
+            destination.copy_from_slice(s);
+         }
          return;
       }
       *self = Self::from_slice(s);
@@ -232,6 +238,26 @@ impl SmallStr {
       } else {
          let ptr = unsafe { std::ptr::read_unaligned(self.data.as_ptr().cast::<*const u8>()) };
          unsafe { std::slice::from_raw_parts(ptr, Self::read_heap_len(&self.data)) }
+      }
+   }
+
+   #[inline(always)]
+   pub(crate) fn prefetch_payload(&self) {
+      let bytes = self.as_bytes();
+      if !(24..=256).contains(&bytes.len()) {
+         return;
+      }
+      for pointer in [bytes.as_ptr(), bytes.as_ptr().wrapping_add(bytes.len() - 1)] {
+         #[cfg(target_arch = "x86_64")]
+         unsafe {
+            std::arch::x86_64::_mm_prefetch::<{ std::arch::x86_64::_MM_HINT_T0 }>(pointer.cast());
+         }
+         #[cfg(target_arch = "aarch64")]
+         unsafe {
+            std::arch::asm!("prfm pldl1keep, [{0}]", in(reg) pointer, options(nostack, readonly, preserves_flags));
+         }
+         #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+         let _ = pointer;
       }
    }
 
@@ -355,11 +381,7 @@ impl SmallStr {
             p.add(5 + len).cast::<u16>().write_unaligned(CRLF_U16);
             total
          } else {
-            let bytes = self.as_bytes();
-            let mut v = Vec::new();
-            crate::utils::resp::write_bulk_bytes(&mut v, bytes);
-            std::ptr::copy_nonoverlapping(v.as_ptr(), p, v.len());
-            v.len()
+            crate::utils::resp::write_bulk_raw(p, self.as_bytes())
          }
       }
    }

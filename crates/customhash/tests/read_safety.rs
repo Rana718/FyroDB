@@ -3,6 +3,54 @@ use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
 #[test]
+fn hinted_and_slot_updates_capture_each_snapshot_value_once() {
+   for route in 0..3 {
+      let map = CustomMap::with_capacity(2, 100);
+      let key = "key:000000000000";
+      map.insert_str(key, 0u64);
+      let _pin = customhash::pin();
+      let (hash, shard) = map.locate_key(key);
+      let entry = map.probe_entry_fast(key, hash, shard).unwrap();
+      for generation in 0..2 {
+         let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
+         let sink = Arc::clone(&captured);
+         assert!(map.begin_snapshot(Arc::new(move |key, value| {
+            sink.lock().unwrap().push((key.to_owned(), *value));
+         })));
+         for update in 1..=10 {
+            let value = generation * 10 + update;
+            match route {
+               0 => {
+                  map.set_with_hint(key, hash, entry.cast(), value);
+               }
+               1 => {
+                  assert!(
+                     map.update_with_hint(key, hash, entry.cast(), |old| *old = value)
+                        .is_some()
+                  );
+               }
+               _ => {
+                  assert!(map.insert_slot_fast_located(hash, shard, key, value));
+               }
+            }
+         }
+         for shard in 0..map.shard_count() {
+            map.snapshot_shard(shard, |key, value| {
+               captured.lock().unwrap().push((key.to_owned(), *value))
+            });
+         }
+         map.end_snapshot();
+         assert_eq!(
+            *captured.lock().unwrap(),
+            vec![(key.to_owned(), generation * 10)],
+            "route={route}"
+         );
+         assert_eq!(map.get(key), Some((generation + 1) * 10));
+      }
+   }
+}
+
+#[test]
 fn borrowed_values_hold_off_overwrites_until_the_last_reader_finishes() {
    let map = Arc::new(CustomMap::with_capacity(2, 100));
    map.insert_str("key", vec![b'a'; 4096]);

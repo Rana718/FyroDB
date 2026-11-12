@@ -180,7 +180,7 @@ fn dispatch_get_one(conn: &mut Conn<'_>, key_part: (*const u8, usize)) {
 }
 
 #[inline(always)]
-pub(super) fn dispatch_get_run(
+pub(super) fn dispatch_get_run<const STREAM_IO: bool>(
    conn: &mut Conn<'_>,
    first_key: (*const u8, usize),
    read_only: bool,
@@ -258,6 +258,8 @@ pub(super) fn dispatch_get_run(
    } else {
       None
    };
+   #[cfg(not(feature = "io-uring"))]
+   let mut read_epoch = read_epoch;
 
    conn
       .store
@@ -275,6 +277,25 @@ pub(super) fn dispatch_get_run(
          &mut entries[..count],
       );
    }
+   let first_payload_len = read_epoch.as_ref().map_or(0, |epoch| unsafe {
+      store.string_payload_len_epoch(hashes[0], entries[0], epoch)
+   });
+   let prefetch_payloads = (24..=256).contains(&first_payload_len);
+   #[cfg(not(feature = "io-uring"))]
+   if STREAM_IO
+      && first_payload_len >= super::bulk::MIN_STREAM_BYTES
+      && unsafe {
+         super::bulk::try_stream_get_run(
+            conn,
+            &keys[..count],
+            &hashes[..count],
+            &entries[..count],
+            &mut read_epoch,
+         )
+      }
+   {
+      return;
+   }
    let out = &mut conn.parser.wbuf;
    // This is only an initial estimate. The Vec writers below grow for the
    // actual payload size, including when a preceding fallback reallocated.
@@ -282,6 +303,12 @@ pub(super) fn dispatch_get_run(
 
    let mut i = 0;
    while i < count {
+      if prefetch_payloads
+         && i + 16 < count
+         && let Some(epoch) = &read_epoch
+      {
+         unsafe { store.prefetch_string_epoch(entries[i + 16], epoch) };
+      }
       let mut end = i + 1;
       while end < count && keys[end] == keys[i] {
          end += 1;
@@ -454,10 +481,7 @@ pub(super) fn dispatch_set_run(
                            crate::storage::value::SmallStr::from_slice(val_bytes),
                         );
                      }
-                     let unlocked = (customhash::bump_seq(locked) & !customhash::STATE_LOCK)
-                        | customhash::STATE_OCCUPIED;
-                     e.state
-                        .store(unlocked, std::sync::atomic::Ordering::Release);
+                     customhash::unlock_write(&e.state, locked, true);
                      conn.store.data.touched_bytes(keys[i]);
                      updated = true;
                      break;
@@ -908,7 +932,7 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
    {
       match id {
          CmdId::Get if raw.len() == 2 => {
-            dispatch_get_run(conn, raw[1], false);
+            dispatch_get_run::<false>(conn, raw[1], false);
             return;
          }
          CmdId::Set if raw.len() == 3 => {

@@ -302,6 +302,55 @@ impl Store {
    }
 
    /// # Safety
+   /// Pointer must be pinned/current; epoch must guard this store.
+   #[inline(always)]
+   pub(crate) unsafe fn string_payload_len_epoch(
+      &self,
+      hash: u64,
+      pointer: *const (),
+      _epoch: &customhash::ReadEpochGuard<'_>,
+   ) -> usize {
+      debug_assert!(self.data.read_epoch_active());
+      let Some(entry) = (unsafe { pointer.cast::<customhash::Entry<StoreValue>>().as_ref() })
+      else {
+         return 0;
+      };
+      let expected = ((hash as u32 as u64) << 32) | customhash::STATE_OCCUPIED;
+      if entry.state.load(std::sync::atomic::Ordering::Relaxed)
+         & (customhash::STATE_MATCH_MASK & !customhash::STATE_LOCK)
+         != expected
+      {
+         return 0;
+      }
+      unsafe { (*entry.value.get()).assume_init_ref() }
+         .value
+         .as_string()
+         .map_or(0, SmallStr::len)
+   }
+
+   /// # Safety
+   /// Pointer must be pinned/current; epoch must guard this store.
+   #[inline(always)]
+   pub(crate) unsafe fn prefetch_string_epoch(
+      &self,
+      pointer: *const (),
+      _epoch: &customhash::ReadEpochGuard<'_>,
+   ) {
+      debug_assert!(self.data.read_epoch_active());
+      let Some(entry) = (unsafe { pointer.cast::<customhash::Entry<StoreValue>>().as_ref() })
+      else {
+         return;
+      };
+      if entry.state.load(std::sync::atomic::Ordering::Relaxed) & customhash::STATE_OCCUPIED != 0
+         && let Some(value) = unsafe { (*entry.value.get()).assume_init_ref() }
+            .value
+            .as_string()
+      {
+         value.prefetch_payload();
+      }
+   }
+
+   /// # Safety
    /// Non-null p must be pinned/current; epoch must guard this store.
    #[inline(always)]
    pub unsafe fn get_to_buf_epoch_entry_bytes(

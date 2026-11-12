@@ -495,14 +495,14 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
             *e_ptr.add(i + 6) = p6.cast();
             *e_ptr.add(i + 7) = p7.cast();
 
-            prefetch_line(p0);
-            prefetch_line(p1);
-            prefetch_line(p2);
-            prefetch_line(p3);
-            prefetch_line(p4);
-            prefetch_line(p5);
-            prefetch_line(p6);
-            prefetch_line(p7);
+            prefetch_entry(p0);
+            prefetch_entry(p1);
+            prefetch_entry(p2);
+            prefetch_entry(p3);
+            prefetch_entry(p4);
+            prefetch_entry(p5);
+            prefetch_entry(p6);
+            prefetch_entry(p7);
          }
          i += 8;
       }
@@ -515,7 +515,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
                let base = s_ptr.cast::<TaggedSlot<V>>();
                let p = TaggedSlot::probe_from_base(base, *h_ptr.add(i), 16);
                *e_ptr.add(i) = p.cast();
-               prefetch_line(p);
+               prefetch_entry(p);
             }
          }
          i += 1;
@@ -563,14 +563,14 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
             *e_ptr.add(i + 6) = p6.cast();
             *e_ptr.add(i + 7) = p7.cast();
 
-            prefetch_line_write(p0);
-            prefetch_line_write(p1);
-            prefetch_line_write(p2);
-            prefetch_line_write(p3);
-            prefetch_line_write(p4);
-            prefetch_line_write(p5);
-            prefetch_line_write(p6);
-            prefetch_line_write(p7);
+            prefetch_entry_write(p0);
+            prefetch_entry_write(p1);
+            prefetch_entry_write(p2);
+            prefetch_entry_write(p3);
+            prefetch_entry_write(p4);
+            prefetch_entry_write(p5);
+            prefetch_entry_write(p6);
+            prefetch_entry_write(p7);
          }
          i += 8;
       }
@@ -583,7 +583,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
                let base = s_ptr.cast::<TaggedSlot<V>>();
                let p = TaggedSlot::probe_from_base(base, *h_ptr.add(i), 16);
                *e_ptr.add(i) = p.cast();
-               prefetch_line_write(p);
+               prefetch_entry_write(p);
             }
          }
          i += 1;
@@ -1336,6 +1336,28 @@ impl<V: Clone + Send + Sync + 'static> Default for CustomMap<V> {
 }
 
 pub const PREFETCH_BATCH: usize = 32;
+
+#[inline(always)]
+fn prefetch_entry<V>(p: *const Entry<V>) {
+   prefetch_line(p);
+   if std::mem::size_of::<Entry<V>>() > 32 {
+      prefetch_line(
+         p.cast::<u8>()
+            .wrapping_add(std::mem::size_of::<Entry<V>>() - 1),
+      );
+   }
+}
+
+#[inline(always)]
+fn prefetch_entry_write<V>(p: *const Entry<V>) {
+   prefetch_line_write(p);
+   if std::mem::size_of::<Entry<V>>() > 32 {
+      prefetch_line_write(
+         p.cast::<u8>()
+            .wrapping_add(std::mem::size_of::<Entry<V>>() - 1),
+      );
+   }
+}
 
 #[inline(always)]
 fn prefetch_line<T>(p: *const T) {
