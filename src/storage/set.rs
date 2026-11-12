@@ -19,7 +19,7 @@ impl Store {
                out.extend_from_slice(if added { b":1\r\n" } else { b":0\r\n" });
             }
             val.value = FyroDB::Set(Box::new(set));
-            val.expires_ms = 0;
+            val.clear_expiry();
             return Ok(());
          }
          match val.value.as_set_mut() {
@@ -43,13 +43,7 @@ impl Store {
                let added = set.insert_str(m);
                out.extend_from_slice(if added { b":1\r\n" } else { b":0\r\n" });
             }
-            self.data.insert_str(
-               key,
-               StoreValue {
-                  value: FyroDB::Set(Box::new(set)),
-                  expires_ms: 0,
-               },
-            );
+            self.data.insert_str(key, StoreValue::set_inner(set));
             Ok(())
          }
       }
@@ -63,7 +57,7 @@ impl Store {
             let mut set = SetInner::new();
             let flags: Vec<bool> = members.iter().map(|m| set.insert_str(m)).collect();
             val.value = FyroDB::Set(Box::new(set));
-            val.expires_ms = 0;
+            val.clear_expiry();
             return Ok(flags);
          }
          match val.value.as_set_mut() {
@@ -77,13 +71,8 @@ impl Store {
          None => {
             let mut set = SetInner::new();
             let flags: Vec<bool> = members.iter().map(|m| set.insert_str(m)).collect();
-            self.data.insert_str(
-               key,
-               StoreValue {
-                  value: FyroDB::Set(Box::new(set)),
-                  expires_ms: 0,
-               },
-            );
+            let sv = StoreValue::set_inner(set);
+            self.data.insert_str(key, sv);
             Ok(flags)
          }
       }
@@ -95,7 +84,7 @@ impl Store {
             let mut set = SetInner::new();
             let added = members.iter().filter(|m| set.insert_str(m)).count();
             val.value = FyroDB::Set(Box::new(set));
-            val.expires_ms = 0;
+            val.clear_expiry();
             return Ok(added);
          }
          match val.value.as_set_mut() {
@@ -117,13 +106,8 @@ impl Store {
          None => {
             let mut set = SetInner::new();
             let added = members.iter().filter(|m| set.insert_str(m)).count();
-            self.data.insert_str(
-               key,
-               StoreValue {
-                  value: FyroDB::Set(Box::new(set)),
-                  expires_ms: 0,
-               },
-            );
+            let sv = StoreValue::set_inner(set);
+            self.data.insert_str(key, sv);
             Ok(added)
          }
       }
@@ -412,7 +396,7 @@ impl Store {
             let mut set = SetInner::new();
             set.insert_str(member);
             val.value = FyroDB::Set(Box::new(set));
-            val.expires_ms = 0;
+            val.clear_expiry();
             return Ok(());
          }
          match val.value.as_set_mut() {
@@ -430,13 +414,7 @@ impl Store {
          None => {
             let mut set = SetInner::new();
             set.insert_str(member);
-            self.data.insert_str(
-               dst,
-               StoreValue {
-                  value: FyroDB::Set(Box::new(set)),
-                  expires_ms: 0,
-               },
-            );
+            self.data.insert_str(dst, StoreValue::set_inner(set));
             Ok(true)
          }
       }

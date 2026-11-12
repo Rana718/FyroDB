@@ -189,7 +189,8 @@ impl FyroDB {
 #[derive(Clone)]
 pub struct StoreValue {
    pub value: FyroDB,
-   pub expires_ms: u64,
+   #[cfg(feature = "expiration")]
+   expires_ms: Option<std::num::NonZeroU64>,
 }
 
 static UNIX_MS_CACHE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -233,58 +234,102 @@ impl StoreValue {
    pub fn compact_allocations(&mut self) {
       self.value.compact_allocations();
    }
-   #[inline]
-   pub fn string(s: String) -> Self {
+
+   #[inline(always)]
+   pub const fn new(value: FyroDB) -> Self {
       Self {
-         value: FyroDB::String(SmallStr::from_string(s)),
-         expires_ms: 0,
+         value,
+         #[cfg(feature = "expiration")]
+         expires_ms: None,
       }
    }
 
-   #[inline]
-   pub fn string_small(s: SmallStr) -> Self {
+   #[inline(always)]
+   pub const fn new_with_expiry_opt(
+      value: FyroDB,
+      _expires_ms: Option<std::num::NonZeroU64>,
+   ) -> Self {
+      Self {
+         value,
+         #[cfg(feature = "expiration")]
+         expires_ms: _expires_ms,
+      }
+   }
+
+   #[inline(always)]
+   pub fn new_with_expiry(value: FyroDB, _expires_ms: u64) -> Self {
+      Self {
+         value,
+         #[cfg(feature = "expiration")]
+         expires_ms: std::num::NonZeroU64::new(_expires_ms),
+      }
+   }
+
+   #[inline(always)]
+   pub fn string(s: String) -> Self {
+      Self::string_small(SmallStr::from_string(s))
+   }
+
+   #[inline(always)]
+   pub const fn string_small(s: SmallStr) -> Self {
       Self {
          value: FyroDB::String(s),
-         expires_ms: 0,
+         #[cfg(feature = "expiration")]
+         expires_ms: None,
       }
    }
 
-   #[inline]
-   pub fn string_str(s: &str) -> Self {
+   #[inline(always)]
+   pub const fn string_small_with_expiry_opt(
+      s: SmallStr,
+      _expires_ms: Option<std::num::NonZeroU64>,
+   ) -> Self {
       Self {
-         value: FyroDB::String(SmallStr::new(s)),
-         expires_ms: 0,
+         value: FyroDB::String(s),
+         #[cfg(feature = "expiration")]
+         expires_ms: _expires_ms,
       }
+   }
+
+   #[inline(always)]
+   pub fn string_small_with_expiry(s: SmallStr, expire_ms: u64) -> Self {
+      #[cfg(not(feature = "expiration"))]
+      let _ = expire_ms;
+
+      Self {
+         value: FyroDB::String(s),
+         #[cfg(feature = "expiration")]
+         expires_ms: std::num::NonZeroU64::new(expire_ms),
+      }
+   }
+
+   #[inline(always)]
+   pub fn string_str(s: &str) -> Self {
+      Self::string_small(SmallStr::new(s))
    }
 
    #[inline]
    pub fn string_str_with_expiry(s: &str, expires_at: Option<std::time::Instant>) -> Self {
       let expires_ms = match expires_at {
-         None => 0,
+         None => return Self::string_small(SmallStr::new(s)),
          Some(exp) => {
             let remaining = exp.saturating_duration_since(std::time::Instant::now());
             now_ms().saturating_add(remaining.as_millis() as u64)
          }
       };
-      Self {
-         value: FyroDB::String(SmallStr::new(s)),
-         expires_ms,
-      }
+      Self::string_small_with_expiry(SmallStr::new(s), expires_ms)
    }
 
    #[inline]
    pub fn string_with_expiry(s: String, expires_at: Option<std::time::Instant>) -> Self {
       let expires_ms = match expires_at {
-         None => 0,
+         None => return Self::string_small(SmallStr::from_string(s)),
          Some(exp) => {
             let remaining = exp.saturating_duration_since(std::time::Instant::now());
             now_ms().saturating_add(remaining.as_millis() as u64)
          }
       };
-      Self {
-         value: FyroDB::String(SmallStr::from_string(s)),
-         expires_ms,
-      }
+      Self::string_small_with_expiry(SmallStr::from_string(s), expires_ms)
    }
 
    #[inline]
@@ -293,100 +338,330 @@ impl StoreValue {
          .into_iter()
          .map(|(k, v)| (SmallStr::from_string(k), SmallStr::from_string(v)))
          .collect();
+      Self::hash_inner(HashInner::Full(Box::new(h)))
+   }
+
+   #[inline]
+   pub fn hash_with_expiry(h: HashMap<String, String>, expires_ms: u64) -> Self {
+      let h = h
+         .into_iter()
+         .map(|(k, v)| (SmallStr::from_string(k), SmallStr::from_string(v)))
+         .collect();
+      Self::hash_inner_with_expiry(HashInner::Full(Box::new(h)), expires_ms)
+   }
+
+   #[inline(always)]
+   pub fn hash_inner(h: HashInner) -> Self {
       Self {
-         value: FyroDB::Hash(Box::new(HashInner::Full(Box::new(h)))),
-         expires_ms: 0,
+         value: FyroDB::Hash(Box::new(h)),
+         #[cfg(feature = "expiration")]
+         expires_ms: None,
+      }
+   }
+
+   #[inline(always)]
+   pub fn hash_inner_with_expiry(h: HashInner, _expires_ms: u64) -> Self {
+      Self {
+         value: FyroDB::Hash(Box::new(h)),
+         #[cfg(feature = "expiration")]
+         expires_ms: std::num::NonZeroU64::new(_expires_ms),
       }
    }
 
    #[inline]
    pub fn list(l: VecDeque<String>) -> Self {
+      Self::list_inner(ListValue::from_strs(l.iter().map(String::as_str)))
+   }
+
+   #[inline(always)]
+   pub fn list_inner(l: ListInner) -> Self {
       Self {
-         value: FyroDB::List(Box::new(ListValue::from_strs(l.iter().map(String::as_str)))),
-         expires_ms: 0,
+         value: FyroDB::List(Box::new(l)),
+         #[cfg(feature = "expiration")]
+         expires_ms: None,
+      }
+   }
+
+   #[inline(always)]
+   pub fn list_inner_with_expiry(l: ListInner, _expires_ms: u64) -> Self {
+      Self {
+         value: FyroDB::List(Box::new(l)),
+         #[cfg(feature = "expiration")]
+         expires_ms: std::num::NonZeroU64::new(_expires_ms),
       }
    }
 
    #[inline]
    pub fn set(s: HashSet<String>) -> Self {
-      Self {
-         value: FyroDB::Set(Box::new(SetInner::from_strings(s))),
-         expires_ms: 0,
-      }
+      Self::set_inner(SetInner::from_strings(s))
    }
 
    #[inline]
-   pub fn zset(z: ZSetData) -> Self {
-      Self {
-         value: FyroDB::ZSet(Box::new(z)),
-         expires_ms: 0,
-      }
+   pub fn set_with_expiry(s: HashSet<String>, expires_ms: u64) -> Self {
+      Self::set_inner_with_expiry(SetInner::from_strings(s), expires_ms)
    }
 
-   #[inline]
-   pub fn json(j: JsonValue) -> Self {
+   #[inline(always)]
+   pub fn set_inner(s: SetInner) -> Self {
       Self {
-         value: FyroDB::Json(j.to_resp_string().into_boxed_str()),
-         expires_ms: 0,
-      }
-   }
-
-   #[inline]
-   pub fn json_str(s: &str) -> Self {
-      Self {
-         value: FyroDB::Json(Box::from(s)),
-         expires_ms: 0,
-      }
-   }
-
-   #[inline]
-   pub fn json_raw(s: String) -> Self {
-      Self {
-         value: FyroDB::Json(s.into_boxed_str()),
-         expires_ms: 0,
-      }
-   }
-
-   #[inline]
-   pub fn stream(s: crate::storage::stream::StreamData) -> Self {
-      Self {
-         value: FyroDB::Stream(Box::new(s)),
-         expires_ms: 0,
+         value: FyroDB::Set(Box::new(s)),
+         #[cfg(feature = "expiration")]
+         expires_ms: None,
       }
    }
 
    #[inline(always)]
+   pub fn set_inner_with_expiry(s: SetInner, _expires_ms: u64) -> Self {
+      Self {
+         value: FyroDB::Set(Box::new(s)),
+         #[cfg(feature = "expiration")]
+         expires_ms: std::num::NonZeroU64::new(_expires_ms),
+      }
+   }
+
+   #[inline(always)]
+   pub fn zset(z: ZSetData) -> Self {
+      Self {
+         value: FyroDB::ZSet(Box::new(z)),
+         #[cfg(feature = "expiration")]
+         expires_ms: None,
+      }
+   }
+
+   #[inline(always)]
+   pub fn zset_with_expiry(z: ZSetData, _expires_ms: u64) -> Self {
+      Self {
+         value: FyroDB::ZSet(Box::new(z)),
+         #[cfg(feature = "expiration")]
+         expires_ms: std::num::NonZeroU64::new(_expires_ms),
+      }
+   }
+
+   #[inline(always)]
+   pub fn json(j: JsonValue) -> Self {
+      Self {
+         value: FyroDB::Json(j.to_resp_string().into_boxed_str()),
+         #[cfg(feature = "expiration")]
+         expires_ms: None,
+      }
+   }
+
+   #[inline(always)]
+   pub fn json_str(s: &str) -> Self {
+      Self {
+         value: FyroDB::Json(Box::from(s)),
+         #[cfg(feature = "expiration")]
+         expires_ms: None,
+      }
+   }
+
+   #[inline(always)]
+   pub fn json_raw(s: String) -> Self {
+      Self {
+         value: FyroDB::Json(s.into_boxed_str()),
+         #[cfg(feature = "expiration")]
+         expires_ms: None,
+      }
+   }
+
+   #[inline(always)]
+   pub fn json_raw_with_expiry(s: String, _expires_ms: u64) -> Self {
+      Self {
+         value: FyroDB::Json(s.into_boxed_str()),
+         #[cfg(feature = "expiration")]
+         expires_ms: std::num::NonZeroU64::new(_expires_ms),
+      }
+   }
+
+   #[inline(always)]
+   pub fn stream(s: crate::storage::stream::StreamData) -> Self {
+      Self {
+         value: FyroDB::Stream(Box::new(s)),
+         #[cfg(feature = "expiration")]
+         expires_ms: None,
+      }
+   }
+
+   #[inline(always)]
+   pub fn stream_with_expiry(s: crate::storage::stream::StreamData, _expires_ms: u64) -> Self {
+      Self {
+         value: FyroDB::Stream(Box::new(s)),
+         #[cfg(feature = "expiration")]
+         expires_ms: std::num::NonZeroU64::new(_expires_ms),
+      }
+   }
+
+   #[inline(always)]
+   #[cfg(feature = "expiration")]
    pub fn is_expired(&self) -> bool {
-      self.expires_ms != 0 && approx_now_ms() >= self.expires_ms
+      match self.expires_ms {
+         Some(expires_ms) => Self::is_expired_slow(expires_ms),
+         None => false,
+      }
+   }
+   #[cold]
+   #[inline(never)]
+   #[cfg(feature = "expiration")]
+   fn is_expired_slow(expires_ms: std::num::NonZeroU64) -> bool {
+      approx_now_ms() >= expires_ms.get()
+   }
+   #[inline(always)]
+   #[cfg(not(feature = "expiration"))]
+   pub const fn is_expired(&self) -> bool {
+      false
    }
 
    /// Same test with a caller-supplied clock, so bulk scans pay one clock
    /// read instead of one per key.
    #[inline(always)]
+   #[cfg(feature = "expiration")]
    pub fn is_expired_at(&self, now_ms: u64) -> bool {
-      self.expires_ms != 0 && now_ms >= self.expires_ms
+      match self.expires_ms {
+         Some(expires_ms) => now_ms >= expires_ms.get(),
+         None => false,
+      }
+   }
+   #[inline(always)]
+   #[cfg(not(feature = "expiration"))]
+   pub const fn is_expired_at(&self, _now_ms: u64) -> bool {
+      false
    }
 
-   #[inline]
+   #[inline(always)]
+   #[cfg(feature = "expiration")]
    pub fn is_expired_precise(&self) -> bool {
-      self.expires_ms != 0 && now_ms() >= self.expires_ms
+      match self.expires_ms {
+         Some(expires_ms) => Self::is_expired_precise_slow(expires_ms),
+         None => false,
+      }
+   }
+   #[cold]
+   #[inline(never)]
+   #[cfg(feature = "expiration")]
+   fn is_expired_precise_slow(expires_ms: std::num::NonZeroU64) -> bool {
+      now_ms() >= expires_ms.get()
+   }
+   #[inline(always)]
+   #[cfg(not(feature = "expiration"))]
+   pub const fn is_expired_precise(&self) -> bool {
+      false
    }
 
-   #[inline]
+   #[inline(always)]
+   #[cfg(feature = "expiration")]
    pub fn ttl_ms(&self) -> Option<u64> {
-      if self.expires_ms == 0 {
-         return None;
+      match self.expires_ms {
+         Some(expires_ms) => Self::ttl_ms_slow(expires_ms),
+         None => None,
       }
+   }
+   #[cold]
+   #[inline(never)]
+   #[cfg(feature = "expiration")]
+   fn ttl_ms_slow(expires_ms: std::num::NonZeroU64) -> Option<u64> {
+      let exp = expires_ms.get();
       let now = now_ms();
-      if now >= self.expires_ms {
-         None
-      } else {
-         Some(self.expires_ms - now)
+      if exp > now { Some(exp - now) } else { None }
+   }
+   #[inline(always)]
+   #[cfg(not(feature = "expiration"))]
+   pub const fn ttl_ms(&self) -> Option<u64> {
+      None
+   }
+
+   #[inline(always)]
+   #[cfg(feature = "expiration")]
+   pub const fn expires_at(&self) -> Option<std::num::NonZeroU64> {
+      self.expires_ms
+   }
+   #[inline(always)]
+   #[cfg(not(feature = "expiration"))]
+   pub const fn expires_at(&self) -> Option<std::num::NonZeroU64> {
+      None
+   }
+
+   #[inline(always)]
+   #[cfg(feature = "expiration")]
+   pub const fn has_expiry(&self) -> bool {
+      self.expires_ms.is_some()
+   }
+   #[inline(always)]
+   #[cfg(not(feature = "expiration"))]
+   pub const fn has_expiry(&self) -> bool {
+      false
+   }
+
+   #[inline(always)]
+   #[cfg(feature = "expiration")]
+   pub const fn is_persistent(&self) -> bool {
+      self.expires_ms.is_none()
+   }
+   #[inline(always)]
+   #[cfg(not(feature = "expiration"))]
+   pub const fn is_persistent(&self) -> bool {
+      true
+   }
+
+   #[inline(always)]
+   #[cfg(feature = "expiration")]
+   pub fn expires_ms_u64(&self) -> u64 {
+      match self.expires_ms {
+         Some(v) => v.get(),
+         None => 0,
       }
+   }
+   #[inline(always)]
+   #[cfg(not(feature = "expiration"))]
+   pub const fn expires_ms_u64(&self) -> u64 {
+      0
+   }
+
+   #[inline(always)]
+   #[cfg(feature = "expiration")]
+   pub fn clear_expiry(&mut self) {
+      self.expires_ms = None;
+   }
+   #[inline(always)]
+   #[cfg(not(feature = "expiration"))]
+   pub const fn clear_expiry(&mut self) {}
+
+   #[inline(always)]
+   #[cfg(feature = "expiration")]
+   pub fn set_expires_ms_opt(&mut self, expires_ms: Option<std::num::NonZeroU64>) {
+      self.expires_ms = expires_ms;
+   }
+   #[inline(always)]
+   #[cfg(not(feature = "expiration"))]
+   pub const fn set_expires_ms_opt(&mut self, _expires_ms: Option<std::num::NonZeroU64>) {}
+
+   #[inline(always)]
+   #[cfg(feature = "expiration")]
+   pub fn set_expires_ms(&mut self, expires_ms: u64) {
+      self.expires_ms = std::num::NonZeroU64::new(expires_ms);
+   }
+   #[inline(always)]
+   #[cfg(not(feature = "expiration"))]
+   pub const fn set_expires_ms(&mut self, _expires_ms: u64) {}
+
+   #[inline(always)]
+   #[cfg(feature = "expiration")]
+   pub fn get_expires_ms(&self) -> Option<u64> {
+      self.expires_ms.map(|v| v.get())
+   }
+   #[inline(always)]
+   #[cfg(not(feature = "expiration"))]
+   pub const fn get_expires_ms(&self) -> Option<u64> {
+      None
    }
 }
 
 const _: () = assert!(std::mem::size_of::<SmallStr>() == 24);
 const _: () = assert!(std::mem::size_of::<FyroDB>() == 24);
+#[cfg(feature = "expiration")]
 const _: () = assert!(std::mem::size_of::<StoreValue>() == 32);
+#[cfg(not(feature = "expiration"))]
+const _: () = assert!(std::mem::size_of::<StoreValue>() == 24);
+#[cfg(feature = "expiration")]
 const _: () = assert!(customhash::entry_size::<StoreValue>() == 56);
+#[cfg(not(feature = "expiration"))]
+const _: () = assert!(customhash::entry_size::<StoreValue>() == 48);

@@ -14,15 +14,13 @@ impl Store {
       let now = now_ms();
       let generation = self.ttl_generation();
       let mut live_ttls = 0usize;
-      self.data.retain(|_, entry| {
-         if entry.expires_ms == 0 {
-            true
-         } else if entry.expires_ms > now {
+      self.data.retain(|_, entry| match entry.expires_at() {
+         None => true,
+         Some(expires_ms) if expires_ms.get() > now => {
             live_ttls += 1;
             true
-         } else {
-            false
          }
+         _ => false,
       });
       self.finish_ttl_scan(generation, live_ttls);
    }
@@ -42,7 +40,7 @@ impl Store {
          self
             .data
             .expire_shard_range(shard, start_slot, max_slots, |entry| {
-               (entry.expires_ms != 0).then_some(entry.expires_ms <= now)
+               entry.expires_at().map(|expires_ms| expires_ms.get() <= now)
             })
       else {
          return (0, start_slot, 0, 0);

@@ -270,7 +270,7 @@ pub(super) fn dispatch_get_run(conn: &mut Conn<'_>, first_key: (*const u8, usize
             }
             std::sync::atomic::fence(std::sync::atomic::Ordering::Acquire);
             let val = unsafe { (*e.value.get()).assume_init_ref() };
-            if val.expires_ms == 0 || !val.is_expired() {
+            if !val.is_expired() {
                if let crate::storage::value::FyroDB::String(s) = &val.value {
                   let written = unsafe { s.write_resp_raw(out_ptr) };
                   if run_len > 1 {
@@ -443,7 +443,7 @@ pub(super) fn dispatch_set_run(
             let last_val = vals[end - 1];
             let val_bytes = unsafe { std::slice::from_raw_parts(last_val.0, last_val.1) };
             let mut backoff = 1u32;
-            for _ in 0..32 {
+            for _ in 0..64 {
                while current & customhash::STATE_LOCK != 0 {
                   for _ in 0..backoff {
                      std::hint::spin_loop();
@@ -457,7 +457,7 @@ pub(super) fn dispatch_set_run(
                   break;
                }
                let locked = customhash::bump_seq(current) | customhash::STATE_LOCK;
-               match e.state.compare_exchange_weak(
+               match e.state.compare_exchange(
                   current,
                   locked,
                   std::sync::atomic::Ordering::Acquire,
@@ -466,7 +466,7 @@ pub(super) fn dispatch_set_run(
                   Ok(_) => {
                      conn.store.data.snap_before_write(e);
                      let val = unsafe { (*e.value.get()).assume_init_mut() };
-                     val.expires_ms = 0;
+                     val.clear_expiry();
                      if let crate::storage::value::FyroDB::String(ref mut s) = val.value {
                         s.overwrite_bytes(val_bytes);
                      } else {
@@ -714,7 +714,7 @@ pub(super) fn dispatch_json_get_run(conn: &mut Conn<'_>, first_raw: &[(*const u8
             }
             std::sync::atomic::fence(std::sync::atomic::Ordering::Acquire);
             let val = unsafe { (*e.value.get()).assume_init_ref() };
-            if val.expires_ms == 0 || !val.is_expired() {
+            if !val.is_expired() {
                if let Some(raw) = val.value.as_json_str() {
                   let written =
                      unsafe { crate::utils::resp::write_bulk_raw(out_ptr, raw.as_bytes()) };

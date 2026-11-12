@@ -1,5 +1,5 @@
 use crate::storage::store::Store;
-use crate::storage::value::{FyroDB, SmallStr, StoreValue, ZSetData};
+use crate::storage::value::{SmallStr, StoreValue, ZSetData};
 
 /// ZADD modifiers, bundled so the flag set has one name at every call site.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -45,8 +45,7 @@ impl Store {
                let added = z.insert(*s, m);
                out.extend_from_slice(if added { b":1\r\n" } else { b":0\r\n" });
             }
-            val.value = FyroDB::ZSet(Box::new(z));
-            val.expires_ms = 0;
+            *val = StoreValue::zset(z);
             return Ok(());
          }
          match val.value.as_zset_mut() {
@@ -70,13 +69,7 @@ impl Store {
                let added = z.insert(*s, m);
                out.extend_from_slice(if added { b":1\r\n" } else { b":0\r\n" });
             }
-            self.data.insert_str(
-               key,
-               StoreValue {
-                  value: FyroDB::ZSet(Box::new(z)),
-                  expires_ms: 0,
-               },
-            );
+            self.data.insert_str(key, StoreValue::zset(z));
             Ok(())
          }
       }
@@ -107,8 +100,7 @@ impl Store {
             for (s, m) in members {
                flags.push(z.insert(*s, m));
             }
-            val.value = FyroDB::ZSet(Box::new(z));
-            val.expires_ms = 0;
+            *val = StoreValue::zset(z);
             return Ok(flags);
          }
          match val.value.as_zset_mut() {
@@ -132,13 +124,7 @@ impl Store {
             for (s, m) in members {
                flags.push(z.insert(*s, m));
             }
-            self.data.insert_str(
-               key,
-               StoreValue {
-                  value: FyroDB::ZSet(Box::new(z)),
-                  expires_ms: 0,
-               },
-            );
+            self.data.insert_str(key, StoreValue::zset(z));
             Ok(flags)
          }
       }
@@ -175,8 +161,7 @@ impl Store {
                   added += 1;
                }
             }
-            val.value = FyroDB::ZSet(Box::new(z));
-            val.expires_ms = 0;
+            *val = StoreValue::zset(z);
             return Ok(added);
          }
          match val.value.as_zset_mut() {
@@ -391,8 +376,7 @@ impl Store {
          if val.is_expired() {
             let mut z = ZSetData::new();
             z.insert(increment, member);
-            val.value = FyroDB::ZSet(Box::new(z));
-            val.expires_ms = 0;
+            *val = StoreValue::zset(z);
             return Ok(increment);
          }
          match val.value.as_zset_mut() {

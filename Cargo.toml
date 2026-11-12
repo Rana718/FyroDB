@@ -64,6 +64,8 @@ name = "fyro_db"
 path = "src/main.rs"
 
 [features]
+default = ["expiration"]
+expiration = []
 io-uring = ["dep:io-uring"]
 profiling = ["dep:pprof"]
 bench-tools = []

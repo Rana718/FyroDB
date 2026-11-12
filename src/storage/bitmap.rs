@@ -1,5 +1,5 @@
 use crate::storage::store::Store;
-use crate::storage::value::{FyroDB, SmallStr, StoreValue};
+use crate::storage::value::{SmallStr, StoreValue};
 
 impl Store {
    pub fn setbit(&self, key: &str, offset: u64, value: bool) -> Result<u8, &'static str> {
@@ -12,8 +12,7 @@ impl Store {
             if value {
                bytes[byte_idx] |= 1 << bit_idx;
             }
-            val.value = FyroDB::String(SmallStr::from_bytes(bytes));
-            val.expires_ms = 0;
+            *val = StoreValue::string_small(SmallStr::from_bytes(bytes));
             return Ok(0u8);
          }
          match val.value.as_string_mut() {

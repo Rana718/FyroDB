@@ -36,11 +36,12 @@ impl Store {
          if val.is_expired() {
             return None;
          }
-         let was_persistent = val.expires_ms == 0;
-         val.expires_ms = now_ms() + duration.as_millis() as u64;
-         Some((was_persistent, val.expires_ms))
+         let was_persistent = val.is_persistent();
+         let new_expiry = std::num::NonZeroU64::new(now_ms() + duration.as_millis() as u64);
+         val.set_expires_ms_opt(new_expiry);
+         Some((was_persistent, new_expiry))
       });
-      let Some((was_persistent, expires_ms)) = result.flatten() else {
+      let Some((was_persistent, expire_at_ms)) = result.flatten() else {
          return false;
       };
       if was_persistent {
@@ -54,21 +55,22 @@ impl Store {
             kind: crate::cluster::MutationKind::Expire,
             key: key.as_bytes().to_vec(),
             value: Vec::new(),
-            expire_at_ms: Some(expires_ms),
+            expire_at_ms,
          });
       }
       was_persistent
    }
 
    pub fn expire_ms(&self, key: &str, abs_ms: u64) -> bool {
+      let non_zero_exp = std::num::NonZeroU64::new(abs_ms);
       let ok = self
          .data
          .update_with(key, |val| {
             if val.is_expired() {
                return false;
             }
-            let was_persistent = val.expires_ms == 0;
-            val.expires_ms = abs_ms;
+            let was_persistent = val.is_persistent();
+            val.set_expires_ms_opt(non_zero_exp);
             was_persistent
          })
          .unwrap_or(false);
@@ -82,7 +84,7 @@ impl Store {
                kind: crate::cluster::MutationKind::Expire,
                key: key.as_bytes().to_vec(),
                value: Vec::new(),
-               expire_at_ms: Some(abs_ms),
+               expire_at_ms: non_zero_exp,
             });
          }
       }
@@ -93,10 +95,10 @@ impl Store {
       let ok = self
          .data
          .update_with(key, |val| {
-            if val.is_expired() || val.expires_ms == 0 {
+            if val.is_expired() || val.is_persistent() {
                return false;
             }
-            val.expires_ms = 0;
+            val.clear_expiry();
             true
          })
          .unwrap_or(false);
