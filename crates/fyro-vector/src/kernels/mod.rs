@@ -31,20 +31,21 @@ fn select() -> Kernels {
          dot_self: dot_self_avx2,
       };
    }
-   #[cfg(target_arch = "aarch64")]
-   return Kernels {
-      dot: dot_neon,
-      l2: l2_neon,
-      dot_self: dot_self_scalar,
-   };
    #[cfg(target_arch = "x86_64")]
-   if std::arch::is_x86_feature_detected!("avx2") && std::arch::is_x86_feature_detected!("fma") {
+   if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
       return Kernels {
          dot: dot_avx2,
          l2: l2_avx2,
          dot_self: dot_self_avx2,
       };
    }
+   #[cfg(target_arch = "aarch64")]
+   return Kernels {
+      dot: dot_neon,
+      l2: l2_neon,
+      dot_self: dot_self_scalar,
+   };
+   #[cfg(not(target_arch = "aarch64"))]
    Kernels {
       dot: dot_scalar,
       l2: l2_scalar,
