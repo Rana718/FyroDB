@@ -2,6 +2,9 @@
 
 use super::*;
 
+// Small mixed runs keep entry guards so they do not delay concurrent writes.
+const READ_EPOCH_MIN: usize = 32;
+
 const OK_BLOCK: [u8; 256 * 5] = {
    let mut b = [0u8; 256 * 5];
    let mut i = 0;
@@ -119,7 +122,7 @@ const W_JSONGET: u64 = cmd_word(b"json.get");
 #[inline(always)]
 pub(super) fn cmd_id(cmd: &[u8]) -> CmdId {
    let n = cmd.len();
-   if n == 0 || n > 8 {
+   if n == 0 || n > 8 || cmd[n - 1] <= b' ' {
       return CmdId::Other;
    }
    let mut w = [b' '; 8];
@@ -155,14 +158,18 @@ pub(super) fn cmd_id(cmd: &[u8]) -> CmdId {
       W_GEODIST => CmdId::Geodist,
       W_PUBLISH => CmdId::Publish,
       W_BITCOUNT => CmdId::Bitcount,
-      W_JSONSET => CmdId::JsonSet,
-      W_JSONGET => CmdId::JsonGet,
+      W_JSONSET if cmd[4] == b'.' => CmdId::JsonSet,
+      W_JSONGET if cmd[4] == b'.' => CmdId::JsonGet,
       _ => CmdId::Other,
    }
 }
 
 #[inline(always)]
-pub(super) fn dispatch_get_run(conn: &mut Conn<'_>, first_key: (*const u8, usize)) {
+pub(super) fn dispatch_get_run(
+   conn: &mut Conn<'_>,
+   first_key: (*const u8, usize),
+   read_only: bool,
+) {
    const BATCH: usize = 256;
    let mut keys: [&[u8]; BATCH] = [&[]; BATCH];
    let mut hashes = [0u64; BATCH];
@@ -236,12 +243,29 @@ pub(super) fn dispatch_get_run(conn: &mut Conn<'_>, first_key: (*const u8, usize
       crate::utils::resp::repeat_reply(out, start, count);
       return;
    }
+   let store = conn.store;
+   let read_epoch = if read_only && count >= READ_EPOCH_MIN {
+      store.data.try_read_epoch()
+   } else {
+      None
+   };
+
    conn
       .store
       .prefetch_slots(&keys[..count], &mut hashes[..count], &mut tables[..count]);
-   conn
-      .store
-      .probe_and_prefetch_entries(&tables[..count], &hashes[..count], &mut entries[..count]);
+   if read_epoch.is_some() {
+      conn.store.probe_and_prefetch_entries(
+         &tables[..count],
+         &hashes[..count],
+         &mut entries[..count],
+      );
+   } else {
+      conn.store.probe_and_prefetch_entries_write(
+         &tables[..count],
+         &hashes[..count],
+         &mut entries[..count],
+      );
+   }
    let out = &mut conn.parser.wbuf;
    // This is only an initial estimate. The Vec writers below grow for the
    // actual payload size, including when a preceding fallback reallocated.
@@ -257,9 +281,11 @@ pub(super) fn dispatch_get_run(conn: &mut Conn<'_>, first_key: (*const u8, usize
       let start_offset = out.len();
       // process_buffered's epoch guard protects the prefetched entry.
       let found = unsafe {
-         conn
-            .store
-            .get_to_buf_fast_entry_bytes(keys[i], hashes[i], entries[i].cast(), out)
+         if let Some(epoch) = &read_epoch {
+            store.get_to_buf_epoch_entry_bytes(keys[i], hashes[i], entries[i].cast(), epoch, out)
+         } else {
+            store.get_to_buf_fast_entry_bytes(keys[i], hashes[i], entries[i].cast(), out)
+         }
       };
       if !found {
          if std::str::from_utf8(keys[i]).is_ok() {
@@ -349,10 +375,13 @@ pub(super) fn dispatch_set_run(
       &hashes[..count],
       &mut entries[..count],
    );
+   let store = conn.store;
+   let write_epoch = store.data.write_epoch();
+   let pin = customhash::pin();
    let out = &mut conn.parser.wbuf;
    out.reserve(count * 5);
    let old_len = out.len();
-   let mut success = true;
+   let mut errors = Vec::new();
    let mut i = 0;
    while i < count {
       let mut end = i + 1;
@@ -428,19 +457,31 @@ pub(super) fn dispatch_set_run(
       if !updated {
          for k in i..end {
             let Ok(key_str) = std::str::from_utf8(keys[k]) else {
-               crate::utils::resp::write_err(out, "invalid UTF-8 in request");
-               success = false;
+               errors.push(k);
                continue;
             };
             let val_bytes = unsafe { std::slice::from_raw_parts(vals[k].0, vals[k].1) };
             if entries[k].is_null() && !conn.store.has_replication() {
-               conn
-                  .store
-                  .set_string_fast_bytes(key_str, hashes[k], val_bytes);
+               let written = unsafe {
+                  store.data.insert_slot_fast_located_pinned(
+                     hashes[k],
+                     store.data.shard_of(hashes[k]),
+                     key_str,
+                     crate::storage::value::StoreValue::string_small(
+                        crate::storage::value::SmallStr::from_slice(val_bytes),
+                     ),
+                     &write_epoch,
+                     &pin,
+                  )
+               };
+               if written {
+                  store.data.touched(key_str);
+               } else {
+                  store.set_string_fast_bytes(key_str, hashes[k], val_bytes);
+               }
             } else {
                let Ok(val_str) = std::str::from_utf8(val_bytes) else {
-                  crate::utils::resp::write_err(out, "invalid UTF-8 in request");
-                  success = false;
+                  errors.push(k);
                   continue;
                };
                conn
@@ -454,10 +495,20 @@ pub(super) fn dispatch_set_run(
       }
       i = end;
    }
-   if success {
+   if errors.is_empty() {
       unsafe {
          out.set_len(old_len + count * 5);
          std::ptr::copy_nonoverlapping(OK_BLOCK.as_ptr(), out.as_mut_ptr().add(old_len), count * 5);
+      }
+   } else {
+      let mut errors = errors.into_iter().peekable();
+      for index in 0..count {
+         if errors.peek() == Some(&index) {
+            errors.next();
+            crate::utils::resp::write_err(out, "invalid UTF-8 in request");
+         } else {
+            crate::utils::resp::write_ok(out);
+         }
       }
    }
 }
@@ -522,6 +573,8 @@ pub(super) fn dispatch_json_set_run(conn: &mut Conn<'_>, first_raw: &[(*const u8
       &mut entries[..count],
    );
 
+   let store = conn.store;
+   let _write_epoch = store.data.write_epoch();
    let out = &mut conn.parser.wbuf;
    out.reserve(count * 5);
    let old_len = out.len();
@@ -561,7 +614,118 @@ pub(super) fn dispatch_json_set_run(conn: &mut Conn<'_>, first_raw: &[(*const u8
    true
 }
 
-pub(super) fn dispatch_json_get_run(conn: &mut Conn<'_>, first_raw: &[(*const u8, usize)]) -> bool {
+pub(super) fn dispatch_repeated_read_run(conn: &mut Conn<'_>, first: &[(*const u8, usize)]) {
+   let mut saved = [(std::ptr::null(), 0); 8];
+   saved[..first.len()].copy_from_slice(first);
+   let first = &saved[..first.len()];
+   let id = cmd_id(unsafe { part_bytes(first[0]) });
+   let mut count = 1;
+   while count < 256 {
+      let start = conn.parser.pos;
+      match conn.parser.parse_one() {
+         ParseResult::Complete => {
+            let next = &conn.parser.parts_raw;
+            if next.len() == first.len()
+               && cmd_id(unsafe { part_bytes(next[0]) }) == id
+               && next[1..]
+                  .iter()
+                  .zip(&first[1..])
+                  .all(|(&a, &b)| unsafe { part_bytes(a) == part_bytes(b) })
+            {
+               count += 1;
+            } else {
+               conn.parser.pos = start;
+               break;
+            }
+         }
+         ParseResult::Incomplete => break,
+         ParseResult::Error => {
+            conn.parser.pos = start;
+            break;
+         }
+      }
+   }
+   let start = conn.parser.wbuf.len();
+   dispatch_raw(conn, first);
+   crate::utils::resp::repeat_reply(&mut conn.parser.wbuf, start, count);
+}
+
+pub(super) fn dispatch_setbit_run(conn: &mut Conn<'_>, first: &[(*const u8, usize)]) {
+   let store = conn.store;
+   let _write_epoch = store.data.write_epoch();
+   dispatch_raw(conn, first);
+   for _ in 1..256 {
+      let start = conn.parser.pos;
+      match conn.parser.parse_one() {
+         ParseResult::Complete => {
+            let raw = unsafe {
+               std::slice::from_raw_parts(
+                  conn.parser.parts_raw.as_ptr(),
+                  conn.parser.parts_raw.len(),
+               )
+            };
+            if raw.len() == 4 && cmd_id(unsafe { part_bytes(raw[0]) }) == CmdId::Setbit {
+               dispatch_raw(conn, raw);
+            } else {
+               conn.parser.pos = start;
+               break;
+            }
+         }
+         ParseResult::Incomplete => break,
+         ParseResult::Error => {
+            conn.parser.pos = start;
+            break;
+         }
+      }
+   }
+}
+
+pub(super) fn dispatch_hget_run(conn: &mut Conn<'_>, first: &[(*const u8, usize)]) {
+   let Some(key) = part_str(&mut conn.parser.wbuf, first[1]) else {
+      return;
+   };
+   let Some(field) = part_str(&mut conn.parser.wbuf, first[2]) else {
+      return;
+   };
+   let mut count = 1;
+   while count < 256 {
+      let start = conn.parser.pos;
+      match conn.parser.parse_one() {
+         ParseResult::Complete => {
+            let next = &conn.parser.parts_raw;
+            if next.len() == 3
+               && cmd_id(unsafe { part_bytes(next[0]) }) == CmdId::Hget
+               && unsafe { part_bytes(next[1]) } == key.as_bytes()
+               && unsafe { part_bytes(next[2]) } == field.as_bytes()
+            {
+               count += 1;
+            } else {
+               conn.parser.pos = start;
+               break;
+            }
+         }
+         ParseResult::Incomplete => break,
+         ParseResult::Error => {
+            conn.parser.pos = start;
+            break;
+         }
+      }
+   }
+   let out = &mut conn.parser.wbuf;
+   let start = out.len();
+   match conn.store.hget_to_buf(key, field, out) {
+      Ok(true) => {}
+      Ok(false) => crate::utils::resp::write_nil(out),
+      Err(_) => crate::utils::resp::write_wrong_type(out),
+   }
+   crate::utils::resp::repeat_reply(out, start, count);
+}
+
+pub(super) fn dispatch_json_get_run(
+   conn: &mut Conn<'_>,
+   first_raw: &[(*const u8, usize)],
+   read_only: bool,
+) -> bool {
    if first_raw.len() != 3 {
       return false;
    }
@@ -592,25 +756,45 @@ pub(super) fn dispatch_json_get_run(conn: &mut Conn<'_>, first_raw: &[(*const u8
       }
    }
 
-   if count == 1 {
+   if count == 1 || keys[1..count].iter().all(|key| *key == keys[0]) {
       let out = &mut conn.parser.wbuf;
+      let start = out.len();
       let Some(key) = part_str(out, first_raw[1]) else {
-         return false;
+         crate::utils::resp::repeat_reply(out, start, count);
+         return true;
       };
       match conn.store.json_get_to_buf(key, &["."], out) {
          Ok(true) => {}
          Ok(false) => crate::utils::resp::write_nil(out),
          Err(e) => crate::utils::resp::write_store_err(out, e),
       }
+      crate::utils::resp::repeat_reply(out, start, count);
       return true;
    }
+
+   let store = conn.store;
+   let read_epoch = if read_only && count >= READ_EPOCH_MIN {
+      store.data.try_read_epoch()
+   } else {
+      None
+   };
 
    conn
       .store
       .prefetch_slots(&keys[..count], &mut hashes[..count], &mut tables[..count]);
-   conn
-      .store
-      .probe_and_prefetch_entries(&tables[..count], &hashes[..count], &mut entries[..count]);
+   if read_epoch.is_some() {
+      conn.store.probe_and_prefetch_entries(
+         &tables[..count],
+         &hashes[..count],
+         &mut entries[..count],
+      );
+   } else {
+      conn.store.probe_and_prefetch_entries_write(
+         &tables[..count],
+         &hashes[..count],
+         &mut entries[..count],
+      );
+   }
 
    let out = &mut conn.parser.wbuf;
    out.reserve(count * 64);
@@ -625,19 +809,19 @@ pub(super) fn dispatch_json_get_run(conn: &mut Conn<'_>, first_raw: &[(*const u8
          if (state & (0xFFFF_FFFF_0000_0000 | customhash::STATE_OCCUPIED)) == expected
             && e.key.eq_bytes(keys[i])
          {
-            if state & customhash::STATE_LOCK != 0 {
-               let mut cur = state;
-               while cur & customhash::STATE_LOCK != 0 {
-                  std::hint::spin_loop();
-                  cur = e.state.load(std::sync::atomic::Ordering::Acquire);
-               }
-               if cur & customhash::STATE_OCCUPIED == 0 {
+            let read = if read_epoch.is_some() && state & customhash::STATE_LOCK == 0 {
+               None
+            } else {
+               let Some(read) = e.read() else {
                   crate::utils::resp::write_nil(out);
                   continue;
-               }
-            }
-            std::sync::atomic::fence(std::sync::atomic::Ordering::Acquire);
-            let val = unsafe { (*e.value.get()).assume_init_ref() };
+               };
+               Some(read)
+            };
+            let val = match &read {
+               Some(read) => &**read,
+               None => unsafe { (*e.value.get()).assume_init_ref() },
+            };
             if val.expires_ms == 0 || !val.is_expired() {
                if let Some(raw) = val.value.as_json_str() {
                   crate::utils::resp::write_bulk(out, raw);
@@ -702,7 +886,7 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
    {
       match id {
          CmdId::Get if raw.len() == 2 => {
-            dispatch_get_run(conn, raw[1]);
+            dispatch_get_run(conn, raw[1], false);
             return;
          }
          CmdId::Set if raw.len() == 3 => {
@@ -1713,8 +1897,8 @@ pub(super) fn ft_search_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
    let inline = conn.mode.executing_transaction()
       || !search_offloaded()
       || (raw.len() >= 2 && {
-         let idx = unsafe { std::str::from_utf8_unchecked(part_bytes(raw[1])) };
-         conn.store.search_state().hnsw_graph_is_clean(idx)
+         std::str::from_utf8(unsafe { part_bytes(raw[1]) })
+            .is_ok_and(|idx| conn.store.search_state().hnsw_graph_is_clean(idx))
       });
 
    if inline {
@@ -1796,6 +1980,10 @@ mod cmd_id_tests {
       assert_eq!(cmd_id(b"BITCOUNT"), CmdId::Bitcount);
       assert_eq!(cmd_id(b""), CmdId::Other);
       assert_eq!(cmd_id(b"GETX"), CmdId::Other);
+      assert_eq!(cmd_id(b"GET\0"), CmdId::Other);
+      assert_eq!(cmd_id(b"SET "), CmdId::Other);
+      assert_eq!(cmd_id(b"JSON\x0eGET"), CmdId::Other);
+      assert_eq!(cmd_id(b"JSON\x0eSET"), CmdId::Other);
       assert_eq!(cmd_id(b"FT.SEARCH"), CmdId::Other);
    }
 }

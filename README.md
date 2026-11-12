@@ -80,6 +80,15 @@ Results are written to `temp/bench/stable/summary.json`. Compare medians and var
 
 For a sustained hot-key check, add `--modes hotkey --hotkey-seconds 8 --inner 1`. CPU time per completed request helps distinguish a server optimization from a client or host bottleneck.
 
+For ANN comparisons against older builds, verify that background indexing has settled before timing:
+
+```bash
+cd bench
+ANN_READY_RECALL=0.99 go run . -m ann -ann-synth-n 100000 -ann-synth-dim 128 -ann-q 1000
+```
+
+The optional gate requires three consecutive probes at the requested recall and a clear `FT.INFO` indexing flag. It checks 32 queries at EF 320 before the timed sweeps and fails after two minutes if the threshold is not reached. Choose a threshold appropriate to the dataset and index settings; compare query speed together with recall.
+
 Measure the direct engine separately:
 
 ```bash

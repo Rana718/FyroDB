@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -eo pipefail
 
-cargo test "$@" 2>&1 | awk '
+RUST_TEST_THREADS="${RUST_TEST_THREADS:-2}" cargo test --workspace "$@" 2>&1 | awk '
 /test result:/ {
     for (i = 1; i <= NF; i++) {
         if ($i == "passed;") passed += $(i - 1);

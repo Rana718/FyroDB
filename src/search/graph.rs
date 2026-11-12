@@ -148,6 +148,9 @@ pub fn doc_vector(
 }
 
 fn new_graph(attrs: &VectorAttrs) -> Arc<HnswGraph> {
+   if attrs.algorithm == "FLAT" {
+      return Arc::new(HnswGraph::new_flat(attrs.metric, attrs.dims));
+   }
    let quant = if attrs.algorithm == "HNSW" {
       attrs.quant
    } else {
@@ -300,7 +303,7 @@ impl SearchState {
       let dirty = self.vector_dirty(&def.name, field)?;
       let dirty_set: &DirtySet = &dirty.vectors[field];
       // Fast path: no pending writes — skip the apply lock entirely.
-      if dirty_set.is_clean() {
+      if dirty_set.is_clean() && !entry.apply.is_locked() {
          return Some(entry);
       }
       let _apply = entry.apply.lock();
@@ -479,18 +482,29 @@ impl SearchState {
    }
 
    /// RediSearch `indexing` / `percent_indexed`: true while any vector field
-   /// has a builder in flight, reporting the minimum indexed document ratio.
+   /// has pending work, reporting the minimum indexed document ratio.
    pub fn index_progress(&self, def: &IndexDef, num_docs: u64) -> (bool, f64) {
       let mut indexing = false;
       let mut percent: f64 = 1.0;
       for f in def.fields.iter().filter(|f| f.vector.is_some()) {
          let key = (def.name.clone(), f.name.clone());
-         if !self.building.lock().contains_key(&key) {
+         let entry = self.graphs.read().get(&key).cloned();
+         let dirty = self.vector_dirty(&def.name, &f.name);
+         let pending = dirty.is_some_and(|d| !d.vectors[&f.name].is_clean());
+         let applying = entry.as_ref().is_some_and(|e| {
+            e.apply.is_locked() || (e.linked && e.graph.linked_len() < e.graph.len())
+         });
+         if !self.building.lock().contains_key(&key) && !pending && !applying {
             continue;
          }
          indexing = true;
-         let entry = self.graphs.read().get(&key).cloned();
-         let done = entry.map_or(0, |e| e.graph.linked_len());
+         let done = entry.map_or(0, |e| {
+            if e.linked {
+               e.graph.linked_len()
+            } else {
+               e.graph.len()
+            }
+         });
          let p = if num_docs == 0 {
             0.0
          } else {
@@ -521,7 +535,7 @@ impl SearchState {
          let Some(entry) = graphs.get(&key) else {
             return false;
          };
-         if !entry.is_linked() {
+         if !entry.is_linked() || entry.apply.is_locked() {
             return false;
          }
          if let Some(dirty) = self.vector_dirty(&def.name, &f.name)
@@ -662,4 +676,94 @@ fn apply_keys(
    }
    drop(km);
    entry.bump();
+}
+
+#[cfg(test)]
+mod tests {
+   use super::*;
+   use crate::search::{StorageKind, parse_field_defs};
+   use std::sync::mpsc;
+   use std::time::Duration;
+
+   fn fixture(algorithm: &'static str) -> (Arc<Store>, Arc<IndexDef>, Arc<GraphEntry>) {
+      let store = Arc::new(Store::new());
+      store
+         .search
+         .create(IndexDef {
+            name: "ready".into(),
+            prefixes: vec![],
+            storage: StorageKind::Hash,
+            fields: parse_field_defs(&[
+               "vec",
+               "VECTOR",
+               algorithm,
+               "6",
+               "TYPE",
+               "FLOAT32",
+               "DIM",
+               "2",
+               "DISTANCE_METRIC",
+               "L2",
+            ])
+            .unwrap(),
+            created_at_ms: 0,
+            num_docs: 0.into(),
+         })
+         .unwrap();
+      let def = store.search.def_arc("ready").unwrap();
+      let attrs = def.field("vec").unwrap().vector.as_ref().unwrap();
+      let entry = Arc::new(GraphEntry::new(new_graph(attrs), algorithm == "HNSW"));
+      store
+         .search
+         .graphs
+         .write()
+         .insert(("ready".into(), "vec".into()), Arc::clone(&entry));
+      (store, def, entry)
+   }
+
+   #[test]
+   fn progress_includes_dirty_and_drained_work() {
+      let (store, def, entry) = fixture("HNSW");
+      let dirty = store.search.vector_dirty("ready", "vec").unwrap();
+      assert_eq!(store.search.index_progress(&def, 1), (false, 1.0));
+      dirty.vectors["vec"].mark("doc");
+      assert!(store.search.index_progress(&def, 1).0);
+      let apply = entry.apply.lock();
+      dirty.vectors["vec"].drain();
+      assert!(dirty.vectors["vec"].is_clean());
+      assert!(store.search.index_progress(&def, 1).0);
+      assert!(!store.search.hnsw_graph_is_clean("ready"));
+      drop(apply);
+      assert_eq!(store.search.index_progress(&def, 1), (false, 1.0));
+   }
+
+   #[test]
+   fn clean_query_waits_for_drained_apply() {
+      let (store, def, entry) = fixture("HNSW");
+      let apply = entry.apply.lock();
+      let (started_tx, started_rx) = mpsc::channel();
+      let (done_tx, done_rx) = mpsc::channel();
+      let worker = std::thread::spawn(move || {
+         started_tx.send(()).unwrap();
+         let found = store.search.vector_index_entry(&store, &def, "vec");
+         done_tx.send(found.is_some()).unwrap();
+      });
+      started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+      assert!(matches!(
+         done_rx.recv_timeout(Duration::from_millis(50)),
+         Err(mpsc::RecvTimeoutError::Timeout)
+      ));
+      drop(apply);
+      assert!(done_rx.recv_timeout(Duration::from_secs(2)).unwrap());
+      worker.join().unwrap();
+   }
+
+   #[test]
+   fn progress_distinguishes_pending_hnsw_from_flat_vectors() {
+      for algorithm in ["HNSW", "FLAT"] {
+         let (store, def, entry) = fixture(algorithm);
+         entry.graph.prepare_batch(&[(0, &[1.0, 2.0])]);
+         assert_eq!(store.search.index_progress(&def, 1).0, algorithm == "HNSW");
+      }
+   }
 }

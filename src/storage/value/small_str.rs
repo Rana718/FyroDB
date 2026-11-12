@@ -188,6 +188,10 @@ impl SmallStr {
          self.len = Tag::inline(len);
          return;
       }
+      if self.len == Tag::Heap && Self::read_heap_len(&self.data) == len {
+         self.as_bytes_mut().copy_from_slice(s);
+         return;
+      }
       *self = Self::from_slice(s);
    }
 
@@ -204,9 +208,10 @@ impl SmallStr {
          self.len = Tag::inline(cur + s.len());
          return;
       }
-      let mut owned = self.as_str().to_owned();
-      owned.push_str(s);
-      *self = Self::from_string(owned);
+      let mut owned = Vec::with_capacity(cur + s.len());
+      owned.extend_from_slice(self.as_bytes());
+      owned.extend_from_slice(s.as_bytes());
+      *self = Self::from_bytes(owned);
    }
 
    #[inline]
@@ -252,7 +257,7 @@ impl SmallStr {
             }
             return;
          }
-         crate::utils::resp::write_bulk(out, self.as_str());
+         crate::utils::resp::write_bulk_bytes(out, self.as_bytes());
          return;
       }
       if len <= SMALL_STR_CAP {
@@ -291,7 +296,7 @@ impl SmallStr {
             }
             return;
          }
-         crate::utils::resp::write_bulk(out, self.as_str());
+         crate::utils::resp::write_bulk_bytes(out, self.as_bytes());
          return;
       }
       crate::utils::resp::write_bulk_bytes(out, self.as_bytes());
@@ -452,9 +457,16 @@ impl SmallStr {
    #[inline]
    pub fn ensure_len(&mut self, min_len: usize) {
       if self.len() < min_len {
-         let mut owned = self.as_str().to_owned();
-         owned.extend(std::iter::repeat_n('\0', min_len - owned.len()));
-         *self = Self::from_string(owned);
+         if self.len != Tag::Heap && min_len <= SMALL_STR_CAP {
+            let current = self.len();
+            self.data[current..min_len].fill(0);
+            self.len = Tag::inline(min_len);
+            return;
+         }
+         let mut owned = Vec::with_capacity(min_len);
+         owned.extend_from_slice(self.as_bytes());
+         owned.resize(min_len, 0);
+         *self = Self::from_bytes(owned);
       }
    }
 }

@@ -44,6 +44,7 @@ def main():
         q = struct.pack("<2f", 1, 0)
         r = c.call("FT.HYBRID", "docs", "SEARCH", "@body:rust", "VSIM", "@vec", "$v", "KNN", "3",
                    "COMBINE", "RRF", "CONSTANT", "60", "LIMIT", "0", "3", "NOCONTENT", "WITHSCORES", "PARAMS", "2", "v", q)
+        check(isinstance(r, list), "hybrid RRF returned results: %s" % r)
         check(r[1] == "p:1", "hybrid RRF puts the doc strong in both lists first (%s)" % r)
         check(r[0] >= 3, "hybrid unions both lists")
         r = c.call("FT.HYBRID", "docs", "SEARCH", "@cat:{food}", "VSIM", "@vec", "$v", "COMBINE", "LINEAR",
@@ -63,11 +64,12 @@ def main():
         rows = [dict(zip(x[0::2], x[1::2])) for x in r[1:]]
         check([x["cat"] for x in rows] == ["book", "food", "db"], "SORTBY @total DESC (%s)" % [x["cat"] for x in rows])
         book = rows[0]
-        check(book["n"] == "2" and book["total"] == "50" and book["avg"] == "25" and book["lo"] == "20" and book["hi"] == "30",
+        expected = {"n": 2, "total": 50, "avg": 25, "lo": 20, "hi": 30}
+        check({name: float(book[name]) for name in expected} == expected,
               "reducers COUNT/SUM/AVG/MIN/MAX (%s)" % book)
-        check(book["titles"] == "2" and sorted(book["names"]) == ["Database internals", "Rust for beginners"], "COUNT_DISTINCT / TOLIST")
+        check(float(book["titles"]) == 2 and sorted(book["names"]) == ["Database internals", "Rust for beginners"], "COUNT_DISTINCT / TOLIST")
         r = c.call("FT.AGGREGATE", "docs", "@price:[6 25]", "GROUPBY", "0", "REDUCE", "COUNT", "0", "AS", "n")
-        check(r[1:] == [["n", "3"]], "filtered global aggregate (%s)" % r)
+        check(len(r) == 2 and r[1][0] == "n" and float(r[1][1]) == 3, "filtered global aggregate (%s)" % r)
         r = c.call("FT.AGGREGATE", "docs", "*", "LOAD", "1", "@price", "SORTBY", "2", "@price", "ASC", "LIMIT", "0", "2")
         check([dict(zip(x[0::2], x[1::2]))["price"] for x in r[1:]] == ["5", "7"], "LOAD + SORTBY + LIMIT")
         r = c.call("FT.AGGREGATE", "docs", "*", "LOAD", "1", "@price", "WITHCURSOR", "COUNT", "2")

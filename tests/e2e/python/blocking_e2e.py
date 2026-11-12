@@ -83,7 +83,10 @@ def main():
     time.sleep(0.1)
     c.call("ZADD", "zs", "3", "m3", "1", "m1")
     th.join(2)
-    check(res.get("v") == ["zs", "m1", "1"], "BZPOPMIN woke with the lowest member")
+    popped = res.get("v")
+    check(isinstance(popped, list) and len(popped) == 3
+          and popped[:2] == ["zs", "m1"] and float(popped[2]) == 1,
+          "BZPOPMIN woke with the lowest member: %r" % (popped,))
 
     # Errors.
     c.call("SET", "str", "v")

@@ -7,6 +7,8 @@ on:
       - "src/**"
       - "crates/**"
       - "tests/**"
+      - "bench/**"
+      - "scripts/**"
       - ".github/workflows/ci.yml"
       - "Cargo.toml"
       - "Cargo.lock"
@@ -30,10 +32,27 @@ jobs:
         run: cargo build
 
       - name: Test
-        run: cargo test
+        run: cargo test --workspace
+        env:
+          RUST_TEST_THREADS: 2
 
-      - name: Script and transaction isolation
-        run: python3 tests/e2e/python/isolation_e2e.py target/debug/fyro_db --seconds 1
+      - name: Protocol and isolation regression suites
+        run: python3 tests/e2e/python/run.py target/debug/fyro_db
 
       - name: Clippy
-        run: cargo clippy -- -D warnings
+        run: cargo clippy --workspace -- -D warnings
+
+  benchmark-validation:
+    name: Benchmark client validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: bench/go.mod
+          cache: false
+      - name: Validate benchmark counts and replies
+        working-directory: bench
+        run: go test -short -timeout 30s ./...
+      - name: Validate Docker benchmark harness
+        run: python3 scripts/test_bench_matrix.py

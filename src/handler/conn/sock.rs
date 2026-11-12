@@ -3,7 +3,7 @@ use super::*;
 impl<'a> Conn<'a> {
    /// Parse between reads once this much unparsed input has accumulated, so a
    /// deep pipeline cannot drag the read buffer up to the whole pipeline size.
-   const MAX_READ_AHEAD: usize = 256 * 1024;
+   const MAX_READ_AHEAD: usize = 64 * 1024;
 
    #[inline]
    fn recv_raw(&self, ptr: *mut u8, len: usize) -> io::Result<usize> {
@@ -71,6 +71,7 @@ impl<'a> Conn<'a> {
       let store = self.store;
       let mut batch_guard = Some(store.command_guard(self.worker));
       let mut prefetched = 0usize;
+      let mut read_only = true;
       self.hint_n = 0;
       loop {
          if batch_guard.is_none() {
@@ -93,6 +94,7 @@ impl<'a> Conn<'a> {
                   unsafe { part_bytes(raw[0]) }
                };
                let id = cmd_id(cmd);
+               read_only &= matches!(id, CmdId::Get | CmdId::JsonGet | CmdId::Hget | CmdId::Ping);
                if self.authenticated
                   && (id == CmdId::Other || id == CmdId::Quit || self.mode.in_transaction())
                   && !matches!(self.mode, ConnMode::Subscribed { .. })
@@ -119,7 +121,7 @@ impl<'a> Conn<'a> {
                if self.authenticated && !self.store.cluster.enabled && !self.store.at_key_capacity()
                {
                   if id == CmdId::Get && raw.len() == 2 {
-                     dispatch_get_run(self, raw[1]);
+                     dispatch_get_run(self, raw[1], read_only);
                      prefetched = self.parser.pos;
                      continue;
                   }
@@ -139,7 +141,25 @@ impl<'a> Conn<'a> {
                      prefetched = self.parser.pos;
                      continue;
                   }
-                  if id == CmdId::JsonGet && dispatch_json_get_run(self, raw) {
+                  if id == CmdId::Hget && raw.len() == 3 {
+                     dispatch_hget_run(self, raw);
+                     prefetched = self.parser.pos;
+                     continue;
+                  }
+                  if id == CmdId::JsonGet && dispatch_json_get_run(self, raw, read_only) {
+                     prefetched = self.parser.pos;
+                     continue;
+                  }
+
+                  if id == CmdId::Setbit && raw.len() == 4 {
+                     dispatch_setbit_run(self, raw);
+                     prefetched = self.parser.pos;
+                     continue;
+                  }
+                  if matches!(id, CmdId::Bitcount | CmdId::Pfcount | CmdId::Geodist)
+                     && raw.len() <= 8
+                  {
+                     dispatch_repeated_read_run(self, raw);
                      prefetched = self.parser.pos;
                      continue;
                   }

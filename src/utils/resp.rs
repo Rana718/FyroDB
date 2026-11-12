@@ -111,6 +111,19 @@ pub fn format_usize_digits(mut n: usize, buf: &mut [u8]) -> &[u8] {
    &buf[i..]
 }
 
+#[inline(always)]
+pub(crate) fn format_u64_digits(mut n: u64, buf: &mut [u8]) -> &[u8] {
+   let mut i = buf.len();
+   loop {
+      i -= 1;
+      buf[i] = b'0' + (n % 10) as u8;
+      n /= 10;
+      if n == 0 {
+         return &buf[i..];
+      }
+   }
+}
+
 /// # Safety
 ///
 /// Caller must ensure `dst` has enough capacity to hold the formatted RESP bulk header, payload, and CRLF.

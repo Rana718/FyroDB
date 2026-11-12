@@ -116,6 +116,9 @@ pub(super) fn dispatch_set_expire_pair(
       return PairOutcome::Done;
    };
 
+   let store = conn.store;
+   let _write_epoch = store.data.write_epoch();
+
    // The pair: one lock, atomic value+TTL.
    let (hint, entry) = conn.hint_for(set[1]);
    conn.store.set_string_auto(key, hint, entry, value, exp);
@@ -190,6 +193,7 @@ pub(super) fn dispatch_publish_run(
          }
       }
 
+      let next_start = conn.parser.pos;
       match conn.parser.parse_one() {
          ParseResult::Complete => {
             let raw_ptr = conn.parser.parts_raw.as_ptr();
@@ -205,7 +209,7 @@ pub(super) fn dispatch_publish_run(
                   Err(()) => QueueRunOutcome::ConnError,
                };
                if matches!(outcome, QueueRunOutcome::Done) {
-                  dispatch_raw(conn, raw);
+                  conn.parser.pos = next_start;
                }
                return outcome;
             }
@@ -440,6 +444,7 @@ pub(super) fn dispatch_write_run(
          }
       }
 
+      let next_start = conn.parser.pos;
       match conn.parser.parse_one() {
          ParseResult::Complete => {
             let raw_ptr = conn.parser.parts_raw.as_ptr();
@@ -456,7 +461,7 @@ pub(super) fn dispatch_write_run(
                   Err(()) => QueueRunOutcome::ConnError,
                };
                if matches!(outcome, QueueRunOutcome::Done) {
-                  dispatch_raw(conn, raw);
+                  conn.parser.pos = next_start;
                }
                return outcome;
             }
@@ -491,6 +496,8 @@ pub(super) fn execute_write_run(
    cmds: usize,
    parts: &[(*const u8, usize)],
 ) -> Result<(), ()> {
+   let store = conn.store;
+   let _write_epoch = store.data.write_epoch();
    let replication = conn.store.has_replication();
 
    match op {
@@ -963,6 +970,7 @@ pub(super) fn dispatch_queue_run(
          }
       }
 
+      let next_start = conn.parser.pos;
       match conn.parser.parse_one() {
          ParseResult::Complete => {
             let raw_ptr = conn.parser.parts_raw.as_ptr();
@@ -984,7 +992,7 @@ pub(super) fn dispatch_queue_run(
                   Err(()) => QueueRunOutcome::ConnError,
                };
                if matches!(outcome, QueueRunOutcome::Done) {
-                  dispatch_raw(conn, raw);
+                  conn.parser.pos = next_start;
                }
                return outcome;
             }
@@ -1020,6 +1028,8 @@ pub(super) fn execute_queue_run(
    cmds: usize,
    parts: &[(*const u8, usize)],
 ) -> Result<(), ()> {
+   let store = conn.store;
+   let _write_epoch = store.data.write_epoch();
    let out = &mut conn.parser.wbuf;
    let store = conn.store;
 

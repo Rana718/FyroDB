@@ -260,7 +260,32 @@ fn vector(
    window: usize,
    ef: usize,
 ) -> Option<Vec<(String, f64)>> {
-   let entry = store.search_state().vector_index_entry(store, def, field)?;
+   let Some(entry) = store.search_state().vector_index_entry(store, def, field) else {
+      let distance = crate::search::QueryDist::new(attrs.metric, qv);
+      let mut hits: Vec<(String, f64)> = Vec::new();
+      store.data.for_each(|key, value| {
+         if value.is_expired() || !def.matches_key(key) || !doc_storage_matches(value, def) {
+            return;
+         }
+         let Some(bytes) = super::doc::doc_vector(value, def, field) else {
+            return;
+         };
+         attrs.with_f32_slice(bytes, |vector| {
+            let score = -(distance.distance(qv, vector) as f64);
+            let pos = hits.partition_point(|(other_key, other_score)| {
+               other_score.total_cmp(&score).is_gt()
+                  || (other_score.total_cmp(&score).is_eq() && other_key.as_str() < key)
+            });
+            if pos < window {
+               hits.insert(pos, (key.to_owned(), score));
+               if hits.len() > window {
+                  hits.pop();
+               }
+            }
+         });
+      });
+      return Some(hits);
+   };
    let graph = &entry.graph;
    let hits = if !entry.is_linked() {
       graph.brute_search(qv, window)
