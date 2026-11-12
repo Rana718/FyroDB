@@ -232,7 +232,9 @@ fn exercise_pipeline(mode: u8) {
 fn heap_pipeline_handles_changing_sizes_missing_keys_and_other_types() {
    let server = Server::start();
    let mut client = Client::connect(server.port);
-   let sizes = [64, 23, 24, 25, 63, 65, 128, 256, 257, 4096];
+   let sizes = [
+      64, 23, 24, 25, 63, 65, 128, 256, 257, 512, 1000, 1024, 1025, 4096,
+   ];
    for round in 0..3 {
       let values: Vec<_> = (0..64)
          .map(|index| {
@@ -308,12 +310,23 @@ fn a_miss_after_duplicate_large_keys_releases_every_read_guard() {
 
 #[test]
 fn heap_write_batches_remain_complete_with_readers_and_snapshotting() {
+   exercise_heap_snapshot(64);
+}
+
+#[test]
+fn medium_heap_updates_and_snapshotting_preserve_complete_values() {
+   for size in [65, 128, 129, 256, 257, 512, 1024] {
+      exercise_heap_snapshot(size);
+   }
+}
+
+fn exercise_heap_snapshot(size: usize) {
    let server = Server::start();
    let mut setup = Client::connect(server.port);
    for index in 0..64 {
       let key = format!("key:{index:012}");
       assert_eq!(
-         setup.call(&[b"SET", key.as_bytes(), &[b'0'; 64]]),
+         setup.call(&[b"SET", key.as_bytes(), &vec![b'0'; size]]),
          Reply::Simple(b"OK".to_vec())
       );
    }
@@ -327,7 +340,7 @@ fn heap_write_batches_remain_complete_with_readers_and_snapshotting() {
             barrier.wait();
             for round in 0..100 {
                let mut wire = Vec::new();
-               let value = [b'a' + (worker * 2 + round % 2) as u8; 64];
+               let value = vec![b'a' + (worker * 2 + round % 2) as u8; size];
                for position in 0..64 {
                   let index = if worker % 2 == 0 {
                      position
@@ -349,7 +362,7 @@ fn heap_write_batches_remain_complete_with_readers_and_snapshotting() {
                      let Reply::Bulk(value) = client.read() else {
                         panic!("missing heap value")
                      };
-                     assert_eq!(value.len(), 64);
+                     assert_eq!(value.len(), size);
                      assert!(value.iter().all(|b| *b == value[0]));
                   }
                }
@@ -370,7 +383,7 @@ fn heap_write_batches_remain_complete_with_readers_and_snapshotting() {
    );
    for index in 0..64 {
       let value = loaded.get(&format!("key:{index:012}")).unwrap();
-      assert_eq!(value.len(), 64);
+      assert_eq!(value.len(), size);
       assert!(value.as_bytes().iter().all(|b| *b == value.as_bytes()[0]));
    }
 }

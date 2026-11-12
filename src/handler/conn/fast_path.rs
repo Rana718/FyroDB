@@ -280,7 +280,8 @@ pub(super) fn dispatch_get_run<const STREAM_IO: bool>(
    let first_payload_len = read_epoch.as_ref().map_or(0, |epoch| unsafe {
       store.string_payload_len_epoch(hashes[0], entries[0], epoch)
    });
-   let prefetch_payloads = (24..=256).contains(&first_payload_len);
+   let prefetch_payloads = (24..=1024).contains(&first_payload_len)
+      && (first_payload_len <= 256 || store.worker_capacity() == 1);
    #[cfg(not(feature = "io-uring"))]
    if STREAM_IO
       && first_payload_len >= super::bulk::MIN_STREAM_BYTES

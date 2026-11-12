@@ -94,6 +94,12 @@ impl Drop for CommandGuard<'_> {
 }
 
 impl super::Store {
+   /// Configured worker slots, excluding the auxiliary caller slot.
+   #[inline(always)]
+   pub(crate) fn worker_capacity(&self) -> usize {
+      self.isolation.slots.len() - 1
+   }
+
    #[inline]
    pub fn command_guard(&self, worker: usize) -> CommandGuard<'_> {
       self.isolation.enter(worker, false)

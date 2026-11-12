@@ -94,7 +94,7 @@ impl Default for RespParser {
 
 impl RespParser {
    /// Idle size of the read buffer, and the size it is reclaimed to.
-   const IDLE_READ_BUFFER: usize = 64 * 1024;
+   const IDLE_READ_BUFFER: usize = 32 * 1024;
 
    /// Buffers start unallocated and are created on first use.
    pub fn new() -> Self {

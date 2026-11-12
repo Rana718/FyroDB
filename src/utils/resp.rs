@@ -240,12 +240,47 @@ pub fn write_bulk_bytes(out: &mut Vec<u8>, s: &[u8]) {
       }
       return;
    }
+   if len < 10_000 {
+      write_medium_bulk(out, s);
+      return;
+   }
    out.reserve(1 + 10 + 2 + len + 2);
    out.push(b'$');
    write_usize(out, s.len());
    out.extend_from_slice(b"\r\n");
    out.extend_from_slice(s);
    out.extend_from_slice(b"\r\n");
+}
+
+#[inline(never)]
+fn write_medium_bulk(out: &mut Vec<u8>, s: &[u8]) {
+   let len = s.len();
+   debug_assert!((100..10_000).contains(&len));
+   let old_len = out.len();
+   let digits = if len < 1000 { 3 } else { 4 };
+   let header = digits + 3;
+   let total = header + len + 2;
+   if out.capacity() - old_len < total {
+      reserve_resp(out, total);
+   }
+   unsafe {
+      let p = out.as_mut_ptr().add(old_len);
+      *p = b'$';
+      if digits == 3 {
+         *p.add(1) = b'0' + (len / 100) as u8;
+      } else {
+         let index = (len / 100) * 2;
+         *p.add(1) = DIGITS100[index];
+         *p.add(2) = DIGITS100[index + 1];
+      }
+      let index = (len % 100) * 2;
+      *p.add(digits - 1) = DIGITS100[index];
+      *p.add(digits) = DIGITS100[index + 1];
+      p.add(digits + 1).cast::<u16>().write_unaligned(CRLF_U16);
+      std::ptr::copy_nonoverlapping(s.as_ptr(), p.add(header), len);
+      p.add(header + len).cast::<u16>().write_unaligned(CRLF_U16);
+      out.set_len(old_len + total);
+   }
 }
 
 #[inline(always)]
@@ -395,4 +430,25 @@ pub fn write_i64(out: &mut Vec<u8>, n: i64) {
    let mut digits = [0u8; 20];
    let s = crate::utils::int_format::write_i64_to(&mut digits, n);
    out.extend_from_slice(s.as_bytes());
+}
+
+#[cfg(test)]
+mod tests {
+   #[test]
+   fn bulk_headers_preserve_binary_payloads_prefixes_and_digit_boundaries() {
+      for length in (0..=1025).chain([9998, 9999, 10_000, 10_001, 65_536]) {
+         let value: Vec<_> = (0..length).map(|i| (i % 256) as u8).collect();
+         let mut expected = b"+prefix\r\n".to_vec();
+         expected.extend_from_slice(format!("${length}\r\n").as_bytes());
+         expected.extend_from_slice(&value);
+         expected.extend_from_slice(b"\r\n+OK\r\n");
+         for spare in [0, 1, length + 32] {
+            let mut out = Vec::with_capacity(9 + spare);
+            out.extend_from_slice(b"+prefix\r\n");
+            super::write_bulk_bytes(&mut out, &value);
+            super::write_ok(&mut out);
+            assert_eq!(out, expected, "length={length}, spare={spare}");
+         }
+      }
+   }
 }

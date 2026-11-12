@@ -29,9 +29,16 @@ fn bulk(value: &[u8]) -> Vec<u8> {
 }
 
 fn with_connection<R>(store: Arc<Store>, run: impl FnOnce(&mut Conn<'_>) -> R) -> R {
+   with_socket_pair(store, |conn, _peer| run(conn))
+}
+
+fn with_socket_pair<R>(
+   store: Arc<Store>,
+   run: impl FnOnce(&mut Conn<'_>, &mut std::net::TcpStream) -> R,
+) -> R {
    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
    let client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
-   let (_peer, _) = listener.accept().unwrap();
+   let (mut peer, _) = listener.accept().unwrap();
    client.set_nonblocking(true).unwrap();
    let stream = Stream::Tcp(mio::net::TcpStream::from_std(client));
    let poll = mio::Poll::new().unwrap();
@@ -39,7 +46,76 @@ fn with_connection<R>(store: Arc<Store>, run: impl FnOnce(&mut Conn<'_>) -> R) -
    let notifier = WorkerNotifier::new(waker, 0);
    let pubsub = PubSub::new();
    let mut conn = Conn::new(stream, &store, &pubsub, 1, &notifier, None, 0);
-   run(&mut conn)
+   run(&mut conn, &mut peer)
+}
+
+#[test]
+fn medium_get_replies_reuse_output_without_increasing_the_buffer_budget() {
+   use std::io::Read;
+   use std::time::{Duration, Instant};
+   for read_capacity in [32 * 1024, 64 * 1024, 128 * 1024] {
+      let store = Arc::new(Store::with_config(2, usize::MAX));
+      let value = vec![b'v'; 128];
+      for index in 0..64 {
+         store.set(
+            &format!("key:{index:012}"),
+            StoreValue::string_small(SmallStr::from_slice(&value)),
+         );
+      }
+      let mut wire = Vec::new();
+      for index in 0..256 {
+         wire.extend_from_slice(&command(&[
+            b"GET",
+            format!("key:{:012}", index % 64).as_bytes(),
+         ]));
+      }
+      let expected = bulk(&value).repeat(256);
+      with_socket_pair(store, |conn, peer| {
+         let mut reader = peer.try_clone().unwrap();
+         reader
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+         let replies = expected.clone();
+         let consumer = std::thread::spawn(move || {
+            let mut received = vec![0; replies.len()];
+            for _ in 0..8 {
+               reader.read_exact(&mut received).unwrap();
+               assert_eq!(received, replies);
+            }
+         });
+         conn.parser.rbuf = Vec::with_capacity(read_capacity);
+         let mut allocation = None;
+         for _ in 0..8 {
+            conn.parser.rbuf.clear();
+            conn.parser.rbuf.extend_from_slice(&wire);
+            conn.parser.filled = wire.len();
+            conn.parser.pos = 0;
+            assert!(conn.process_buffered());
+            assert_eq!(conn.parser.wbuf, expected);
+            if read_capacity == 32 * 1024 {
+               let current = conn.parser.wbuf.as_ptr();
+               if let Some(previous) = allocation {
+                  assert_eq!(current, previous, "output allocation changed after warmup");
+               }
+               allocation = Some(current);
+            }
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while conn.has_pending_write() {
+               assert!(conn.do_write());
+               assert!(Instant::now() < deadline);
+               std::thread::yield_now();
+            }
+            let capacity = conn.parser.wbuf.capacity();
+            if read_capacity == 32 * 1024 {
+               assert!(capacity >= expected.len());
+               assert!(conn.parser.rbuf.capacity() + capacity <= 96 * 1024);
+            } else {
+               assert!(capacity <= 32 * 1024);
+            }
+         }
+         consumer.join().unwrap();
+      });
+   }
 }
 
 fn check_pipeline(store: Arc<Store>, wire: Vec<u8>, expected: &[u8]) -> usize {

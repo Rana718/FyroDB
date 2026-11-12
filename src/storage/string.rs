@@ -345,6 +345,7 @@ impl Store {
          && let Some(value) = unsafe { (*entry.value.get()).assume_init_ref() }
             .value
             .as_string()
+         && (value.len() <= 256 || self.worker_capacity() == 1)
       {
          value.prefetch_payload();
       }

@@ -94,7 +94,7 @@ fn push_str_stays_inline_when_it_fits() {
 
 #[test]
 fn same_size_heap_overwrites_reuse_storage_and_preserve_clones() {
-   for size in (24..=66).chain([4096, 65536]) {
+   for size in (24..=258).chain([512, 1024, 4096, 65536]) {
       let mut value = SmallStr::from_slice(&vec![b'a'; size]);
       let snapshot = value.clone();
       let allocation = value.as_bytes().as_ptr();

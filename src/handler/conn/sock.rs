@@ -206,6 +206,14 @@ impl<'a> Conn<'a> {
       true
    }
 
+   fn retained_write_capacity(&self) -> usize {
+      if self.parser.rbuf.capacity() <= RETAINED_WRITE_BUFFER {
+         RETAINED_WRITE_BUFFER * 2
+      } else {
+         RETAINED_WRITE_BUFFER
+      }
+   }
+
    pub fn do_write(&mut self) -> bool {
       if let ConnMode::Subscribed { ref slot, .. } = self.mode
          && self.parser.wbuf.len() < SUB_WRITE_BATCH_BYTES
@@ -235,7 +243,7 @@ impl<'a> Conn<'a> {
                   }
                   let retained = match self.mode {
                      ConnMode::Subscribed { .. } => SUB_WRITE_BATCH_BYTES,
-                     ConnMode::Normal | ConnMode::Transaction(_) => RETAINED_WRITE_BUFFER,
+                     ConnMode::Normal | ConnMode::Transaction(_) => self.retained_write_capacity(),
                   };
                   if self.parser.wbuf.capacity() > retained {
                      self.parser.wbuf.shrink_to(retained);
@@ -283,8 +291,9 @@ impl<'a> Conn<'a> {
       if self.write_offset >= self.parser.wbuf.len() {
          self.parser.wbuf.clear();
          self.write_offset = 0;
-         if self.parser.wbuf.capacity() > RETAINED_WRITE_BUFFER {
-            self.parser.wbuf.shrink_to(RETAINED_WRITE_BUFFER);
+         let retained = self.retained_write_capacity();
+         if self.parser.wbuf.capacity() > retained {
+            self.parser.wbuf.shrink_to(retained);
          }
       } else if self.write_offset > 512 * 1024 && self.write_offset > self.parser.wbuf.len() / 2 {
          self.parser.wbuf.drain(..self.write_offset);
