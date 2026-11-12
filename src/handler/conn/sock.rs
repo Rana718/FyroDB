@@ -35,7 +35,10 @@ impl<'a> Conn<'a> {
             Err(_) => return false,
          };
          self.parser.did_fill(n);
-         if !raw_only && self.parser.pending() >= Self::MAX_READ_AHEAD && !self.process_buffered() {
+         if !raw_only
+            && self.parser.pending() >= Self::MAX_READ_AHEAD
+            && !self.process_buffered_inner::<true>()
+         {
             return false;
          }
          if n < cap {
@@ -51,7 +54,7 @@ impl<'a> Conn<'a> {
          return true;
       }
 
-      if !self.process_buffered() {
+      if !self.process_buffered_inner::<true>() {
          return false;
       }
       #[cfg(not(feature = "io-uring"))]
@@ -67,6 +70,10 @@ impl<'a> Conn<'a> {
    /// Parse and execute commands in read buffer, pausing if parked and
    /// preserving unparsed bytes. Returns false on protocol error.
    pub fn process_buffered(&mut self) -> bool {
+      self.process_buffered_inner::<false>()
+   }
+
+   fn process_buffered_inner<const STREAM_IO: bool>(&mut self) -> bool {
       let _guard = customhash::pin();
       let store = self.store;
       let mut batch_guard = Some(store.command_guard(self.worker));
@@ -121,7 +128,7 @@ impl<'a> Conn<'a> {
                if self.authenticated && !self.store.cluster.enabled && !self.store.at_key_capacity()
                {
                   if id == CmdId::Get && raw.len() == 2 {
-                     dispatch_get_run(self, raw[1], read_only);
+                     dispatch_get_run::<STREAM_IO>(self, raw[1], read_only);
                      prefetched = self.parser.pos;
                      continue;
                   }
