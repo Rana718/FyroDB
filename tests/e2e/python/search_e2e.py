@@ -66,8 +66,8 @@ def m_quant(c, idx):
     return dict(zip(a[0::2], a[1::2])).get("quantization")
 
 
-def knn(c, idx, v, k=5, flt="*"):
-    q = "(%s)=>[KNN %d @vec $v EF_RUNTIME 64 AS s]" % (flt, k) if flt != "*" else "*=>[KNN %d @vec $v EF_RUNTIME 64 AS s]" % k
+def knn(c, idx, v, k=5, flt="*", ef=64):
+    q = "(%s)=>[KNN %d @vec $v EF_RUNTIME %d AS s]" % (flt, k, ef) if flt != "*" else "*=>[KNN %d @vec $v EF_RUNTIME %d AS s]" % (k, ef)
     r = c.call("FT.SEARCH", idx, q, "NOCONTENT", "LIMIT", "0", str(k), "DIALECT", "2", "PARAMS", "2", "v", blob(v))
     return r[1:]
 
@@ -131,7 +131,9 @@ def main():
             knn(c, name, vecs[0])
             wait_indexed(c, name)
             check(m_quant(c, name) == q, q + " reported by FT.INFO")
-            check(knn(c, name, vecs[11], k=1) == ["d:11"], q + " finds the exact match")
+            # Verify decoding with a full-width traversal; approximate recall
+            # at smaller EF values has separate quantitative coverage.
+            check(knn(c, name, vecs[11], k=1, ef=len(vecs)) == ["d:11"], q + " finds the exact match")
             c.call("FT.DROPINDEX", name)
         check(c.call("FT.CREATE", "h16", "ON", "HASH", "PREFIX", "1", "h:", "SCHEMA", "vec", "VECTOR", "HNSW", "6",
                      "TYPE", "FLOAT16", "DIM", "4", "DISTANCE_METRIC", "L2") == "OK", "FT.CREATE FLOAT16")
@@ -158,6 +160,14 @@ def main():
         wantf = {k for k in want if int(k[2:]) % 3 == 1 and k != "d:5"}
         check(set(r[1:]) == wantf, "filtered VECTOR_RANGE exact on a small allow-list")
 
+        check(c.call("FT.CREATE", "flat", "ON", "HASH", "PREFIX", "1", "flat:", "SCHEMA", "vec", "VECTOR", "FLAT", "6",
+                     "TYPE", "FLOAT32", "DIM", str(DIM), "DISTANCE_METRIC", "L2") == "OK", "FT.CREATE FLAT")
+        for i in range(20):
+            c.call("HSET", "flat:%d" % i, "vec", blob([float(i)] * DIM))
+        knn(c, "flat", [5.125] * DIM)
+        wait_indexed(c, "flat")
+        flat_before = knn(c, "flat", [5.125] * DIM)
+        check(flat_before[0] == "flat:5", "FLAT finds a stored vector")
         before = knn(c, "idx", vecs[42], k=10)
         check(c.call("SAVE") == "OK", "SAVE")
     finally:
@@ -174,6 +184,7 @@ def main():
         check(info(c, "idx").get("indexing") == "0", "restored graph needs no reindex")
         after = knn(c, "idx", vecs[42], k=10)
         check(after == before, "restored graph answers like before the restart")
+        check(knn(c, "flat", [5.125] * DIM) == flat_before, "FLAT vectors survive SAVE and restart")
         c.call("HSET", "d:post", "tag", "x", "n", "1", "vec", blob(far))
         check(knn(c, "idx", far, k=1) == ["d:post"], "writes after restart are indexed")
         print("all search checks passed")

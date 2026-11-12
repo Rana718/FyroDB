@@ -1,6 +1,68 @@
 use super::*;
 use crate::distance::distance;
 
+#[test]
+fn flat_arena_omits_edges_and_preserves_vectors_through_dump_and_reorder() {
+   let data: Vec<_> = (0..512).map(|i| v(i as f32, 128)).collect();
+   let items: Vec<_> = data
+      .iter()
+      .enumerate()
+      .map(|(i, v)| (i, v.as_slice()))
+      .collect();
+   let flat = HnswGraph::new_flat(DistanceMetric::L2, 128);
+   let regular = HnswGraph::new(DistanceMetric::L2, 128, 16, 200);
+   flat.prepare_batch(&items);
+   regular.prepare_batch(&items);
+   assert!(flat.memory_bytes() < regular.memory_bytes());
+   assert_eq!(flat.linked_len(), data.len());
+   assert_eq!(flat.dump().nodes.len(), data.len());
+   for q in &data[..8] {
+      assert_eq!(flat.brute_search(q, 10), regular.brute_search(q, 10));
+   }
+   flat.mark_deleted(7);
+   let (reordered, map) = flat.reordered();
+   assert_eq!(map[7], u32::MAX);
+   assert_eq!(reordered.m0, 0);
+   assert_eq!(reordered.dump().nodes.len(), data.len() - 1);
+   for (id, vector) in data.iter().enumerate().filter(|(id, _)| *id != 7) {
+      assert!(reordered.vector_matches(map[id] as usize, vector));
+   }
+}
+
+#[test]
+fn batch_overwrites_are_atomic_against_exact_scans() {
+   let graph = Arc::new(HnswGraph::new_flat(DistanceMetric::L2, 64));
+   let zeros = vec![0.0; 64];
+   let ones = vec![1.0; 64];
+   let initial: Vec<_> = (0..128).map(|id| (id, zeros.as_slice())).collect();
+   graph.prepare_batch(&initial);
+   let start = Arc::new(std::sync::Barrier::new(2));
+   let writer_graph = Arc::clone(&graph);
+   let writer_start = Arc::clone(&start);
+   let writer = std::thread::spawn(move || {
+      writer_start.wait();
+      for i in 0..200 {
+         let vector = if i % 2 == 0 { &ones } else { &zeros };
+         let items: Vec<_> = (0..128).map(|id| (id, vector.as_slice())).collect();
+         writer_graph.prepare_batch(&items);
+      }
+   });
+   start.wait();
+   for _ in 0..200 {
+      let hits = graph.brute_search(&[0.0; 64], 128);
+      assert_eq!(hits.len(), 128);
+      assert!(hits.iter().all(|hit| hit.0 == hits[0].0));
+   }
+   writer.join().unwrap();
+}
+
+#[test]
+#[should_panic(expected = "duplicate vector id")]
+fn duplicate_batch_ids_are_rejected_before_parallel_encoding() {
+   let graph = HnswGraph::new_flat(DistanceMetric::L2, 2);
+   graph.prepare_batch(&[(0, &[1.0, 2.0]), (1, &[3.0, 4.0]), (0, &[5.0, 6.0])]);
+}
+
 fn v(seed: f32, dims: usize) -> Vec<f32> {
    (0..dims)
       .map(|i| ((seed + i as f32) * 0.13).sin())
@@ -615,7 +677,7 @@ fn range_returns_everything_within_radius() {
 }
 
 #[test]
-fn reordered_graph_answers_identically_through_the_id_map() {
+fn reordered_graph_preserves_vectors_links_and_exact_results_through_the_id_map() {
    let mut data = clustered(10_100, 32, 32, 51);
    let queries = data.split_off(10_000);
    let g = build(DistanceMetric::L2, &data, 16, 150);
@@ -631,12 +693,39 @@ fn reordered_graph_answers_identically_through_the_id_map() {
       .filter(|(_, n)| **n != u32::MAX)
       .map(|(o, n)| (*n, o))
       .collect();
+   {
+      let original = g.inner.read();
+      let reordered = r.inner.read();
+      for (&new, &old) in &back {
+         assert_eq!(original.vector_of(old), reordered.vector_of(new as usize));
+      }
+   }
+   let original = g.dump();
+   let reordered = r.dump();
+   assert_eq!(reordered.nodes.len(), original.nodes.len());
+   assert_eq!(reordered.entry, original.entry.map(|id| map[id as usize]));
+   let nodes: std::collections::HashMap<_, _> =
+      reordered.nodes.iter().map(|node| (node.id, node)).collect();
+   for old in &original.nodes {
+      let new = nodes[&map[old.id as usize]];
+      assert_eq!(new.level, old.level);
+      for (old_links, new_links) in old.links.iter().zip(&new.links) {
+         let mut expected: Vec<_> = old_links.iter().map(|&id| map[id as usize]).collect();
+         expected.sort_unstable();
+         assert_eq!(*new_links, expected);
+      }
+   }
+   // Approximate seeds depend on physical IDs. Preserve logical graph
+   // contents and exact distances across a change in storage order.
    for q in &queries {
-      let a: Vec<usize> = g.search(q, 10, 200).iter().map(|x| x.1).collect();
-      let b: Vec<usize> = r
-         .search(q, 10, 200)
+      let a: Vec<_> = g.brute_search(q, 10).iter().map(|x| x.0).collect();
+      let b: Vec<_> = r
+         .brute_search(q, 10)
          .iter()
-         .map(|x| back[&(x.1 as u32)])
+         .map(|x| {
+            assert!(back.contains_key(&(x.1 as u32)));
+            x.0
+         })
          .collect();
       assert_eq!(a, b);
    }

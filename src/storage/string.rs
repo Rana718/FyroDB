@@ -180,23 +180,7 @@ impl Store {
    }
 
    pub fn get(&self, key: &str) -> Option<String> {
-      let (h, idx) = self.data.locate_key(key);
-      let p = self.data.probe_slot_entry(h, idx);
-      if !p.is_null() {
-         let e = unsafe { &*p };
-         let state = e.state.load(std::sync::atomic::Ordering::Acquire);
-         let expected = ((h as u32 as u64) << 32) | customhash::STATE_OCCUPIED;
-         if (state & customhash::STATE_MATCH_MASK) == expected && e.key.eq_str(key) {
-            let val = unsafe { (*e.value.get()).assume_init_ref() };
-            if val.expires_ms == 0 || !val.is_expired() {
-               return val.value.as_string().map(|s| s.to_string());
-            } else {
-               self.data.remove(key);
-               return None;
-            }
-         }
-      }
-      let result = self.data.with_entry(key, h, idx, |val| {
+      let result = self.data.get_locked(key, |val| {
          if val.is_expired() {
             return Err(());
          }
@@ -204,7 +188,7 @@ impl Store {
       })?;
       match result {
          Err(()) => {
-            self.data.remove(key);
+            self.data.remove_if(key, |value| value.is_expired());
             None
          }
          Ok(v) => v,
@@ -223,6 +207,7 @@ impl Store {
 
    #[inline(always)]
    pub fn get_to_buf_hinted_bytes(&self, key: &[u8], hash: Option<u64>, out: &mut Vec<u8>) -> bool {
+      let _guard = customhash::pin();
       let (h, idx) = match hash {
          Some(h) => (h, self.data.shard_of(h)),
          None => {
@@ -264,8 +249,8 @@ impl Store {
          }
          false
       });
-      if expired {
-         self.data.remove(key);
+      if expired && !self.data.read_epoch_active() {
+         self.data.remove_if(key, |value| value.is_expired());
          return false;
       }
       matched.unwrap_or(false)
@@ -289,26 +274,21 @@ impl Store {
          if (state & (0xFFFF_FFFF_0000_0000 | customhash::STATE_OCCUPIED)) == expected
             && e.key.eq_bytes(key)
          {
-            if state & customhash::STATE_LOCK != 0 {
-               let mut cur = state;
-               while cur & customhash::STATE_LOCK != 0 {
-                  std::hint::spin_loop();
-                  cur = e.state.load(std::sync::atomic::Ordering::Acquire);
-               }
-               if cur & customhash::STATE_OCCUPIED == 0 {
-                  return false;
-               }
-            }
-            std::sync::atomic::fence(std::sync::atomic::Ordering::Acquire);
-            let val = unsafe { (*e.value.get()).assume_init_ref() };
+            let Some(read) = e.read() else {
+               return false;
+            };
+            let val = &*read;
             if val.expires_ms == 0 || !val.is_expired() {
                if let crate::storage::value::FyroDB::String(s) = &val.value {
                   s.write_resp(out);
                   return true;
                }
             } else {
-               if let Ok(key_str) = std::str::from_utf8(key) {
-                  self.data.remove(key_str);
+               drop(read);
+               if !self.data.read_epoch_active()
+                  && let Ok(key_str) = std::str::from_utf8(key)
+               {
+                  self.data.remove_if(key_str, |value| value.is_expired());
                }
                return false;
             }
@@ -319,6 +299,40 @@ impl Store {
       } else {
          false
       }
+   }
+
+   /// # Safety
+   /// Non-null p must be pinned/current; epoch must guard this store.
+   #[inline(always)]
+   pub unsafe fn get_to_buf_epoch_entry_bytes(
+      &self,
+      key: &[u8],
+      hash: u64,
+      p: *const customhash::Entry<StoreValue>,
+      epoch: &customhash::ReadEpochGuard<'_>,
+      out: &mut Vec<u8>,
+   ) -> bool {
+      let _ = epoch;
+      debug_assert!(self.data.read_epoch_active());
+      if !p.is_null() {
+         let entry = unsafe { &*p };
+         let expected = ((hash as u32 as u64) << 32) | customhash::STATE_OCCUPIED;
+         if entry.state.load(std::sync::atomic::Ordering::Relaxed) & customhash::STATE_MATCH_MASK
+            == expected
+            && entry.key.eq_bytes(key)
+         {
+            let value = unsafe { (*entry.value.get()).assume_init_ref() };
+            if value.is_expired() {
+               return false;
+            }
+            if let crate::storage::value::FyroDB::String(value) = &value.value {
+               value.write_resp(out);
+               return true;
+            }
+            return false;
+         }
+      }
+      unsafe { self.get_to_buf_fast_entry_bytes(key, hash, p, out) }
    }
 
    /// # Safety
@@ -347,6 +361,7 @@ impl Store {
       value: &str,
       expires_ms: u64,
    ) {
+      let _write_epoch = self.data.write_epoch();
       if !p.is_null() {
          let e = unsafe { &*p };
          if e.key.eq_str(key) {
@@ -416,20 +431,24 @@ impl Store {
          None => self.data.locate_key(key).0,
       };
       let idx = self.data.shard_of(hash);
-      let store_val = StoreValue {
-         value: crate::storage::value::FyroDB::String(SmallStr::new(value)),
-         expires_ms,
-      };
-      if self
-         .data
-         .insert_slot_fast_located(hash, idx, key, store_val)
-      {
-         self.data.touched(key);
-         if expires_ms != 0 {
-            self.add_ttl();
+      if value.len() <= crate::storage::value::SMALL_STR_CAP {
+         let store_val = StoreValue {
+            value: crate::storage::value::FyroDB::String(SmallStr::new(value)),
+            expires_ms,
+         };
+         if self
+            .data
+            .insert_slot_fast_located(hash, idx, key, store_val)
+         {
+            self.data.touched(key);
+            if expires_ms != 0 {
+               self.add_ttl();
+            }
+            return;
          }
-         return;
       }
+      let _pin = customhash::pin();
+      let _write_epoch = self.data.write_epoch();
       match self.data.probe_or_insert_fast(hash, key, || StoreValue {
          value: crate::storage::value::FyroDB::String(SmallStr::new(value)),
          expires_ms,
@@ -474,6 +493,7 @@ impl Store {
       entry_hint: *const (),
       out: &mut Vec<u8>,
    ) -> bool {
+      let _guard = customhash::pin();
       if !entry_hint.is_null() {
          let hash = hash_hint.unwrap_or_else(|| self.data.locate_key(key).0);
          unsafe {
@@ -536,8 +556,8 @@ impl Store {
          }
          false
       });
-      if expired {
-         self.data.remove(key);
+      if expired && !self.data.read_epoch_active() {
+         self.data.remove_if(key, |value| value.is_expired());
          return false;
       }
       matched.unwrap_or(false)
@@ -965,5 +985,37 @@ impl Store {
          curr.fill(0);
       }
       Ok(prev[n] as usize)
+   }
+}
+
+#[cfg(test)]
+mod auto_set_tests {
+   use super::*;
+
+   #[test]
+   fn heap_updates_without_hints_reuse_storage_and_reset_expiry() {
+      let store = Store::with_config(2, usize::MAX);
+      let first = "a".repeat(64);
+      let second = "b".repeat(64);
+      store.set_string_auto("key", None, std::ptr::null(), &first, u64::MAX);
+      let allocation = {
+         let value = store.data.get_ref("key").unwrap();
+         value.value.as_string().unwrap().as_bytes().as_ptr() as usize
+      };
+      store.set_string_auto("key", None, std::ptr::null(), &second, 0);
+      {
+         let value = store.data.get_ref("key").unwrap();
+         let bytes = value.value.as_string().unwrap().as_bytes();
+         assert_eq!(bytes, second.as_bytes());
+         assert_eq!(bytes.as_ptr() as usize, allocation);
+      }
+      assert_eq!(store.ttl_value_ms("key"), -1);
+      let snapshot = store.get("key").unwrap();
+      store.set_string_auto("key", None, std::ptr::null(), &"c".repeat(24), 0);
+      assert_eq!(snapshot, second);
+      assert_eq!(store.get("key").unwrap(), "c".repeat(24));
+      store.hset("hash", &[("field", "value")]).unwrap();
+      store.set_string_auto("hash", None, std::ptr::null(), &first, 0);
+      assert_eq!(store.get("hash").unwrap(), first);
    }
 }

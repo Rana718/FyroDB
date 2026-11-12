@@ -10,6 +10,7 @@ pub use list::ListValue;
 pub use quicklist::QuickList;
 pub type ListInner = ListValue;
 pub use json_value::JsonValue;
+pub(crate) use small_str::SMALL_STR_CAP;
 pub use small_str::SmallStr;
 pub use zset_data::{ZEntry, ZSetData};
 

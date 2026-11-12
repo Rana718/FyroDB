@@ -1,6 +1,48 @@
 use super::*;
 
 #[test]
+#[cfg(all(
+   target_os = "linux",
+   not(any(feature = "jemalloc", feature = "system"))
+))]
+fn allocator_keeps_user_page_candidate_policy() {
+   const CHILD: &str = "FYRODB_ALLOCATOR_POLICY_TEST_CHILD";
+   if std::env::var_os(CHILD).is_some() {
+      unsafe extern "C" {
+         fn mi_version() -> i32;
+         fn mi_option_get(option: i32) -> libc::c_long;
+      }
+      configure_allocator();
+      assert_eq!(
+         unsafe { mi_version() } / 10_000,
+         3,
+         "review allocator option ABI after an upgrade"
+      );
+      assert_eq!(
+         unsafe { mi_option_get(37) },
+         7,
+         "configuration overwrote the page-search policy"
+      );
+      return;
+   }
+   let result = std::process::Command::new(std::env::current_exe().unwrap())
+      .args([
+         "--exact",
+         "tests::allocator_keeps_user_page_candidate_policy",
+         "--nocapture",
+      ])
+      .env(CHILD, "1")
+      .env("MIMALLOC_PAGE_MAX_CANDIDATES", "7")
+      .output()
+      .unwrap();
+   assert!(
+      result.status.success(),
+      "{}",
+      String::from_utf8_lossy(&result.stdout)
+   );
+}
+
+#[test]
 fn raw_alloc_preserves_alignment_and_contents() {
    for &(size, align) in &[(1, 1), (17, 8), (129, 64), (4096, 4096)] {
       let layout = Layout::from_size_align(size, align).unwrap();

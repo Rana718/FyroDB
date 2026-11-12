@@ -120,6 +120,7 @@ impl Store {
       paths: &[&str],
       out: &mut Vec<u8>,
    ) -> Result<bool, &'static str> {
+      let _guard = customhash::pin();
       let is_root = paths.is_empty()
          || (paths.len() == 1 && (paths[0] == "." || paths[0] == "$" || paths[0].is_empty()));
       if is_root {
@@ -130,7 +131,9 @@ impl Store {
             let state = e.state.load(std::sync::atomic::Ordering::Acquire);
             let expected = ((h as u32 as u64) << 32) | customhash::STATE_OCCUPIED;
             if (state & customhash::STATE_MATCH_MASK) == expected && e.key.eq_str(key) {
-               let val = unsafe { (*e.value.get()).assume_init_ref() };
+               let Some(val) = e.read() else {
+                  return Ok(false);
+               };
                if val.expires_ms == 0 || !val.is_expired() {
                   let raw = match val.value.as_json_str() {
                      Some(s) => s,
@@ -139,7 +142,10 @@ impl Store {
                   crate::utils::resp::write_bulk(out, raw);
                   return Ok(true);
                } else {
-                  self.data.remove(key);
+                  drop(val);
+                  if !self.data.read_epoch_active() {
+                     self.data.remove_if(key, |value| value.is_expired());
+                  }
                   return Ok(false);
                }
             }

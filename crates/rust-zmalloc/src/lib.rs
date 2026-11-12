@@ -179,8 +179,8 @@ pub fn configure_allocator() {
          mi_option_set(15, 0);
          // mi_option_arena_reserve = 23: 0 (don't pre-reserve 1GB arena upfront)
          mi_option_set(23, 0);
-         // mi_option_allow_thp = 37: 0 (disable THP to avoid 2MB page fragmentation/RSS blowup)
-         mi_option_set(37, 0);
+         // THP is disabled by the no_thp build feature; option 37 in v3
+         // controls page candidates and must retain its allocator setting.
       }
    });
 }

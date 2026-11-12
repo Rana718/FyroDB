@@ -478,6 +478,16 @@ impl HnswGraph {
       Self::with_quant(metric, dims, m, ef_construction, Quant::None)
    }
 
+   /// Vector-only arena: FLAT queries need no neighbor slots or upper layers.
+   pub fn new_flat(metric: DistanceMetric, dims: usize) -> Self {
+      let mut graph = Self::new(metric, dims, 2, 1);
+      graph.m0 = 0;
+      graph.ml = 0.0;
+      let inner = graph.inner.get_mut();
+      inner.stride = (inner.pay + 1).div_ceil(16) * 16;
+      graph
+   }
+
    /// Creates a graph with `quant`-encoded traversal payloads; search returns
    /// approximate candidates intended to be reranked with exact vectors.
    pub fn with_quant(
@@ -585,11 +595,15 @@ impl HnswGraph {
    pub fn memory_bytes(&self) -> usize {
       let g = self.inner.read();
       g.blocks.capacity() * 64
-         + g.flags.capacity() * 2
+         + g.flags.capacity()
+         + g.levels.capacity()
          + g.locks.capacity()
          + g.upper.capacity() * 16
          + g.upper.iter().map(|u| u.len() * 4).sum::<usize>()
          + g.free.capacity() * 4
+         + g.flat_int8.capacity()
+         + g.flat_scales.capacity() * 4
+         + g.raw.capacity() * std::mem::size_of::<Option<Box<[f32]>>>()
          + g.raw.iter().flatten().map(|r| r.len() * 4).sum::<usize>()
    }
 
@@ -844,9 +858,11 @@ impl HnswGraph {
       } else if let Some(pos) = g.free.iter().position(|&f| f == id) {
          g.free.swap_remove(pos);
       }
-      g.flags[key_id].store(F_PENDING, Ordering::Release);
+      g.flags[key_id].store(if self.m0 == 0 { 0 } else { F_PENDING }, Ordering::Release);
       self.count.fetch_add(1, Ordering::AcqRel);
-      self.pending.fetch_add(1, Ordering::AcqRel);
+      if self.m0 != 0 {
+         self.pending.fetch_add(1, Ordering::AcqRel);
+      }
       lvl
    }
 
@@ -857,9 +873,25 @@ impl HnswGraph {
          return;
       }
       let max_id = items.iter().map(|&(id, _)| id).max().unwrap();
-      let levels: Vec<usize> = items.iter().map(|&(id, _)| self.random_level(id)).collect();
+      assert!(
+         max_id < (u32::MAX >> 1) as usize,
+         "vector id space exhausted"
+      );
+      let mut levels: Vec<usize> = items.iter().map(|&(id, _)| id).collect();
+      if !levels.windows(2).all(|ids| ids[0] < ids[1])
+         && !levels.windows(2).all(|ids| ids[0] > ids[1])
       {
-         let mut g = self.inner.write();
+         levels.sort_unstable();
+         assert!(
+            levels.windows(2).all(|ids| ids[0] != ids[1]),
+            "duplicate vector id"
+         );
+      }
+      for (level, &(id, _)) in levels.iter_mut().zip(items) {
+         *level = self.random_level(id);
+      }
+      let mut g = self.inner.write();
+      {
          assert!(
             items.iter().all(|&(_, v)| v.len() == g.dims),
             "dimension mismatch"
@@ -904,10 +936,9 @@ impl HnswGraph {
             }
          }
       }
-      // Encode payloads in parallel under a read lock — each thread writes
-      // to non-overlapping per-node memory regions.
+      // Keep the exclusive lock through encoding so queries cannot see
+      // partially written payloads or mismatched Int8 codes.
       {
-         let g = self.inner.read();
          let book = self.book.read();
          let rot = self.rot.as_ref();
          let quant = self.quant;
@@ -927,28 +958,30 @@ impl HnswGraph {
                quant::encode(quant, rot, &book, metric, v, payload);
                if quant == Quant::None {
                   // SAFETY: each thread writes to a non-overlapping range.
-                  let codes = unsafe {
+                  let slot = unsafe {
                      std::slice::from_raw_parts_mut(
-                        g.flat_int8.as_ptr() as *mut i8,
-                        g.flat_int8.len(),
-                     )
-                  };
-                  let scales = unsafe {
-                     std::slice::from_raw_parts_mut(
-                        g.flat_scales.as_ptr() as *mut f32,
-                        g.flat_scales.len(),
+                        (g.flat_int8.as_ptr() as *mut i8).add(key_id * dims),
+                        dims,
                      )
                   };
                   let maxabs = v.iter().fold(0f32, |m, x| m.max(x.abs()));
                   let scale = if maxabs > 0.0 { maxabs / 127.0 } else { 1.0 };
-                  scales[key_id] = scale;
-                  let slot = &mut codes[key_id * dims..(key_id + 1) * dims];
+                  unsafe {
+                     (g.flat_scales.as_ptr() as *mut f32)
+                        .add(key_id)
+                        .write(scale)
+                  };
                   for (c, &x) in slot.iter_mut().zip(v) {
                      *c = (x / scale).round().clamp(-127.0, 127.0) as i8;
                   }
                }
             }
          });
+      }
+      if self.m0 == 0 {
+         for &(id, _) in items {
+            self.finish_link(&g, id as u32);
+         }
       }
    }
 
@@ -1104,13 +1137,17 @@ impl HnswGraph {
       g.flat_int8 = Vec::new();
       g.flat_scales = Vec::new();
       g.raw = Vec::new();
-      let out = HnswGraph::with_quant(
-         self.metric,
-         g.dims,
-         self.m,
-         self.ef_construction,
-         self.quant,
-      );
+      let out = if self.m0 == 0 {
+         HnswGraph::new_flat(self.metric, g.dims)
+      } else {
+         HnswGraph::with_quant(
+            self.metric,
+            g.dims,
+            self.m,
+            self.ef_construction,
+            self.quant,
+         )
+      };
       *out.book.write() = Arc::clone(&self.book.read());
       {
          let mut o = out.inner.write();

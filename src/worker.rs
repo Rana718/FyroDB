@@ -568,7 +568,13 @@ fn alloc_slot(
    let id = *next_token;
    *next_token += 1;
    if id >= conns.len() {
+      let previous = conns.capacity();
       conns.resize_with(id + 1, || None);
+      if conns.capacity() != previous && previous * size_of::<Option<Conn>>() >= 32 * 1024 {
+         // Reclaim large retired slot arrays during connection bursts;
+         // ordinary request processing never pays for this collection.
+         rust_zmalloc::purge();
+      }
    }
    id
 }

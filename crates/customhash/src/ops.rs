@@ -41,10 +41,8 @@ fn walk_shard<V: Clone + Send + Sync + 'static>(shard: &Shard<V>, f: &mut impl F
          continue;
       }
       let e = unsafe { &*p };
-      if state_occupied(&e.state, Ordering::Acquire) {
-         f(e.key.as_str(), unsafe {
-            (*e.value.get()).assume_init_ref()
-         });
+      if let Some(read) = e.read() {
+         f(e.key.as_str(), &read);
       }
    }
 }
@@ -73,6 +71,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
       budget: usize,
       mut rebuild: impl FnMut(&mut V),
    ) -> Option<(usize, usize, usize)> {
+      let _write_epoch = self.write_epoch();
       let shard = self.shards.get(shard_idx)?;
       let _guard = ebr::pin();
       let t = shard.table();
@@ -112,6 +111,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
    }
 
    pub fn retain(&self, mut f: impl FnMut(&str, &V) -> bool) {
+      let _write_epoch = self.write_epoch();
       let mut removed = false;
       for shard in self.shards.iter() {
          let _guard = ebr::pin();
@@ -125,10 +125,12 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
             if !state_occupied(&entry.state, Ordering::Acquire) {
                continue;
             }
-            if !f(entry.key.as_str(), unsafe {
-               (*entry.value.get()).assume_init_ref()
-            }) {
-               state_lock(&entry.state);
+            state_lock(&entry.state);
+            if state_occupied(&entry.state, Ordering::Relaxed)
+               && !f(entry.key.as_str(), unsafe {
+                  (*entry.value.get()).assume_init_ref()
+               })
+            {
                if state_occupied(&entry.state, Ordering::Relaxed) {
                   self.snap.before_write(entry);
                   write_begin(&entry.state);
@@ -142,6 +144,8 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
                } else {
                   state_unlock(&entry.state);
                }
+            } else {
+               state_unlock(&entry.state);
             }
          }
       }
@@ -159,6 +163,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
       max_slots: usize,
       mut f: impl FnMut(&str, &V) -> bool,
    ) -> Option<(usize, usize)> {
+      let _write_epoch = self.write_epoch();
       let shard = self.shards.get(shard_idx)?;
       let _guard = ebr::pin();
       let t = shard.table();
@@ -174,12 +179,15 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
          if !state_occupied(&entry.state, Ordering::Acquire) {
             continue;
          }
-         if f(entry.key.as_str(), unsafe {
-            (*entry.value.get()).assume_init_ref()
-         }) {
+         state_lock(&entry.state);
+         if !state_occupied(&entry.state, Ordering::Relaxed)
+            || f(entry.key.as_str(), unsafe {
+               (*entry.value.get()).assume_init_ref()
+            })
+         {
+            state_unlock(&entry.state);
             continue;
          }
-         state_lock(&entry.state);
          if state_occupied(&entry.state, Ordering::Relaxed) {
             self.snap.before_write(entry);
             write_begin(&entry.state);
@@ -203,6 +211,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
       max_slots: usize,
       expired: impl Fn(&V) -> Option<bool>,
    ) -> Option<(usize, usize, usize, usize)> {
+      let _write_epoch = self.write_epoch();
       let shard = self.shards.get(shard_idx)?;
       let _guard = ebr::pin();
       let t = shard.table();
@@ -219,7 +228,12 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
          if !state_occupied(&entry.state, Ordering::Acquire) {
             continue;
          }
-         match expired(unsafe { (*entry.value.get()).assume_init_ref() }) {
+         let Some(read) = entry.read() else {
+            continue;
+         };
+         let expiry = expired(&read);
+         drop(read);
+         match expiry {
             None => continue,
             Some(false) => {
                live += 1;
@@ -249,6 +263,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
    }
 
    pub fn compact_shard(&self, shard_idx: usize) {
+      let _write_epoch = self.write_epoch();
       let Some(shard) = self.shards.get(shard_idx) else {
          return;
       };
@@ -301,6 +316,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
    }
 
    pub fn clear(&self) {
+      let _write_epoch = self.write_epoch();
       for shard in self.shards.iter() {
          let _lock = shard.grow_lock.lock().unwrap_or_else(|e| e.into_inner());
          shard.insert_gate.fetch_or(GROWING, Ordering::AcqRel);
@@ -318,8 +334,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
          let sf_ptr = shard.fast.load(Ordering::Relaxed);
          if !sf_ptr.is_null() {
             unsafe {
-               (*sf_ptr).slots.store(new_slots, Ordering::Release);
-               (*sf_ptr).mask.store(new_mask, Ordering::Release);
+               (*sf_ptr).publish(new_slots, new_mask);
             }
          }
          shard.len.store(0, Ordering::Relaxed);
@@ -407,6 +422,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
    }
 
    pub fn peek_slot(&self, shard: usize, slot: usize) -> Option<(String, V)> {
+      let _guard = ebr::pin();
       let s = &self.shards[shard];
       let t = s.table();
       if slot >= t.capacity {
@@ -418,12 +434,8 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
          return None;
       }
       let entry = unsafe { &*p };
-      if !state_occupied(&entry.state, Ordering::Acquire) {
-         return None;
-      }
-      Some((entry.key.as_str().to_owned(), unsafe {
-         (*entry.value.get()).assume_init_ref().clone()
-      }))
+      let read = entry.read()?;
+      Some((entry.key.as_str().to_owned(), read.clone()))
    }
 
    pub fn peek_slot_with<R>(
@@ -432,6 +444,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
       slot: usize,
       f: impl FnOnce(&str, &V) -> R,
    ) -> Option<R> {
+      let _guard = ebr::pin();
       let s = &self.shards[shard];
       let t = s.table();
       if slot >= t.capacity {
@@ -443,12 +456,8 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
          return None;
       }
       let entry = unsafe { &*p };
-      if !state_occupied(&entry.state, Ordering::Acquire) {
-         return None;
-      }
-      Some(f(entry.key.as_str(), unsafe {
-         (*entry.value.get()).assume_init_ref()
-      }))
+      let read = entry.read()?;
+      Some(f(entry.key.as_str(), &read))
    }
 }
 

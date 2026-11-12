@@ -143,8 +143,7 @@ impl<'a> Conn<'a> {
    ) -> Self {
       store.client_connected();
       let authenticated = auth.is_none();
-      let mut parser = RespParser::new();
-      parser.wbuf.reserve(16 * 1024);
+      let parser = RespParser::new();
       Self {
          stream,
          parser,
