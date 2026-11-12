@@ -61,7 +61,10 @@ impl VectorAttrs {
       if bytes.len() != self.blob_len() {
          return None;
       }
-      if self.elem() == fyro_vector::ElemType::Float32 && (bytes.as_ptr() as usize & 3) == 0 {
+      if cfg!(target_endian = "little")
+         && self.elem() == fyro_vector::ElemType::Float32
+         && (bytes.as_ptr() as usize & 3) == 0
+      {
          let slice = bytemuck::cast_slice::<u8, f32>(bytes);
          Some(f(slice))
       } else {
