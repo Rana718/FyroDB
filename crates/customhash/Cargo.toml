@@ -8,6 +8,7 @@ name = "customhash"
 path = "src/lib.rs"
 
 [dependencies]
+crossbeam-epoch = "0.9"
 crossbeam-utils = "0.8"
 foldhash = "0.2"
 rust-zmalloc = { path = "../rust-zmalloc" }

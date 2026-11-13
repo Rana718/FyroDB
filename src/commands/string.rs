@@ -394,8 +394,8 @@ pub fn lcs(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
          Err(e) => resp::write_store_err(out, e),
       }
    } else {
-      match store.lcs(key1, key2) {
-         Ok(s) => resp::write_bulk(out, &s),
+      match store.lcs_bytes(key1, key2) {
+         Ok(s) => resp::write_bulk_bytes(out, &s),
          Err(e) => resp::write_store_err(out, e),
       }
    }

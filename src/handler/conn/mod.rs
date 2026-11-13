@@ -77,18 +77,18 @@ pub enum ConnMode {
    Subscribed {
       slot: Arc<SubSlot>,
       channels: Box<Channels>,
-      patterns: HashSet<String>,
+      patterns: HashSet<Arc<str>>,
    },
 }
 
 #[derive(Default)]
 pub struct Channels {
-   pub(crate) keys: HashSet<String>,
+   pub(crate) keys: HashSet<Arc<str>>,
    pub(crate) transaction: Option<Box<transaction::Transaction>>,
 }
 
 impl std::ops::Deref for Channels {
-   type Target = HashSet<String>;
+   type Target = HashSet<Arc<str>>;
    fn deref(&self) -> &Self::Target {
       &self.keys
    }

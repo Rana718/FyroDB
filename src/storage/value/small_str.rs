@@ -114,18 +114,15 @@ impl SmallStr {
       }
    }
 
-   #[inline(always)]
+   #[inline]
+   pub fn try_as_str(&self) -> Result<&str, std::str::Utf8Error> {
+      std::str::from_utf8(self.as_bytes())
+   }
+
+   /// Panics for non-UTF-8 values; binary callers must use as_bytes or try_as_str.
+   #[inline]
    pub fn as_str(&self) -> &str {
-      if self.len != Tag::Heap {
-         unsafe { std::str::from_utf8_unchecked(&self.data[..self.len as usize]) }
-      } else {
-         let ptr_val = unsafe { std::ptr::read_unaligned(self.data.as_ptr().cast::<*const u8>()) };
-         let len_val = Self::read_heap_len(&self.data);
-         unsafe {
-            let slice = std::slice::from_raw_parts(ptr_val, len_val);
-            std::str::from_utf8_unchecked(slice)
-         }
-      }
+      self.try_as_str().expect("binary SmallStr is not UTF-8")
    }
 
    #[inline]
@@ -144,19 +141,7 @@ impl SmallStr {
 
    #[inline]
    pub fn into_string(self) -> String {
-      if self.len != Tag::Heap {
-         let s = self.as_str().to_owned();
-         std::mem::forget(self);
-         s
-      } else {
-         let ptr_val = unsafe { std::ptr::read_unaligned(self.data.as_ptr().cast::<*mut u8>()) };
-         let len_val = Self::read_heap_len(&self.data);
-         let boxed = unsafe {
-            Box::from_raw(std::ptr::slice_from_raw_parts_mut(ptr_val, len_val) as *mut str)
-         };
-         std::mem::forget(self);
-         boxed.into()
-      }
+      String::from_utf8(self.into_bytes()).expect("binary SmallStr is not UTF-8")
    }
 
    #[inline(always)]
@@ -569,19 +554,19 @@ impl From<&str> for SmallStr {
 
 impl std::fmt::Display for SmallStr {
    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-      f.write_str(self.as_str())
+      f.write_str(&String::from_utf8_lossy(self.as_bytes()))
    }
 }
 
 impl std::fmt::Debug for SmallStr {
    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-      write!(f, "\"{}\"", self.as_str())
+      write!(f, "{:?}", String::from_utf8_lossy(self.as_bytes()))
    }
 }
 
 impl PartialEq for SmallStr {
    fn eq(&self, other: &Self) -> bool {
-      self.as_str() == other.as_str()
+      self.as_bytes() == other.as_bytes()
    }
 }
 
@@ -589,7 +574,10 @@ impl Eq for SmallStr {}
 
 impl std::hash::Hash for SmallStr {
    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-      self.as_str().hash(state);
+      match self.try_as_str() {
+         Ok(text) => text.hash(state),
+         Err(_) => self.as_bytes().hash(state),
+      }
    }
 }
 
@@ -608,34 +596,34 @@ impl AsRef<str> for SmallStr {
 
 impl PartialEq<str> for SmallStr {
    fn eq(&self, other: &str) -> bool {
-      self.as_str() == other
+      self.as_bytes() == other.as_bytes()
    }
 }
 
 impl PartialEq<&str> for SmallStr {
    fn eq(&self, other: &&str) -> bool {
-      self.as_str() == *other
+      self.as_bytes() == other.as_bytes()
    }
 }
 
 impl PartialEq<String> for SmallStr {
    #[inline]
    fn eq(&self, other: &String) -> bool {
-      self.as_str() == other.as_str()
+      self.as_bytes() == other.as_bytes()
    }
 }
 
 impl PartialEq<SmallStr> for String {
    #[inline]
    fn eq(&self, other: &SmallStr) -> bool {
-      self.as_str() == other.as_str()
+      self.as_bytes() == other.as_bytes()
    }
 }
 
 impl PartialEq<SmallStr> for &str {
    #[inline]
    fn eq(&self, other: &SmallStr) -> bool {
-      *self == other.as_str()
+      self.as_bytes() == other.as_bytes()
    }
 }
 

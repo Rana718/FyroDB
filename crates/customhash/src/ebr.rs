@@ -1,329 +1,104 @@
-use std::cell::UnsafeCell;
-use std::marker::PhantomData;
-use std::ptr;
-use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
+use std::cell::Cell;
+use std::mem::ManuallyDrop;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-use crossbeam_utils::CachePadded;
-
-const INACTIVE: u64 = 0;
-const RETIRED: u64 = u64::MAX;
-const COLLECT_INTERVAL: usize = 64;
-
-static GLOBAL_EPOCH: AtomicU64 = AtomicU64::new(1);
-static PARTICIPANTS: AtomicPtr<Participant> = AtomicPtr::new(ptr::null_mut());
-static ORPHANS: AtomicPtr<OrphanNode> = AtomicPtr::new(ptr::null_mut());
-
-struct Participant {
-   local: CachePadded<AtomicU64>,
-   next: *mut Participant,
-}
-
-unsafe impl Sync for Participant {}
-unsafe impl Send for Participant {}
-
-struct Garbage {
-   ptr: *mut u8,
-   drop_fn: unsafe fn(*mut u8),
-   epoch: u64,
-}
-
-unsafe impl Send for Garbage {}
-
-struct OrphanNode {
-   garbage: Vec<Garbage>,
-   next: *mut OrphanNode,
-}
-
-struct Local {
-   participant: *const Participant,
-   garbage: Vec<Garbage>,
-   depth: usize,
-   retires: usize,
-   collect_on_unpin: bool,
-}
-
-impl Local {
-   const fn uninit() -> Self {
-      Local {
-         participant: ptr::null(),
-         garbage: Vec::new(),
-         depth: 0,
-         retires: 0,
-         collect_on_unpin: false,
-      }
-   }
-
-   #[cold]
-   fn initialize(&mut self) {
-      // Nodes are never unlinked (lock-free walk); RETIRED slots are reused,
-      // bounding list length to peak thread count.
-      let mut candidate = PARTICIPANTS.load(Ordering::Acquire);
-      while !candidate.is_null() {
-         let node = unsafe { &*candidate };
-         if node
-            .local
-            .compare_exchange(RETIRED, INACTIVE, Ordering::AcqRel, Ordering::Relaxed)
-            .is_ok()
-         {
-            self.participant = candidate;
-            self.garbage = Vec::with_capacity(COLLECT_INTERVAL * 2);
-            return;
-         }
-         candidate = node.next;
-      }
-
-      let p = Box::into_raw(Box::new(Participant {
-         local: CachePadded::new(AtomicU64::new(INACTIVE)),
-         next: ptr::null_mut(),
-      }));
-      loop {
-         let head = PARTICIPANTS.load(Ordering::Acquire);
-         unsafe { (*p).next = head };
-         if PARTICIPANTS
-            .compare_exchange_weak(head, p, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
-         {
-            break;
-         }
-      }
-      self.participant = p;
-      self.garbage = Vec::with_capacity(COLLECT_INTERVAL * 2);
-   }
-
-   #[inline(always)]
-   fn ensure_init(&mut self) {
-      if self.participant.is_null() {
-         self.initialize();
-      }
-   }
-
-   #[cold]
-   #[inline(never)]
-   fn pin_slow(&mut self) {
-      let participant = unsafe { &*self.participant };
-      loop {
-         participant.local.store(INACTIVE, Ordering::Release);
-         let e = GLOBAL_EPOCH.load(Ordering::Relaxed);
-         participant.local.store(e, Ordering::Release);
-         if GLOBAL_EPOCH.load(Ordering::Acquire) == e {
-            break;
-         }
-      }
-   }
-
-   #[cold]
-   #[inline(never)]
-   fn unpin_slow(&mut self) {
-      self.collect();
-      self.collect_on_unpin = !self.garbage.is_empty();
-   }
-
-   #[inline(always)]
-   fn pin(&mut self) {
-      let d = self.depth;
-      self.depth = d + 1;
-      if d == 0 {
-         if self.participant.is_null() {
-            self.initialize();
-         }
-         let participant = unsafe { &*self.participant };
-         let e = GLOBAL_EPOCH.load(Ordering::Relaxed);
-         participant.local.store(e, Ordering::Release);
-         if GLOBAL_EPOCH.load(Ordering::Acquire) != e {
-            self.pin_slow();
-         }
-      }
-   }
-
-   #[inline(always)]
-   fn unpin(&mut self) {
-      let d = self.depth - 1;
-      self.depth = d;
-      if d == 0 {
-         unsafe { &*self.participant }
-            .local
-            .store(INACTIVE, Ordering::Release);
-         if self.collect_on_unpin {
-            self.unpin_slow();
-         }
-      }
-   }
-
-   fn collect(&mut self) {
-      let mut merged = false;
-      if !ORPHANS.load(Ordering::Relaxed).is_null() {
-         let mut p = ORPHANS.swap(ptr::null_mut(), Ordering::AcqRel);
-         while !p.is_null() {
-            let node = unsafe { Box::from_raw(p) };
-            p = node.next;
-            self.garbage.extend(node.garbage);
-            merged = true;
-         }
-      }
-      // Adopted garbage carries another thread's epochs: re-sort before the
-      // epoch-ordered partition_point scan.
-      if merged {
-         self.garbage.sort_unstable_by_key(|g| g.epoch);
-      }
-
-      let mut global = GLOBAL_EPOCH.load(Ordering::Acquire);
-      for _ in 0..2 {
-         let mut all_caught_up = true;
-         let mut p = PARTICIPANTS.load(Ordering::Acquire);
-         while !p.is_null() {
-            let node = unsafe { &*p };
-            let e = node.local.load(Ordering::Acquire);
-            if e != INACTIVE && e < global {
-               all_caught_up = false;
-               break;
-            }
-            p = node.next;
-         }
-         if all_caught_up {
-            if GLOBAL_EPOCH
-               .compare_exchange(global, global + 1, Ordering::AcqRel, Ordering::Relaxed)
-               .is_ok()
-            {
-               global += 1;
-            } else {
-               break;
-            }
-         } else {
-            break;
-         }
-      }
-
-      let safe = GLOBAL_EPOCH.load(Ordering::Acquire);
-      let reclaimable = self.garbage.partition_point(|g| g.epoch + 2 <= safe);
-      if reclaimable != 0 {
-         for item in self.garbage.drain(..reclaimable) {
-            unsafe { (item.drop_fn)(item.ptr) };
-         }
-      }
-   }
-
-   #[inline(always)]
-   fn retire_raw(&mut self, ptr: *mut u8, drop_fn: unsafe fn(*mut u8)) {
-      let epoch = GLOBAL_EPOCH.load(Ordering::Relaxed);
-      self.garbage.push(Garbage {
-         ptr,
-         drop_fn,
-         epoch,
-      });
-      self.retires += 1;
-      if self.retires.is_multiple_of(COLLECT_INTERVAL) {
-         self.collect();
-      }
-   }
-
-   fn drop_local(&mut self) {
-      if self.participant.is_null() {
-         return;
-      }
-      unsafe { &*self.participant }
-         .local
-         .store(INACTIVE, Ordering::Release);
-
-      // One last attempt to retire locally: cheaper than orphaning, and in
-      // the common case the grace period has already passed.
-      self.collect();
-
-      unsafe { &*self.participant }
-         .local
-         .store(RETIRED, Ordering::Release);
-
-      if self.garbage.is_empty() {
-         return;
-      }
-
-      let node = Box::into_raw(Box::new(OrphanNode {
-         garbage: std::mem::take(&mut self.garbage),
-         next: ptr::null_mut(),
-      }));
-      loop {
-         let head = ORPHANS.load(Ordering::Acquire);
-         unsafe { (*node).next = head };
-         if ORPHANS
-            .compare_exchange_weak(head, node, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
-         {
-            break;
-         }
-      }
-   }
-}
-
-struct LocalCell(UnsafeCell<Local>);
-
-impl Drop for LocalCell {
-   fn drop(&mut self) {
-      unsafe { &mut *self.0.get() }.drop_local();
-   }
-}
-
-pub fn force_collect() {
-   LOCAL.with(|c| {
-      let l = unsafe { &mut *c.0.get() };
-      // Always register: maintenance threads must adopt orphaned garbage.
-      l.ensure_init();
-      l.collect();
-      l.collect();
-   });
-}
-
-/// Repeatedly runs garbage collection and yields to allow readers to quiesce.
-pub fn force_collect_quiescent() {
-   for _ in 0..64 {
-      force_collect();
-      std::thread::yield_now();
-   }
-}
-
+static PENDING: AtomicUsize = AtomicUsize::new(0);
 thread_local! {
-    static LOCAL: LocalCell = const { LocalCell(UnsafeCell::new(Local::uninit())) };
+   static DIRTY: Cell<bool> = const { Cell::new(false) };
 }
 
 pub struct Guard {
-   _p: PhantomData<*const ()>,
+   inner: ManuallyDrop<crossbeam_epoch::Guard>,
 }
 
 impl Drop for Guard {
-   #[inline(always)]
+   #[inline]
    fn drop(&mut self) {
-      LOCAL.with(|c| unsafe { &mut *c.0.get() }.unpin());
+      // Release this guard exactly once before testing whether its thread quiesced.
+      unsafe { ManuallyDrop::drop(&mut self.inner) };
+      if DIRTY.try_with(Cell::get).unwrap_or(false) && !crossbeam_epoch::is_pinned() {
+         force_collect();
+      }
    }
 }
 
 #[inline(always)]
 pub fn pin() -> Guard {
-   LOCAL.with(|c| unsafe { &mut *c.0.get() }.pin());
-   Guard { _p: PhantomData }
+   Guard {
+      inner: ManuallyDrop::new(crossbeam_epoch::pin()),
+   }
+}
+
+struct Completed;
+impl Drop for Completed {
+   fn drop(&mut self) {
+      PENDING.fetch_sub(1, Ordering::Release);
+   }
 }
 
 /// # Safety
-/// `ptr` must be a valid heap allocation; `drop_fn` must free it exactly once after the grace period.
+/// The callback must free the unlinked allocation once and be safe to run on any thread.
 #[inline]
 pub unsafe fn retire_raw(ptr: *mut u8, drop_fn: unsafe fn(*mut u8)) {
    if ptr.is_null() {
       return;
    }
-   LOCAL.with(|c| {
-      let l = unsafe { &mut *c.0.get() };
-      l.ensure_init();
-      l.retire_raw(ptr, drop_fn);
-      l.collect_on_unpin = true;
-   });
+   let guard = pin();
+   PENDING.fetch_add(1, Ordering::Relaxed);
+   unsafe {
+      guard.inner.defer_unchecked(move || {
+         let _completed = Completed;
+         drop_fn(ptr);
+      });
+   }
+   let _ = DIRTY.try_with(|dirty| dirty.set(true));
+}
+
+pub fn force_collect() {
+   let pinned = crossbeam_epoch::is_pinned();
+   if !pinned {
+      let _ = DIRTY.try_with(|dirty| dirty.set(false));
+   }
+   let mut previous = PENDING.load(Ordering::Acquire);
+   let mut stalled = 0;
+   for _ in 0..16_384 {
+      let guard = crossbeam_epoch::pin();
+      guard.flush();
+      drop(guard);
+      let remaining = PENDING.load(Ordering::Acquire);
+      if remaining == 0 {
+         if !pinned {
+            let _ = DIRTY.try_with(|dirty| dirty.set(false));
+         }
+         return;
+      }
+      if remaining >= previous {
+         stalled += 1;
+         if stalled >= 4 {
+            return;
+         }
+      } else {
+         stalled = 0;
+      }
+      previous = remaining;
+      std::thread::yield_now();
+   }
+}
+
+pub fn force_collect_quiescent() {
+   for _ in 0..64 {
+      force_collect();
+      if PENDING.load(Ordering::Acquire) == 0 {
+         return;
+      }
+      std::thread::yield_now();
+   }
 }
 
 #[inline(always)]
 pub fn with_pin<R>(f: impl FnOnce(&()) -> R) -> R {
-   LOCAL.with(|c| {
-      let l = unsafe { &mut *c.0.get() };
-      l.pin();
-      let r = f(&());
-      l.unpin();
-      r
-   })
+   let _guard = pin();
+   f(&())
 }
 
 #[cfg(test)]
@@ -334,78 +109,105 @@ mod tests {
    use super::TEST_SERIALIZE;
    use std::sync::atomic::{AtomicUsize, Ordering};
 
-   static HANDOFF_DROPPED: AtomicUsize = AtomicUsize::new(0);
+   static DROPPED: AtomicUsize = AtomicUsize::new(0);
+   static CHAIN_DROPPED: AtomicUsize = AtomicUsize::new(0);
 
-   unsafe fn count_handoff_drop(ptr: *mut u8) {
-      HANDOFF_DROPPED.fetch_add(1, Ordering::Relaxed);
+   unsafe fn count_drop(ptr: *mut u8) {
       drop(unsafe { Box::from_raw(ptr.cast::<u64>()) });
+      DROPPED.fetch_add(1, Ordering::Release);
    }
 
    fn retire_on_new_thread(count: usize) {
       std::thread::spawn(move || {
          for value in 0..count as u64 {
             let leaked = Box::into_raw(Box::new(value)).cast::<u8>();
-            unsafe { super::retire_raw(leaked, count_handoff_drop) };
+            unsafe { super::retire_raw(leaked, count_drop) };
          }
       })
       .join()
       .unwrap();
    }
 
-   /// collect() adopts exited threads' garbage; the merged sort keeps the
-   /// vector epoch-ordered for partition_point.
-   #[test]
-   fn garbage_from_exited_threads_is_still_reclaimed() {
-      let _serialize = TEST_SERIALIZE.lock().unwrap_or_else(|e| e.into_inner());
-      const PER_THREAD: usize = 16;
-      const THREADS: usize = 2;
-
-      let before = HANDOFF_DROPPED.load(Ordering::Relaxed);
-      for _ in 0..THREADS {
-         retire_on_new_thread(PER_THREAD);
-      }
-
-      // Another test's thread may be the adopter: allow time to come around.
-      let target = before + THREADS * PER_THREAD;
-      for _ in 0..200 {
+   fn wait_for(counter: &AtomicUsize, target: usize) {
+      for _ in 0..400 {
          super::force_collect();
-         if HANDOFF_DROPPED.load(Ordering::Relaxed) >= target {
+         if counter.load(Ordering::Acquire) >= target {
             break;
          }
-         std::thread::sleep(std::time::Duration::from_millis(10));
+         std::thread::sleep(std::time::Duration::from_millis(5));
       }
-
-      assert_eq!(HANDOFF_DROPPED.load(Ordering::Relaxed), target);
+      assert_eq!(counter.load(Ordering::Acquire), target);
    }
 
-   /// Reuse of exited slots bounds the participant list; otherwise collect
-   /// walks every thread ever spawned.
    #[test]
-   fn participant_slots_are_reused_across_thread_lifetimes() {
-      let _serialize = TEST_SERIALIZE.lock().unwrap_or_else(|e| e.into_inner());
+   fn garbage_from_exited_threads_is_still_reclaimed() {
+      let _serial = TEST_SERIALIZE.lock().unwrap_or_else(|e| e.into_inner());
+      let before = DROPPED.load(Ordering::Acquire);
+      for _ in 0..2 {
+         retire_on_new_thread(16);
+      }
+      wait_for(&DROPPED, before + 32);
+   }
 
-      fn participant_count() -> usize {
-         let mut count = 0;
-         let mut p = super::PARTICIPANTS.load(Ordering::Acquire);
-         while !p.is_null() {
-            count += 1;
-            p = unsafe { &*p }.next;
+   #[test]
+   fn deferred_values_are_reclaimed_across_thread_churn() {
+      let _serial = TEST_SERIALIZE.lock().unwrap_or_else(|e| e.into_inner());
+      let before = DROPPED.load(Ordering::Acquire);
+      for _ in 0..64 {
+         retire_on_new_thread(4);
+      }
+      wait_for(&DROPPED, before + 256);
+   }
+
+   unsafe fn reentrant_drop(ptr: *mut u8) {
+      let value = *unsafe { Box::from_raw(ptr.cast::<u64>()) };
+      CHAIN_DROPPED.fetch_add(1, Ordering::Release);
+      let _guard = super::pin();
+      if value != 0 {
+         let next = Box::into_raw(Box::new(value - 1)).cast();
+         unsafe { super::retire_raw(next, reentrant_drop) };
+      }
+   }
+
+   #[test]
+   fn reclamation_callbacks_can_pin_and_retire_more_objects() {
+      let _serial = TEST_SERIALIZE.lock().unwrap_or_else(|e| e.into_inner());
+      let before = CHAIN_DROPPED.load(Ordering::Acquire);
+      let ptr = Box::into_raw(Box::new(31u64)).cast();
+      unsafe { super::retire_raw(ptr, reentrant_drop) };
+      wait_for(&CHAIN_DROPPED, before + 32);
+   }
+}
+#[cfg(test)]
+mod panic_regression {
+   use std::sync::atomic::{AtomicUsize, Ordering};
+   static DROPPED: AtomicUsize = AtomicUsize::new(0);
+   unsafe fn drop_value(ptr: *mut u8) {
+      drop(unsafe { Box::from_raw(ptr.cast::<u64>()) });
+      DROPPED.fetch_add(1, Ordering::Release);
+   }
+
+   #[test]
+   fn a_panicking_callback_releases_its_pin_before_later_collection() {
+      let _serial = super::TEST_SERIALIZE
+         .lock()
+         .unwrap_or_else(|e| e.into_inner());
+      let before = DROPPED.load(Ordering::Acquire);
+      std::thread::spawn(move || {
+         let result = std::panic::catch_unwind(|| super::with_pin(|_| panic!("callback failed")));
+         assert!(result.is_err());
+         let ptr = Box::into_raw(Box::new(7u64)).cast();
+         unsafe { super::retire_raw(ptr, drop_value) };
+         for _ in 0..200 {
+            super::force_collect();
+            if DROPPED.load(Ordering::Acquire) == before + 1 {
+               return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
          }
-         count
-      }
-
-      // Register once so at least one reusable slot exists.
-      std::thread::spawn(|| drop(super::pin())).join().unwrap();
-
-      const ROUNDS: usize = 64;
-      let before = participant_count();
-      for _ in 0..ROUNDS {
-         std::thread::spawn(|| drop(super::pin())).join().unwrap();
-      }
-      let after = participant_count();
-      assert!(
-         after < before + ROUNDS / 2,
-         "participant list grew from {before} to {after} over {ROUNDS} thread lifetimes"
-      );
+         assert_eq!(DROPPED.load(Ordering::Acquire), before + 1);
+      })
+      .join()
+      .unwrap();
    }
 }

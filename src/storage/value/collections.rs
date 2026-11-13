@@ -204,12 +204,16 @@ impl HashInner {
 
    #[inline]
    pub fn remove(&mut self, field: &str) -> Option<String> {
+      self.remove_small(field).map(SmallStr::into_string)
+   }
+
+   pub fn remove_small(&mut self, field: &str) -> Option<SmallStr> {
       match self {
          Self::Compact(v) => match compact_find(v, field) {
             Ok(pair_idx) => {
                let idx = pair_idx * 2;
                v.remove(idx);
-               let val = v.remove(idx).into_string();
+               let val = v.remove(idx);
                if v.capacity() / 2 > v.len().max(4) {
                   v.shrink_to_fit();
                }
@@ -218,7 +222,7 @@ impl HashInner {
             Err(_) => None,
          },
          Self::Full(m) => {
-            let out = m.remove(field).map(|s| s.into_string());
+            let out = m.remove(field);
             if m.len() <= COMPACT_THRESHOLD / 2 {
                self.demote_hash();
             }

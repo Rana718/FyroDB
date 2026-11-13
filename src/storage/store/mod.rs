@@ -303,6 +303,122 @@ mod tests {
    use std::sync::atomic::Ordering;
    use std::time::{Duration, Instant};
 
+   fn binary_set_protocol(logging: bool) {
+      use crate::handler::{Conn, net::Stream};
+      use crate::pubsub::{PubSub, WorkerNotifier};
+      use std::sync::Arc;
+      let mut base = Store::with_config(2, usize::MAX);
+      if logging {
+         base.replication = Some(crate::cluster::ReplicationCoordinator::new(128));
+      }
+      let store = Arc::new(base);
+      let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+      let client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+      let (_peer, _) = listener.accept().unwrap();
+      client.set_nonblocking(true).unwrap();
+      let poll = mio::Poll::new().unwrap();
+      let notifier = WorkerNotifier::new(
+         Arc::new(mio::Waker::new(poll.registry(), mio::Token(1)).unwrap()),
+         0,
+      );
+      let bus = PubSub::new();
+      let mut conn = Conn::new(
+         Stream::Tcp(mio::net::TcpStream::from_std(client)),
+         &store,
+         &bus,
+         1,
+         &notifier,
+         None,
+         0,
+      );
+      fn frame(key: &str, value: &[u8]) -> Vec<u8> {
+         let mut out = format!(
+            "*3\r\n$3\r\nSET\r\n${}\r\n{key}\r\n${}\r\n",
+            key.len(),
+            value.len()
+         )
+         .into_bytes();
+         out.extend_from_slice(value);
+         out.extend_from_slice(b"\r\n");
+         out
+      }
+      for size in [5, 23, 24, 64, 1024, 10240] {
+         let mut value = vec![b'a'; size];
+         value[..4].copy_from_slice(&[255, 0, 13, 10]);
+         let one = frame("binary:one", &value);
+         for (wire, count) in [
+            (one, 1),
+            (
+               [
+                  frame("binary:one", &value),
+                  frame(&format!("binary:new:{size}"), &value),
+               ]
+               .concat(),
+               2,
+            ),
+         ] {
+            conn.parser.rbuf = wire;
+            conn.parser.filled = conn.parser.rbuf.len();
+            conn.parser.pos = 0;
+            conn.parser.wbuf.clear();
+            assert!(conn.process_buffered());
+            assert_eq!(conn.parser.wbuf, b"+OK\r\n".repeat(count));
+            assert_eq!(
+               store
+                  .data
+                  .get_ref("binary:one")
+                  .unwrap()
+                  .value
+                  .as_string()
+                  .unwrap()
+                  .as_bytes(),
+               value
+            );
+         }
+      }
+      if let Some(log) = &store.replication {
+         let records = log.replay_from(0).unwrap();
+         assert_eq!(records.len(), 18);
+         let replica = Store::with_config(2, usize::MAX);
+         for record in records {
+            let value = crate::storage::rdb::decode_single_value(&record.value).unwrap();
+            assert_eq!(
+               &value.value.as_string().unwrap().as_bytes()[..4],
+               &[255, 0, 13, 10]
+            );
+            replica.apply_replica_mutation(&record).unwrap();
+         }
+         assert_eq!(
+            replica
+               .data
+               .get_ref("binary:one")
+               .unwrap()
+               .value
+               .as_string()
+               .unwrap()
+               .as_bytes(),
+            store
+               .data
+               .get_ref("binary:one")
+               .unwrap()
+               .value
+               .as_string()
+               .unwrap()
+               .as_bytes()
+         );
+      }
+   }
+
+   #[test]
+   fn binary_set_scalar_and_pipeline_preserve_every_byte() {
+      binary_set_protocol(false);
+   }
+
+   #[test]
+   fn binary_set_logged_scalar_and_pipeline_replay_without_loss() {
+      binary_set_protocol(true);
+   }
+
    #[test]
    fn replica_mutations_validate_slot_and_apply_without_logging() {
       let store = Store::with_config(1, 16);

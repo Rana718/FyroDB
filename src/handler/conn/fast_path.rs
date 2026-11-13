@@ -189,6 +189,15 @@ pub(super) fn dispatch_get_run<const STREAM_IO: bool>(
       dispatch_get_one(conn, first_key);
       return;
    }
+   dispatch_get_batch::<STREAM_IO>(conn, first_key, read_only);
+}
+
+#[inline(never)]
+fn dispatch_get_batch<const STREAM_IO: bool>(
+   conn: &mut Conn<'_>,
+   first_key: (*const u8, usize),
+   read_only: bool,
+) {
    const BATCH: usize = 256;
    let mut keys: [&[u8]; BATCH] = [&[]; BATCH];
    let mut hashes = [0u64; BATCH];
@@ -283,8 +292,14 @@ pub(super) fn dispatch_get_run<const STREAM_IO: bool>(
    let prefetch_payloads = (24..=1024).contains(&first_payload_len)
       && (first_payload_len <= 256 || store.worker_capacity() == 1);
    #[cfg(not(feature = "io-uring"))]
+   let stream_minimum = if store.worker_capacity() == 1 {
+      64 * 1024
+   } else {
+      super::bulk::MIN_STREAM_BYTES
+   };
+   #[cfg(not(feature = "io-uring"))]
    if STREAM_IO
-      && first_payload_len >= super::bulk::MIN_STREAM_BYTES
+      && first_payload_len >= stream_minimum
       && unsafe {
          super::bulk::try_stream_get_run(
             conn,
@@ -349,10 +364,17 @@ fn dispatch_set_one(
    let Some(key) = part_str(out, key_part) else {
       return;
    };
-   let Some(value) = part_str(out, value_part) else {
-      return;
-   };
-   conn.store.set_string_auto(key, hint, entry, value, 0);
+   let bytes = unsafe { part_bytes(value_part) };
+   if let Ok(value) = std::str::from_utf8(bytes) {
+      conn.store.set_string_auto(key, hint, entry, value, 0);
+   } else {
+      conn.store.set(
+         key,
+         crate::storage::value::StoreValue::string_small(
+            crate::storage::value::SmallStr::from_slice(bytes),
+         ),
+      );
+   }
    if conn.store.has_replication() {
       conn.store.record_current_value(key);
    }
@@ -369,12 +391,25 @@ pub(super) fn dispatch_set_run(
       dispatch_set_one(conn, first_key, first_val);
       return;
    }
+   if conn.store.worker_capacity() > 1 && first_val.1 <= 256 {
+      dispatch_set_batch::<64>(conn, first_key, first_val);
+   } else {
+      dispatch_set_batch::<256>(conn, first_key, first_val);
+   }
+}
+
+#[inline(never)]
+fn dispatch_set_batch<const PREFETCH: usize>(
+   conn: &mut Conn<'_>,
+   first_key: (*const u8, usize),
+   first_val: (*const u8, usize),
+) {
    const BATCH: usize = 256;
    let mut keys: [&[u8]; BATCH] = [&[]; BATCH];
    let mut vals: [(*const u8, usize); BATCH] = [(std::ptr::null(), 0); BATCH];
    let mut hashes = [0u64; BATCH];
    let mut tables = [std::ptr::null(); BATCH];
-   let mut entries = [std::ptr::null(); BATCH];
+   let mut entries = [std::ptr::null(); PREFETCH];
 
    let k0_bytes = unsafe { std::slice::from_raw_parts(first_key.0, first_key.1) };
    keys[0] = k0_bytes;
@@ -417,15 +452,20 @@ pub(super) fn dispatch_set_run(
       return;
    }
 
-   conn
-      .store
-      .prefetch_slots_write(&keys[..count], &mut hashes[..count], &mut tables[..count]);
-   conn.store.probe_and_prefetch_entries_write(
-      &tables[..count],
-      &hashes[..count],
-      &mut entries[..count],
-   );
    let store = conn.store;
+   if PREFETCH < BATCH {
+      // Tiled updates request write ownership for entries, not bucket pointers.
+      store.prefetch_slots(&keys[..count], &mut hashes[..count], &mut tables[..count]);
+   } else {
+      store.prefetch_slots_write(&keys[..count], &mut hashes[..count], &mut tables[..count]);
+   }
+   let mut base = 0;
+   let mut prefetched = count.min(PREFETCH);
+   store.probe_and_prefetch_entries_write(
+      &tables[..prefetched],
+      &hashes[..prefetched],
+      &mut entries[..prefetched],
+   );
    let write_epoch = store.data.write_epoch();
    let pin = customhash::pin();
    let out = &mut conn.parser.wbuf;
@@ -434,12 +474,22 @@ pub(super) fn dispatch_set_run(
    let mut errors = Vec::new();
    let mut i = 0;
    while i < count {
+      if i >= prefetched {
+         base = i;
+         prefetched = (i + PREFETCH).min(count);
+         store.probe_and_prefetch_entries_write(
+            &tables[i..prefetched],
+            &hashes[i..prefetched],
+            &mut entries[..prefetched - i],
+         );
+      }
+      let local = i - base;
       let mut end = i + 1;
       while end < count && keys[end] == keys[i] {
          end += 1;
       }
 
-      let p = entries[i];
+      let p = entries[local];
       let mut updated = false;
       if !p.is_null() && !conn.store.has_replication() {
          let e = unsafe { &*p.cast::<customhash::Entry<crate::storage::value::StoreValue>>() };
@@ -508,7 +558,7 @@ pub(super) fn dispatch_set_run(
                continue;
             };
             let val_bytes = unsafe { std::slice::from_raw_parts(vals[k].0, vals[k].1) };
-            if entries[k].is_null() && !conn.store.has_replication() {
+            if entries[local].is_null() && !conn.store.has_replication() {
                let written = unsafe {
                   store.data.insert_slot_fast_located_pinned(
                      hashes[k],
@@ -527,13 +577,18 @@ pub(super) fn dispatch_set_run(
                   store.set_string_fast_bytes(key_str, hashes[k], val_bytes);
                }
             } else {
-               let Ok(val_str) = std::str::from_utf8(val_bytes) else {
-                  errors.push(k);
-                  continue;
-               };
-               conn
-                  .store
-                  .set_string_auto(key_str, Some(hashes[k]), entries[k], val_str, 0);
+               if let Ok(val_str) = std::str::from_utf8(val_bytes) {
+                  conn
+                     .store
+                     .set_string_auto(key_str, Some(hashes[k]), entries[local], val_str, 0);
+               } else {
+                  conn.store.set(
+                     key_str,
+                     crate::storage::value::StoreValue::string_small(
+                        crate::storage::value::SmallStr::from_slice(val_bytes),
+                     ),
+                  );
+               }
                if conn.store.has_replication() {
                   conn.store.record_current_value(key_str);
                }
@@ -919,6 +974,39 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
       return;
    }
 
+   if matches!(conn.mode, ConnMode::Subscribed { .. }) {
+      if id == CmdId::Ping {
+         if raw.len() > 2 {
+            crate::utils::resp::write_wrong_args(&mut conn.parser.wbuf, "ping");
+         } else {
+            conn.parser.wbuf.extend_from_slice(b"*2\r\n$4\r\npong\r\n");
+            let message = raw
+               .get(1)
+               .map_or(&[][..], |part| unsafe { part_bytes(*part) });
+            crate::utils::resp::write_bulk_bytes(&mut conn.parser.wbuf, message);
+         }
+      } else if [
+         b"SUBSCRIBE".as_slice(),
+         b"UNSUBSCRIBE",
+         b"PSUBSCRIBE",
+         b"PUNSUBSCRIBE",
+         b"ASKING",
+         b"RESET",
+         b"QUIT",
+      ]
+      .iter()
+      .any(|allowed| cmd.eq_ignore_ascii_case(allowed))
+      {
+         dispatch_text(conn, raw);
+      } else {
+         crate::utils::resp::write_err(
+            &mut conn.parser.wbuf,
+            "Command not allowed in subscribed state",
+         );
+      }
+      return;
+   }
+
    if id == CmdId::Auth {
       handle_auth(conn, raw);
       return;
@@ -1292,10 +1380,8 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
             let Some(channel) = part_str(out, raw[1]) else {
                return;
             };
-            let Some(message) = part_str(out, raw[2]) else {
-               return;
-            };
-            let n = conn.pubsub.publish(channel, message);
+            let message = unsafe { part_bytes(raw[2]) };
+            let n = conn.pubsub.publish_bytes(channel, message);
             crate::utils::resp::write_integer(out, n as i64);
             return;
          }
@@ -1698,6 +1784,10 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
       return ft_offload_generic(conn, raw);
    }
 
+   dispatch_text(conn, raw);
+}
+
+fn dispatch_text(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
    const STACK_CAP: usize = 32;
    if raw.len() <= STACK_CAP {
       let mut arr = [""; STACK_CAP];

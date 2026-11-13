@@ -173,11 +173,13 @@ fn psubscribe_wildcard_delivers() {
    let count = pubsub.publish("news.sports", "goal");
    assert_eq!(count, 1);
 
-   // Pattern subscribers keep the per-slot path: their frames embed the
-   // matched pattern, which only the publisher knows.
-   let buf = drain(&slot);
-   assert!(buf.starts_with(b"*4\r\n$8\r\npmessage\r\n"));
-   assert!(buf.windows(4).any(|w| w == b"goal"));
+   let frames = fanout_frames(slot.notifier());
+   assert_eq!(frames.len(), 1);
+   assert_eq!(frames[0].0, "news.*");
+   assert_eq!(
+      frames[0].1,
+      b"*4\r\n$8\r\npmessage\r\n$6\r\nnews.*\r\n$11\r\nnews.sports\r\n$4\r\ngoal\r\n"
+   );
 }
 
 #[test]
@@ -215,7 +217,12 @@ fn pattern_and_exact_both_delivered() {
    assert_eq!(count, 2);
    assert!(!fanout_frames(exact.notifier()).is_empty());
    assert!(drain(&exact).is_empty());
-   assert!(!drain(&pattern).is_empty());
+   let frames = fanout_frames(pattern.notifier());
+   assert_eq!(frames.len(), 1);
+   assert_eq!(
+      frames[0].1,
+      b"*4\r\n$8\r\npmessage\r\n$2\r\nc*\r\n$2\r\nch\r\n$3\r\nmsg\r\n"
+   );
 }
 
 #[test]
@@ -513,4 +520,25 @@ fn end_to_end_delivery_through_worker_loop() {
 
    // Idle workers block in poll() forever; process exit reclaims them.
    fyro_db::worker::initiate_shutdown();
+}
+
+#[test]
+fn numpat_counts_unique_patterns_and_duplicate_subscribes_are_idempotent() {
+   let pubsub = PubSub::new();
+   let (_, first) = make_sub(0, 1);
+   let (_, second) = make_sub(1, 2);
+   pubsub.psubscribe("same.*", Arc::clone(&first));
+   pubsub.psubscribe("same.*", Arc::clone(&second));
+   pubsub.psubscribe("same.*", Arc::clone(&second));
+   assert_eq!(pubsub.numpat(), 1);
+   assert_eq!(pubsub.publish("same.topic", "payload"), 2);
+   assert_eq!(fanout_frames(first.notifier()).len(), 1);
+   assert_eq!(fanout_frames(second.notifier()).len(), 1);
+   pubsub.punsubscribe("same.*", &first);
+   assert_eq!(pubsub.numpat(), 1);
+   pubsub.punsubscribe("same.*", &second);
+   assert_eq!(pubsub.numpat(), 0);
+   pubsub.subscribe("exact", Arc::clone(&first));
+   pubsub.subscribe("exact", Arc::clone(&first));
+   assert_eq!(pubsub.numsub(&["exact"]), vec![("exact".to_string(), 1)]);
 }

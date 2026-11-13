@@ -532,6 +532,11 @@ impl Store {
       }
       if let Ok(val_str) = std::str::from_utf8(val_bytes) {
          self.set_string_auto(key, Some(hash), std::ptr::null(), val_str, 0);
+      } else {
+         self.set(
+            key,
+            StoreValue::string_small(SmallStr::from_slice(val_bytes)),
+         );
       }
    }
 
@@ -760,7 +765,7 @@ impl Store {
          return true;
       }
 
-      let mut start = if start < 0 {
+      let start = if start < 0 {
          (len + start).max(0)
       } else {
          start.min(len)
@@ -776,14 +781,8 @@ impl Store {
          return true;
       }
 
-      while start > 0 && !s.is_char_boundary(start) {
-         start -= 1;
-      }
       end += 1;
-      while end < s.len() && !s.is_char_boundary(end) {
-         end += 1;
-      }
-      crate::utils::resp::write_bulk(out, &s[start..end]);
+      crate::utils::resp::write_bulk_bytes(out, &s.as_bytes()[start..end]);
       true
    }
 
@@ -802,7 +801,7 @@ impl Store {
          return String::new();
       }
 
-      let mut start = if start < 0 {
+      let start = if start < 0 {
          (len + start).max(0)
       } else {
          start.min(len)
@@ -817,14 +816,8 @@ impl Store {
          return String::new();
       }
 
-      while start > 0 && !s.is_char_boundary(start) {
-         start -= 1;
-      }
       end += 1;
-      while end < s.len() && !s.is_char_boundary(end) {
-         end += 1;
-      }
-      s[start..end].to_string()
+      String::from_utf8_lossy(&s.as_bytes()[start..end]).into_owned()
    }
 
    pub fn setrange(&self, key: &str, offset: usize, value: &str) -> Result<usize, &'static str> {
@@ -888,7 +881,12 @@ impl Store {
             .data
             .update_with_hinted(key, hash, |val| match val.value.as_string() {
                Some(s) => {
-                  let n = match s.parse::<i64>() {
+                  let n = match s
+                     .try_as_str()
+                     .ok()
+                     .and_then(|s| s.parse::<i64>().ok())
+                     .ok_or(())
+                  {
                      Ok(n) => n,
                      Err(_) => return Err("value is not an integer or out of range"),
                   };
@@ -941,7 +939,12 @@ impl Store {
          .data
          .update_with(key, |val| match val.value.as_string() {
             Some(s) => {
-               let n = match s.parse::<f64>() {
+               let n = match s
+                  .try_as_str()
+                  .ok()
+                  .and_then(|s| s.parse::<f64>().ok())
+                  .ok_or(())
+               {
                   Ok(n) => n,
                   Err(_) => return Err("value is not a valid float"),
                };
@@ -966,29 +969,33 @@ impl Store {
 
 impl Store {
    pub fn lcs(&self, key1: &str, key2: &str) -> Result<String, &'static str> {
+      String::from_utf8(self.lcs_bytes(key1, key2)?).map_err(|_| "LCS result is not UTF-8")
+   }
+
+   pub fn lcs_bytes(&self, key1: &str, key2: &str) -> Result<Vec<u8>, &'static str> {
       let ref1 = self.data.get_ref(key1);
       let ref2 = self.data.get_ref(key2);
 
       let s1 = match ref1.as_deref() {
-         None => "",
-         Some(e) if e.is_expired() => "",
+         None => &[][..],
+         Some(e) if e.is_expired() => &[][..],
          Some(e) => match e.value.as_string() {
-            Some(s) => s.as_str(),
+            Some(s) => s.as_bytes(),
             None => return Err("WRONGTYPE"),
          },
       };
       let s2 = match ref2.as_deref() {
-         None => "",
-         Some(e) if e.is_expired() => "",
+         None => &[][..],
+         Some(e) if e.is_expired() => &[][..],
          Some(e) => match e.value.as_string() {
-            Some(s) => s.as_str(),
+            Some(s) => s.as_bytes(),
             None => return Err("WRONGTYPE"),
          },
       };
 
       let mut result = Vec::new();
-      hirschberg(s1.as_bytes(), s2.as_bytes(), &mut result);
-      Ok(String::from_utf8(result).unwrap_or_default())
+      hirschberg(s1, s2, &mut result);
+      Ok(result)
    }
 
    pub fn lcs_len(&self, key1: &str, key2: &str) -> Result<usize, &'static str> {
@@ -996,24 +1003,24 @@ impl Store {
       let ref2 = self.data.get_ref(key2);
 
       let s1 = match ref1.as_deref() {
-         None => "",
-         Some(e) if e.is_expired() => "",
+         None => &[][..],
+         Some(e) if e.is_expired() => &[][..],
          Some(e) => match e.value.as_string() {
-            Some(s) => s.as_str(),
+            Some(s) => s.as_bytes(),
             None => return Err("WRONGTYPE"),
          },
       };
       let s2 = match ref2.as_deref() {
-         None => "",
-         Some(e) if e.is_expired() => "",
+         None => &[][..],
+         Some(e) if e.is_expired() => &[][..],
          Some(e) => match e.value.as_string() {
-            Some(s) => s.as_str(),
+            Some(s) => s.as_bytes(),
             None => return Err("WRONGTYPE"),
          },
       };
 
-      let b1 = s1.as_bytes();
-      let b2 = s2.as_bytes();
+      let b1 = s1;
+      let b2 = s2;
       let m = b1.len();
       let n = b2.len();
 
