@@ -58,6 +58,48 @@ fn copy_medium_payload(destination: &mut [u8], source: &[u8]) {
    }
 }
 
+#[inline(never)]
+fn copy_large_payload(destination: &mut [u8], source: &[u8]) {
+   assert_eq!(destination.len(), source.len());
+   #[cfg(target_arch = "x86_64")]
+   if source.len() >= 8192 && std::is_x86_feature_detected!("avx") {
+      // The helper fences streaming stores before the caller can reuse the destination.
+      unsafe { copy_streaming_payload(destination, source) };
+      return;
+   }
+   destination.copy_from_slice(source);
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx")]
+unsafe fn copy_streaming_payload(destination: &mut [u8], source: &[u8]) {
+   use std::arch::x86_64::{_mm_sfence, _mm256_loadu_si256, _mm256_stream_si256};
+   unsafe {
+      let dst = destination.as_mut_ptr();
+      let src = source.as_ptr();
+      let len = source.len();
+      let head = dst.align_offset(64);
+      std::ptr::copy_nonoverlapping(src, dst, head);
+      let mut at = head;
+      while at + 128 <= len {
+         for offset in [0, 32, 64, 96] {
+            let value = _mm256_loadu_si256(src.add(at + offset).cast());
+            _mm256_stream_si256(dst.add(at + offset).cast(), value);
+         }
+         at += 128;
+      }
+      if at + 64 <= len {
+         for offset in [0, 32] {
+            let value = _mm256_loadu_si256(src.add(at + offset).cast());
+            _mm256_stream_si256(dst.add(at + offset).cast(), value);
+         }
+         at += 64;
+      }
+      _mm_sfence();
+      std::ptr::copy_nonoverlapping(src.add(at), dst.add(at), len - at);
+   }
+}
+
 const CRLF_U16: u16 = u16::from_ne_bytes(*b"\r\n");
 
 impl SmallStr {
@@ -199,6 +241,18 @@ impl SmallStr {
          return;
       }
       *self = Self::from_slice(s);
+   }
+
+   #[inline(always)]
+   pub(crate) fn overwrite_bytes_streaming(&mut self, bytes: &[u8]) {
+      if bytes.len() >= 8192
+         && self.len == Tag::Heap
+         && Self::read_heap_len(&self.data) == bytes.len()
+      {
+         copy_large_payload(self.as_bytes_mut(), bytes);
+      } else {
+         self.overwrite_bytes(bytes);
+      }
    }
 
    #[inline(always)]

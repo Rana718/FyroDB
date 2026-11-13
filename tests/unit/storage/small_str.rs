@@ -54,6 +54,51 @@ fn raw_bulk_replies_preserve_binary_values_and_destination_bounds() {
 use super::SmallStr;
 
 #[test]
+fn large_copies_preserve_every_alignment_tail_and_surrounding_byte() {
+   for size in [8191, 8192, 8193, 10239, 10240, 10241, 65535, 65536, 65537] {
+      for shift in 0..64 {
+         let mut source = vec![0; size + 128];
+         for (i, byte) in source.iter_mut().enumerate() {
+            *byte = (i.wrapping_mul(137) % 256) as u8;
+         }
+         let before = source.clone();
+         let mut destination = vec![0xa5; size + 128];
+         let start = 32 + shift;
+         let input = &source[63 - shift..63 - shift + size];
+         super::copy_large_payload(&mut destination[start..start + size], input);
+         assert_eq!(&destination[start..start + size], input);
+         #[cfg(target_arch = "x86_64")]
+         if size >= 8192 && std::is_x86_feature_detected!("avx") {
+            destination[start..start + size].fill(0);
+            unsafe { super::copy_streaming_payload(&mut destination[start..start + size], input) };
+            assert_eq!(&destination[start..start + size], input);
+         }
+         assert!(destination[..start].iter().all(|b| *b == 0xa5));
+         assert!(destination[start + size..].iter().all(|b| *b == 0xa5));
+         assert_eq!(source, before);
+      }
+   }
+}
+
+#[test]
+fn streaming_overwrites_reuse_storage_without_changing_captured_values() {
+   for size in [1024, 8191, 8192, 8193, 10240, 65536] {
+      let mut value = SmallStr::from_slice(&vec![17; size]);
+      let captured = value.clone();
+      let address = value.as_bytes().as_ptr();
+      for byte in [0, 255, 73] {
+         let input = vec![byte; size];
+         value.overwrite_bytes_streaming(&input);
+         assert_eq!(value.as_bytes(), input);
+         assert_eq!(value.as_bytes().as_ptr(), address);
+         assert_eq!(captured.as_bytes(), vec![17; size]);
+      }
+      value.overwrite_bytes_streaming(b"short");
+      assert_eq!(value.as_bytes(), b"short");
+   }
+}
+
+#[test]
 fn clone_is_an_independent_copy() {
    let long = "0123456789abcdefghijklmnopqrstuvwxyz";
    let a = SmallStr::new(long);

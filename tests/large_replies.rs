@@ -1,5 +1,5 @@
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpStream;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -16,8 +16,28 @@ impl Server {
    }
 
    fn start_with_workers(workers: usize) -> Self {
-      let reservation = TcpListener::bind("127.0.0.1:0").unwrap();
-      let port = reservation.local_addr().unwrap().port();
+      let reservation = socket2::Socket::new(
+         socket2::Domain::IPV4,
+         socket2::Type::STREAM,
+         Some(socket2::Protocol::TCP),
+      )
+      .unwrap();
+      reservation.set_reuse_address(true).unwrap();
+      reservation.set_reuse_port(true).unwrap();
+      reservation
+         .bind(
+            &"127.0.0.1:0"
+               .parse::<std::net::SocketAddr>()
+               .unwrap()
+               .into(),
+         )
+         .unwrap();
+      let port = reservation
+         .local_addr()
+         .unwrap()
+         .as_socket()
+         .unwrap()
+         .port();
       let directory =
          std::env::temp_dir().join(format!("fyro-large-{}-{port}", std::process::id()));
       std::fs::create_dir_all(&directory).unwrap();
@@ -35,7 +55,7 @@ impl Server {
          .env("FYRODB_RDB_PATH", directory.join("snapshot.rdb"))
          .stdout(Stdio::null())
          .stderr(std::fs::File::create(directory.join("server.log")).unwrap());
-      drop(reservation);
+      // Reserve the port without accepting connections until the child listens.
       let child = command.spawn().unwrap();
       let mut server = Self {
          child,
@@ -45,6 +65,7 @@ impl Server {
       let deadline = Instant::now() + Duration::from_secs(5);
       loop {
          if TcpStream::connect(("127.0.0.1", port)).is_ok() {
+            drop(reservation);
             return server;
          }
          assert!(
@@ -59,6 +80,13 @@ impl Server {
 
 impl Drop for Server {
    fn drop(&mut self) {
+      if std::thread::panicking() {
+         eprintln!(
+            "server status: {:?}; log: {}",
+            self.child.try_wait(),
+            std::fs::read_to_string(self.directory.join("server.log")).unwrap_or_default()
+         );
+      }
       let _ = self.child.kill();
       let _ = self.child.wait();
       let _ = std::fs::remove_dir_all(&self.directory);
@@ -153,9 +181,28 @@ fn single_core_large_batches_preserve_all_owner_indexes_and_fallbacks() {
    }
 }
 
+#[test]
+fn single_core_streaming_boundaries_preserve_queued_values_and_fallback_order() {
+   for bytes in [4095, 4096, 4097, 8192, 10240] {
+      for mode in [0, 2, 3] {
+         exercise_workers_pipeline(mode, 256, bytes, 1);
+      }
+   }
+}
+
+#[test]
+fn repeated_large_gets_remain_owned_across_scripts_and_later_overwrites() {
+   for workers in [1, 2] {
+      for bytes in [4096, 10240, 65536] {
+         exercise_workers_pipeline(5, 256, bytes, workers);
+      }
+   }
+}
+
 fn exercise_workers_pipeline(mode: u8, count: usize, bytes: usize, workers: usize) {
    let fallback = mode == 1;
    let duplicate = mode == 2;
+   let same_key = mode == 5;
    let server = Server::start_with_workers(workers);
    let mut consumer = Client::connect(server.port);
    let mut updater = Client::connect(server.port);
@@ -188,7 +235,7 @@ fn exercise_workers_pipeline(mode: u8, count: usize, bytes: usize, workers: usiz
    }
    let mut expected = Vec::new();
    for (index, value) in values.iter().enumerate() {
-      let key = if (mode == 3 && index == 1) || (duplicate && index == count - 1) {
+      let key = if same_key || (mode == 3 && index == 1) || (duplicate && index == count - 1) {
          "large:0".to_owned()
       } else if (mode == 3 && index == count - 1) || (fallback && index == 1) {
          "missing".to_owned()
@@ -201,14 +248,14 @@ fn exercise_workers_pipeline(mode: u8, count: usize, bytes: usize, workers: usiz
       expected.push(
          if (mode == 3 && index == count - 1) || (fallback && (index == 1 || index == 2)) {
             Reply::Nil
-         } else if (duplicate && index == count - 1) || (mode == 3 && index == 1) {
+         } else if same_key || (duplicate && index == count - 1) || (mode == 3 && index == 1) {
             Reply::Bulk(values[0].clone())
          } else {
             Reply::Bulk(value.clone())
          },
       );
    }
-   let script_key = if duplicate || mode == 3 {
+   let script_key = if same_key || duplicate || mode == 3 {
       "large:0".to_owned()
    } else {
       format!("large:{}", count - 1)
@@ -347,6 +394,13 @@ fn heap_write_batches_remain_complete_with_readers_and_snapshotting() {
 #[test]
 fn medium_heap_updates_and_snapshotting_preserve_complete_values() {
    for size in [65, 128, 129, 256, 257, 512, 1024] {
+      exercise_heap_snapshot(size);
+   }
+}
+
+#[test]
+fn streaming_heap_copies_remain_complete_during_reads_and_snapshotting() {
+   for size in [8192, 10240, 65536] {
       exercise_heap_snapshot(size);
    }
 }

@@ -31,6 +31,26 @@ fn header(length: usize, out: &mut [u8; 24]) -> usize {
    number.len() + 3
 }
 
+#[inline]
+fn write_vectored_bounded<W: Write>(writer: &mut W, slices: &mut [IoSlice<'_>]) -> usize {
+   let mut pending = slices;
+   let mut written = 0;
+   let mut calls = 0;
+   while calls < 4 && !pending.is_empty() {
+      match writer.write_vectored(pending) {
+         Ok(0) => break,
+         Ok(n) => {
+            written += n;
+            calls += 1;
+            IoSlice::advance_slices(&mut pending, n);
+         }
+         Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+         Err(_) => break,
+      }
+   }
+   written
+}
+
 #[inline(never)]
 fn send_batch<W: Write>(
    writer: &mut W,
@@ -90,6 +110,48 @@ fn send_batch<W: Write>(
    }
    if buffered.is_empty() && buffered.capacity() > RETAINED_WRITE_BUFFER {
       buffered.shrink_to(RETAINED_WRITE_BUFFER);
+   }
+}
+
+#[inline(never)]
+pub(super) fn send_repeated<W: Write>(
+   writer: &mut W,
+   buffered: &mut Vec<u8>,
+   offset: &mut usize,
+   start: usize,
+   count: usize,
+) {
+   assert!((1..=BATCH).contains(&count));
+   let prefix = start - *offset;
+   let reply = buffered.len() - start;
+   let total = reply
+      .checked_mul(count)
+      .and_then(|n| n.checked_add(prefix))
+      .expect("reply length overflow");
+   let written = {
+      let mut slices = [IoSlice::new(&[]); BATCH + 1];
+      slices[0] = IoSlice::new(&buffered[*offset..start]);
+      for slice in &mut slices[1..=count] {
+         *slice = IoSlice::new(&buffered[start..]);
+      }
+      write_vectored_bounded(writer, &mut slices[usize::from(prefix == 0)..=count])
+   };
+   if written == total {
+      buffered.clear();
+      *offset = 0;
+      if buffered.capacity() > RETAINED_WRITE_BUFFER {
+         buffered.shrink_to(RETAINED_WRITE_BUFFER);
+      }
+   } else if written >= prefix && reply != 0 {
+      let body_written = written - prefix;
+      let copies_left = count - body_written / reply;
+      buffered.copy_within(start.., 0);
+      buffered.truncate(reply);
+      crate::utils::resp::repeat_reply(buffered, 0, copies_left);
+      *offset = body_written % reply;
+   } else {
+      crate::utils::resp::repeat_reply(buffered, start, count);
+      *offset += written;
    }
 }
 
@@ -214,12 +276,14 @@ mod tests {
          if let Some(error) = self.error {
             return Err(error.into());
          }
+         let before = self.wire.len();
          let mut written = 0;
          for slice in slices {
             let count = slice.len().min(self.limit - written);
             self.wire.extend_from_slice(&slice[..count]);
             written += count;
          }
+         assert_eq!(self.wire.len() - before, written);
          Ok(written)
       }
    }
@@ -261,6 +325,65 @@ mod tests {
             assert_eq!(writer.wire, expected, "offset={offset} limit={limit}");
          }
       }
+   }
+
+   #[test]
+   fn repeated_owned_replies_preserve_every_prefix_and_partial_write_boundary() {
+      let prefix = b":1\r\n+PONG\r\n";
+      let mut reply = Vec::new();
+      crate::utils::resp::write_bulk_bytes(&mut reply, b"\0\xff\r\nbody");
+      for count in [1, 2, 7, 256] {
+         for offset in [0, 4, prefix.len()] {
+            let expected = [prefix[offset..].to_vec(), reply.repeat(count)].concat();
+            for limit in 0..=expected.len() {
+               let mut writer = ShortWriter {
+                  limit,
+                  error: None,
+                  interrupt: true,
+                  wire: Vec::new(),
+               };
+               let mut buffered = [prefix.as_slice(), &reply].concat();
+               let mut at = offset;
+               send_repeated(&mut writer, &mut buffered, &mut at, prefix.len(), count);
+               writer.wire.extend_from_slice(&buffered[at..]);
+               assert_eq!(
+                  writer.wire, expected,
+                  "count={count} offset={offset} limit={limit}"
+               );
+            }
+         }
+      }
+      for error in [io::ErrorKind::WouldBlock, io::ErrorKind::Other] {
+         let mut writer = ShortWriter {
+            limit: 0,
+            error: Some(error),
+            interrupt: false,
+            wire: Vec::new(),
+         };
+         let mut buffered = reply.clone();
+         let mut offset = 0;
+         send_repeated(&mut writer, &mut buffered, &mut offset, 0, 256);
+         assert_eq!(buffered, reply.repeat(256));
+      }
+   }
+
+   #[test]
+   fn repeated_partial_writes_keep_only_the_unsent_repetitions() {
+      let mut reply = Vec::new();
+      crate::utils::resp::write_bulk_bytes(&mut reply, &vec![255; 8192]);
+      let mut writer = ShortWriter {
+         limit: reply.len() * 2 + 3,
+         error: None,
+         interrupt: false,
+         wire: Vec::new(),
+      };
+      let mut buffered = reply.clone();
+      let mut offset = 0;
+      send_repeated(&mut writer, &mut buffered, &mut offset, 0, 17);
+      assert!(buffered.len() < reply.len() * 17);
+      assert!(offset < reply.len());
+      writer.wire.extend_from_slice(&buffered[offset..]);
+      assert_eq!(writer.wire, reply.repeat(17));
    }
 
    #[test]

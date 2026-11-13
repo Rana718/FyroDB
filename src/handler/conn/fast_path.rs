@@ -193,6 +193,28 @@ pub(super) fn dispatch_get_run<const STREAM_IO: bool>(
 }
 
 #[inline(never)]
+fn dispatch_repeated_get<const STREAM_IO: bool>(conn: &mut Conn<'_>, key: &[u8], count: usize) {
+   let out = &mut conn.parser.wbuf;
+   let start = out.len();
+   if !conn.store.get_to_buf_hinted_bytes(key, None, out) {
+      if std::str::from_utf8(key).is_ok() {
+         out.extend_from_slice(b"$-1\r\n");
+      } else {
+         crate::utils::resp::write_err(out, "invalid UTF-8 in request");
+      }
+   }
+   #[cfg(not(feature = "io-uring"))]
+   if STREAM_IO
+      && conn.store.worker_capacity() > 1
+      && out.len() - start >= super::bulk::MIN_STREAM_BYTES
+   {
+      super::bulk::send_repeated(&mut conn.stream, out, &mut conn.write_offset, start, count);
+      return;
+   }
+   crate::utils::resp::repeat_reply(out, start, count);
+}
+
+#[inline(never)]
 fn dispatch_get_batch<const STREAM_IO: bool>(
    conn: &mut Conn<'_>,
    first_key: (*const u8, usize),
@@ -249,16 +271,7 @@ fn dispatch_get_batch<const STREAM_IO: bool>(
    }
 
    if keys[0] == keys[1] && keys[2..count].iter().all(|&key| key == keys[0]) {
-      let out = &mut conn.parser.wbuf;
-      let start = out.len();
-      if !conn.store.get_to_buf_hinted_bytes(keys[0], None, out) {
-         if std::str::from_utf8(keys[0]).is_ok() {
-            out.extend_from_slice(b"$-1\r\n");
-         } else {
-            crate::utils::resp::write_err(out, "invalid UTF-8 in request");
-         }
-      }
-      crate::utils::resp::repeat_reply(out, start, count);
+      dispatch_repeated_get::<STREAM_IO>(conn, keys[0], count);
       return;
    }
    let store = conn.store;
@@ -293,7 +306,7 @@ fn dispatch_get_batch<const STREAM_IO: bool>(
       && (first_payload_len <= 256 || store.worker_capacity() == 1);
    #[cfg(not(feature = "io-uring"))]
    let stream_minimum = if store.worker_capacity() == 1 {
-      64 * 1024
+      4 * 1024
    } else {
       super::bulk::MIN_STREAM_BYTES
    };
@@ -392,14 +405,16 @@ pub(super) fn dispatch_set_run(
       return;
    }
    if conn.store.worker_capacity() > 1 && first_val.1 <= 256 {
-      dispatch_set_batch::<64>(conn, first_key, first_val);
+      dispatch_set_batch::<64, false>(conn, first_key, first_val);
+   } else if first_val.1 >= 8192 {
+      dispatch_set_batch::<256, true>(conn, first_key, first_val);
    } else {
-      dispatch_set_batch::<256>(conn, first_key, first_val);
+      dispatch_set_batch::<256, false>(conn, first_key, first_val);
    }
 }
 
 #[inline(never)]
-fn dispatch_set_batch<const PREFETCH: usize>(
+fn dispatch_set_batch<const PREFETCH: usize, const STREAMING: bool>(
    conn: &mut Conn<'_>,
    first_key: (*const u8, usize),
    first_val: (*const u8, usize),
@@ -526,7 +541,17 @@ fn dispatch_set_batch<const PREFETCH: usize>(
                      let val = unsafe { (*e.value.get()).assume_init_mut() };
                      val.expires_ms = 0;
                      if let crate::storage::value::FyroDB::String(ref mut s) = val.value {
-                        s.overwrite_bytes(val_bytes);
+                        if STREAMING
+                           && val_bytes.len() >= 8192
+                           && count > 1
+                           && end == i + 1
+                           && !hashes[..i].contains(&hashes[i])
+                           && !hashes[end..count].contains(&hashes[i])
+                        {
+                           s.overwrite_bytes_streaming(val_bytes);
+                        } else {
+                           s.overwrite_bytes(val_bytes);
+                        }
                      } else {
                         val.value = crate::storage::value::FyroDB::String(
                            crate::storage::value::SmallStr::from_slice(val_bytes),
