@@ -125,7 +125,10 @@ impl<'a> Conn<'a> {
                      continue;
                   }
                }
-               if self.authenticated && !self.store.cluster.enabled && !self.store.at_key_capacity()
+               if self.authenticated
+                  && !matches!(self.mode, ConnMode::Subscribed { .. })
+                  && !self.store.cluster.enabled
+                  && !self.store.at_key_capacity()
                {
                   if id == CmdId::Get && raw.len() == 2 {
                      dispatch_get_run::<STREAM_IO>(self, raw[1], read_only);
@@ -215,6 +218,11 @@ impl<'a> Conn<'a> {
    }
 
    pub fn do_write(&mut self) -> bool {
+      if let ConnMode::Subscribed { slot, .. } = &self.mode
+         && slot.limit_exceeded(self.parser.wbuf.len().saturating_sub(self.write_offset))
+      {
+         return false;
+      }
       if let ConnMode::Subscribed { ref slot, .. } = self.mode
          && self.parser.wbuf.len() < SUB_WRITE_BATCH_BYTES
       {
@@ -266,6 +274,11 @@ impl<'a> Conn<'a> {
 
    #[cfg(feature = "io-uring")]
    pub fn prepare_send(&mut self) -> Option<(std::os::fd::RawFd, *const u8, usize)> {
+      if let ConnMode::Subscribed { slot, .. } = &self.mode
+         && slot.limit_exceeded(self.parser.wbuf.len().saturating_sub(self.write_offset))
+      {
+         return None;
+      }
       use std::os::fd::AsRawFd;
       if let ConnMode::Subscribed { ref slot, .. } = self.mode
          && self.parser.wbuf.len() < SUB_WRITE_BATCH_BYTES
@@ -291,7 +304,10 @@ impl<'a> Conn<'a> {
       if self.write_offset >= self.parser.wbuf.len() {
          self.parser.wbuf.clear();
          self.write_offset = 0;
-         let retained = self.retained_write_capacity();
+         let retained = match self.mode {
+            ConnMode::Subscribed { .. } => SUB_WRITE_BATCH_BYTES,
+            ConnMode::Normal | ConnMode::Transaction(_) => self.retained_write_capacity(),
+         };
          if self.parser.wbuf.capacity() > retained {
             self.parser.wbuf.shrink_to(retained);
          }

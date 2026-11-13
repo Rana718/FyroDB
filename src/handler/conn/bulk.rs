@@ -2,8 +2,25 @@ use super::*;
 use crate::storage::value::{FyroDB, StoreValue};
 use std::io::IoSlice;
 
-pub(super) const MIN_STREAM_BYTES: usize = 64 * 1024;
+pub(super) const MIN_STREAM_BYTES: usize = 1024;
 const BATCH: usize = 256;
+
+fn owner_slot(
+   entries: &[*const ()],
+   seen: &[u16; BATCH * 2],
+   pointer: *const (),
+) -> (usize, Option<usize>) {
+   let hash = ((pointer as usize >> 3) as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+   let mut slot = (hash >> (64 - (BATCH * 2).trailing_zeros())) as usize;
+   while seen[slot] != 0 {
+      let previous = usize::from(seen[slot] - 1);
+      if entries[previous] == pointer {
+         return (slot, Some(previous));
+      }
+      slot = (slot + 1) & (BATCH * 2 - 1);
+   }
+   (slot, None)
+}
 
 fn header(length: usize, out: &mut [u8; 24]) -> usize {
    let mut digits = [0u8; 20];
@@ -20,7 +37,7 @@ fn send_batch<W: Write>(
    buffered: &mut Vec<u8>,
    offset: &mut usize,
    headers: &[[u8; 24]],
-   lengths: &[usize],
+   lengths: &[u16],
    values: &[&[u8]],
 ) {
    let body_bytes = lengths
@@ -28,7 +45,7 @@ fn send_batch<W: Write>(
       .zip(values)
       .try_fold(0usize, |total, (length, value)| {
          total
-            .checked_add(*length)?
+            .checked_add(usize::from(*length))?
             .checked_add(value.len())?
             .checked_add(2)
       })
@@ -38,7 +55,7 @@ fn send_batch<W: Write>(
       let mut slices = [IoSlice::new(&[]); BATCH * 3 + 1];
       slices[0] = IoSlice::new(&buffered[*offset..]);
       for (i, value) in values.iter().enumerate() {
-         slices[i * 3 + 1] = IoSlice::new(&headers[i][..lengths[i]]);
+         slices[i * 3 + 1] = IoSlice::new(&headers[i][..usize::from(lengths[i])]);
          slices[i * 3 + 2] = IoSlice::new(value);
          slices[i * 3 + 3] = IoSlice::new(b"\r\n");
       }
@@ -58,7 +75,11 @@ fn send_batch<W: Write>(
    };
    buffered.reserve(body_bytes.saturating_sub(remaining));
    for (i, value) in values.iter().enumerate() {
-      for part in [&headers[i][..lengths[i]], *value, b"\r\n".as_slice()] {
+      for part in [
+         &headers[i][..usize::from(lengths[i])],
+         *value,
+         b"\r\n".as_slice(),
+      ] {
          if remaining >= part.len() {
             remaining -= part.len();
          } else {
@@ -93,16 +114,16 @@ pub(super) unsafe fn try_stream_get_run(
    }
    let mut reads: [Option<customhash::EntryReadGuard<'_, StoreValue>>; BATCH] =
       [const { None }; BATCH];
-   let mut owners = [0usize; BATCH];
+   // Owner indexes become header lengths after all guards are acquired.
+   let mut lengths = [0u16; BATCH];
+   let mut seen = [0u16; BATCH * 2];
    for i in 0..count {
-      if let Some(previous) = entries[..i]
-         .iter()
-         .position(|pointer| *pointer == entries[i])
-      {
+      let (slot, previous) = owner_slot(entries, &seen, entries[i]);
+      if let Some(previous) = previous {
          if hashes[i] != hashes[previous] || keys[i] != keys[previous] {
             return false;
          }
-         owners[i] = owners[previous];
+         lengths[i] = previous as u16;
          continue;
       }
       let Some(entry) = (unsafe { entries[i].cast::<customhash::Entry<StoreValue>>().as_ref() })
@@ -124,20 +145,20 @@ pub(super) unsafe fn try_stream_get_run(
          return false;
       }
       reads[i] = Some(read);
-      owners[i] = i;
+      lengths[i] = i as u16;
+      seen[slot] = (i + 1) as u16;
    }
    // Entry guards keep payloads immutable after releasing the global epoch.
    drop(epoch.take());
    let mut headers = [[0u8; 24]; BATCH];
-   let mut lengths = [0usize; BATCH];
    let mut values: [&[u8]; BATCH] = [&[]; BATCH];
    for i in 0..count {
-      let read = reads[owners[i]].as_ref().unwrap();
+      let read = reads[usize::from(lengths[i])].as_ref().unwrap();
       let FyroDB::String(value) = &read.value else {
          unreachable!()
       };
       values[i] = value.as_bytes();
-      lengths[i] = header(values[i].len(), &mut headers[i]);
+      lengths[i] = header(values[i].len(), &mut headers[i]) as u16;
    }
    send_batch(
       &mut conn.stream,
@@ -153,6 +174,24 @@ pub(super) unsafe fn try_stream_get_run(
 #[cfg(test)]
 mod tests {
    use super::*;
+
+   #[test]
+   fn ownership_index_resolves_collisions_and_reuses_all_aliases() {
+      let storage = [0u8; BATCH * 16];
+      let entries: Vec<_> = (0..BATCH)
+         .map(|i| storage.as_ptr().wrapping_add(i * 16).cast())
+         .collect();
+      let mut seen = [0u16; BATCH * 2];
+      for (i, &pointer) in entries.iter().enumerate() {
+         let (slot, previous) = owner_slot(&entries, &seen, pointer);
+         assert_eq!(previous, None);
+         seen[slot] = (i + 1) as u16;
+      }
+      for (i, &pointer) in entries.iter().enumerate().rev() {
+         assert_eq!(owner_slot(&entries, &seen, pointer).1, Some(i));
+      }
+      assert_eq!(owner_slot(&entries, &seen, std::ptr::null()).1, None);
+   }
 
    struct ShortWriter {
       limit: usize,
@@ -192,7 +231,7 @@ mod tests {
       let lengths: Vec<_> = values
          .iter()
          .zip(&mut headers)
-         .map(|(v, h)| header(v.len(), h))
+         .map(|(v, h)| header(v.len(), h) as u16)
          .collect();
       let prefix = b":1\r\n+PONG\r\n";
       let mut response = Vec::new();
@@ -235,7 +274,7 @@ mod tests {
          let mut expected = b"+OK\r\n".to_vec();
          crate::utils::resp::write_bulk_bytes(&mut expected, &value);
          let mut headers = [[0; 24]; 1];
-         let lengths = [header(value.len(), &mut headers[0])];
+         let lengths = [header(value.len(), &mut headers[0]) as u16];
          let mut buffered = b"+OK\r\n".to_vec();
          let mut offset = 0;
          let mut writer = ShortWriter {
@@ -262,7 +301,7 @@ mod tests {
    fn completed_large_replies_need_no_output_allocation_and_reclaim_old_buffers() {
       let value = vec![b'x'; 1024 * 1024];
       let mut headers = [[0; 24]; 1];
-      let lengths = [header(value.len(), &mut headers[0])];
+      let lengths = [header(value.len(), &mut headers[0]) as u16];
       for capacity in [0, 2 * 1024 * 1024] {
          let mut buffered = Vec::with_capacity(capacity);
          let mut offset = 0;

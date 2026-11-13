@@ -1,451 +1,539 @@
-use std::sync::Arc;
-use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
-
-use foldhash::fast::RandomState;
+use arc_swap::ArcSwap;
+use smallvec::SmallVec;
 use std::hash::BuildHasher;
+use std::ops::Deref;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
+use super::frame::{
+   encode_batch_bytes as encode_batch, encode_message_bytes as encode_message,
+   encode_pmessage_batch, encode_pmessage_bytes as encode_pmessage,
+};
+use super::slot::{FanEntry, PATTERN_FLAG, SubSlot, WorkerNotifier};
 use crate::utils::util::glob_match_bytes;
+use foldhash::fast::RandomState;
 
-use super::frame::{encode_batch, encode_message, encode_pmessage};
-use super::slot::{FanEntry, SubSlot, WorkerNotifier};
+static NEXT_GENERATION: AtomicU64 = AtomicU64::new(1);
+fn next_generation() -> u64 {
+   NEXT_GENERATION
+      .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+         value.checked_add(1).filter(|next| *next < PATTERN_FLAG)
+      })
+      .expect("pub/sub generations exhausted")
+}
 
-fn extract_workers(slots: &[Arc<SubSlot>]) -> Vec<Arc<WorkerNotifier>> {
+#[derive(Clone)]
+enum Refs<T> {
+   Empty,
+   One(T),
+   Many(Arc<[T]>),
+}
+impl<T> Deref for Refs<T> {
+   type Target = [T];
+   fn deref(&self) -> &[T] {
+      match self {
+         Self::Empty => &[],
+         Self::One(value) => std::slice::from_ref(value),
+         Self::Many(values) => values,
+      }
+   }
+}
+impl<T> Refs<T> {
+   fn from_vec(mut values: Vec<T>) -> Self {
+      match values.len() {
+         0 => Self::Empty,
+         1 => Self::One(values.pop().unwrap()),
+         _ => Self::Many(values.into()),
+      }
+   }
+}
+
+fn extract_workers(slots: &[Arc<SubSlot>]) -> Refs<Arc<WorkerNotifier>> {
    let mut reps: [Option<Arc<WorkerNotifier>>; 64] = [const { None }; 64];
-   let mut overflow: Vec<Arc<WorkerNotifier>> = Vec::new();
+   let mut overflow = Vec::new();
    for slot in slots {
       let notifier = slot.notifier();
-      let idx = notifier.worker_index();
-      if idx < 64 {
-         if reps[idx].is_none() {
-            reps[idx] = Some(Arc::clone(notifier));
+      let index = notifier.worker_index();
+      if index < 64 {
+         if reps[index].is_none() {
+            reps[index] = Some(Arc::clone(notifier));
          }
       } else if !overflow.iter().any(|n| Arc::ptr_eq(n, notifier)) {
          overflow.push(Arc::clone(notifier));
       }
    }
-   let mut workers = Vec::with_capacity(reps.iter().flatten().count() + overflow.len());
-   for w in reps.into_iter().flatten() {
-      workers.push(w);
+   let count = reps.iter().flatten().count() + overflow.len();
+   if count == 1 {
+      return Refs::One(
+         reps
+            .into_iter()
+            .flatten()
+            .next()
+            .or_else(|| overflow.pop())
+            .unwrap(),
+      );
    }
+   let mut workers = Vec::with_capacity(count);
+   workers.extend(reps.into_iter().flatten());
    workers.extend(overflow);
-   workers
+   Refs::from_vec(workers)
 }
 
-#[inline]
-fn fan_out(ch: &ChannelData, frame: Arc<[u8]>) {
-   let workers = &ch.workers;
-   let n = workers.len();
-   if n == 0 {
-      return;
-   }
-   if n == 1 {
-      workers[0].notify_fanout(FanEntry {
-         channel: Arc::clone(&ch.name),
+fn fan_out(channel: &ChannelData, generation: u64, frame: Arc<[u8]>) {
+   let workers = &*channel.workers;
+   if let Some((last, earlier)) = workers.split_last() {
+      for worker in earlier {
+         worker.notify_fanout(FanEntry::new(
+            Arc::clone(&channel.name),
+            Arc::clone(&frame),
+            generation,
+            false,
+         ));
+      }
+      last.notify_fanout(FanEntry::new(
+         Arc::clone(&channel.name),
          frame,
-      });
-      return;
+         generation,
+         false,
+      ));
    }
-
-   for w in &workers[..n - 1] {
-      w.notify_fanout(FanEntry {
-         channel: Arc::clone(&ch.name),
-         frame: Arc::clone(&frame),
-      });
-   }
-   workers[n - 1].notify_fanout(FanEntry {
-      channel: Arc::clone(&ch.name),
-      frame,
-   });
 }
 
-struct PatternEntry {
-   pattern: String,
-   slot: Arc<SubSlot>,
+fn fan_out_pattern(pattern: &PatternEntry, generation: u64, frame: Arc<[u8]>) {
+   let mut seen = 0u64;
+   let mut last: Option<&Arc<WorkerNotifier>> = None;
+   for (index, slot) in pattern.slots.iter().enumerate() {
+      let notifier = slot.notifier();
+      let worker = notifier.worker_index();
+      if worker < 64 {
+         let bit = 1u64 << worker;
+         if seen & bit != 0 {
+            continue;
+         }
+         seen |= bit;
+      } else if pattern.slots[..index]
+         .iter()
+         .any(|slot| Arc::ptr_eq(slot.notifier(), notifier))
+      {
+         continue;
+      }
+      if let Some(previous) = last.replace(notifier) {
+         previous.notify_fanout(FanEntry::new(
+            Arc::clone(&pattern.pattern),
+            Arc::clone(&frame),
+            generation,
+            true,
+         ));
+      }
+   }
+   if let Some(last) = last {
+      last.notify_fanout(FanEntry::new(
+         Arc::clone(&pattern.pattern),
+         frame,
+         generation,
+         true,
+      ));
+   }
+}
+
+#[derive(Clone)]
+struct ChannelData {
+   name: Arc<str>,
+   slots: Refs<Arc<SubSlot>>,
+   workers: Refs<Arc<WorkerNotifier>>,
+}
+struct ChannelSnapshot {
+   generation: u64,
+   channels: Vec<ChannelData>,
+}
+impl ChannelSnapshot {
+   fn locate(&self, channel: &str) -> Result<usize, usize> {
+      if self.channels.len() <= 8 {
+         self
+            .channels
+            .iter()
+            .position(|ch| ch.name.as_ref() == channel)
+            .ok_or(self.channels.len())
+      } else {
+         self
+            .channels
+            .binary_search_by(|ch| ch.name.as_ref().cmp(channel))
+      }
+   }
+   fn find(&self, channel: &str) -> Option<&ChannelData> {
+      self.locate(channel).ok().map(|i| &self.channels[i])
+   }
 }
 
 const CHANNEL_SHARDS: usize = 64;
-
-unsafe fn drop_snapshot_box(ptr: *mut u8) {
-   unsafe { drop(Box::from_raw(ptr.cast::<Snapshot>())) };
-}
-
-struct ChannelData {
-   name: Arc<str>,
-   slots: Vec<Arc<SubSlot>>,
-   workers: Vec<Arc<WorkerNotifier>>,
-}
-
-type Snapshot = Arc<Vec<ChannelData>>;
-
 struct ChannelShard {
-   snapshot: AtomicPtr<Snapshot>,
+   snapshot: ArcSwap<ChannelSnapshot>,
    mu: std::sync::Mutex<()>,
 }
-
-unsafe impl Send for ChannelShard {}
-unsafe impl Sync for ChannelShard {}
-
 impl ChannelShard {
    fn new() -> Self {
-      let snap: Snapshot = Arc::new(Vec::new());
       Self {
-         snapshot: AtomicPtr::new(Box::into_raw(Box::new(snap))),
+         snapshot: ArcSwap::from_pointee(ChannelSnapshot {
+            generation: 0,
+            channels: Vec::new(),
+         }),
          mu: std::sync::Mutex::new(()),
       }
    }
-
-   /// Lock-free snapshot load. The boxed slot is EBR-retired on swap, so the
-   /// Arc stays alive while this guard is held.
-   #[inline(always)]
-   fn load_snapshot(&self) -> Snapshot {
-      let _guard = customhash::pin();
-      let ptr = self.snapshot.load(Ordering::Acquire);
-      Arc::clone(unsafe { &*ptr })
+   fn publish(&self, channel: &str, frame: impl FnOnce() -> Arc<[u8]>) -> usize {
+      let snapshot = self.snapshot.load();
+      let Some(ch) = snapshot.find(channel) else {
+         return 0;
+      };
+      let count = ch.slots.len();
+      if count != 0 {
+         fan_out(ch, snapshot.generation, frame());
+      }
+      count
    }
-
-   #[inline(always)]
-   pub(crate) fn with_snapshot<R>(&self, f: impl FnOnce(&[ChannelData]) -> R) -> R {
-      let _guard = customhash::pin();
-      let ptr = self.snapshot.load(Ordering::Acquire);
-      let snap = unsafe { &*ptr };
-      f(&snap[..])
-   }
-
-   #[inline(always)]
-   fn load_snapshot_locked(&self) -> Snapshot {
-      let ptr = self.snapshot.load(Ordering::Acquire);
-      Arc::clone(unsafe { &*ptr })
-   }
-
-   #[inline(always)]
-   fn store_snapshot_locked(&self, new_snap: Snapshot) {
-      let new_ptr = Box::into_raw(Box::new(new_snap));
-      let old_ptr = self.snapshot.swap(new_ptr, Ordering::AcqRel);
-      unsafe { customhash::retire_raw(old_ptr.cast::<u8>(), drop_snapshot_box) };
-   }
-
-   #[inline(always)]
-   pub fn publish(&self, channel: &str, frame_fn: &dyn Fn() -> Arc<[u8]>) -> usize {
-      let mut n = 0;
-      self.with_snapshot(|snap| {
-         for ch in snap {
-            if ch.name.as_ref() == channel {
-               n = ch.slots.len();
-               if n != 0 {
-                  fan_out(ch, frame_fn());
-               }
-               return;
+   fn subscribe(&self, channel: &str, slot: Arc<SubSlot>) -> Arc<str> {
+      let _lock = self.mu.lock().unwrap_or_else(|e| e.into_inner());
+      let old = self.snapshot.load_full();
+      let index = old.locate(channel);
+      if let Ok(index) = index
+         && old.channels[index]
+            .slots
+            .iter()
+            .any(|existing| Arc::ptr_eq(existing, &slot))
+      {
+         return Arc::clone(&old.channels[index].name);
+      }
+      let generation = next_generation();
+      let mut channels = Vec::with_capacity(old.channels.len() + usize::from(index.is_err()));
+      channels.extend(old.channels.iter().cloned());
+      let name;
+      match index {
+         Ok(index) => {
+            let ch = &mut channels[index];
+            let mut slots = Vec::with_capacity(ch.slots.len() + 1);
+            slots.extend(ch.slots.iter().cloned());
+            slots.push(Arc::clone(&slot));
+            if !ch
+               .workers
+               .iter()
+               .any(|worker| Arc::ptr_eq(worker, slot.notifier()))
+            {
+               ch.workers = extract_workers(&slots);
+            }
+            ch.slots = Refs::from_vec(slots);
+            name = Arc::clone(&ch.name);
+         }
+         Err(index) => {
+            name = Arc::from(channel);
+            channels.insert(
+               index,
+               ChannelData {
+                  name: Arc::clone(&name),
+                  slots: Refs::One(Arc::clone(&slot)),
+                  workers: Refs::One(Arc::clone(slot.notifier())),
+               },
+            );
+            if old.channels.len() == 8 {
+               channels.sort_unstable_by(|a, b| a.name.cmp(&b.name));
             }
          }
-      });
-      n
-   }
-
-   fn subscribe(&self, channel: &str, slot: Arc<SubSlot>) {
-      let _lock = self.mu.lock().unwrap_or_else(|e| e.into_inner());
-      let old_snap = self.load_snapshot_locked();
-
-      let mut new_vec: Vec<ChannelData> = Vec::with_capacity(old_snap.len() + 1);
-      let mut found = false;
-      for ch in old_snap.iter() {
-         if ch.name.as_ref() == channel {
-            let mut new_slots = ch.slots.clone();
-            new_slots.push(slot.clone());
-            let workers = extract_workers(&new_slots);
-            new_vec.push(ChannelData {
-               name: ch.name.clone(),
-               slots: new_slots,
-               workers,
-            });
-            found = true;
-         } else {
-            new_vec.push(ChannelData {
-               name: ch.name.clone(),
-               slots: ch.slots.clone(),
-               workers: ch.workers.clone(),
-            });
-         }
       }
-      if !found {
-         let new_slots = vec![slot];
-         let workers = extract_workers(&new_slots);
-         new_vec.push(ChannelData {
-            name: Arc::from(channel),
-            slots: new_slots,
-            workers,
-         });
-      }
-
-      self.store_snapshot_locked(Arc::new(new_vec));
+      slot
+         .notifier()
+         .register_subscription(Arc::clone(&name), slot.token, generation, false);
+      self.snapshot.store(Arc::new(ChannelSnapshot {
+         generation,
+         channels,
+      }));
+      name
    }
-
    fn unsubscribe(&self, channel: &str, slot: &Arc<SubSlot>) {
       let _lock = self.mu.lock().unwrap_or_else(|e| e.into_inner());
-      let old_snap = self.load_snapshot_locked();
-
-      let mut new_vec: Vec<ChannelData> = Vec::with_capacity(old_snap.len());
-      for ch in old_snap.iter() {
-         if ch.name.as_ref() == channel {
-            let new_slots: Vec<Arc<SubSlot>> = ch
-               .slots
-               .iter()
-               .filter(|s| !Arc::ptr_eq(s, slot))
-               .cloned()
-               .collect();
-            if !new_slots.is_empty() {
-               let workers = extract_workers(&new_slots);
-               new_vec.push(ChannelData {
-                  name: ch.name.clone(),
-                  slots: new_slots,
-                  workers,
-               });
-            }
-         } else {
-            new_vec.push(ChannelData {
-               name: ch.name.clone(),
-               slots: ch.slots.clone(),
-               workers: ch.workers.clone(),
-            });
-         }
+      let old = self.snapshot.load_full();
+      let Ok(index) = old.locate(channel) else {
+         return;
+      };
+      let ch = &old.channels[index];
+      if !ch.slots.iter().any(|s| Arc::ptr_eq(s, slot)) {
+         return;
       }
-
-      self.store_snapshot_locked(Arc::new(new_vec));
+      let slots: Vec<_> = ch
+         .slots
+         .iter()
+         .filter(|s| !Arc::ptr_eq(s, slot))
+         .cloned()
+         .collect();
+      let mut channels = old.channels.clone();
+      if slots.is_empty() {
+         channels.remove(index);
+         if channels.is_empty() {
+            channels = Vec::new();
+         }
+      } else {
+         channels[index].workers = extract_workers(&slots);
+         channels[index].slots = Refs::from_vec(slots);
+      }
+      slot
+         .notifier()
+         .unregister_subscription(channel, slot.token, false);
+      self.snapshot.store(Arc::new(ChannelSnapshot {
+         generation: next_generation(),
+         channels,
+      }));
    }
-
    fn active_channels(&self, pattern: Option<&str>) -> Vec<String> {
-      let snap = self.load_snapshot();
-      let mut result = Vec::new();
-      for ch in snap.iter() {
-         if !ch.slots.is_empty()
-            && pattern.is_none_or(|p| glob_match_bytes(p.as_bytes(), ch.name.as_bytes()))
-         {
-            result.push(ch.name.to_string());
-         }
-      }
-      result
+      self
+         .snapshot
+         .load()
+         .channels
+         .iter()
+         .filter(|ch| {
+            !ch.slots.is_empty()
+               && pattern.is_none_or(|p| glob_match_bytes(p.as_bytes(), ch.name.as_bytes()))
+         })
+         .map(|ch| ch.name.to_string())
+         .collect()
    }
-
    fn count_for(&self, channel: &str) -> usize {
-      let snap = self.load_snapshot();
-      for ch in snap.iter() {
-         if ch.name.as_ref() == channel {
-            return ch.slots.len();
-         }
-      }
-      0
+      self
+         .snapshot
+         .load()
+         .find(channel)
+         .map_or(0, |ch| ch.slots.len())
    }
 }
 
-// Final teardown frees the boxed snapshot directly: no concurrent readers can
-// exist once the whole registry is dropping.
-impl Drop for ChannelShard {
-   fn drop(&mut self) {
-      let ptr = *self.snapshot.get_mut();
-      if !ptr.is_null() {
-         unsafe { drop(Box::from_raw(ptr)) };
-      }
-   }
+struct PatternEntry {
+   pattern: Arc<str>,
+   slots: SmallVec<[Arc<SubSlot>; 1]>,
 }
-
-pub struct PubSub {
-   shards: Box<[ChannelShard]>,
-   patterns: std::sync::RwLock<PatternIndex>,
-   pattern_count: AtomicUsize,
-   hasher: RandomState,
-}
-
 struct PatternIndex {
    buckets: [Vec<PatternEntry>; 256],
    wildcard: Vec<PatternEntry>,
+   generation: u64,
    total: usize,
 }
-
 impl PatternIndex {
    fn new() -> Self {
       Self {
          buckets: std::array::from_fn(|_| Vec::new()),
          wildcard: Vec::new(),
+         generation: 0,
          total: 0,
       }
    }
-
-   fn add(&mut self, pattern: String, slot: Arc<SubSlot>) {
-      let entry = PatternEntry { pattern, slot };
-      let first = entry.pattern.as_bytes().first().copied();
-      match first {
-         Some(b'*') | Some(b'?') | Some(b'[') | None => self.wildcard.push(entry),
-         Some(b) => self.buckets[b as usize].push(entry),
+   fn bucket_mut(&mut self, pattern: &str) -> &mut Vec<PatternEntry> {
+      match pattern.as_bytes().first().copied() {
+         Some(b'*' | b'?' | b'[') | None => &mut self.wildcard,
+         Some(byte) => &mut self.buckets[byte as usize],
       }
-      self.total += 1;
    }
-
+   fn add(&mut self, pattern: &str, slot: Arc<SubSlot>) -> Arc<str> {
+      let generation = next_generation();
+      let bucket = self.bucket_mut(pattern);
+      let index = bucket.binary_search_by(|entry| entry.pattern.as_ref().cmp(pattern));
+      let name;
+      match index {
+         Ok(index) => {
+            let entry = &mut bucket[index];
+            if entry.slots.iter().any(|s| Arc::ptr_eq(s, &slot)) {
+               return Arc::clone(&entry.pattern);
+            }
+            entry.slots.push(Arc::clone(&slot));
+            name = Arc::clone(&entry.pattern);
+         }
+         Err(index) => {
+            name = Arc::from(pattern);
+            bucket.insert(
+               index,
+               PatternEntry {
+                  pattern: Arc::clone(&name),
+                  slots: smallvec::smallvec![Arc::clone(&slot)],
+               },
+            );
+            self.total += 1;
+         }
+      }
+      self.generation = generation;
+      slot
+         .notifier()
+         .register_subscription(Arc::clone(&name), slot.token, generation, true);
+      name
+   }
    fn remove(&mut self, pattern: &str, slot: &Arc<SubSlot>) {
-      let first = pattern.as_bytes().first().copied();
-      let vec = match first {
-         Some(b'*') | Some(b'?') | Some(b'[') | None => &mut self.wildcard,
-         Some(b) => &mut self.buckets[b as usize],
+      let bucket = self.bucket_mut(pattern);
+      let Ok(index) = bucket.binary_search_by(|entry| entry.pattern.as_ref().cmp(pattern)) else {
+         return;
       };
-      let before = vec.len();
-      vec.retain(|e| !(e.pattern == pattern && Arc::ptr_eq(&e.slot, slot)));
-      if vec.len() < before {
-         self.total -= before - vec.len();
+      if !bucket[index].slots.iter().any(|s| Arc::ptr_eq(s, slot)) {
+         return;
       }
+      bucket[index].slots.retain(|s| !Arc::ptr_eq(s, slot));
+      let removed = bucket[index].slots.is_empty();
+      if removed {
+         bucket.remove(index);
+      }
+      self.total -= usize::from(removed);
+      self.generation = next_generation();
+      slot
+         .notifier()
+         .unregister_subscription(pattern, slot.token, true);
    }
-
-   fn is_empty(&self) -> bool {
-      self.total == 0
-   }
-
-   fn len(&self) -> usize {
-      self.total
+   fn matching<'a>(&'a self, channel: &str) -> SmallVec<[&'a PatternEntry; 4]> {
+      let mut matches = SmallVec::new();
+      let first = channel.as_bytes().first().copied();
+      let bucket = first.map_or(&[][..], |b| &self.buckets[b as usize]);
+      for entry in self.wildcard.iter().chain(bucket) {
+         if glob_match_bytes(entry.pattern.as_bytes(), channel.as_bytes()) {
+            matches.push(entry);
+         }
+      }
+      matches
    }
 }
 
+pub struct PubSub {
+   shards: Box<[ChannelShard]>,
+   patterns: std::sync::RwLock<Option<Box<PatternIndex>>>,
+   pattern_count: AtomicUsize,
+   hasher: RandomState,
+}
 impl Default for PubSub {
    fn default() -> Self {
       Self::new()
    }
 }
-
 impl PubSub {
    pub fn new() -> Self {
-      let shards = (0..CHANNEL_SHARDS)
-         .map(|_| ChannelShard::new())
-         .collect::<Vec<_>>()
-         .into_boxed_slice();
       Self {
-         shards,
-         patterns: std::sync::RwLock::new(PatternIndex::new()),
+         shards: (0..CHANNEL_SHARDS)
+            .map(|_| ChannelShard::new())
+            .collect::<Vec<_>>()
+            .into_boxed_slice(),
+         patterns: std::sync::RwLock::new(None),
          pattern_count: AtomicUsize::new(0),
          hasher: RandomState::default(),
       }
    }
-
-   #[inline(always)]
    fn shard_for(&self, channel: &str) -> &ChannelShard {
-      let h = self.hasher.hash_one(channel) as usize;
-      &self.shards[h % CHANNEL_SHARDS]
+      &self.shards[self.hasher.hash_one(channel) as usize % CHANNEL_SHARDS]
    }
-
    pub fn subscribe(&self, channel: &str, slot: Arc<SubSlot>) {
-      self.shard_for(channel).subscribe(channel, slot);
+      self.subscribe_shared(channel, slot);
    }
-
+   pub(crate) fn subscribe_shared(&self, channel: &str, slot: Arc<SubSlot>) -> Arc<str> {
+      self.shard_for(channel).subscribe(channel, slot)
+   }
    pub fn unsubscribe(&self, channel: &str, slot: &Arc<SubSlot>) {
       self.shard_for(channel).unsubscribe(channel, slot);
    }
-
    pub fn psubscribe(&self, pattern: &str, slot: Arc<SubSlot>) {
-      let mut idx = self.patterns.write().unwrap_or_else(|e| e.into_inner());
-      idx.add(pattern.to_string(), slot);
-      self.pattern_count.store(idx.len(), Ordering::Release);
+      self.psubscribe_shared(pattern, slot);
    }
-
+   pub(crate) fn psubscribe_shared(&self, pattern: &str, slot: Arc<SubSlot>) -> Arc<str> {
+      let mut guard = self.patterns.write().unwrap_or_else(|e| e.into_inner());
+      let index = guard.get_or_insert_with(|| Box::new(PatternIndex::new()));
+      let name = index.add(pattern, slot);
+      self.pattern_count.store(index.total, Ordering::Release);
+      name
+   }
    pub fn punsubscribe(&self, pattern: &str, slot: &Arc<SubSlot>) {
-      let mut idx = self.patterns.write().unwrap_or_else(|e| e.into_inner());
-      idx.remove(pattern, slot);
-      self.pattern_count.store(idx.len(), Ordering::Release);
-   }
-
-   #[inline]
-   pub fn publish(&self, channel: &str, message: &str) -> usize {
-      let mut count = 0usize;
-
-      count += self
-         .shard_for(channel)
-         .publish(channel, &|| encode_message(channel, message));
-
-      if self.pattern_count.load(Ordering::Relaxed) != 0 {
-         let guard = self.patterns.read().unwrap_or_else(|e| e.into_inner());
-         if !guard.is_empty() {
-            let chan_b = channel.as_bytes();
-            let check = |entry: &PatternEntry| {
-               if glob_match_bytes(entry.pattern.as_bytes(), chan_b) {
-                  let pframe: Arc<[u8]> = encode_pmessage(&entry.pattern, channel, message);
-                  entry.slot.push(pframe);
-                  true
-               } else {
-                  false
-               }
-            };
-
-            for entry in &guard.wildcard {
-               if check(entry) {
-                  count += 1;
-               }
-            }
-            if let Some(&first_byte) = chan_b.first() {
-               for entry in &guard.buckets[first_byte as usize] {
-                  if check(entry) {
-                     count += 1;
-                  }
-               }
-            }
+      let mut guard = self.patterns.write().unwrap_or_else(|e| e.into_inner());
+      if let Some(index) = guard.as_deref_mut() {
+         index.remove(pattern, slot);
+         self.pattern_count.store(index.total, Ordering::Release);
+         if index.total == 0 {
+            *guard = None;
          }
       }
-
-      count
    }
-
-   /// Batches messages into a single contiguous frame for direct worker fanout.
-   /// Falls back to single publishes if pattern subscribers exist.
+   #[inline]
+   pub fn publish(&self, channel: &str, message: &str) -> usize {
+      self.publish_batch(channel, &[message])
+   }
    pub fn publish_batch(&self, channel: &str, messages: &[&str]) -> usize {
+      self.publish_impl(channel, messages)
+   }
+   pub fn publish_bytes(&self, channel: &str, message: &[u8]) -> usize {
+      self.publish_batch_bytes(channel, &[message])
+   }
+   pub fn publish_batch_bytes(&self, channel: &str, messages: &[&[u8]]) -> usize {
+      self.publish_impl(channel, messages)
+   }
+   fn publish_impl<M: AsRef<[u8]>>(&self, channel: &str, messages: &[M]) -> usize {
       if messages.is_empty() {
          return 0;
       }
-      if self.pattern_count.load(Ordering::Relaxed) != 0
-         && !self
-            .patterns
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .is_empty()
-      {
-         let mut n = 0;
-         for message in messages {
-            n = n.max(self.publish(channel, message));
-         }
-         return n;
+      let shard = self.shard_for(channel);
+      if self.pattern_count.load(Ordering::Relaxed) == 0 {
+         return shard.publish(channel, || encode_batch(channel, messages));
       }
-
-      let frame = encode_batch(channel, messages);
-      let mut n = 0;
-      self.shard_for(channel).with_snapshot(|snap| {
-         for ch in snap {
-            if ch.name.as_ref() == channel {
-               n = ch.slots.len();
-               if n != 0 {
-                  fan_out(ch, frame);
-               }
-               return;
-            }
+      let patterns = self.patterns.read().unwrap_or_else(|e| e.into_inner());
+      let Some(patterns) = patterns.as_deref() else {
+         return shard.publish(channel, || encode_batch(channel, messages));
+      };
+      let matching = patterns.matching(channel);
+      let snapshot = shard.snapshot.load();
+      let direct = snapshot.find(channel);
+      let direct_count = direct.map_or(0, |ch| ch.slots.len());
+      if matching.is_empty() {
+         if let Some(ch) = direct {
+            fan_out(ch, snapshot.generation, encode_batch(channel, messages));
          }
-      });
-      n
+         return direct_count;
+      }
+      let count = direct_count
+         + matching
+            .iter()
+            .map(|entry| entry.slots.len())
+            .sum::<usize>();
+      if direct_count == 0 && matching.len() == 1 {
+         let entry = matching[0];
+         fan_out_pattern(
+            entry,
+            patterns.generation,
+            encode_pmessage_batch(&entry.pattern, channel, messages),
+         );
+         return count;
+      }
+      // One lock covers the batch; both delivery kinds use the same worker queue.
+      for message in messages {
+         if let Some(ch) = direct {
+            fan_out(
+               ch,
+               snapshot.generation,
+               encode_message(channel, message.as_ref()),
+            );
+         }
+         for entry in &matching {
+            fan_out_pattern(
+               entry,
+               patterns.generation,
+               encode_pmessage(&entry.pattern, channel, message.as_ref()),
+            );
+         }
+      }
+      count
    }
-
    pub fn active_channels(&self, pattern: Option<&str>) -> Vec<String> {
-      let mut result = Vec::new();
-      for shard in self.shards.iter() {
-         result.extend(shard.active_channels(pattern));
-      }
-      result
+      self
+         .shards
+         .iter()
+         .flat_map(|shard| shard.active_channels(pattern))
+         .collect()
    }
-
    pub fn numsub(&self, channels: &[&str]) -> Vec<(String, usize)> {
       channels
          .iter()
-         .map(|&ch| {
-            let n = self.shard_for(ch).count_for(ch);
-            (ch.to_string(), n)
+         .map(|channel| {
+            (
+               channel.to_string(),
+               self.shard_for(channel).count_for(channel),
+            )
          })
          .collect()
    }
-
    pub fn numpat(&self) -> usize {
-      self
-         .patterns
-         .read()
-         .unwrap_or_else(|e| e.into_inner())
-         .len()
+      self.pattern_count.load(Ordering::Acquire)
    }
 }

@@ -546,3 +546,76 @@ fn batched_bit_writes_and_repeated_count_reads_preserve_script_boundaries() {
    expected.extend_from_slice(b"+PONG\r\n");
    check_pipeline(store, wire, &expected);
 }
+
+#[test]
+fn worker_sized_batches_preserve_values_boundaries_and_script_order() {
+   for workers in [1, 6] {
+      for count in [63, 64, 65, 127, 128, 129, 255, 256, 257] {
+         let store = Arc::new(Store::with_config_workers(2, usize::MAX, workers));
+         let mut writes = Vec::new();
+         let mut reads = Vec::new();
+         let mut expected = Vec::new();
+         for index in 0..count {
+            let key = format!("key:{index:012}");
+            let mut value = vec![b'a' + (index % 26) as u8; [5, 24, 64, 128, 1024][index % 5]];
+            value[..4].copy_from_slice(&[(index % 128) as u8, 0, b'\r', b'\n']);
+            writes.extend(command(&[b"SET", key.as_bytes(), &value]));
+            reads.extend(command(&[b"GET", key.as_bytes()]));
+            expected.extend(bulk(if index == 0 { b"latest" } else { &value }));
+            if index == count / 2 {
+               reads.extend(command(&[b"PING"]));
+               expected.extend_from_slice(b"+PONG\r\n");
+            }
+         }
+         for value in [b"newer".as_slice(), b"latest".as_slice()] {
+            writes.extend(command(&[b"SET", b"key:000000000000", value]));
+         }
+         check_pipeline(Arc::clone(&store), writes, &b"+OK\r\n".repeat(count + 2));
+         reads.extend(command(&[b"GET", b"missing"]));
+         expected.extend_from_slice(b"$-1\r\n");
+         reads.extend(command(&[
+            b"EVAL",
+            b"redis.call('SET',KEYS[1],'after'); return 17",
+            b"1",
+            b"key:000000000000",
+         ]));
+         expected.extend_from_slice(b":17\r\n");
+         reads.extend(command(&[b"GET", b"key:000000000000"]));
+         expected.extend(bulk(b"after"));
+         check_pipeline(store, reads, &expected);
+      }
+   }
+}
+
+#[test]
+fn binary_set_fallback_keeps_inserts_and_overwrites_after_long_probe_chains() {
+   for workers in [1, 6] {
+      let store = Arc::new(Store::with_config_workers(1, 128, workers));
+      let mut keys = Vec::new();
+      for candidate in 0.. {
+         let key = format!("collision:{candidate}");
+         let mut hash = [0];
+         store.prefetch_batch(&[key.as_bytes()], &mut hash);
+         if hash[0] & 255 == 0 {
+            keys.push(key);
+            if keys.len() == 65 {
+               break;
+            }
+         }
+      }
+      for pass in 0..3 {
+         let mut writes = Vec::new();
+         let mut reads = Vec::new();
+         let mut expected = Vec::new();
+         for (index, key) in keys.iter().enumerate() {
+            let value = [255, 0, b'\r', b'\n', pass, index as u8];
+            writes.extend(command(&[b"SET", key.as_bytes(), &value]));
+            reads.extend(command(&[b"GET", key.as_bytes()]));
+            expected.extend(bulk(&value));
+         }
+         check_pipeline(Arc::clone(&store), writes, &b"+OK\r\n".repeat(keys.len()));
+         check_pipeline(Arc::clone(&store), reads, &expected);
+         assert_eq!(store.dbsize(), keys.len());
+      }
+   }
+}

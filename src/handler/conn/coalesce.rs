@@ -240,14 +240,11 @@ pub(super) fn execute_publish_run(
 ) -> Result<(), ()> {
    let out = &mut conn.parser.wbuf;
    out.reserve(cmds * 8);
-   let mut messages: [&str; QUEUE_RUN_MAX] = [""; QUEUE_RUN_MAX];
+   let mut messages: [&[u8]; QUEUE_RUN_MAX] = [&[]; QUEUE_RUN_MAX];
    for (idx, &part) in parts.iter().enumerate() {
-      let Some(m) = part_str(out, part) else {
-         return Err(());
-      };
-      messages[idx] = m;
+      messages[idx] = unsafe { part_bytes(part) };
    }
-   let n = conn.pubsub.publish_batch(channel, &messages[..cmds]);
+   let n = conn.pubsub.publish_batch_bytes(channel, &messages[..cmds]);
    let old_len = out.len();
    crate::utils::resp::write_integer(out, n as i64);
    if cmds > 1 {

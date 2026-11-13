@@ -19,11 +19,16 @@ pub fn parse_cpu_list(s: &str) -> Vec<usize> {
 
 pub fn pin_current(core: usize) -> bool {
    #[cfg(target_os = "linux")]
-   unsafe {
-      let mut set: libc::cpu_set_t = std::mem::zeroed();
-      libc::CPU_ZERO(&mut set);
-      libc::CPU_SET(core, &mut set);
-      libc::sched_setaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &set) == 0
+   {
+      if core >= libc::CPU_SETSIZE as usize {
+         return false;
+      }
+      unsafe {
+         let mut set: libc::cpu_set_t = std::mem::zeroed();
+         libc::CPU_ZERO(&mut set);
+         libc::CPU_SET(core, &mut set);
+         libc::sched_setaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &set) == 0
+      }
    }
    #[cfg(not(target_os = "linux"))]
    {
@@ -38,21 +43,53 @@ pub struct Plan {
    pub search: Option<Vec<usize>>,
 }
 
-pub fn plan(workers: usize, ncpu: usize, env: impl Fn(&str) -> Option<String>) -> Plan {
+fn plan_on_cores(
+   workers: usize,
+   cores: impl ExactSizeIterator<Item = usize> + Clone,
+   env: impl Fn(&str) -> Option<String>,
+) -> Plan {
    let list = |k: &str| env(k).map(|v| parse_cpu_list(&v)).filter(|v| !v.is_empty());
    let auto = env("FYRODB_AFFINITY").is_some_and(|v| v.eq_ignore_ascii_case("auto"));
    let workers_cores =
-      list("FYRODB_WORKER_CORES").or_else(|| auto.then(|| (0..workers.min(ncpu)).collect()));
+      list("FYRODB_WORKER_CORES").or_else(|| auto.then(|| cores.clone().take(workers).collect()));
    let search_cores = list("FYRODB_SEARCH_CORES")
-      .or_else(|| (auto && workers < ncpu).then(|| (workers..ncpu).collect()));
+      .or_else(|| (auto && workers < cores.len()).then(|| cores.skip(workers).collect()));
    Plan {
       workers: workers_cores,
       search: search_cores,
    }
 }
 
+pub fn plan(workers: usize, ncpu: usize, env: impl Fn(&str) -> Option<String>) -> Plan {
+   plan_on_cores(workers, 0..ncpu, env)
+}
+
+#[cfg(target_os = "linux")]
+fn allowed_cores() -> Option<Vec<usize>> {
+   let mut set: libc::cpu_set_t = unsafe { std::mem::zeroed() };
+   if unsafe { libc::sched_getaffinity(0, std::mem::size_of_val(&set), &mut set) } != 0 {
+      return None;
+   }
+   let cores: Vec<_> = (0..libc::CPU_SETSIZE as usize)
+      .filter(|&core| unsafe { libc::CPU_ISSET(core, &set) })
+      .collect();
+   (!cores.is_empty()).then_some(cores)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn allowed_cores() -> Option<Vec<usize>> {
+   None
+}
+
 pub fn from_env(workers: usize) -> Plan {
-   plan(workers, num_cpus::get(), |k| std::env::var(k).ok())
+   let env = |k: &str| std::env::var(k).ok();
+   if env("FYRODB_AFFINITY").is_some_and(|v| v.eq_ignore_ascii_case("auto"))
+      && let Some(cores) = allowed_cores()
+   {
+      plan_on_cores(workers, cores.iter().copied(), env)
+   } else {
+      plan(workers, num_cpus::get(), env)
+   }
 }
 
 #[cfg(test)]
@@ -84,5 +121,41 @@ mod tests {
             search: None
          }
       );
+   }
+
+   #[test]
+   fn auto_respects_sparse_allowed_cpus_and_explicit_overrides() {
+      let cores = [2, 6, 9, 11];
+      let auto = |k: &str| (k == "FYRODB_AFFINITY").then(|| "auto".to_string());
+      assert_eq!(
+         plan_on_cores(2, cores.into_iter(), auto),
+         Plan {
+            workers: Some(vec![2, 6]),
+            search: Some(vec![9, 11]),
+         }
+      );
+      assert_eq!(
+         plan_on_cores(8, cores.into_iter(), auto).workers,
+         Some(cores.to_vec())
+      );
+      assert_eq!(plan_on_cores(8, cores.into_iter(), auto).search, None);
+      let explicit = |k: &str| match k {
+         "FYRODB_AFFINITY" => Some("auto".to_string()),
+         "FYRODB_WORKER_CORES" => Some("11,2".to_string()),
+         "FYRODB_SEARCH_CORES" => Some("6".to_string()),
+         _ => None,
+      };
+      assert_eq!(
+         plan_on_cores(2, cores.into_iter(), explicit),
+         Plan {
+            workers: Some(vec![11, 2]),
+            search: Some(vec![6]),
+         }
+      );
+   }
+
+   #[test]
+   fn invalid_cpu_index_does_not_panic_or_change_affinity() {
+      assert!(!pin_current(usize::MAX));
    }
 }

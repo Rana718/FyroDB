@@ -502,7 +502,6 @@ mod tests {
    }
 
    #[test]
-   #[ignore = "requires loopback socket permissions"]
    fn hello_handshake_and_ping_pong_work() {
       let listener = TcpListener::bind("127.0.0.1:0").unwrap();
       let address = listener.local_addr().unwrap();
@@ -556,9 +555,21 @@ mod tests {
             payload: Vec::new(),
          })
          .unwrap();
+      peer
+         .send(&Frame {
+            message_type: MessageType::Ping,
+            flags: 0,
+            request_id: 13,
+            source_id: stable_id("node-b"),
+            target_id: stable_id("node-a"),
+            epoch: hello.epoch,
+            payload: Vec::new(),
+         })
+         .unwrap();
       let pong = peer.receive().unwrap();
       assert_eq!(pong.message_type, MessageType::Pong);
-      assert_eq!(pong.request_id, 12);
+      assert_eq!(pong.request_id, 13);
+      assert_eq!(pong.epoch, hello.epoch);
       drop(peer);
       server.join().unwrap();
    }

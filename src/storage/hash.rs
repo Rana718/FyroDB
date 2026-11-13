@@ -453,7 +453,10 @@ impl Store {
          }
          match val.value.as_hash_mut() {
             Some(h) => {
-               let count = fields.iter().filter(|f| h.remove(f).is_some()).count();
+               let count = fields
+                  .iter()
+                  .filter(|f| h.remove_small(f).is_some())
+                  .count();
                Ok(count)
             }
             None => Err("WRONGTYPE"),
@@ -584,7 +587,12 @@ impl Store {
          match val.value.as_hash_mut() {
             Some(h) => {
                if let Some(v) = h.get_mut(field) {
-                  let n = match v.as_str().parse::<i64>() {
+                  let n = match v
+                     .try_as_str()
+                     .ok()
+                     .and_then(|s| s.parse::<i64>().ok())
+                     .ok_or(())
+                  {
                      Ok(n) => n,
                      Err(_) => return Err("value is not an integer or out of range"),
                   };
@@ -634,7 +642,12 @@ impl Store {
          match val.value.as_hash_mut() {
             Some(h) => {
                if let Some(v) = h.get_mut(field) {
-                  let n = match v.as_str().parse::<f64>() {
+                  let n = match v
+                     .try_as_str()
+                     .ok()
+                     .and_then(|s| s.parse::<f64>().ok())
+                     .ok_or(())
+                  {
                      Ok(n) => n,
                      Err(_) => return Err("value is not a valid float"),
                   };

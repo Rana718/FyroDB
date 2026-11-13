@@ -40,7 +40,9 @@ impl SendRing {
    }
 
    #[inline(always)]
-   pub fn push(
+   /// # Safety
+   /// The buffer and fd must remain valid and unchanged until complete returns.
+   pub unsafe fn push(
       &mut self,
       fd: RawFd,
       ptr: *const u8,
@@ -62,36 +64,21 @@ impl SendRing {
       }
    }
 
-   #[inline(always)]
-   pub fn submit_and_reap(&mut self, out: &mut Vec<(u64, i32)>) {
-      if self.inflight == 0 {
-         return;
-      }
-      let _ = self.ring.submit_and_wait(0);
-      for cqe in self.ring.completion() {
-         out.push((cqe.user_data(), cqe.result()));
-         self.inflight = self.inflight.saturating_sub(1);
-      }
-   }
-
    pub fn complete(&mut self, out: &mut Vec<(u64, i32)>) {
-      if self.inflight == 0 {
-         return;
-      }
-      loop {
-         match self.ring.submit() {
-            Ok(_) => break,
-            Err(e) if e.raw_os_error() == Some(libc::EINTR) => continue,
+      while self.inflight != 0 {
+         match self.ring.submit_and_wait(1) {
+            Ok(_) => {}
+            Err(e) if matches!(e.raw_os_error(), Some(libc::EINTR | libc::EBUSY)) => continue,
             Err(e) => {
-               eprintln!("fyrodb: io_uring submit failed: {e}");
-               self.inflight = 0;
-               return;
+               // Returning with borrowed buffers in flight would permit use-after-free.
+               eprintln!("fyrodb: unrecoverable io_uring submission failure: {e}");
+               std::process::abort();
             }
          }
-      }
-      for cqe in self.ring.completion() {
-         out.push((cqe.user_data(), cqe.result()));
-         self.inflight = self.inflight.saturating_sub(1);
+         for cqe in self.ring.completion() {
+            out.push((cqe.user_data(), cqe.result()));
+            self.inflight -= 1;
+         }
       }
    }
 }
@@ -101,16 +88,52 @@ mod tests {
    use super::*;
 
    #[test]
-   fn test_builder() {
-      let ring = IoUring::<io_uring::squeue::Entry, io_uring::cqueue::Entry>::builder()
-         .setup_single_issuer()
-         .setup_defer_taskrun()
-         .setup_cqsize(4096)
-         .build(2048);
-      println!(
-         "builder with single_issuer + defer_taskrun + cqsize 4096: {:?}",
-         ring.as_ref().map(|_| "ok")
-      );
-      assert!(ring.is_ok());
+   fn sends_complete_before_borrowed_buffers_are_reused() {
+      use std::io::Read;
+      use std::os::fd::AsRawFd;
+      let ring = match IoUring::new(8) {
+         Ok(ring) => ring,
+         Err(error) if matches!(error.raw_os_error(), Some(libc::EPERM | libc::ENOSYS)) => {
+            eprintln!("io_uring runtime test unavailable: {error}");
+            return;
+         }
+         Err(error) => panic!("io_uring setup: {error}"),
+      };
+      let mut ring = SendRing { ring, inflight: 0 };
+      let mut pairs = Vec::new();
+      let mut buffers = Vec::new();
+      let mut out = Vec::new();
+      for i in 0..4 {
+         let pair = std::os::unix::net::UnixStream::pair().unwrap();
+         pair.0.set_nonblocking(true).unwrap();
+         pair
+            .1
+            .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+            .unwrap();
+         pairs.push(pair);
+         buffers.push(vec![b'a' + i; 32]);
+      }
+      for (i, ((writer, _), buffer)) in pairs.iter().zip(&buffers).enumerate() {
+         // All sockets and buffers remain alive and unchanged through complete.
+         unsafe {
+            ring.push(
+               writer.as_raw_fd(),
+               buffer.as_ptr(),
+               buffer.len(),
+               i as u64,
+               &mut out,
+            )
+         };
+      }
+      ring.complete(&mut out);
+      assert_eq!(ring.inflight, 0);
+      out.sort_unstable();
+      assert_eq!(out, vec![(0, 32), (1, 32), (2, 32), (3, 32)]);
+      for (i, ((_, reader), buffer)) in pairs.iter_mut().zip(&mut buffers).enumerate() {
+         buffer.fill(b'z');
+         let mut received = [0; 32];
+         reader.read_exact(&mut received).unwrap();
+         assert_eq!(received, [b'a' + i as u8; 32]);
+      }
    }
 }
