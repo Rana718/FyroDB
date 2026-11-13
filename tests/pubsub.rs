@@ -228,7 +228,7 @@ fn active_channels_lists_subscribed() {
 
    let mut channels = pubsub.active_channels(None);
    channels.sort();
-   assert_eq!(channels, vec!["alpha", "beta"]);
+   assert_eq!(channels, vec![Arc::from("alpha"), Arc::from("beta")]);
 }
 
 #[test]
@@ -242,7 +242,7 @@ fn active_channels_with_pattern_filter() {
 
    let mut channels = pubsub.active_channels(Some("news.*"));
    channels.sort();
-   assert_eq!(channels, vec!["news.sports", "news.tech"]);
+   assert_eq!(channels, vec![Arc::from("news.sports"), Arc::from("news.tech")]);
 }
 
 #[test]
@@ -267,7 +267,7 @@ fn numsub_counts_correctly() {
    let result = pubsub.numsub(&["ch", "missing"]);
    assert_eq!(
       result,
-      vec![("ch".to_string(), 2), ("missing".to_string(), 0)]
+      vec![("ch", 2), ("missing", 0)]
    );
 }
 
