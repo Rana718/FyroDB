@@ -1,0 +1,115 @@
+---
+title: Historical benchmarks
+description: Previously published best-of-three rates preserved separately from current measured results.
+order: 18
+---
+
+## Previously published rates
+
+These are **historical reported best-of-three** values, retained so the earlier, sometimes higher numbers remain visible. They are not freshly measured current results. See [current benchmarks](/docs/benchmarks) for the image-matched normal suite, standard clients, medians, ranges and memory evidence.
+
+The original page described 100 clients, a pipeline of 100 and one million operations; the current Go harness uses ten million operations for KV phases. Some identical rates were repeated under both TCP and direct-engine headings. That provenance conflict is unresolved, so these figures do not establish a current TCP/engine comparison, a current competitor speedup or measured latency. Cluster counts also differed between the old README and benchmark page.
+
+[Original benchmark page](/benchmarks/2026-11-13/historical/benchmarks.mdx.txt) · [original README](/benchmarks/2026-11-13/historical/readme.txt). The archived page's six-node cluster labels are preserved below. DiceDB was already a carried-over earlier measurement, not a matched rerun.
+
+## KV Throughput
+
+| Metric           | FyroDB      | Redis Cluster (6 nodes)    | DragonflyDB | DiceDB (1 node) |
+| ---------------- | ----------- | -------------------------- | ----------- | --------------- |
+| Pipeline-64 SET  | **15.41M**  | 5.75M                      | 4.09M       | 766K            |
+| Pipelined SET    | **39.62M**  | 7.56M                      | 4.16M       | 1.62M           |
+| Pipelined GET    | **53.38M**  | 11.29M                     | 4.09M       | 1.88M           |
+
+<BenchmarkChart id="pipeline64" />
+
+<BenchmarkChart id="set" />
+
+<BenchmarkChart id="get" />
+
+## Mixed Workload Throughput
+
+| Metric                | FyroDB      | Redis Cluster (6 nodes)    | DragonflyDB | Speedup |
+| --------------------- | ----------- | -------------------------- | ----------- | ------- |
+| Mixed SET/GET (50/50) | **45.87M**  | 7.24M                      | 5.15M       | 6.3×    |
+| INCR (counters)       | **108.56M** | 6.32M                      | 6.84M       | 17.2×   |
+| HSET/HGET (sessions)  | **44.44M**  | 7.95M                      | 5.81M       | 5.6×    |
+| LPUSH/RPOP (queue)    | **66.93M**  | 7.19M                      | 6.23M       | 9.3×    |
+| SADD (per-client sets)| **40.38M**  | 6.34M                      | 5.00M       | 6.4×    |
+| ZADD (per-client zsets)| **17.83M** | 4.55M                      | 4.36M       | 3.9×    |
+| JSON.GET (docs)       | **26.21M**  | 3.38M                      | 151.5K      | 7.8×    |
+| JSON.SET (docs)       | **16.28M**  | 3.38M                      | 151.5K      | 4.8×    |
+| SET+EXPIRE (cache TTL)| **15.14M**  | 2.64M                      | 2.41M       | 5.7×    |
+| Hot Key (contention)  | **37.68M**  | 2.03M                      | 2.15M       | 18.6×   |
+| Producer/Consumer     | **40.61M**  | 981.3K                     | 1.75M       | 23.2×   |
+| XADD (streams)        | **23.76M**  | 4.27M                      | —           | 5.6×    |
+| SETBIT/BITCOUNT (bitmap)| **38.11M**| 5.94M                      | —           | 6.4×    |
+| PFADD/PFCOUNT (HLL)   | **63.43M**  | 6.03M                      | —           | 10.5×   |
+| GEOADD/GEODIST (geo)  | **10.06M**  | 3.07M                      | —           | 3.3×    |
+
+<BenchmarkChart id="mixed" />
+
+<BenchmarkChart id="incr" />
+
+<BenchmarkChart id="hash" />
+
+<BenchmarkChart id="list" />
+
+<BenchmarkChart id="sadd" />
+
+<BenchmarkChart id="zadd" />
+
+<BenchmarkChart id="json" />
+
+<BenchmarkChart id="expire" />
+
+<BenchmarkChart id="hotkey" />
+
+<BenchmarkChart id="prodcons" />
+
+## Pub/Sub Throughput
+
+| Metric           | FyroDB      | Redis Cluster (6 nodes)    | DragonflyDB | DiceDB (1 node) |
+| ---------------- | ----------- | -------------------------- | ----------- | --------------- |
+| Publish ops/sec  | **2.29M**   | 147.1K                     | 315.5K      | 167.8K          |
+| Delivery msg/sec | **113.98M** | 7.35M                      | 15.43M      | 8.39M           |
+
+<BenchmarkChart id="pubsub-publish" />
+
+<BenchmarkChart id="pubsub" />
+
+## Vector & Search Workloads
+
+| Benchmark                     | Elapsed | Throughput       | Notes / Filtering |
+| ----------------------------- | ------- | ---------------- | ----------------- |
+| Vector HSET load              | 499ms   | 100.2k ops/sec   | Embedding ingestion rate |
+| Vector KNN-10 (FLAT)          | 2.169s  | 922 ops/sec      | Exact L2/Cosine scan |
+| Vector KNN-10 +tag filter     | 691ms   | 1.4k ops/sec     | Pre-filtered KNN search |
+| Filter Tag+Num                | 211ms   | 4.7k ops/sec     | Tag & numeric range query |
+| Text term                     | 29ms    | 34.3k ops/sec    | Single term BM25 search |
+| Text + Tag                    | 42ms    | 23.9k ops/sec    | Hybrid lexical + tag filter |
+| Text negation                 | 49ms    | 20.3k ops/sec    | NOT filter query |
+| Vector KNN-10 (8 clients)     | 1.079s  | 1.9k ops/sec     | Concurrent KNN queries |
+| Vector HNSW KNN-10            | 410ms   | 4.9k ops/sec     | Graph-based ANN search |
+| Vector HNSW M=32 KNN-10       | 1.016s  | 2.0k ops/sec     | High-recall graph search |
+
+## Resource Usage
+
+Previously reported resource readings; original build/workload accounting is incomplete. These do not describe a fixed RAM ceiling or the current ten-million-key suite.
+
+| Metric           | FyroDB (1 node, PID 2258)  | Redis Cluster (6 nodes, 7 containers) | DragonflyDB (1 node) |
+| ---------------- | -------------------------- | ------------------------------------- | -------------------- |
+| Peak RSS         | **294.19 MB**              | 767.63 MB                             | 235.80 MB            |
+| Avg RSS          | 168.81 MB                  | 347.46 MB                             | **171.86 MB**        |
+| Peak CPU         | **79.6%**                  | 442.1%                                | 957.5%               |
+| Avg CPU          | **42.5%**                  | 125.2%                                | 430.6%               |
+
+<BenchmarkChart id="rss-peak" />
+
+<BenchmarkChart id="cpu-avg" />
+
+
+## How to use these figures
+
+Do not divide a historical best sample by a current median from a different client, keyspace, payload or CPU layout. The reciprocal of an aggregate throughput rate is not measured request latency. The repeated direct-engine table from the old page has been removed from the current reference; its original text remains archived above.
+
+Higher old peaks remain documented here, including 53.38M GET, 39.62M SET, 108.56M INCR and 113.98M deliveries/s. Their preservation does not mean the current guarded runtime reproduced every one of them.

@@ -4,125 +4,75 @@
 
 FyroDB is a two-engine system in a single Rust binary:
 
-**KV Engine** — Redis-compatible in-memory key-value store. Speaks RESP2/RESP3 so any Redis client works unchanged. Uses a thread-per-core mio event loop, a lock-free concurrent hash map with epoch-based reclamation and per-key seqlock, zero-copy RESP parsing, embedded Lua 5.4 scripting runtime with SHA1 caching, and direct-write response building. Vector, full-text and hybrid search (`FT.*`) run on a separate persistent thread pool so heavy queries never stall the network workers.
+**KV Engine** — Redis-compatible in-memory key-value store. Speaks RESP2/RESP3 so any Redis client works unchanged. Uses a thread-per-core mio event loop, a sharded concurrent hash map with epoch-based reclamation, map admission epochs and per-entry read/write guards, zero-copy RESP parsing, embedded Lua 5.4 scripting runtime with SHA1 caching, and direct-write response building. Vector, full-text and hybrid search (`FT.*`) run on a separate persistent thread pool so heavy queries never stall the network workers.
 
-**DB Cache Proxy** — PostgreSQL wire-protocol caching proxy. Applications connect to it exactly as they would to PostgreSQL (no driver or code changes). The proxy serves `SELECT` results from the shared in-memory store in ~1 µs. Misses are forwarded to the real upstream, results cached, and served instantly on every subsequent call. Both engines run with fully independent mio event loops — neither can block the other.
-
----
-
-## Why It's Fast
-
-| Factor              | Redis                         | FyroDB                                                                                       |
-| ------------------- | ----------------------------- | -------------------------------------------------------------------------------------------- |
-| I/O model           | Single-thread epoll           | Thread-per-core epoll (mio), SO_REUSEPORT, Unix domain sockets (`unix-sockets`) with multi-worker dup accept scaling |
-| Accept queue        | Single shared queue           | Per-thread kernel queue — no contention                                                      |
-| Hash map            | Custom, single-threaded       | Lock-free CustomMap — EBR + seqlock + per-key spinlock                                       |
-| RESP parsing        | Copy into dynamic buffer      | Zero-copy: parse directly from read buffer                                                   |
-| Command dispatch    | String comparison             | First-byte fast-path for 13 hot commands; static `foldhash` map (O(1)) for all others        |
-| Response building   | Format into String            | Inline bulk headers, raw byte writes                                                         |
-| GET path            | Clone value + allocate        | Zero-copy: raw-byte key matching (`eq_bytes`) bypasses UTF-8 scan, writes stored value directly to buffer (53.38M ops/sec) |
-| Mutations           | Single-threaded (safe)        | In-place under per-key spinlock via `SmallStr::overwrite_bytes`, seqlock for reader safety (39.62M ops/sec) |
-| TTL computation     | clock_gettime per op          | Cached clock ticked once per event loop iteration                                            |
-| Allocator           | libc malloc                   | mimalloc with zero-overhead hot path and periodic RSS tracking (strictly < 900MB ceiling)   |
-| Memory search       | Naive byte scan               | SIMD memchr (AVX2) for newline scanning                                                      |
-| Write batching      | Per-command write             | Batched: all events read first, then flush all writes                                        |
-| Pub/Sub fan-out     | Per-message frame copy        | Single Arc frame shared to all subscribers; dense fan-outs group per worker into one queue entry; batched TCP delivery & 1MB SO_SNDBUF |
-| Pipelined hot keys  | One lock per command          | Run coalescing: a run of ≤512 consecutive same-key commands takes one entry lock (265ms on 10M hot key ops) |
-| Pipelined write run | Parse + allocate per op       | Zero-alloc `try_fast_tail` verifies wire prefix in 1 comparison, extracts args into stack arrays (`QUEUE_RUN_MAX * 3`) |
-| SET + EXPIRE pairs  | Two commands, two locks       | Greedy parser absorption: adjacent pair fused into one atomic set-with-TTL under a single lock |
-| Lua Scripting       | Single-thread blocking engine | Isolated Lua 5.4 runtime (`mlua`), pre-compiled SHA1 digest cache, generational GC, zero-alloc RESP conversions |
-| Hash probe step     | Deref entry to compare key    | 15-bit hash tag packed into the slot pointer — reject a non-match without touching the entry; _mm_prefetch during table rebuilds |
-| Shard memory sizing | Static large allocation       | Right-sized 32,768 initial capacity (saves >100MB RAM across 128 shards), adaptive buffer retention (32KB normal / 256KB subscriber) |
-| Pipelined lookups   | One dependent miss per command | Look-ahead batches up to 256 queued commands (`BATCH = 256`), prefetches slots & entries in parallel, with redundant prefetch bypass |
-| Geospatial encode   | Multi-step coordinate division| 5-instruction Morton bit-interleaving (`spread26`) replaces 52-step division loop             |
-| Stream append       | Per-entry stream node alloc   | Coalesced varint append into 4KB packed nodes (`WriteOp::Xadd` + `Store::xadd_batch`)         |
-| Blocking commands   | Per-client blocked state      | Parked connections: waiters registered per key, woken through the owning worker's queue       |
-| Snapshots           | fork() + copy-on-write pages  | Forkless point-in-time snapshot: one state bit per entry, writers save pre-images            |
-| Lock contention     | Single-threaded, none         | Exponential backoff with thread yield on contended spinlocks to guarantee forward progress    |
-| Cluster slot lookup | Flat `slots[16384]` array     | Same: shared routing table, revalidated per connection with one atomic load                  |
-| Proxy connections   | Thread per connection         | mio event loop — N worker threads, `SO_REUSEPORT`, no thread spawning per client             |
-| Proxy cache hit     | N/A                           | `ActiveState` inline in mio thread, coalesced `flush_out_batched` (32 KB), ~1 µs, no blocking pool |
-| Proxy L1 routing    | Loopback TCP socket           | Direct in-process memory routing between PG proxy and KV store, bypassing network stack      |
-| Memory accounting   | `zmalloc_used_memory` counter | Per-CPU striped counters, so `used_memory` is real and drives purge/defrag                   |
+**DB Cache Proxy** — PostgreSQL wire-protocol caching proxy. Applications connect to it exactly as they would to PostgreSQL (no driver or code changes). The proxy serves `SELECT` results from the shared in-memory store in ~1 µs. Misses are forwarded to the real upstream, results cached, and served instantly on every subsequent call. Both engines use separate mio event loops while sharing process and storage resources; slow work or contention can still affect shared resources.
 
 ---
 
-## CustomMap — Lock-Free Concurrent Hash Map
+## Current implementation and measurement
 
-### Memory Layout
+The retained runtime is checkpoint **d5a178b**, Docker image **3d5ef33d50f9**. Performance depends on client implementation, payload, key distribution, pipeline depth and CPU placement. [BENCHMARKS.md](BENCHMARKS.md) records the normal TCP suite first, then independent standard-client, payload, memory and historical comparisons with graphs, ranges and source hashes. Inverse aggregate throughput is not measured request latency.
 
-```
-CustomMap<V>
-  ├── shards: Box<[Shard<V>]>           (N shards, power of two)
-  ├── shift / shard_mask                 (fast shard selection via hash >> shift)
-  ├── hasher: foldhash::RandomState      (non-cryptographic, fast hash)
-  ├── key_count: AtomicUsize             (global live key count)
-  ├── max_keys: usize                    (capacity limit)
-  ├── observer: Option<WriteObserver>    (search indexes' dirty-key hook, gated by one flag)
-  └── snap: Arc<SnapCtl<V>>              (forkless snapshot control)
+FyroDB is not end-to-end lock-free. Atomic table probing avoids a table-wide lookup mutex, but mutable values require protection. Entry guards, map read/write admission, script/transaction isolation and shard growth synchronization serve different purposes.
 
-Shard<V>  (cache-padded counters)
-  ├── table: AtomicPtr<SlotTable<V>>     (swapped atomically on growth; initial capacity 32,768)
-  ├── len: CachePadded<AtomicUsize>      (occupied slots)
-  ├── insert_gate: CachePadded<AtomicUsize>  (concurrent insert counter + GROWING flag)
-  ├── grow_lock: Mutex<()>               (serializes growth/compaction per shard; prefetch hints on rebuild)
-  ├── hasher: RandomState                (recomputes hashes on growth; entries store none)
-  └── snap: Arc<SnapCtl<V>>              (shared snapshot parity + pre-image sink)
+| Path | Current mechanism |
+| --- | --- |
+| I/O | One mio loop per configured worker; SO_REUSEPORT for TCP; explicit worker affinity is configurable |
+| Parsing | Borrow arguments from the connection buffer; classify hot commands once; parse eligible runs into bounded stack arrays |
+| Lookup | Foldhash, open addressing and a 14-bit hash tag plus marker in eligible slot pointers; full key/state validation before value use |
+| Reads | EBR pin plus an entry read guard, or a successfully admitted map read epoch for a bounded read-only batch |
+| Writes | Map write admission plus the entry write lock; snapshot pre-image capture before in-place mutation |
+| GET replies | Serialize directly to the output buffer, or guarded scatter/gather for eligible large batches; the kernel still transmits/copies data |
+| SET overwrite | Reuse existing SmallStr capacity; growth or encoding changes can allocate; selected large writes use fenced streaming copies |
+| Script/transaction isolation | Shared per-worker command guards for normal work; exclusive admission across all slots for atomic commands |
+| Pub/Sub | Shared encoded frames, Arc subscriber snapshots, grouped per-worker queues and bounded delivery/backpressure |
+| Memory | Compact values, small initial shards, bounded stack batches, adaptive buffers and allocator maintenance; no universal RSS ceiling |
 
-Entry<V>  (per key, heap-allocated, exactly 64 bytes for StoreValue)
-  ├── key: CompactKey                    (≤23 bytes inline, 24-byte footprint)
-  ├── state: AtomicU64                   (lock + occupied + seqlock generation + snapshot bit)
-  └── value: UnsafeCell<MaybeUninit<V>>  (mutated in place while occupied)
-```
+## CustomMap — guarded concurrent hash map
 
-### Concurrency Model
+### Memory layout
 
-**Writers** (SET, LPUSH, SADD, HSET, ZADD, INCR):
+The current 64-bit build has a 16-byte CompactKey, 24-byte SmallStr, 24-byte FyroDB enum, 32-byte StoreValue and **56-byte Entry<StoreValue>**. Compile-time and regression assertions cover these layouts. Allocator rounding and payload allocations are additional memory; the entry is not a guaranteed cache-line-aligned 64-byte allocation.
 
-```
-1. Find entry via lock-free linear probe
-2. Acquire per-key spinlock (single atomic CAS, Acquire ordering; exponential backoff with thread::yield_now under contention)
-3. Increment the packed sequence to odd (signals "write in progress")
-4. Mutate value in-place (zero clone, zero allocation)
-5. Store final state: increment seq to even + release lock (single atomic store)
-```
+CompactKey stores up to fifteen bytes inline and has a special inline representation for eligible sixteen-byte keys. SmallStr stores up to twenty-three value bytes inline. Longer strings allocate payload storage. Empty shards begin with eight slots and grow as needed; the old fixed 32,768-slot starting-capacity description is obsolete.
 
-**Single-field Readers** (GET, HGET, SISMEMBER, ZSCORE, LINDEX):
+CustomMap owns the map-level Access admission state, cache-padded shard metadata, published slot-table addresses, a write-observer hook and snapshot control. A shard has an insertion/growth gate and a growth mutex. Entries hold immutable keys, a packed atomic state and mutable values. The packed state carries occupied/lock bits, reader-count information, sequence/hash information and snapshot state.
 
-```
-1. Find entry via lock-free linear probe
-   └─ find() checks the occupied bit before returning — prevents a
-      concurrent removal between tag-match and epoch-pin from exposing
-      an uninitialized entry to the caller
-2. Pin EBR epoch (thread-local atomic store)
-3. Load entry state with Acquire ordering — synchronizes with the
-   writer's Release store, replacing the previous Relaxed load +
-   explicit fence(Acquire) with a single Acquire load
-4. Read field directly — no lock, no seq check
-5. Unpin epoch
-```
+### Protection layers
 
-**Iteration Readers** (LRANGE, SMEMBERS, HGETALL, HKEYS, HVALS):
+1. **Command isolation:** normal commands acquire a shared worker slot. EVAL, EVALSHA, EXEC and WATCH use exclusive command admission, serializing atomic operations and waiting for ordinary commands to leave every slot. Nested redis.call/redis.pcall dispatch reuses that isolation scope.
+2. **Map read/write admission:** try_read_epoch admits a read-only batch only when no writer has registered; its second check pairs with writer registration. Writers register before waiting for admitted readers to drain. Existing writers may proceed concurrently on different entries. Thread-local nesting avoids duplicate registration for an already-held map and preserves out-of-order drops across nested maps.
+3. **Entry read/write guards:** ordinary value reads acquire a shared reader count in the packed entry state. Writers acquire the entry lock and wait for readers to leave. A map read epoch can replace repeated entry admission for an eligible batch, but it is not interchangeable with EBR.
+4. **EBR:** a pin keeps retired entries and tables alive while raw pointers are examined. EBR alone does not permit concurrently reading and mutating a Rust String, Vec or collection.
+5. **Snapshot and watch hooks:** writers capture required pre-images before mutation, publish completion with the existing ordering, then notify the observing hooks. WATCH invalidation includes direct and optimized batch writes.
 
-```
-1. Find entry via lock-free linear probe
-2. Pin EBR epoch
-3. Read seq counter (must be even — wait if odd)
-4. Iterate collection, clone results
-5. Read seq counter again
-6. If seq changed → retry from step 3 (writer raced)
-7. If seq unchanged → return results (consistent snapshot)
-8. Unpin epoch
-```
+The sequentially consistent map-admission handshake and acquire/release entry operations remain intact. A sequence recheck after reading an unprotected mutable value is not a substitute for a read guard.
 
-### Safety Guarantees
+### Reader and writer flow
 
-- **Writer vs Writer**: per-key spinlock serializes — no two mutations on same key simultaneously
-- **Reader vs Writer (single field)**: EBR keeps value alive, single lookup is atomic; `find()` occupied guard prevents exposure of an uninitialized entry between tag-match and epoch-pin
-- **Reader vs Writer (iteration)**: seqlock detects race, reader retries if write happened during iteration
-- **Different keys**: zero contention — separate entries, separate spinlocks
-- **No deadlock**: spinlock is per-entry, held for microseconds, no nesting
-- **No starvation**: readers retry at most once per concurrent write
+A reader pins EBR, probes slots, validates the occupied state and full key, acquires the appropriate value protection, checks expiry/type and reads or serializes while that protection remains held. Fallback reads and collection iteration use guarded access. The guard is released before the pin can permit reclamation.
+
+A writer enters command isolation and map write admission, probes the entry, acquires its write lock, captures a snapshot pre-image if required, mutates the value, releases the entry state and issues write-observer/durability notifications. New inserts also coordinate with shard growth. In-place overwrites avoid allocation only when existing capacity and representation suffice.
+
+Unrelated keys still share admission counters, allocator/cache/memory bandwidth and command-isolation machinery. Contended entry operations may spin, back off or yield. There is no wait-free lookup, bounded-retry, starvation-free or linear CPU-scaling guarantee for the complete value path.
+
+### Retained large-payload algorithms
+
+- **Bounded scatter/gather GET:** eligible string runs use stack RESP headers and IoSlice arrays for up to 256 replies. Each unique entry has one read guard; a fixed 512-slot ownership index resolves duplicate pointers and validates key/hash aliases. The global read epoch is released after entry guards are acquired, while the EBR pin and entry guards retain payload lifetime.
+- **Partial-write ownership:** send attempts are bounded. Bytes that were not accepted by the socket are copied into the connection-owned output buffer before payload guards drop, preserving response order through short writes, EINTR, WouldBlock and later mutations.
+- **Repeated-key routing:** multicore repeated large replies can use the guarded vectored path. Single-worker repeats retain the buffered copy/repeat path because the vectored alternative regressed that cohort.
+- **SET prefetch tiles:** small multicore payloads use a shorter prefetch tile; ordinary and large payloads retain the wider batch. Key/state checks, snapshot capture, write admission and per-entry locks remain in both paths.
+- **Large overwrite copies:** selected values of at least 8 KiB can use an AVX non-temporal copy on supported x86-64 CPUs. Alignment/tails are handled and streaming stores are fenced before completion is published. Consecutive duplicates or hash repetition select cached copying conservatively; unsupported CPUs use the ordinary copy.
+- **Allocation discipline:** these changes use bounded local arrays rather than persistent per-key/per-connection metadata. Payload growth, fallback buffering and snapshots can still allocate.
+
+Implementation: [fast_path.rs](src/handler/conn/fast_path.rs), [bulk.rs](src/handler/conn/bulk.rs), [small_str.rs](src/storage/value/small_str.rs), [access.rs](crates/customhash/src/access.rs), [shard.rs](crates/customhash/src/shard.rs), [isolation.rs](src/storage/store/isolation.rs) and [watch.rs](src/storage/store/watch.rs).
+
+### Rejected experiments
+
+Counter-striping variants and a later handler that retained write admission across adjacent deep small-SET batches passed correctness checks but did not establish acceptable end-to-end gains. They are not in the retained runtime. The latter reduced one diagnostic locked-access instruction count by about 0.48%, while TCP medians were mixed, including slower cases. No new speedup is credited to it.
+
+The six added regressions cover deep binary pipelines and command boundaries, malformed/partial packets, nested admission cleanup, expiry/large-payload transitions, concurrent SET/read/SAVE and WATCH aborts. The retained source passed 789 workspace tests, zero failures, and 14 io-uring-feature large-reply tests. [Evidence, full coverage and graphs](BENCHMARKS.md#safety-and-regression-coverage).
 
 ### Dynamic Growth
 
@@ -140,18 +90,16 @@ Every shard starts with eight slots and grows only as keys arrive. When a shard 
 
 When an entry or slot table is retired:
 
-- Stamped with current global epoch
+- Stamped with the current reclamation epoch
 - Added to thread-local garbage list
 - Freed only after all threads have advanced past epoch + 2
 - Raw entry/table memory is released through the tracked allocator
 
-Updates to existing keys mutate their value in place. Allocations are needed only when the new value or collection representation itself grows.
+Updates can reuse existing value capacity. Payload or representation growth, snapshot capture, observer work and fallback buffering can still allocate.
 
 ### Compact Values
 
-Static assertions pin the layout: `SmallStr` and `CompactKey` are 24 bytes with
-23 bytes inline (the length tag doubles as the enum niche), `FyroDB` is 24 bytes,
-`StoreValue` 32, and an `Entry` exactly 64 — one cache line per key.
+Static assertions pin SmallStr and FyroDB to 24 bytes, StoreValue to 32 and Entry<StoreValue> to 56. CompactKey is 16 bytes; its fifteen-byte inline key payload and special eligible sixteen-byte representation differ from SmallStr's twenty-three-byte inline value capacity.
 
 - **Strings**: `SmallStr`, inline up to 23 bytes, one heap allocation beyond.
   JSON documents are boxed so the two string-carrying variants do not compete for
@@ -186,8 +134,9 @@ compare-exchange against the same cache line, so a single handoff between N
 contenders cost N exclusive-ownership transfers and a hot key scaled _negatively_
 with worker count.
 
-Reads never take the lock at all, which is why a read-heavy hot key stays fast
-while a write-only hot key is bounded by lock handoff latency.
+Reads either share the entry read state or use admitted map read protection.
+Read/write mixtures still contend on admission, entry state and memory bandwidth;
+a write-only hot key is additionally bounded by write-lock handoff.
 
 ### Memory Maintenance
 
@@ -451,7 +400,7 @@ SHA1 Digest Lookup ──(hit)──► Cached Lua Chunk
 
 1. **Embedded Lua 5.4 via `mlua`**: Uses Lua 5.4 compiled into the binary with memory limits and sandbox isolation.
 2. **SHA1 Chunk Caching**: Scripts loaded via `SCRIPT LOAD` or `EVAL` are compiled once and stored in a shared script cache keyed by 40-character hexadecimal SHA1 digest. Subsequent `EVALSHA` invocations skip parsing and compilation entirely.
-3. **Re-entrant Execution**: `redis.call` and `redis.pcall` execute commands through the same lock-free storage interfaces used by normal RESP clients. Re-entrant calls share the calling worker's context with zero thread handoff or IPC overhead.
+3. **Re-entrant Execution**: `redis.call` and `redis.pcall` execute commands through the same guarded storage interfaces used by normal RESP clients. Re-entrant calls share the calling worker's context with zero thread handoff or IPC overhead.
 4. **Generational Garbage Collection**: Generational GC mode keeps Lua state allocation low and minimizes GC pause latency during high-frequency script execution.
 5. **Zero-Allocation RESP Conversions**: Conversions between RESP protocol frames and Lua data structures (numbers, strings, booleans, tables) use direct streaming serialization, avoiding intermediate string or vector allocations.
 
@@ -653,7 +602,7 @@ Incoming query
        ▼
 fingerprint = normalize(SQL) ^ encode(params) ^ context_hash
        │
-  cache probe (CustomMap, lock-free tag-filtered)
+  cache probe (CustomMap, tag-filtered and guarded)
        │
   ┌────┴──────────────────────────────────┐
   │ HIT                                   │ MISS (or Startup)
@@ -783,7 +732,7 @@ crates/customhash/src/
 ├── shard.rs                Entry/table layout, probing, growth
 ├── ops.rs                  Iteration, expiry sweep, compaction, defrag, snapshot walk
 ├── snap.rs                 Forkless snapshot control (parity bit, pre-image sink)
-├── key.rs                  23-byte inline CompactKey
+├── key.rs                  16-byte CompactKey (15 inline bytes + eligible 16-byte encoding)
 └── ebr.rs                  Epoch-based reclamation
 
 crates/fyro-vector/src/
@@ -824,81 +773,17 @@ src/cluster/
 
 ---
 
-## Performance, Latency & Algorithmic Breakdown
+## Performance evidence and algorithm validation
 
-Direct benchmark execution and latency profile on a 6-core Intel i5-11400H (12 hardware threads), 100 concurrent clients:
+[BENCHMARKS.md](BENCHMARKS.md) is the measurement reference. It separates the current normal Go TCP suite, official redis-benchmark scores, multi-process capacity diagnostics, scalar guards, historical memtier/direct-engine runs, large-payload/hot-key sweeps and rejected trials. It includes all twenty normal workloads and RSS/container peaks, with medians, ranges, exact images and committed evidence.
 
-### Summary & Latency Profile
+The retained runtime's dedicated-client sweep measured pipelined GET medians of 20.130M, 32.962M, 44.616M and 47.419M ops/s for one/two/three/six workers. Six workers occupy three physical cores with SMT. The separate twelve-worker shared-client case measured 55.897M GET/s; it is a different resource budget, not evidence of linear scaling. Historical peaks are preserved in their own section rather than rebranded as current results.
 
-| Benchmark | Elapsed | Throughput | Avg Latency / Op | Algorithmic Mechanism |
-| :--- | :--- | :--- | :--- | :--- |
-| **Pipelined GET** | 187ms | 53.38M ops/sec | 18.7 ns | Raw-byte `CompactKey::eq_bytes` validation on prefetched entries; bypasses UTF-8 decode; direct RESP bulk write to TCP buffer |
-| **Pipelined SET** | 252ms | 39.62M ops/sec | 25.2 ns | In-place `SmallStr::overwrite_bytes` under per-key spinlock + `BATCH = 256` lookahead prefetch |
-| **Pipeline-64 SET** | 649ms | 15.41M ops/sec | 64.9 ns | Open-addressing tag-filtered probe + 75% load factor with 64-byte aligned Entry allocation |
-| **Mixed SET/GET (50/50)** | 44ms | 45.87M ops/sec | 21.8 ns | Specialized run engines with `prefetch_ahead` redundant scan bypass for 250 SET + 250 GET bursts |
-| **Hot Key (contention)** | 265ms | 37.68M ops/sec | 26.5 ns | Direct atomic CAS in-place updates + TTAS exponential spin backoff (`MAX_SPIN_BACKOFF = 64`) |
-| **INCR (atomic counters)** | 18ms | 108.56M ops/sec | 9.2 ns | In-place 64-byte aligned Entry integer mutation under per-key spinlock |
-| **HSET/HGET (sessions)** | 45ms | 44.44M ops/sec | 22.5 ns | SmallStr inline fields + compact vector promote to foldhash |
-| **LPUSH/RPOP (queue)** | 30ms | 66.93M ops/sec | 14.9 ns | Quicklist chunked deque + output stream direct write |
-| **SADD (per-client sets)** | 50ms | 40.38M ops/sec | 24.8 ns | Sorted integer array promote to compact HashSet |
-| **ZADD (per-client zsets)** | 112ms | 17.83M ops/sec | 56.1 ns | Right-append optimization in `ZSetData::place` (`CHUNK_MAX = 64`) + direct RESP buffer writing (`zadd_added_flags_into`) |
-| **JSON.GET (documents)** | 76ms | 26.21M ops/sec | 38.1 ns | Fast path direct JSON property extraction |
-| **JSON.SET (documents)** | 123ms | 16.28M ops/sec | 61.4 ns | Dedicated wire parser `try_fast_json_set_key_val_at` + `dispatch_json_set_run` |
-| **SET+EXPIRE (cache TTL)** | 132ms | 15.14M ops/sec | 66.0 ns | Fused atomic set-with-TTL under single lock |
-| **Producer/Consumer (50+50)** | 49ms | 40.61M ops/sec | 24.6 ns | Concurrent LPUSH/RPOP ring buffer reuse |
-| **XADD (streams)** | 84ms | 23.76M ops/sec | 42.1 ns | Coalesced varint append into 4KB packed nodes via `WriteOp::Xadd` + `Store::xadd_batch` |
-| **SETBIT/BITCOUNT (bitmap)** | 52ms | 38.11M ops/sec | 26.2 ns | Byte-level hardware `count_ones()` / `leading_zeros()` |
-| **PFADD/PFCOUNT (HLL)** | 32ms | 63.43M ops/sec | 15.8 ns | 16,384 6-bit register hashing (O(1)) |
-| **GEOADD/GEODIST (geo)** | 199ms | 10.06M ops/sec | 99.4 ns | 5-instruction Morton bit-interleaving (`spread26`) + haversine distance |
-| **Pub/Sub publish** | 87ms | 2.29M ops/sec | 436.7 ns | Arc-snapshot channel reader (zero lock) |
-| **Pub/Sub delivery** | 88ms | 113.98M ops/sec | 8.77 ns | Shared Arc frame + lock-free SegQueue worker dispatch |
-| **Vector HSET load** | 499ms | 100.2k ops/sec | 9.98 µs | Burst write lock coalescing for consecutive vector fields |
-| **Vector KNN-10 (FLAT)** | 2.169s | 922 ops/sec | 1.08 ms | Two-pass Int8 pre-filter + exact f32 rerank |
-| **Vector KNN-10 +tag filter** | 691ms | 1.4k ops/sec | 691 µs | Pre-filter bitset intersection + KNN shortlist |
-| **Filter Tag+Num** | 211ms | 4.7k ops/sec | 211 µs | Roaring/sorted-merge postings traversal |
-| **Text term (BM25)** | 29ms | 34.3k ops/sec | 29.1 µs | Inverted index posting list scan with BM25 scorer |
-| **Text + Tag** | 42ms | 23.9k ops/sec | 42.0 µs | Postings intersection with tag bitset |
-| **Text negation** | 49ms | 20.3k ops/sec | 49.2 µs | O(total - matched) sorted-merge candidate elimination |
-| **Vector KNN-10 (8 clients)** | 1.079s | 1.9k ops/sec | 539 µs | Parallel graph search on persistent thread pool |
-| **Vector HNSW KNN-10** | 410ms | 4.9k ops/sec | 205 µs | Level-0 fixed-stride graph traversal + scratch buffers |
-| **Vector HNSW M=32 KNN-10** | 1.016s | 2.0k ops/sec | 508 µs | High-connectivity graph search (M=32, ef=64) |
+![Current worker scaling with throughput and RSS](docs/public/benchmarks/2026-11-13/normal-scaling.svg)
 
-### Algorithmic Drivers of Latency & Throughput
+![Retained large-payload before and after, including all selected metrics](docs/public/benchmarks/2026-11-13/large-payload.svg)
 
-1. **Zero-Copy Raw-Byte GET Path (53.38M ops/sec, ~18.7 ns)**:
-   - **Byte-Level Key Matching**: `CompactKey::eq_bytes` checks key bytes directly against prefetched entry addresses, completely bypassing the UTF-8 decoding state machine (`std::str::from_utf8`) on cache hits.
-   - **Direct Output Serialization**: RESP bulk reply strings (`$len\r\n<data>\r\n`) are written directly into connection write buffers, eliminating intermediate string copies and allocation overhead.
-   - **14-Bit Hash Tag Probing**: The unused high bits of slot pointers store a 14-bit hash tag derived from `foldhash`. Probing steps inspect the pointer value itself; if the tag does not match, the entry is skipped without dereferencing the pointer or bringing unrelated cache lines into L1.
-
-2. **In-Place Atomic SET Updates (39.62M ops/sec, ~25.2 ns)**:
-   - **Zero-Allocation String Overwrites**: `SmallStr::overwrite_bytes` replaces values in-place within the existing 64-byte `Entry<V>` under per-key spinlock with sequence bumping and release ordering.
-   - **Prefetch Batch Scaling**: `BATCH = 256` lookahead batching enables full 100-key and 250-key pipeline bursts to be hashed, prefetched, and dispatched in a single uninterrupted pass.
-
-3. **Sub-45ms Mixed Workloads & Prefetch Bypass (45.87M ops/sec, ~21.8 ns)**:
-   - **Early Tag Inspection**: `prefetch_ahead` inspects the initial byte stream for pipelined GET (`*2\r\n$3\r\nGET`) and SET (`*3\r\n$3\r\nSET`) signatures. If detected, it immediately bypasses the general 32-key prefetch pass, avoiding duplicate hashing and slot probing for commands that run under dedicated batch handlers.
-
-4. **Hot Key Contention Optimization (37.68M ops/sec, 26.5 ns)**:
-   - **Atomic In-Place CAS**: Contended single-key updates apply directly via compare-and-swap on the entry's seqlock sequence, dropping contention latency from 647ms down to 265ms (a 2.4× speedup).
-   - **TTAS Exponential Backoff**: When multiple threads hammer the same key, they spin on a plain shared load. Only when the lock bit clears do they attempt a `compare_exchange_weak`. If contention persists, backoff doubles up to `MAX_SPIN_BACKOFF = 64` before calling `std::thread::yield_now()`, eliminating cache-line bouncing and bus saturation.
-
-5. **Fast Morton Interleaving for Geospatial (10.06M ops/sec, < 199ms)**:
-   - **5-Instruction Coordinate Interleaving**: `spread26` uses 5 bitwise shifts and masks per coordinate to calculate 52-bit geohash integers in ~5 CPU cycles, replacing the legacy 52-step iterative division loops.
-
-6. **Massive Pub/Sub Fan-Out (113.98M msg/sec, ~8.77 ns/msg)**:
-   - **Lock-Free Arc Snapshots**: Subscribers are stored in copy-on-write `Arc` vectors. A publisher clones the `Arc` pointer with a single atomic increment (zero locks).
-   - **Batched Crossbeam SegQueues**: Delivered messages are wrapped in a single shared `Arc<Frame>` and enqueued into lock-free worker queues, avoiding per-subscriber message payload copying.
-
-7. **DB Cache Proxy Fast Path (~7.6M simple / ~5M extended, ~1 µs)**:
-   - **mio multiplexing**: Each proxy worker thread owns one `mio::Poll` and drives thousands of connections. No thread spawning per connection; N worker threads handle the entire concurrent connection pool.
-   - **Inline cache-hit serving**: `ActiveState` handles all PostgreSQL wire-protocol message types (simple `Q`, extended `P/B/E/S`, `D/C/X`) inside the mio event loop thread — no blocking pool involvement, no context switch.
-   - **Coalescing flush (`flush_out_batched`)**: `handle_sync` accumulates response frames in `WriteBuf` and flushes only when `wbuf.len() >= 32KB` or the read buffer is drained. One `write(2)` syscall covers an entire pipeline batch instead of one per response, giving a 2.5× throughput improvement on extended-protocol pipelines vs per-response flush.
-   - **SO_REUSEPORT**: Each proxy worker thread binds its own `TcpListener` to the same port. The kernel distributes accepted connections across workers with no userspace accept queue lock — same pattern as the KV engine.
-   - **ParseComplete coalescing**: In the extended protocol, `ParseComplete` is buffered without flushing. It reaches the client bundled with the first `ReadyForQuery` from the following `Sync`, eliminating a round-trip latency between `Parse` and `Execute`.
-
-8. **Vector Search & AI Engine (4.9k KNN queries/sec, ~205 µs)**:
-   - **Persistent Pinned Pool**: CPU-heavy vector searches are offloaded to dedicated pool threads via lock-free `crossbeam::SegQueue<Job>` priority tiers.
-   - **Thread-Local Scratch**: Traversal visited bitsets, candidate priority queues, and Int8 quantized query codes use pre-allocated thread-local `Scratch` memory, completely eliminating allocations on the query path.
-   - **Arena Milestone Shrinking**: The graph arena releases excess memory at power-of-two milestones, keeping the graph nodes dense in L2/L3 cache.
+Throughput is completed operations divided by elapsed time under a stated workload. Its reciprocal is aggregate spacing, not a latency percentile. Read latency percentiles from the client histogram and compare ANN throughput together with recall; the current KV documentation update does not supply new vector or proxy measurements.
 
 ---
 
@@ -906,10 +791,10 @@ Direct benchmark execution and latency profile on a 6-core Intel i5-11400H (12 h
 
 | Operation                     | Time                                                                                                       | Mechanism                                                                                                                         |
 | ----------------------------- | ---------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| GET / HGET / SISMEMBER        | O(1)                                                                                                       | Lock-free tag-filtered probe + atomic load; raw-byte comparison (`eq_bytes`) skips UTF-8 decode; never takes the entry lock      |
+| GET / HGET / SISMEMBER        | O(1)                                                                                                       | Tag-filtered probe, EBR pin and guarded value access; raw-byte key comparison avoids decoding on eligible paths      |
 | SET / DEL / EXPIRE            | O(1) average                                                                                               | Tag-filtered probe + in-place atomic mutation via `SmallStr::overwrite_bytes` under per-key spinlock                              |
 | INCR / LPUSH / SADD           | O(1)                                                                                                       | Per-key spinlock + in-place mutate                                                                                                |
-| HGETALL / SMEMBERS            | O(N)                                                                                                       | Seqlock-validated iteration                                                                                                       |
+| HGETALL / SMEMBERS            | O(N)                                                                                                       | Guarded collection iteration                                                                                                       |
 | ZADD                          | O(log N) + O(C) | Hash-index probe for an existing member; chunk located by binary search, C ≤ 256-entry memmove; direct RESP output buffers         |
 | ZRANGE                        | O(N/C + K)    | Walk chunk lengths to the start rank, then iterate K entries                                                     |
 | ZRANGEBYSCORE                 | O(log N + K)  | Binary search over chunk tails, then inside the chunk                                                            |
@@ -999,7 +884,7 @@ Direct benchmark execution and latency profile on a 6-core Intel i5-11400H (12 h
 | Search dirty sets      | 16 sharded `HashSet` stripes per index                                    | Write hook stays cheap under concurrency; overflow falls back to a rebuild                                |
 | Blocked clients        | `HashMap<key, Vec<Waiter>>` + per-worker deadline heap                    | Wake only the waiters of the written key; timeouts bound the poll                                         |
 | AOF                    | Per-thread append files, sequence-numbered state records                  | No cross-thread contention; replay is a k-way merge                                                       |
-| Proxy cached results   | CustomMap under `db:<fingerprint>` key prefix                             | Reuses the KV engine's lock-free store; purge via SCAN + DEL or FLUSHALL                                  |
+| Proxy cached results   | CustomMap under `db:<fingerprint>` key prefix                             | Reuses the KV engine's guarded store; purge via SCAN + DEL or FLUSHALL                                  |
 | Proxy conn state       | `ProxyConn` enum (Startup / Active / Offloaded / Dead) per mio token      | Zero-allocation state transitions; `Active` holds a boxed `ActiveState` only while the connection is live  |
 | Proxy read/write bufs  | `ReadBuf` / `WriteBuf` (heap-allocated, per-connection)                   | Contiguous staging for partial reads and partial writes; compacted with `copy_within` on consume           |
 | Proxy blocking pool    | `Arc<BlockingPool>` — bounded OS thread pool                              | Reuses existing `session::handle_client`; cache-hit traffic never enters the pool                          |

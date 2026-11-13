@@ -406,6 +406,15 @@ fn streaming_heap_copies_remain_complete_during_reads_and_snapshotting() {
 }
 
 fn exercise_heap_snapshot(size: usize) {
+   exercise_heap_snapshot_count(size, 64);
+}
+
+#[test]
+fn deep_small_set_admission_preserves_values_during_reads_and_snapshots() {
+   exercise_heap_snapshot_count(64, 512);
+}
+
+fn exercise_heap_snapshot_count(size: usize, commands: usize) {
    let server = Server::start();
    let mut setup = Client::connect(server.port);
    for index in 0..64 {
@@ -426,7 +435,8 @@ fn exercise_heap_snapshot(size: usize) {
             for round in 0..100 {
                let mut wire = Vec::new();
                let value = vec![b'a' + (worker * 2 + round % 2) as u8; size];
-               for position in 0..64 {
+               for position in 0..commands {
+                  let position = position % 64;
                   let index = if worker % 2 == 0 {
                      position
                   } else {
@@ -440,7 +450,7 @@ fn exercise_heap_snapshot(size: usize) {
                   }
                }
                client.stream.write_all(&wire).unwrap();
-               for _ in 0..64 {
+               for _ in 0..commands {
                   if worker < 4 {
                      assert_eq!(client.read(), Reply::Simple(b"OK".to_vec()));
                   } else {
@@ -475,6 +485,12 @@ fn exercise_heap_snapshot(size: usize) {
 
 #[test]
 fn watch_aborts_after_a_heap_write_pipeline() {
+   for commands in [64, 1024] {
+      exercise_watched_pipeline(commands);
+   }
+}
+
+fn exercise_watched_pipeline(commands: usize) {
    let server = Server::start();
    let mut writer = Client::connect(server.port);
    let mut watcher = Client::connect(server.port);
@@ -495,12 +511,13 @@ fn watch_aborts_after_a_heap_write_pipeline() {
       Reply::Simple(b"QUEUED".to_vec())
    );
    let mut wire = Vec::new();
-   for index in 0..64 {
+   for position in 0..commands {
+      let index = position % 64;
       let key = format!("key:{index:012}");
       append(&mut wire, &[b"SET", key.as_bytes(), &[b'b'; 64]]);
    }
    writer.stream.write_all(&wire).unwrap();
-   for _ in 0..64 {
+   for _ in 0..commands {
       assert_eq!(writer.read(), Reply::Simple(b"OK".to_vec()));
    }
    assert_eq!(watcher.call(&[b"EXEC"]), Reply::Nil);

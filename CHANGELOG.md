@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Tests and documentation — 2026-11-13
+
+- Retain six new regressions for deep binary SET pipelines, GET/EVAL/WATCH/MULTI/EXEC/NX boundaries, partial/malformed protocol cleanup, nested admission scopes, expiry/large-value transitions and concurrent SET/read/SAVE. Expand WATCH abort checks to 64- and 1024-command pipelines.
+- Publish the retained d5a178b runtime's normal Go TCP suite first, plus independent redis-benchmark/Dragonfly comparisons, earlier standalone Redis and memtier results, payload/RSS/container memory, hot-key and capacity diagnostics. Preserve higher historical best-of-three rates as historical, separately from current medians.
+- Commit hashed measurement evidence, summaries, CSV/JSON downloads, ten SVG comparisons, a graph viewer and a deterministic documentation generator.
+- Correct architecture claims: values use read/write guards, map admission and EBR; Lua/transactions also require command isolation. Document the 56-byte entry layout and retained bounded scatter/gather, duplicate-owner indexing, partial-write ownership and fenced large-SET copies.
+- The later small-SET admission-reuse experiment was reverted after mixed/slower throughput results. This update adds tests/docs; it introduces no new runtime optimization. Recorded retained-source validation: 789 workspace passes, zero failures, three existing probes ignored; 14 io-uring-feature large-reply passes and Clippy clean.
+
+
 ## [0.3.1] - 2026-11-09
 
 ### Added

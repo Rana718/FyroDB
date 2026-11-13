@@ -1,0 +1,192 @@
+# Benchmark results and methodology
+
+## Current results: our normal TCP suite
+
+Wide graphs and tables scroll horizontally on small screens. Select a graph to open its full-size SVG.
+
+The retained runtime is checkpoint **d5a178b**, measured as Docker image **3d5ef33d50f9**. Our normal TCP suite measured **47.419M GET/s and 37.704M SET/s** with six workers on three physical cores plus SMT. The separate twelve-worker shared-client case measured **55.897M GET/s and 43.347M SET/s**. These are three-run medians under the stated CPU budgets.
+
+This update publishes existing measurements. The later SET-admission experiment was reverted; its results and the six retained regression tests are documented below.
+
+Our Go TCP suite appears first because it covers the complete KV, Pub/Sub and mixed workload set. These are **three-run medians**, with one full warmup discarded, on an Intel i5-11400H with six physical cores and twelve hardware threads. Each engine ran separately. Fixed-client tests put the server on CPUs 0,1,2,6,7,8 and clients on 3,4,5,9,10,11. Two and three workers use two and three physical cores; six workers use three physical cores with SMT. The twelve-worker experiment shares all CPUs with its client and is a separate resource budget.
+
+<figure><a href="docs/public/benchmarks/2026-11-13/normal-scaling.svg"><img src="docs/public/benchmarks/2026-11-13/normal-scaling.svg" alt="Current Go TCP throughput and peak server RSS for one, two, three, six and twelve workers, with the shared-client case labeled separately" /></a></figure>
+
+Both processes ran in Docker at verified **niceness 0**, using host loopback networking. The server cap was 4 GiB, client cap 1 GiB, with swap disabled. A fixed CPU allocation and equal niceness prevent a lower-priority native client from skewing a Docker-server comparison. The benchmark runner rejects unequal client/server priorities and requires an explicit flag before client/server CPUs can overlap.
+
+### All normal workloads
+
+Rates below are millions of completed operations per second; Pub/Sub delivery is millions of **recipient messages** per second. Peak RSS and peak container memory are separate whole-suite measurements. Memory is workload-dependent; there is no fixed sub-900-MB ceiling.
+
+<!-- GENERATED_NORMAL_START -->
+| Metric (M/s unless marked) | 1 worker | 2 workers | 3 workers | 6 / SMT | 12 / shared |
+| --- | --- | --- | --- | --- | --- |
+| Pipeline-64 SET | 4.921 | 7.159 | 9.105 | 13.240 | 14.561 |
+| Pipelined SET | 17.382 | 27.605 | 32.251 | 37.704 | 43.347 |
+| Pipelined GET | 20.130 | 32.962 | 44.616 | 47.419 | 55.897 |
+| Pub/Sub publish | 1.522 | 2.373 | 2.845 | 2.360 | 2.142 |
+| Pub/Sub delivery | 73.600 | 116.457 | 141.007 | 116.361 | 104.294 |
+| Mixed SET/GET (50/50) | 17.033 | 27.566 | 33.515 | 37.984 | 46.372 |
+| INCR (atomic counters) | 13.960 | 27.313 | 30.386 | 45.858 | 73.887 |
+| HSET/HGET (sessions) | 17.075 | 26.454 | 35.959 | 39.977 | 59.965 |
+| LPUSH/RPOP (queue) | 9.923 | 11.811 | 21.439 | 30.177 | 38.505 |
+| SADD (per-client sets) | 15.789 | 29.493 | 37.847 | 39.432 | 48.798 |
+| ZADD (per-client zsets) | 4.975 | 8.770 | 11.491 | 8.444 | 10.610 |
+| JSON.SET (documents) | 4.427 | 6.876 | 8.852 | 7.322 | 10.310 |
+| JSON.GET (documents) | 11.826 | 18.387 | 22.298 | 25.001 | 28.341 |
+| SET+EXPIRE (cache TTL) | 3.292 | 5.377 | 7.996 | 7.808 | 9.769 |
+| Hot Key (1 key, contention) | 39.328 | 67.387 | 107.014 | 118.612 | 160.608 |
+| Producer/Consumer (50+50) | 8.962 | 15.407 | 16.372 | 3.270 | 13.421 |
+| XADD (streams) | 4.595 | 7.902 | 10.441 | 15.041 | 15.792 |
+| SETBIT/BITCOUNT (bitmap) | 4.540 | 8.126 | 12.902 | 14.912 | 23.238 |
+| PFADD/PFCOUNT (HyperLogLog) | 17.717 | 35.047 | 34.333 | 53.095 | 59.769 |
+| GEOADD/GEODIST (geospatial) | 1.694 | 3.122 | 4.064 | 5.178 | 5.667 |
+| Peak RSS (MiB) | 782.3 | 794.6 | 797.1 | 1296.5 | 1596.8 |
+| Peak container (MiB) | 805.7 | 818.0 | 821.8 | 1308.2 | 1609.2 |
+<!-- GENERATED_NORMAL_END -->
+
+The KV phases each execute **10 million operations**, with 100 clients and 100,000 operations per client. The main GET/SET pipeline is 100; Pipeline-64 SET is a separate insertion phase. Ordinary mixed phases execute 2 million operations; the hot-key phase executes 10 million. Pub/Sub uses 50 subscribers, ten publishers and 200,000 published messages, and verifies all ten million recipient deliveries per suite. The table includes insertion, overwrite, contention, collections, TTL, streams and fan-out rather than only the fastest GET case.
+
+<figure><a href="docs/public/benchmarks/2026-11-13/normal-all.svg"><img src="docs/public/benchmarks/2026-11-13/normal-all.svg" alt="All twenty normal TCP workload medians and memory measurements, with six-worker and twelve-worker results in separate columns" /></a></figure>
+
+[Complete numerical CSV](docs/public/benchmarks/2026-11-13/numbers.csv) · [All selected results and ranges](docs/public/benchmarks/2026-11-13/results.json) · [Scrollable graph viewer and campaign index](docs/public/benchmarks/2026-11-13/index.html) · [Evidence manifest and hashes](docs/public/benchmarks/2026-11-13/manifest.json).
+
+### Historical peaks and current medians
+
+The previously published **53.38M GET**, **39.62M SET**, **108.56M INCR** and **113.98M subscriber deliveries/s** remain available in [historical benchmarks](docs/src/content/benchmark-history.mdx). They were reported as best-of-three results, and some were duplicated under both TCP and direct-engine headings. Their original workload/build details are incomplete.
+
+Higher historical values are preserved as historical references; they are not substituted for slower current medians. The current twelve-worker GET median is **55.897M/s**, but that shared-client run is not a matched before/after speedup over the older 53.38M figure. Compare like-for-like runs, payloads, clients and CPU budgets.
+
+### Why client methods report different rates
+
+The normal suite's KV values are five bytes. Both the Go suite and redis-benchmark use TCP, but their pipeline depths, key distributions, client CPU budgets and response-processing costs differ. A four-thread stock client and a multi-process capacity diagnostic also measure different load-generator budgets. Compare an optimization with the same client and parameters; a gap between different clients is not itself a server speedup or regression.
+
+## Independent standard-client tests
+
+### Retained FyroDB versus Dragonfly: 5 B through 10 KiB
+
+The official, unmodified **redis-benchmark 8.8.3** client ran with 64 connections, four client threads, pipeline 256 and 100,000 fully populated random keys. Each command executes ten million requests through 1 KiB and two million for larger values, with warmups and three measured rounds. Persistence and eviction are disabled for this in-memory comparison. Both servers have the same 3 GiB memory cap and CPU allocation; their exact immutable image IDs and launch flags are archived with the samples.
+
+The FyroDB column is the retained 3d5ef33d50f9 image. Dragonfly is a single server process using the same allocated worker count; this comparison is not against a Redis cluster.
+
+<figure><a href="docs/public/benchmarks/2026-11-13/stock-single.svg"><img src="docs/public/benchmarks/2026-11-13/stock-single.svg" alt="Single-worker official redis-benchmark GET, SET and peak RSS for FyroDB and Dragonfly across all six payload sizes" /></a></figure>
+
+<figure><a href="docs/public/benchmarks/2026-11-13/stock-multi.svg"><img src="docs/public/benchmarks/2026-11-13/stock-multi.svg" alt="Six-worker official redis-benchmark GET, SET and peak RSS for FyroDB and Dragonfly across all six payload sizes" /></a></figure>
+
+Four client threads can limit or quantize the reported rate. These rates should not be interpreted as the hardware limit. Contention indicators, image IDs, all three samples, sampled peak RSS and container memory are available in the [standard-client records](docs/public/benchmarks/2026-11-13/evidence/large-path-verified/standard-final/records.json.gz). Reused peer samples are explicitly marked in those records.
+
+### Earlier standalone Redis comparison
+
+A separate, earlier campaign tested FyroDB, Dragonfly and standalone Redis with **64-byte values, one million populated keys, pipeline 1/16/64/256 and three rounds**. The single-core results are shown below; all single/multicore figures and memory readings are in its [summary](docs/public/benchmarks/2026-11-13/evidence/standard-benchmark/summary.json). The FyroDB image was **5823ed9fc45c**, an earlier build, so these are not current-checkpoint results. The multicore Redis configuration used I/O threads; command execution remained single-threaded.
+
+<figure><a href="docs/public/benchmarks/2026-11-13/redis-history.svg"><img src="docs/public/benchmarks/2026-11-13/redis-history.svg" alt="Earlier single-core official-client comparison across pipeline depths for FyroDB, Dragonfly and standalone Redis; an older FyroDB build is clearly labeled" /></a></figure>
+
+This chart contains median scores only and explicitly marks ranges as unavailable; that does not imply zero variance. [Raw records](docs/public/benchmarks/2026-11-13/evidence/standard-benchmark/records.json.gz) and [discarded-attempt log](docs/public/benchmarks/2026-11-13/evidence/standard-benchmark/discarded-attempts.json) preserve the original campaign.
+
+### Multi-process capacity diagnostic
+
+Six independent processes, each running the unmodified official client without client threads, tested whether a single load-generator process was limiting throughput. Total completed requests were divided by the **slowest reported client duration**. This is a separate aggregate diagnostic, not the score of one redis-benchmark invocation and not the normal Go suite. The same client count, CPU budget, keyspace and pipeline were used for both servers.
+
+<figure><a href="docs/public/benchmarks/2026-11-13/capacity.svg"><img src="docs/public/benchmarks/2026-11-13/capacity.svg" alt="Separate six-client capacity diagnostic comparing FyroDB and Dragonfly GET, SET and peak RSS for 64 B, 1 KiB, 8 KiB and 10 KiB values" /></a></figure>
+
+### Other benchmark methods
+
+- **Scalar standard-client guard:** pipeline 1, no client threads, 64 connections, one million requests per command; one/six workers and 64 B/1 KiB values. The latest campaign compares the checkpoint with the rejected admission candidate. [All samples](docs/public/benchmarks/2026-11-13/evidence/set-admission-isolated/scalar-guard/records.json.gz).
+- **Independent memtier cross-check:** an earlier 64 B probe used four threads, sixteen clients per thread, pipeline 64, a one-million-key random workload and five-second GET/SET windows. It has one measured attempt per command/build and is a smoke cross-check, not a statistically established current speedup. [Baseline samples](docs/public/benchmarks/2026-11-13/evidence/large-payload-optimization/memtier-probe/baseline/records.json.gz) · [candidate samples](docs/public/benchmarks/2026-11-13/evidence/large-payload-optimization/memtier-probe/candidate/records.json.gz).
+- **Direct Rust engine:** `without_tcp` removes sockets and client parsing. Batched APIs may credit equivalent logical operations. Its ops/s and inverse-throughput ns/op are not TCP request/reply rates or measured latency percentiles. Earlier direct and stable campaigns are listed in the downloadable campaign index.
+- **Custom RESP and hot-key clients:** used for targeted copying, concurrency, aliasing and capacity diagnostics; they are labeled separately from the standard client.
+- **Latency, memory, ANN and proxy modes:** the Go client supplies `lat`, `mem`, `ann`, `vec` and `pgcache` modes. These are supported measurement tools; the current KV campaign does not claim new ANN recall, open-loop latency or PostgreSQL results. Historical vector/proxy figures remain historical.
+- **Hardware counters:** instruction, cache and locked-access diagnostics investigate mechanisms. They do not establish end-to-end server throughput on their own.
+
+<figure><a href="docs/public/benchmarks/2026-11-13/memtier-history.svg"><img src="docs/public/benchmarks/2026-11-13/memtier-history.svg" alt="Earlier memtier GET and SET smoke cross-check, explicitly labeled one attempt on older builds" /></a></figure>
+
+## Algorithms retained in the runtime
+
+The current implementation retains guarded value access, script/transaction isolation, snapshot pre-images and WATCH invalidation. [Architecture](ARCHITECTURE.md) explains the protection layers.
+
+The retained large-payload changes use bounded scatter/gather replies, one guard per unique entry, a stack ownership index for duplicate entries, partial-write copying before guards drop, tiled SET prefetch and conditionally streaming large overwrites. The streaming path fences stores before publishing completion; repeated hashes conservatively select ordinary cached copying. It adds no persistent per-key or per-connection field.
+
+<figure><a href="docs/public/benchmarks/2026-11-13/large-payload.svg"><img src="docs/public/benchmarks/2026-11-13/large-payload.svg" alt="Matched before-and-after single-worker large-payload GET, SET and RSS measurements for all three large payload sizes, including cases without improvement" /></a></figure>
+
+<figure><a href="docs/public/benchmarks/2026-11-13/hot-key.svg"><img src="docs/public/benchmarks/2026-11-13/hot-key.svg" alt="Before-and-after large repeated-key tests for scalar and pipelined GET and SET on one and six workers" /></a></figure>
+
+These graphs show all selected metrics for each cohort, including regressions and unchanged cases. The [evidence manifest](docs/public/benchmarks/2026-11-13/manifest.json) also lists the small-payload acceptance and scaling records; only image-matched samples are credited to the retained runtime.
+
+## Rejected lock-reduction experiment
+
+An outlined handler reused write admission across adjacent small-value SET batches in a deep parser buffer. It retained the existing entry locks, snapshot hooks, replication/AOF routing and command boundaries. It passed correctness checks, but throughput varied materially and several medians were lower. **Both experimental runtime changes were reverted.** Only the regression tests were kept.
+
+<figure><a href="docs/public/benchmarks/2026-11-13/rejected-admission.svg"><img src="docs/public/benchmarks/2026-11-13/rejected-admission.svg" alt="Checkpoint and rejected SET-admission candidate side by side, showing slower as well as faster medians and memory" /></a></figure>
+
+The campaign contains **84 timed samples plus eight full Go warmup suites**: normal suites at one/three/six workers, a separate twelve-worker shared-client case, standard P256 cases at 64 B/1 KiB/10 KiB and scalar P1 cases at 64 B/1 KiB. All attempts are retained. A control measured the **identical checkpoint image under both labels** and demonstrated substantial host variation. [A/A samples](docs/public/benchmarks/2026-11-13/evidence/set-admission-isolated/noise-control/records.json.gz).
+
+A separate hardware diagnostic observed about **0.48% fewer retired locked-access load instructions per SET**. This is neither a mutex-acquisition count nor a throughput improvement. [Diagnostic details](docs/public/benchmarks/2026-11-13/evidence/set-admission-isolated/lock-review.json) · [acceptance decision](docs/public/benchmarks/2026-11-13/evidence/set-admission-isolated/acceptance.json) · [experimental patch](docs/public/benchmarks/2026-11-13/evidence/set-admission-isolated/candidate.patch.gz).
+
+Earlier counter-striping and broader admission trials were also rejected or superseded. The [campaign viewer](docs/public/benchmarks/2026-11-13/index.html) links all 23 archived summary campaigns and the manifest includes the available trial state records. Earlier native-client/Docker-server priority mismatches are not the current normal-suite reference.
+
+<a id="safety-and-regression-coverage" />
+
+## Safety and regression coverage
+
+The retained source passed **789 workspace tests, zero failures**, with three existing performance probes ignored, plus **14 large-reply tests with the io-uring feature**, Clippy across all targets with io-uring, formatting and diff checks. These counts are a recorded validation snapshot, not a guarantee about future changes.
+
+New regressions cover:
+
+- Deep binary SET pipelines followed by GET, EVAL, WATCH, MULTI/EXEC and NX fallback on one/six workers.
+- Incomplete and malformed protocol packets releasing write admission, and resuming a fragmented command.
+- SET+EXPIRE boundaries and mixed 257 B, 4 KiB and 10 KiB payloads.
+- Nested writer-scope cleanup and preservation of an already-active writer scope.
+- Concurrent deep SET/read/SAVE traffic, complete payloads and WATCH aborts after 64/1024-command write pipelines.
+
+The retained release image's isolation stress ran Lua transfers, MULTI/EXEC transfers and WATCH compare-and-set for **15 seconds each, twelve writers and four readers, on one/six workers**. All six cases passed with zero inconsistent snapshots and zero errors. Lua and MULTI transfers preserved the **64,000** total; each WATCH compare-and-set counter matched its expected successful-update count. SAVE/restart covered thirteen data types in two configurations, plus two affinity checks and three queued-large-reply cases. The rejected candidate also passed these checks; correctness alone did not justify retaining it.
+
+[Retained source checks](docs/public/benchmarks/2026-11-13/evidence/set-admission-isolated/retained-checks.json) · [retained-image isolation](docs/public/benchmarks/2026-11-13/evidence/large-path-verified/validation/isolation.json) · [candidate-image isolation](docs/public/benchmarks/2026-11-13/evidence/set-admission-isolated/validation/isolation.json) · [restart checks](docs/public/benchmarks/2026-11-13/evidence/large-path-verified/validation/state-results.json).
+
+A preliminary full-suite reference with a 3 GiB server cap was OOM-killed; it is recorded in the scaling checks rather than silently counted as a successful run. The matched normal suites use 4 GiB for both builds and had zero OOM kills. [Scaling checks](docs/public/benchmarks/2026-11-13/evidence/scaling-verified-20261113/checks.json).
+
+## Reproduce the measurements
+
+Build a local server image, then choose CPUs for your own topology; the example allocation below is specific to this six-core/SMT host. Use a fresh output directory. The runner builds an unchanged static Go client if no client binary is supplied.
+
+```bash
+docker build -t fyrodb:local .
+python3 scripts/bench_docker_normal.py \
+  --server current=fyrodb:local --workers 1,2,3,6 \
+  --server-cpus 0,1,2,6,7,8 --client-cpus 3,4,5,9,10,11 \
+  --runs 3 --warmups 1 --memory 4g --client-memory 1g \
+  --out temp/bench/normal-new
+```
+
+Run the shared-client case separately:
+
+```bash
+python3 scripts/bench_docker_normal.py \
+  --server current=fyrodb:local --workers 12 \
+  --server-cpus 0-11 --client-cpus 0-11 --allow-shared-cpus \
+  --out temp/bench/shared-new
+```
+
+For an independent client against a separately started, disposable server, this command is an example of the P256 workload, not a complete reproduction of all archived preloading and verification steps:
+
+```bash
+docker run --rm --network host --cpuset-cpus 3,4,5,9,10,11 \
+  --memory 1g --memory-swap 1g redis:8.8.3 \
+  redis-benchmark -h 127.0.0.1 -p 8000 --threads 4 \
+  -c 64 -P 256 -n 10000000 -r 100000 -d 64 -t set,get --csv
+```
+
+Prepopulate every requested random key, verify DBSIZE and sampled values, run warmups, alternate server order and preserve every result before comparing. `-d` changes the value size; do not change value size without preloading that cohort again. For 4 KiB and larger cohorts the archive uses two million requests per command. Pin immutable server/client image IDs for an exact replay; tags can change.
+
+The raw records preserve exact launch commands, keyspace, payloads, sample reuse, host-pressure and memory fields. `task bench-stable` offers the separate native pinned runner, `task memtier` runs the independent load generator, and `cargo bench --bench without_tcp` exercises the engine without TCP. A standard-client score and a batched engine score measure different work.
+
+To regenerate these docs and graphs from the committed evidence:
+
+```bash
+python3 scripts/update_benchmark_docs.py
+python3 scripts/update_benchmark_docs.py --check
+cargo test --workspace
+cargo test --features io-uring --test large_replies
+cargo clippy --workspace --all-targets --features io-uring -- -D warnings
+```
+
+The generator verifies evidence hashes, checks the normal-summary medians against the raw equal-priority samples, validates retained-image identities and emits deterministic SVGs, JSON and CSV. The evidence archive includes historical summaries without relabeling them as current results.

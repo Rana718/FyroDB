@@ -144,13 +144,15 @@ body {
 
 /* Improved table styling */
 .prose table {
+   display: block;
+   max-width: 100%;
    width: 100%;
    border-collapse: separate;
    border-spacing: 0;
    margin-bottom: 1.5rem;
    font-size: 0.875rem;
    border-radius: 0.5rem;
-   overflow: hidden;
+   overflow-x: auto;
    border: 1px solid var(--border);
 }
 .prose thead {
@@ -193,3 +195,6 @@ body {
    border-top: 1px solid var(--border);
    margin: 2rem 0;
 }
+
+.prose figure { overflow-x: auto; margin: 1.5rem 0; }
+.prose figure img { min-width: 760px; width: 100%; height: auto; }

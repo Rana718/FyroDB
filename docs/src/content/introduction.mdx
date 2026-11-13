@@ -10,25 +10,25 @@ order: 1
 
 FyroDB is two things in one binary:
 
-1. **A Redis-compatible in-memory KV store** — speaks RESP, works with every Redis client, SDK, and CLI tool without modification. Uses all CPU cores via a thread-per-core mio event loop and a fully lock-free concurrent hash map. A single FyroDB node outperforms a 6-node Redis Cluster on every workload.
+1. **A Redis-compatible in-memory KV store** — speaks RESP, works with every Redis client, SDK, and CLI tool without modification. Uses configurable mio workers and a sharded concurrent hash map with guarded value access. Performance depends on payloads, client behavior and CPU allocation; matched measurements are documented in the benchmarks.
 
 2. **A PostgreSQL query caching proxy** — sits in front of any PostgreSQL database and intercepts SELECT queries. Cache hits are served directly from memory over the PostgreSQL wire protocol at 5M+ ops/sec, completely bypassing the database. The proxy speaks full PostgreSQL wire protocol (simple query + extended protocol / prepared statements), so your existing drivers and ORMs connect without any code changes.
 
-Both engines run in the same process with independent event loops — the KV engine never blocks the proxy and vice versa.
+Both engines run in one process with separate event loops while sharing CPU, memory and storage resources.
 
 ## Key Features
 
 ### KV Engine
 
 - **Redis-compatible** — drop-in replacement, supports all major data types and 150+ commands
-- **Lock-free reads** — epoch-based reclamation, seqlock validation for iteration safety
-- **Zero-clone writes** — per-key spinlock with in-place mutation, no CAS retry loops
+- **Guarded concurrent reads** — EBR lifetime protection plus entry guards or bounded map read admission
+- **In-place writes** — per-key write guards and reusable value capacity; growth and contention can require allocation or retries
 - **Thread-per-core** — one epoll loop per CPU, SO_REUSEPORT kernel accept
 - **Redis Cluster** — 16384 hash slots, MOVED/ASK redirects, hash tags, gossip bus
-- **Zero-copy GET** — writes directly from stored value to TCP buffer
+- **Direct GET replies** — serialize protected stored values; eligible large batches use guarded scatter/gather
 - **Full data type support** — String, Hash, List, Set, Sorted Set, JSON, Stream, Bitmap, HyperLogLog, Geospatial
 - **RDB persistence** — automatic snapshots, atomic saves, crash-safe
-- **Pub/Sub** — 113.98M msg/sec delivery with lock-free Arc snapshots
+- **Pub/Sub** — shared encoded frames and grouped worker delivery, with completed recipient counts verified
 
 ### DB Cache Proxy
 
@@ -43,37 +43,11 @@ Both engines run in the same process with independent event loops — the KV eng
 
 ### KV Engine
 
-| Benchmark | FyroDB (1 node) | Redis Cluster (12 nodes) | Speedup |
-| ------------------------- | ------------------- | ------------------------ | ------- |
-| Pipeline-64 SET           | 15.41M ops/sec      | 5.00M ops/sec            | 3.08×   |
-| Pipelined SET             | 39.62M ops/sec      | 6.53M ops/sec            | 6.07×   |
-| Pipelined GET             | 53.38M ops/sec      | 11.62M ops/sec           | 4.59×   |
-| Pub/Sub publish           | 2.29M ops/sec       | 161.9K ops/sec           | 14.1×   |
-| Pub/Sub delivery          | 113.98M msg/sec     | 8.09M msg/sec            | 14.1×   |
-| Mixed SET/GET (50/50)     | 45.87M ops/sec      | 5.82M ops/sec            | 7.88×   |
-| INCR (counters)           | 108.56M ops/sec     | 6.54M ops/sec            | 16.6×   |
-| HSET/HGET (sessions)      | 44.44M ops/sec      | 6.63M ops/sec            | 6.70×   |
-| LPUSH/RPOP (queue)        | 66.93M ops/sec      | 7.17M ops/sec            | 9.33×   |
-| SADD (sets)               | 40.38M ops/sec      | 6.27M ops/sec            | 6.44×   |
-| ZADD (zsets)              | 17.83M ops/sec      | 4.78M ops/sec            | 3.73×   |
-| JSON.GET (docs)           | 26.21M ops/sec      | 3.23M ops/sec            | 8.11×   |
-| JSON.SET (docs)           | 16.28M ops/sec      | 3.23M ops/sec            | 5.04×   |
-| SET+EXPIRE (cache TTL)    | 15.14M ops/sec      | 2.41M ops/sec            | 6.28×   |
-| Hot Key (contention)      | 37.68M ops/sec      | 1.61M ops/sec            | 23.4×   |
-| Producer/Consumer         | 40.61M ops/sec      | 1.70M ops/sec            | 23.9×   |
-| XADD (streams)            | 23.76M ops/sec      | 4.27M ops/sec            | 5.56×   |
-| SETBIT/BITCOUNT (bitmap)  | 38.11M ops/sec      | 5.94M ops/sec            | 6.42×   |
-| PFADD/PFCOUNT (HLL)       | 63.43M ops/sec      | 6.03M ops/sec            | 10.5×   |
-| GEOADD/GEODIST (geo)      | 10.06M ops/sec      | 3.07M ops/sec            | 3.28×   |
-| Vector KNN-10 (FLAT)      | 922 q/s             | 104 q/s †                | 8.87×   |
-| Text term search          | 34.3K q/s           | 1.6K q/s †               | 21.4×   |
-| Text negation             | 20.3K q/s           | 361 q/s †                | 56.2×   |
-| Vector HNSW KNN-10        | 4.9K q/s            | 1.1K q/s †               | 4.45×   |
-| Vector HNSW M=32 KNN-10   | 2.0K q/s            | 1.1K q/s †               | 1.82×   |
+[Current benchmark evidence](/docs/benchmarks) leads with our normal Go TCP suite. The retained d5a178b runtime measured 20.130M GET/s on one worker and 47.419M GET/s on six workers using three physical cores plus SMT with dedicated clients. A separate twelve-worker shared-client run measured 55.897M GET/s. These are three-run medians under different stated CPU budgets, not latency measurements or a guaranteed deployment rate.
 
-Tested on a 6-core Intel i5-11400H (12 hardware threads): one FyroDB node against a 12-node Redis Cluster (13 containers).
+<figure><a href="/benchmarks/2026-11-13/normal-scaling.svg"><img src="/benchmarks/2026-11-13/normal-scaling.svg" alt="Current normal TCP medians and peak RSS across worker allocations, including a separately labeled shared-client run" /></a></figure>
 
-† Redis Cluster does not distribute vector or graph operations across nodes — those benchmarks ran against a single Redis node.
+The page includes every normal workload, official redis-benchmark comparisons with Dragonfly, earlier standalone Redis results, all tested payload sizes, memory, safety checks and rejected experiments. [Historical higher best-of-three figures](/docs/benchmark-history) remain available separately; the latest admission-reuse candidate was reverted.
 
 ### DB Cache Proxy
 
@@ -84,7 +58,7 @@ Tested on a 6-core Intel i5-11400H (12 hardware threads): one FyroDB node agains
 | Simple query TCP (cache hit)     | ~7.6M ops/sec    |
 | Extended protocol TCP (cache hit)| ~5M ops/sec      |
 
-Cache hits never touch the upstream database. Numbers measured on a 6-core Intel i5-11400H.
+Historical proxy measurements on a six-core i5-11400H; no new proxy benchmark was run in the current KV campaign. Cache hits avoid forwarding the query upstream.
 
 ## Links
 

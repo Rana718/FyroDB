@@ -2,7 +2,7 @@
 
 Thank you for your interest in contributing to FyroDB! 🎉
 
-FyroDB is a high-performance system combining two engines: a Redis-compatible in-memory key-value store (RESP2/RESP3) and a PostgreSQL query caching proxy (full wire protocol). Both run in the same Rust binary. Performance, low latency, lock-free concurrency, and minimal resource footprints are core project goals.
+FyroDB is a high-performance system combining two engines: a Redis-compatible in-memory key-value store (RESP2/RESP3) and a PostgreSQL query caching proxy (full wire protocol). Both run in the same Rust binary. Performance, low latency, safe concurrency, and minimal resource footprints are core project goals.
 
 Please review this guide before submitting issues or pull requests.
 
@@ -20,7 +20,7 @@ Please review this guide before submitting issues or pull requests.
    - [Documentation](#documentation)
 4. [Architecture & Coding Guidelines](#architecture--coding-guidelines)
    - [Zero-Regression Policy](#zero-regression-policy)
-   - [Lock-Free Concurrency & Memory Safety](#lock-free-concurrency--memory-safety)
+   - [Concurrency & Memory Safety](#concurrency--memory-safety)
    - [Zero-Copy & Allocation Awareness](#zero-copy--allocation-awareness)
    - [Hash Collections & Data Structures](#hash-collections--data-structures)
    - [Adding a New Command](#adding-a-new-command)
@@ -35,7 +35,7 @@ Please review this guide before submitting issues or pull requests.
 - **Performance First**: Any PR that causes a performance regression (even ~1%) without strong justification will not be merged.
 - **Zero Allocations on Hot Paths**: Hot paths (`GET`, `SET`, `INCR`, `LPUSH`, `HSET`, etc.) must avoid unnecessary heap allocations, String clones, or heavy formatting macros.
 - **Compatibility**: Redis wire protocol (RESP2/RESP3) compatibility must be preserved for supported commands.
-- **Simplicity**: Prefer clear, lock-free, cache-friendly data structures over complex abstractions.
+- **Simplicity**: Prefer clear, bounded, cache-friendly data structures with explicit protection and ownership.
 
 ---
 
@@ -77,8 +77,9 @@ Unit and integration tests live in `tests/`:
 
 ```bash
 task test
-# or
-cargo test
+# Complete workspace validation:
+cargo test --workspace
+cargo test --features io-uring --test large_replies
 ```
 
 To run a specific test suite:
@@ -131,6 +132,17 @@ task bench-redis-cluster
 task down
 ```
 
+Compare like-for-like builds with the Docker normal runner and independent clients; see [BENCHMARKS.md](BENCHMARKS.md). Keep medians, min/max, all attempts, keyspace, payloads, immutable images, CPU placement, process priorities, RSS and container memory. A shared-client sweep is a different budget from dedicated clients. Verify equal niceness before timing; do not silently drop contended or failed attempts.
+
+The versioned evidence and SVGs are generated deterministically:
+
+```bash
+python3 scripts/update_benchmark_docs.py
+python3 scripts/update_benchmark_docs.py --check
+```
+
+Regenerate after editing the benchmark page's source text because BENCHMARKS.md mirrors it. Add a new evidence campaign rather than replacing historical numbers with selected maxima. The generator checks archived hashes and selected raw-sample/summary consistency; it does not run a benchmark.
+
 ### Documentation
 
 The documentation lives in the `docs/` folder:
@@ -144,20 +156,23 @@ task docs-build  # Build static docs
 
 ## Architecture & Coding Guidelines
 
-Before writing code, please read [`ARCHITECTURE.md`](ARCHITECTURE.md) to understand the lock-free concurrency model (`CustomMap`, EBR, seqlocks, and thread-per-core event loop).
+Before writing code, please read [`ARCHITECTURE.md`](ARCHITECTURE.md) to understand command isolation, map admission, per-entry read/write guards, EBR and the worker event loops.
 
 ### Zero-Regression Policy
 
-FyroDB is designed to outperform standard Redis instances by 2× to 16×. When touching critical execution paths:
+Performance goals must be supported by matched measurements; no fixed speedup over another database is assumed. When touching critical execution paths:
 1. Benchmark before and after your changes.
 2. Ensure instruction counts, cache misses, and heap allocations do not increase.
 3. Validate binary size does not inflate unexpectedly.
 
-### Lock-Free Concurrency & Memory Safety
+### Concurrency & Memory Safety
 
-- In-place mutations happen under a lightweight per-key spinlock (`mlock`) and sequence lock (`seq`).
-- Read paths must use Epoch-Based Reclamation (`EBR`) to guarantee reference validity without blocking writers.
-- Never introduce global locks or long-held mutexes in the storage engine.
+- Preserve command isolation for EVAL/EVALSHA, WATCH and EXEC; normal work shares worker slots and atomic work excludes every slot.
+- Mutable values require an entry read/write guard or a successfully admitted map read epoch. EBR keeps retired memory alive; it does not prevent data races on String, Vec or collections.
+- Mutations require map write admission and the entry write lock. Keep snapshot pre-image capture, WATCH invalidation and durable/replicated write hooks in optimized paths.
+- Keep sequentially consistent admission and acquire/release publication orderings unless a separately reviewed proof and tests establish an alternative.
+- Test partial/error exits, nested scopes, duplicate keys, short socket writes, concurrent reads/writes and SAVE/restart.
+- Reject an optimization when real workloads regress or the gain is unproven; fewer instructions or locks alone is insufficient.
 
 ### Zero-Copy & Allocation Awareness
 

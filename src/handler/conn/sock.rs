@@ -323,3 +323,61 @@ impl<'a> Conn<'a> {
          || matches!(&self.mode, ConnMode::Subscribed { slot, .. } if slot.has_pending())
    }
 }
+
+#[cfg(test)]
+mod tests {
+   use super::*;
+
+   fn process(store: &Arc<Store>, wire: Vec<u8>) -> bool {
+      let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+      let client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+      let (_peer, _) = listener.accept().unwrap();
+      client.set_nonblocking(true).unwrap();
+      let poll = mio::Poll::new().unwrap();
+      let waker = Arc::new(mio::Waker::new(poll.registry(), mio::Token(1)).unwrap());
+      let notifier = WorkerNotifier::new(waker, 0);
+      let pubsub = PubSub::new();
+      let mut conn = Conn::new(
+         Stream::Tcp(mio::net::TcpStream::from_std(client)),
+         store,
+         &pubsub,
+         1,
+         &notifier,
+         None,
+         0,
+      );
+      conn.parser.filled = wire.len();
+      conn.parser.rbuf = wire;
+      conn.process_buffered()
+   }
+
+   fn deep_writes() -> Vec<u8> {
+      b"*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n".repeat(4096)
+   }
+
+   #[test]
+   fn incomplete_and_invalid_packets_release_write_admission() {
+      for incomplete in [false, true] {
+         let store = Arc::new(Store::with_config_workers(2, usize::MAX, 6));
+         let mut wire = deep_writes();
+         wire.extend_from_slice(if incomplete {
+            b"*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nval"
+         } else {
+            b"*2\r\n$-2\r\n"
+         });
+         assert_eq!(process(&store, wire), incomplete);
+         assert!(store.data.try_read_epoch().is_some());
+         assert_eq!(store.get("key").as_deref(), Some("value"));
+      }
+   }
+
+   #[test]
+   fn buffered_set_admission_preserves_an_existing_writer_scope() {
+      let store = Arc::new(Store::with_config_workers(2, usize::MAX, 6));
+      let writer = store.data.write_epoch();
+      assert!(process(&store, deep_writes()));
+      assert!(store.data.try_read_epoch().is_none());
+      drop(writer);
+      assert!(store.data.try_read_epoch().is_some());
+   }
+}

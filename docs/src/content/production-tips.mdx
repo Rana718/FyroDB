@@ -16,7 +16,15 @@ redis-cli -p 8000 DEBUG POPULATE 100000
 redis-cli -p 8000 FLUSHALL
 ```
 
-Or insert your expected key count at deployment time before routing traffic. After pre-warming, Pipeline-64 SET throughput improves from ~9M to ~17M ops/sec.
+Or insert your expected key count at deployment time before routing traffic. Benchmark the first-load and preloaded phases separately; the current suite reports insertion and overwrite rates as different metrics. FLUSHALL may release/replace warmed tables, so verify retained capacity rather than assuming that dummy insertion followed by a flush preserves it.
+
+## Choose workers from measurements
+
+Physical cores, SMT threads and client CPU time are different resources. Sweep the worker count with a dedicated client CPU allocation first, and measure any shared-client/all-core case separately. The normal TCP results show gains from one to three physical cores, a smaller incremental GET gain with six workers on those cores plus SMT, and a different twelve-worker result when clients share all CPUs.
+
+<figure><a href="/benchmarks/2026-11-13/normal-scaling.svg"><img src="/benchmarks/2026-11-13/normal-scaling.svg" alt="Current worker scaling shows physical-core, SMT and shared-client configurations separately, including peak RSS" /></a></figure>
+
+More workers can increase shared-counter traffic, cache/memory pressure and allocator footprint. Keep the value guards and Lua/transaction isolation enabled; reducing coordination is useful only when matched end-to-end tests improve. [All benchmark methods, ranges and raw evidence](/docs/benchmarks).
 
 ## Recommended Configuration
 
