@@ -13,16 +13,14 @@ pub fn pubsub_info(parts: &[&str], pubsub: &PubSub, out: &mut Vec<u8>) {
    match sub.to_ascii_uppercase().as_str() {
       "CHANNELS" => {
          let pattern = parts.get(2).copied();
-         let mut channels = pubsub.active_channels(pattern);
-         channels.sort();
+         let channels = pubsub.active_channels(pattern);
          resp::write_array(out, &channels);
       }
       "NUMSUB" => {
-         let keys: Vec<&str> = parts[2..].to_vec();
-         let pairs = pubsub.numsub(&keys);
+         let pairs = pubsub.numsub(&parts[2..]);
          resp::write_array_header(out, pairs.len() * 2);
          for (ch, n) in pairs {
-            resp::write_bulk(out, &ch);
+            resp::write_bulk(out, ch);
             resp::write_integer(out, n as i64);
          }
       }

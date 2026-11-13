@@ -79,6 +79,38 @@ fn extract_workers(slots: &[Arc<SubSlot>]) -> Refs<Arc<WorkerNotifier>> {
    Refs::from_vec(workers)
 }
 
+fn add_worker(
+   workers: &Refs<Arc<WorkerNotifier>>,
+   notifier: &Arc<WorkerNotifier>,
+) -> Option<Refs<Arc<WorkerNotifier>>> {
+   let worker_index = notifier.worker_index();
+   if worker_index < 64 {
+      let index = workers
+         .iter()
+         .position(|worker| worker.worker_index() >= worker_index)
+         .unwrap_or(workers.len());
+      if workers
+         .get(index)
+         .is_some_and(|worker| worker.worker_index() == worker_index)
+      {
+         return None;
+      }
+      let mut updated = Vec::with_capacity(workers.len() + 1);
+      updated.extend(workers[..index].iter().cloned());
+      updated.push(Arc::clone(notifier));
+      updated.extend(workers[index..].iter().cloned());
+      return Some(Refs::from_vec(updated));
+   }
+
+   if workers.iter().any(|worker| Arc::ptr_eq(worker, notifier)) {
+      return None;
+   }
+   let mut updated = Vec::with_capacity(workers.len() + 1);
+   updated.extend(workers.iter().cloned());
+   updated.push(Arc::clone(notifier));
+   Some(Refs::from_vec(updated))
+}
+
 fn fan_out(channel: &ChannelData, generation: u64, frame: Arc<[u8]>) {
    let workers = &*channel.workers;
    if let Some((last, earlier)) = workers.split_last() {
@@ -213,12 +245,8 @@ impl ChannelShard {
             let mut slots = Vec::with_capacity(ch.slots.len() + 1);
             slots.extend(ch.slots.iter().cloned());
             slots.push(Arc::clone(&slot));
-            if !ch
-               .workers
-               .iter()
-               .any(|worker| Arc::ptr_eq(worker, slot.notifier()))
-            {
-               ch.workers = extract_workers(&slots);
+            if let Some(workers) = add_worker(&ch.workers, slot.notifier()) {
+               ch.workers = workers;
             }
             ch.slots = Refs::from_vec(slots);
             name = Arc::clone(&ch.name);
@@ -386,16 +414,13 @@ impl PatternIndex {
          .notifier()
          .unregister_subscription(pattern, slot.token, true);
    }
-   fn matching<'a>(&'a self, channel: &str) -> SmallVec<[&'a PatternEntry; 4]> {
-      let mut matches = SmallVec::new();
+
+   fn matching(&self, channel: &str) -> SmallVec<[&PatternEntry; 4]> {
       let first = channel.as_bytes().first().copied();
       let bucket = first.map_or(&[][..], |b| &self.buckets[b as usize]);
-      for entry in self.wildcard.iter().chain(bucket) {
-         if glob_match_bytes(entry.pattern.as_bytes(), channel.as_bytes()) {
-            matches.push(entry);
-         }
-      }
-      matches
+      self.wildcard.iter().chain(bucket)
+         .filter(|entry| glob_match_bytes(entry.pattern.as_bytes(), channel.as_bytes()))
+        .collect()
    }
 }
 
@@ -537,12 +562,12 @@ impl PubSub {
          .flat_map(|shard| shard.active_channels(pattern))
          .collect()
    }
-   pub fn numsub(&self, channels: &[&str]) -> Vec<(String, usize)> {
+   pub fn numsub<'a>(&self, channels: &[&'a str]) -> Vec<(&'a str, usize)> {
       channels
          .iter()
-         .map(|channel| {
+         .map(|&channel| {
             (
-               channel.to_string(),
+               channel,
                self.shard_for(channel).count_for(channel),
             )
          })

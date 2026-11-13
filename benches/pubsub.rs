@@ -84,7 +84,7 @@ fn bench_distinct_worker_subscribers() {
       report(label, WORKERS, start.elapsed());
       assert_eq!(
          pubsub.numsub(&["shared-worker-channel"]),
-         vec![("shared-worker-channel".to_string(), WORKERS)]
+         vec![("shared-worker-channel", WORKERS)]
       );
    }
 }
