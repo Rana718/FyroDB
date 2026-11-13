@@ -80,6 +80,8 @@ Results are written to `temp/bench/stable/summary.json`. Compare medians and var
 
 For a sustained hot-key check, add `--modes hotkey --hotkey-seconds 8 --inner 1`. CPU time per completed request helps distinguish a server optimization from a client or host bottleneck.
 
+For the normal Go suite against Docker, use `python3 scripts/bench_docker_normal.py --server current=fyrodb --out temp/bench/docker-normal`. The runner checks matching client/server process priorities and requires an explicit `--allow-shared-cpus` flag for overlapping CPU allocations. A shared-client run measures a different resource budget from a dedicated-client worker sweep.
+
 For ANN comparisons against older builds, verify that background indexing has settled before timing:
 
 ```bash
@@ -177,7 +179,7 @@ Full reference → [Configuration docs](https://fyrodb.vercel.app/docs/configura
 | Contributing | [CONTRIBUTING.md](CONTRIBUTING.md) |
 | Docker Hub | https://hub.docker.com/r/rana718/fyrodb |
 
-Built on [`customhash`](https://www.ranadolui.me/blog/custom-concurrent-hashmap-rust) — a sharded lock-free concurrent hash map with epoch-based reclamation and per-key seqlock.
+Built on [`customhash`](crates/customhash) — a sharded concurrent hash map with epoch-based reclamation and per-entry read/write guards. Batch admission and script/transaction isolation protect mutable values and atomic operations.
 
 ## License
 
