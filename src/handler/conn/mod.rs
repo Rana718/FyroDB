@@ -118,6 +118,10 @@ pub struct Conn<'a> {
    pub uid: u64,
    /// Set while the current command waits off-worker or on a key.
    pub park: Option<park::Parked>,
+   /// Reusable scratch for commands that move an element out of a locked
+   /// value before serializing it (pops), keeping the RESP reply build
+   /// outside the entry critical section.
+   pub(crate) pop_scratch: String,
    #[allow(dead_code)]
    hints: [prefetch::Hint; customhash::PREFETCH_BATCH],
    #[allow(dead_code)]
@@ -162,6 +166,7 @@ impl<'a> Conn<'a> {
          worker,
          uid: park::next_uid(),
          park: None,
+         pop_scratch: String::new(),
          hints: [prefetch::Hint::default(); customhash::PREFETCH_BATCH],
          hint_n: 0,
          hint_idx: 0,

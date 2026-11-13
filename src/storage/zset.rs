@@ -37,13 +37,18 @@ impl Store {
       members: &[(f64, &str)],
       out: &mut Vec<u8>,
    ) -> Result<(), &'static str> {
+      // Flags are collected under the entry lock and serialized after it:
+      // for contended shared keys the ordered-chunk insert no longer also
+      // drags the reply buffer work through the critical section.
+      let mut flags = smallvec::SmallVec::<[bool; 32]>::new();
+      flags.reserve(members.len());
       out.reserve(members.len() * 4);
       let result = self.data.update_with(key, |val| {
          if val.is_expired() {
             let mut z = ZSetData::with_capacity(members.len());
             for (s, m) in members {
                let added = z.insert(*s, m);
-               out.extend_from_slice(if added { b":1\r\n" } else { b":0\r\n" });
+               flags.push(added);
             }
             val.value = FyroDB::ZSet(Box::new(z));
             val.expires_ms = 0;
@@ -54,7 +59,7 @@ impl Store {
                z.reserve(members.len());
                for (s, m) in members {
                   let added = z.insert(*s, m);
-                  out.extend_from_slice(if added { b":1\r\n" } else { b":0\r\n" });
+                  flags.push(added);
                }
                Ok(())
             }
@@ -63,12 +68,19 @@ impl Store {
       });
 
       match result {
-         Some(r) => r,
+         Some(r) => {
+            if r.is_ok() {
+               for added in flags.iter() {
+                  out.extend_from_slice(if *added { b":1\r\n" } else { b":0\r\n" });
+               }
+            }
+            r
+         }
          None => {
             let mut z = ZSetData::with_capacity(members.len());
             for (s, m) in members {
                let added = z.insert(*s, m);
-               out.extend_from_slice(if added { b":1\r\n" } else { b":0\r\n" });
+               flags.push(added);
             }
             self.data.insert_str(
                key,
@@ -77,6 +89,9 @@ impl Store {
                   expires_ms: 0,
                },
             );
+            for added in flags.iter() {
+               out.extend_from_slice(if *added { b":1\r\n" } else { b":0\r\n" });
+            }
             Ok(())
          }
       }

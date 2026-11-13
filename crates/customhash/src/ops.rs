@@ -279,10 +279,16 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
          return;
       }
 
-      let _lock = shard.grow_lock.lock().unwrap_or_else(|e| e.into_inner());
+      let _lock = shard.grow_lock.lock();
       shard.insert_gate.fetch_or(GROWING, Ordering::AcqRel);
+      let mut spins: u32 = 0;
       while (shard.insert_gate.load(Ordering::Acquire) & !GROWING) != 0 {
-         std::hint::spin_loop();
+         spins += 1;
+         if spins <= 64 {
+            std::hint::spin_loop();
+         } else {
+            std::thread::yield_now();
+         }
       }
 
       let old_ptr = shard.table.load(Ordering::Acquire);
@@ -318,7 +324,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
    pub fn clear(&self) {
       let _write_epoch = self.write_epoch();
       for shard in self.shards.iter() {
-         let _lock = shard.grow_lock.lock().unwrap_or_else(|e| e.into_inner());
+         let _lock = shard.grow_lock.lock();
          shard.insert_gate.fetch_or(GROWING, Ordering::AcqRel);
          while (shard.insert_gate.load(Ordering::Acquire) & !GROWING) != 0 {
             std::hint::spin_loop();
@@ -346,6 +352,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
       for shard in self.shards.iter() {
          shard.live.store(0, Ordering::Release);
       }
+      self.approx.store(0, Ordering::Release);
       if self.observing.load(Ordering::Relaxed)
          && let Some(o) = self.observer.get()
       {

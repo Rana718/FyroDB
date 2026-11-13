@@ -22,6 +22,13 @@ pub use memory::*;
 use ttl::TtlCounters;
 pub use watch::WatchedKey;
 
+// Per-thread script snapshot: (epoch, normalized sha1, script). Re-entrant
+// callers (nested EVAL) fall back to the shared map.
+thread_local! {
+   static SCRIPT_TL: std::cell::RefCell<Option<(u64, String, Arc<str>)>> =
+      const { std::cell::RefCell::new(None) };
+}
+
 pub struct Store {
    pub(crate) data: CustomMap<StoreValue>,
    pub(crate) replication: Option<crate::cluster::ReplicationCoordinator>,
@@ -137,6 +144,10 @@ impl Store {
             return;
          }
       }
+      // Invalidate per-thread snapshots so the next lookup repopulates.
+      self
+         .script_epoch
+         .fetch_add(1, std::sync::atomic::Ordering::Release);
       self
          .script_cache
          .write()
@@ -146,8 +157,33 @@ impl Store {
    pub fn with_script<R>(&self, sha1: &str, f: impl FnOnce(&str) -> R) -> Option<R> {
       let mut buf = [0u8; 40];
       let norm = crate::scripting::normalize_sha1(sha1, &mut buf);
+      // Per-thread snapshot: in steady state an EVALSHA pays zero atomics
+      // (one epoch compare + one pointer compare); the shared RwLock is
+      // taken only on epoch change or first use.
+      let mut f = Some(f);
+      let fast = SCRIPT_TL.try_with(|cell| {
+         let mut slot = cell.try_borrow_mut().ok()?;
+         let epoch = self.script_epoch.load(std::sync::atomic::Ordering::Acquire);
+         if let Some((cached_epoch, key, script)) = slot.as_ref() {
+            if *cached_epoch == epoch && key.as_str() == norm {
+               let script = Arc::clone(script);
+               return Some((f.take().unwrap())(script.as_ref()));
+            }
+         }
+         let script = {
+            let read = self.script_cache.read();
+            read.get(norm).map(Arc::clone)?
+         };
+         *slot = Some((epoch, norm.to_owned(), Arc::clone(&script)));
+         Some((f.take().unwrap())(script.as_ref()))
+      });
+      if let Ok(Some(result)) = fast {
+         return Some(result);
+      }
+      // Re-entrant (nested EVAL) or miss inside the snapshot path: the
+      // shared map. `f` is only consumed when a script was actually found.
       let read = self.script_cache.read();
-      read.get(norm).map(|s| f(s.as_ref()))
+      read.get(norm).map(|s| f.take().unwrap()(s.as_ref()))
    }
 
    pub fn get_script(&self, sha1: &str) -> Option<String> {
@@ -157,7 +193,23 @@ impl Store {
    pub fn script_exists(&self, sha1: &str) -> bool {
       let mut buf = [0u8; 40];
       let norm = crate::scripting::normalize_sha1(sha1, &mut buf);
-      self.script_cache.read().contains_key(norm)
+      SCRIPT_TL.with(|cell| {
+         let mut slot = cell.borrow_mut();
+         let epoch = self.script_epoch.load(std::sync::atomic::Ordering::Acquire);
+         if let Some((cached_epoch, key, _)) = slot.as_ref() {
+            if *cached_epoch == epoch && key.as_str() == norm {
+               return true;
+            }
+         }
+         let read = self.script_cache.read();
+         let hit = read.contains_key(norm);
+         if hit
+            && let Some(script) = read.get(norm).map(Arc::clone)
+         {
+            *slot = Some((epoch, norm.to_owned(), script));
+         }
+         hit
+      })
    }
 
    pub fn flush_scripts(&self) {

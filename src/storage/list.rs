@@ -116,6 +116,10 @@ impl Store {
       from_back: bool,
       out: &mut Vec<u8>,
    ) -> Result<usize, &'static str> {
+      // Reserve for typical element sizes before the entry lock is taken:
+      // a wbuf realloc inside the lock would memcpy the retained buffer
+      // while holding the hot queue key.
+      out.reserve(out.len() + count * 24);
       self.list_write(key, |l| {
          let mut n = 0;
          while n < count {

@@ -54,10 +54,32 @@ impl Store {
    }
 
    pub fn record_current_value(&self, key: &str) {
-      self.aof_capture(key);
+      // One lookup, one encoding, shared by the AOF record and the
+      // replication record. The entry read guard spans the encode so the
+      // captured value is consistent (writers are excluded for the same
+      // window that orders the log append).
+      let mut encoded: Option<Vec<u8>> = None;
+      let mut expire_at_ms: Option<u64> = None;
+      let mut live = false;
+      {
+         let value = self.data.get_ref(key);
+         if let Some(value) = value.as_ref().filter(|value| !value.is_expired()) {
+            live = true;
+            if crate::storage::persistence::aof::enabled() {
+               encoded = crate::storage::persistence::aof::encode_live(value);
+            }
+            expire_at_ms = Some(value.expires_ms).filter(|expiry| *expiry != 0);
+            if self.replication.is_some() && encoded.is_none() {
+               encoded = crate::storage::rdb::encode_single_value(value).ok();
+            }
+         }
+      }
+      if let Some(aof) = crate::storage::persistence::aof::get() {
+         aof.record_encoded(key, encoded.as_deref());
+      }
       let Some(log) = &self.replication else { return };
       let slot = crate::cluster::hash_slot(key.as_bytes());
-      let Some(value) = self.data.get_ref(key).filter(|value| !value.is_expired()) else {
+      let Some(encoded) = (live.then_some(encoded)).flatten() else {
          let _ = log.append(crate::cluster::MutationRecord {
             offset: 0,
             slot,
@@ -68,14 +90,11 @@ impl Store {
          });
          return;
       };
-      let Ok(encoded) = crate::storage::rdb::encode_single_value(&value) else {
-         return;
-      };
       let _ = log.append(crate::cluster::MutationRecord::replace(
          slot,
          key.as_bytes().to_vec(),
          encoded,
-         Some(value.expires_ms).filter(|expiry| *expiry != 0),
+         expire_at_ms,
       ));
    }
 

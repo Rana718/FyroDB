@@ -500,20 +500,18 @@ pub(super) fn execute_write_run(
    match op {
       WriteOp::Set => {
          // Sequential SETs fully overwrite: one call reproduces the final
-         // state. Plain SET clears TTL (set_string uses zero TTL).
+         // state. Plain SET clears TTL. Bytes-native: no value scan.
          let last = parts[parts.len() - 1];
-         let out = &mut conn.parser.wbuf;
-         let Some(value) = part_str(out, last) else {
-            return Err(());
-         };
-         conn.store.set_string(key, value, 0);
+         let value = unsafe { part_bytes(last) };
+         conn.store.set_string_auto_bytes(key, None, std::ptr::null(), value, 0);
          for _ in 0..cmds {
             conn.parser.wbuf.extend_from_slice(b"+OK\r\n");
          }
          if replication {
-            for _ in 0..cmds {
-               conn.store.record_current_value(key);
-            }
+            // One capture per run: the batch mutation is already complete
+            // above, so every loop iteration recorded the identical final
+            // value; K-1 lookups, encodes and appends were pure waste.
+            conn.store.record_current_value(key);
          }
       }
       WriteOp::Incr => {
@@ -545,9 +543,10 @@ pub(super) fn execute_write_run(
             }
          }
          if replication {
-            for _ in 0..cmds {
-               conn.store.record_current_value(key);
-            }
+            // One capture per run: the batch mutation is already complete
+            // above, so every loop iteration recorded the identical final
+            // value; K-1 lookups, encodes and appends were pure waste.
+            conn.store.record_current_value(key);
          }
       }
       WriteOp::Hset => {
@@ -575,9 +574,10 @@ pub(super) fn execute_write_run(
             }
          }
          if replication {
-            for _ in 0..cmds {
-               conn.store.record_current_value(key);
-            }
+            // One capture per run: the batch mutation is already complete
+            // above, so every loop iteration recorded the identical final
+            // value; K-1 lookups, encodes and appends were pure waste.
+            conn.store.record_current_value(key);
          }
       }
       WriteOp::Sadd => {
@@ -596,9 +596,10 @@ pub(super) fn execute_write_run(
             }
          }
          if replication {
-            for _ in 0..cmds {
-               conn.store.record_current_value(key);
-            }
+            // One capture per run: the batch mutation is already complete
+            // above, so every loop iteration recorded the identical final
+            // value; K-1 lookups, encodes and appends were pure waste.
+            conn.store.record_current_value(key);
          }
       }
       WriteOp::Pfadd => {
@@ -626,9 +627,10 @@ pub(super) fn execute_write_run(
             }
          }
          if replication {
-            for _ in 0..cmds {
-               conn.store.record_current_value(key);
-            }
+            // One capture per run: the batch mutation is already complete
+            // above, so every loop iteration recorded the identical final
+            // value; K-1 lookups, encodes and appends were pure waste.
+            conn.store.record_current_value(key);
          }
       }
       WriteOp::Zadd => {
@@ -684,9 +686,10 @@ pub(super) fn execute_write_run(
             }
          }
          if replication {
-            for _ in 0..cmds {
-               conn.store.record_current_value(key);
-            }
+            // One capture per run: the batch mutation is already complete
+            // above, so every loop iteration recorded the identical final
+            // value; K-1 lookups, encodes and appends were pure waste.
+            conn.store.record_current_value(key);
          }
       }
       WriteOp::Geoadd => {
@@ -751,9 +754,10 @@ pub(super) fn execute_write_run(
             }
          }
          if replication {
-            for _ in 0..cmds {
-               conn.store.record_current_value(key);
-            }
+            // One capture per run: the batch mutation is already complete
+            // above, so every loop iteration recorded the identical final
+            // value; K-1 lookups, encodes and appends were pure waste.
+            conn.store.record_current_value(key);
          }
       }
       WriteOp::Xadd => {
@@ -815,9 +819,10 @@ pub(super) fn execute_write_run(
             }
          }
          if replication {
-            for _ in 0..cmds {
-               conn.store.record_current_value(key);
-            }
+            // One capture per run: the batch mutation is already complete
+            // above, so every loop iteration recorded the identical final
+            // value; K-1 lookups, encodes and appends were pure waste.
+            conn.store.record_current_value(key);
          }
       }
    }
@@ -1105,9 +1110,9 @@ pub(super) fn execute_queue_run(
    }
 
    if conn.store.has_replication() {
-      for _ in 0..cmds {
-         conn.store.record_current_value(key);
-      }
+      // One capture per run (see execute_write_run): the push/pop batch is
+      // complete, so per-iteration captures were identical duplicates.
+      conn.store.record_current_value(key);
    }
    Ok(())
 }

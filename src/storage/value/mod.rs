@@ -206,7 +206,13 @@ pub fn now_ms() -> u64 {
 
 #[inline]
 pub fn tick_clock() {
-   UNIX_MS_CACHE.store(now_ms(), std::sync::atomic::Ordering::Relaxed);
+   // One shared line is written by every worker's event loop; gate the store
+   // on a value change so the line stays read-shared for ~99.9% of ticks
+   // instead of bouncing exclusive ownership every iteration.
+   let now = now_ms();
+   if UNIX_MS_CACHE.load(std::sync::atomic::Ordering::Relaxed) != now {
+      UNIX_MS_CACHE.store(now, std::sync::atomic::Ordering::Relaxed);
+   }
 }
 
 #[inline]

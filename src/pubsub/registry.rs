@@ -394,7 +394,7 @@ impl PatternIndex {
 
 pub struct PubSub {
    shards: Box<[ChannelShard]>,
-   patterns: std::sync::RwLock<Option<Box<PatternIndex>>>,
+   patterns: parking_lot::RwLock<Option<Box<PatternIndex>>>,
    pattern_count: AtomicUsize,
    hasher: RandomState,
 }
@@ -410,7 +410,7 @@ impl PubSub {
             .map(|_| ChannelShard::new())
             .collect::<Vec<_>>()
             .into_boxed_slice(),
-         patterns: std::sync::RwLock::new(None),
+         patterns: parking_lot::RwLock::new(None),
          pattern_count: AtomicUsize::new(0),
          hasher: RandomState::default(),
       }
@@ -431,14 +431,14 @@ impl PubSub {
       self.psubscribe_shared(pattern, slot);
    }
    pub(crate) fn psubscribe_shared(&self, pattern: &str, slot: Arc<SubSlot>) -> Arc<str> {
-      let mut guard = self.patterns.write().unwrap_or_else(|e| e.into_inner());
+      let mut guard = self.patterns.write();
       let index = guard.get_or_insert_with(|| Box::new(PatternIndex::new()));
       let name = index.add(pattern, slot);
       self.pattern_count.store(index.total, Ordering::Release);
       name
    }
    pub fn punsubscribe(&self, pattern: &str, slot: &Arc<SubSlot>) {
-      let mut guard = self.patterns.write().unwrap_or_else(|e| e.into_inner());
+      let mut guard = self.patterns.write();
       if let Some(index) = guard.as_deref_mut() {
          index.remove(pattern, slot);
          self.pattern_count.store(index.total, Ordering::Release);
@@ -468,7 +468,7 @@ impl PubSub {
       if self.pattern_count.load(Ordering::Relaxed) == 0 {
          return shard.publish(channel, || encode_batch(channel, messages));
       }
-      let patterns = self.patterns.read().unwrap_or_else(|e| e.into_inner());
+      let patterns = self.patterns.read();
       let Some(patterns) = patterns.as_deref() else {
          return shard.publish(channel, || encode_batch(channel, messages));
       };

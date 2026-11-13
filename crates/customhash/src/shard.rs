@@ -74,17 +74,29 @@ impl<V> std::ops::Deref for EntryReadGuard<'_, V> {
 impl<V> Drop for EntryReadGuard<'_, V> {
    #[inline(always)]
    fn drop(&mut self) {
-      let previous = self
-         .entry
-         .state
-         .fetch_sub(STATE_READER_ONE, Ordering::AcqRel);
-      if previous & STATE_READER_MASK == STATE_READER_ONE {
-         // LOCK excludes new readers until this store; AcqRel carries
-         // earlier reader releases to the next writer.
-         self.entry.state.store(
-            (previous - STATE_READER_ONE) & !STATE_LOCK,
-            Ordering::Release,
-         );
+      // The decrement and the last-reader unlock are one atomic step: a
+      // reader that joins under the lock between a separate fetch_sub and
+      // store would have its count clobbered by the store, leaving it
+      // unprotected against a waiting writer. Folding both into one CAS
+      // closes that window; a joiner that lands first simply turns this
+      // into a plain decrement on the retry.
+      let mut current = self.entry.state.load(Ordering::Acquire);
+      loop {
+         let readers = current & STATE_READER_MASK;
+         let next = if readers == STATE_READER_ONE {
+            (current - STATE_READER_ONE) & !STATE_LOCK
+         } else {
+            current - STATE_READER_ONE
+         };
+         match self.entry.state.compare_exchange_weak(
+            current,
+            next,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+         ) {
+            Ok(_) => return,
+            Err(observed) => current = observed,
+         }
       }
    }
 }
@@ -576,7 +588,7 @@ pub(crate) struct Shard<V> {
    pub(crate) len: CachePadded<AtomicUsize>,
    pub(crate) live: CachePadded<AtomicUsize>,
    pub(crate) insert_gate: CachePadded<AtomicUsize>,
-   pub(crate) grow_lock: std::sync::Mutex<()>,
+   pub(crate) grow_lock: parking_lot::Mutex<()>,
    pub(crate) snap: std::sync::Arc<crate::snap::SnapCtl<V>>,
    pub(crate) initial_capacity: usize,
 }
@@ -608,7 +620,7 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
          len: CachePadded::new(AtomicUsize::new(0)),
          live: CachePadded::new(AtomicUsize::new(0)),
          insert_gate: CachePadded::new(AtomicUsize::new(0)),
-         grow_lock: std::sync::Mutex::new(()),
+         grow_lock: parking_lot::Mutex::new(()),
          snap,
          initial_capacity: cap,
       }
@@ -629,10 +641,18 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
 
    #[inline(always)]
    fn enter_insert(&self) -> InsertGuard<'_> {
+      let mut spins: u32 = 0;
       loop {
          let gate = self.insert_gate.load(Ordering::Relaxed);
          if gate & GROWING != 0 {
-            std::hint::spin_loop();
+            spins += 1;
+            // A rehash holds GROWING for the whole rebuild; yield instead of
+            // burning the core once the spin window is spent.
+            if spins <= 64 {
+               std::hint::spin_loop();
+            } else {
+               std::thread::yield_now();
+            }
             continue;
          }
          let val = self.insert_gate.fetch_add(1, Ordering::Acquire);
@@ -643,7 +663,12 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
          }
          self.insert_gate.fetch_sub(1, Ordering::Release);
          while self.insert_gate.load(Ordering::Relaxed) & GROWING != 0 {
-            std::hint::spin_loop();
+            spins += 1;
+            if spins <= 64 {
+               std::hint::spin_loop();
+            } else {
+               std::thread::yield_now();
+            }
          }
       }
    }
@@ -1375,7 +1400,7 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
    }
 
    fn grow(&self) {
-      let _lock = self.grow_lock.lock().unwrap_or_else(|e| e.into_inner());
+      let _lock = self.grow_lock.lock();
 
       let cur_table = self.table();
       if self.len.load(Ordering::Relaxed) < cur_table.threshold {
@@ -1383,8 +1408,14 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
       }
 
       self.insert_gate.fetch_or(GROWING, Ordering::AcqRel);
+      let mut spins: u32 = 0;
       while (self.insert_gate.load(Ordering::Acquire) & !GROWING) != 0 {
-         std::hint::spin_loop();
+         spins += 1;
+         if spins <= 64 {
+            std::hint::spin_loop();
+         } else {
+            std::thread::yield_now();
+         }
       }
       if self.len.load(Ordering::Relaxed) >= self.table().threshold {
          let old_ptr = self.table.load(Ordering::Acquire);
@@ -1405,13 +1436,19 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
    /// Rebuild at current capacity when table is full of tombstones.
    fn rehash(&self, observed: &SlotTable<V>) {
       let observed = observed as *const SlotTable<V>;
-      let _lock = self.grow_lock.lock().unwrap_or_else(|e| e.into_inner());
+      let _lock = self.grow_lock.lock();
       if !std::ptr::eq(self.table.load(Ordering::Acquire), observed) {
          return;
       }
       self.insert_gate.fetch_or(GROWING, Ordering::AcqRel);
+      let mut spins: u32 = 0;
       while (self.insert_gate.load(Ordering::Acquire) & !GROWING) != 0 {
-         std::hint::spin_loop();
+         spins += 1;
+         if spins <= 64 {
+            std::hint::spin_loop();
+         } else {
+            std::thread::yield_now();
+         }
       }
       if std::ptr::eq(self.table.load(Ordering::Acquire), observed) {
          let old_ptr = self.table.load(Ordering::Acquire);
