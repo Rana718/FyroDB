@@ -1,0 +1,6 @@
+{
+  "checked_files": 164,
+  "runtime_identical_to_checkpoint": true,
+  "exception": "only an appended #[cfg(test)] module in sock.rs",
+  "candidate_snapshot_hashes_verified": true
+}

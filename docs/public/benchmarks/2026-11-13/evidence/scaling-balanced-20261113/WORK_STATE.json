@@ -1,0 +1,49 @@
+{
+  "objective": "Latest user askswhyaddingcoresdropsperformance,wherefullflowlockfree,investigate/fix. Workactive; earlier GET/SET+normalbench tasks complete.",
+  "status": "rejected macro performance trial",
+  "protected_container": "fyro-a4085354-a4a6-4087-846a-d24e2e5cd3ca port10000; never stop/pause/redeploy or reprioritize it/userjobs. No hostsecurity/sysctl/governor changes.",
+  "constraints": "No agents unlessuserasks. No automaticcommit. Commentsmax2lines. Preserve pre-existing original5uncommittedsource/testfiles and scripts/__pycache__. OriginalbaselineHEAD522c2b9,actualbeforeimage3d5 containsoriginal5uncommittedchanges.",
+  "before_image": "sha256:3d5ef33d50f9dc4d5e321dbd196cbed3c5e644bfbdb2be32c6108fd6be4f3980",
+  "before_tag": "fyrodb:scaling-before",
+  "candidate_image": "sha256:3f08c9918c9760bbfeb5f6ee5b3e449c4efa8962198fcbf4aef0b1d1dfd058aa",
+  "candidate_tag": "fyrodb:scaling-balanced-candidate",
+  "findings": [
+    "Earliernormal6workerGET50.74M vs12worker49.38M changesCPUsharing:3physicalserver+3physicalclient vsall6physicalshared. Only2.7%lowerwithoverlappingranges; notpurecorescalingtest.",
+    "IMPORTANTOWNBENCHMARKSETUPFLAW: agent-nativeGo clientinheritsniceness16; Docker serversnice0. All-coreCPUsharingfavorsserver/starvesclient. Userwasexplicitlytoldthismistake. Fairfinalharnessrunsbothserver/clientDocker atnice0, assertpercase; no user/hostprocessnicechanges.",
+    "Codeisnotend-to-endlockfree: Accessbatchreader/writercounters, entryRWguards, perworkercommandisolation, exclusiveLua/MULTI; keepcorrectness. READMEclaimcorrectedfromlock-free/perkeyseqlock toconcurrent/entryguards/isolation.",
+    "Truecontention: isolatedactualAccessbefore1threadread104Mguard/s,6thread20M;write1thread85M\u219212thread40M. DiagnosticguardratesNOTTCPRPS."
+  ],
+  "changes": [
+    "Accessprimary+boundedCachePaddedcounterlanes; writerlanes1..16pow2basedworkerhint, readerlanes1or2. ThreadLANEassignedonce; collisionsaggregateatomiccounts. SeqCstregister/scanalloppositelanes andReleaseunregister preserved. ImmutablemapIDoffmutablecountercacheline. No perentry/conn/requestalloc; fixed~4KiBmaxpermapadded.",
+    "PublicCustomMap::with_capacity_and_concurrency; defaultconstructors1lane. Store::with_config_workers passesworkerhint. COMMONwritecurrentid0skipsOTHER_WRITESRefCell scan. Nested/outoforderguardsretained.",
+    "New4nativeconcurrencytests inuntrackedcrates/customhash/tests/access_scaling.rs:16/17actors,collisions,lastreader/writerdrain,nestedmaps,panic; existingread_safety19mutationpathsnowtested1&8hints.14targetedtestspass,preflightclippyalltargets/io-Dwarningsclean.",
+    "READMEmarketingclaimfixed. Original5Get/Setnewtestsfrompreviousgoalpreserved. Newcandidate.patch includesuntrackedtestvia gitdiff--no-index."
+  ],
+  "trial_history": [
+    "temp/scaling-contention-20261113=v1symmetricreaders/writersNlanes, image1a6f...; nativepairednormal24complete. HSET+28%,SADD+19%at6workers,butsomeHot/JSONslower5-7%; fullreader-scanoverheadpluspriority-biasedsharedCPU. Coordinatorendedatgate. Preservev1rawresults; finalinbalancedroot.",
+    "Balancedcandidate2readerlanes+up to16writerlanes. ActualAccessdiagread1~102.5M,6~56.8M,12~64.4M;write1~90.3M,6~424.5M,12~559.9M. AllnativeNI16equalwithinprobe; ratesnotserverthroughput.",
+    "InitialbalancedallDockerwarmupGo20phasescompletedExit0 butclientmemory.peakreadafterexitfailedbecauseDockerremovedcgroup. Archivedtelemetry-trialfolder, telemetry-trial-paired-normal.log andfinish.log. Fixedsampler: clientmemory sampled20ms whilealive. Notproductionbug, no timedresultdiscarded.",
+    "Equal-priority3GiBtrialcompleted20suites thenbaseline-multi-r2OOMKilledtrue; client137secondaryPIDnamespaceinitdeath. Preserved3g-trialfolder/logs/script. Fullnormalnowmatched4GiBboth; exactHostConfigasserted; controlledKV/stockremain3GiB. Preservefailure,reportseparately; do notclaimzeroOOMacrossalltrials."
+  ],
+  "active_runner": "Coordinator intentionally ended at completed paired review gate. No workloads running. Final revision in temp/scaling-writers-20261113.",
+  "stages": [
+    "paired-normal24suites:layouts single1worker,multi6worker3physicaldisjointclient,all12worker6physicalclientshared;2images\u00d7(1warm+3timed). StaticCGO0unmodifiedGo-mbench20phases; clientsinbaseline3d5runtime, server/clientbothNI0verified. HostPIDnamespaceNOTshared; onlyownclientjoinsownserverPIDnamespace via --pid=container:name soGo-pid1correct. ParentbenchmarkharnessNI16buttiminginsideGoNI0. PRIMARYnormalcap4GiB,bothafter3GiBreferenceOOM; beforelaunchcurrently3GiBemptythenDockerupdate4GiBbeforeworkload; command+resourceupdatecaptured. Clientcap1GiB. Nice0verifiedboth,CGO0sourceunchanged.",
+    "Afterpaired-normalends, coordinatorholdscontinue-after-normal internalreviewgate. Reviewall20medians/rangesandRAMfirst. Ifacceptedtouchgate; no userapprovalrequired.",
+    "Nextcontrolled-paired: sameallDockerharness MODEkey OUTcontrolled-paired LAYOUTS1w,2w,3w,6w;32cases2images\u00d74layouts\u00d7(1warm+3timed), fixedclientCPUs3,4,5,9,10,11. Thisreplacesoldnativebaseline/candidatecontrolasprimaryfaircurve.",
+    "stock-guard36officialredis-benchmarkcases:64B/1KiB/10KiB\u00d7single/multi6workers\u00d72images\u00d73rounds. AllDockerNI0alreadyfair; threads4conns64P256,100kkeys.",
+    "Thenreleasevalidation6isolation15sec+3queuedreply;state2restart13types;affinity2;workspace(expected783pass3existingignored),clippyallio-Dwarnings,uring13large tests; FINISHED."
+  ],
+  "next": [
+    "Preservealltrials. Writer-onlycounterstripe preservesbaselineinlineAccesslayout; testandremeasurefresh."
+  ],
+  "provenance": "candidate-source.json frozen allsrc/cratesRustincludingcrateTests; rootTestSHAseparate. Allprodcodeunchanged afterimage3f08build. READMEnonruntimeupdatedbeforefreezePatch. Baselineoldsource3d5proof baseline-source.json copied; old5changesagainstHEADalreadyinimage. Candidate.patchincludesalltrackedchanges+newtest; no gitstage/commit. StaticGo clientsha inpairedmetadata, sourceGoallunchanged.",
+  "previous_completed_reports": [
+    "temp/large-path-verified/report.html (independentstockbench,783?actually779tests beforecurrent4tests,source3d5)",
+    "temp/normal-benchmark-current-20261113/report.html (Go,nativeNI16vsserver0; data retained; notprimaryproofpurecore scaling)"
+  ],
+  "sources": [
+    "https://doc.rust-lang.org/nomicon/atomics.html",
+    "https://docs.rs/crossbeam-utils/latest/crossbeam_utils/struct.CachePadded.html",
+    "https://docs.kernel.org/networking/scaling.html"
+  ]
+}

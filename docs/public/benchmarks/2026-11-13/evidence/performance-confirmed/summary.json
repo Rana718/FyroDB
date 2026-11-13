@@ -1,0 +1,2497 @@
+{
+  "metadata": {
+    "status": "complete",
+    "cpu": "11th Gen Intel(R) Core(TM) i5-11400H @ 2.70GHz",
+    "initial_pressure": {
+      "cpu": 0.15,
+      "memory": 0.0,
+      "io": 0.38
+    },
+    "governor": "powersave",
+    "server_cpus": [
+      0,
+      1,
+      2,
+      3,
+      6,
+      7,
+      8,
+      9
+    ],
+    "client_cpus": [
+      4,
+      5,
+      10,
+      11
+    ],
+    "direct_cpus": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+    ],
+    "workers": 8,
+    "runs": 7,
+    "warmups": 1,
+    "inner": 3,
+    "hotkey_duration_seconds": null,
+    "counts": {
+      "clients": 100,
+      "kv_per_client": 100000,
+      "mixed_per_client": 20000,
+      "hotkey_per_client": 100000,
+      "subscribers": 50,
+      "publishers": 10,
+      "messages_per_publisher": 20000
+    },
+    "binary_sha256": {
+      "current": "4ec156d07b33bccdf4845f7de7586166d3fe7bcdbac47b641f17f0b52106bc03",
+      "tuned": "d33d30daeecdc28a7bdae61612662dfaa84581432b9e87729c0fa40620c1011f",
+      "tcp-bench": "694535e448acdda854546242ebc57d6f497d9f370ed37510fbd76cf1a84afed2"
+    },
+    "readme_basis": "Historical best-of-three claims with conflicting TCP/in-process labels; rates are references, not matched measurements."
+  },
+  "results": {
+    "tcp": {
+      "current": {
+        "Pipeline-64 SET": {
+          "median": 12967195.5196161,
+          "best": 15289496.276292108,
+          "minimum": 11191522.373454731,
+          "maximum": 15289496.276292108,
+          "cv_pct": 10.567412804692184,
+          "median_ci95": [
+            12014093.29072071,
+            14122076.04757346
+          ],
+          "samples": [
+            15289496.276292108,
+            14122076.04757346,
+            13002451.354754401,
+            12014093.29072071,
+            11191522.373454731,
+            12967195.5196161,
+            12262084.33643178
+          ]
+        },
+        "Pipelined SET": {
+          "median": 34269180.32657898,
+          "best": 42360990.18323166,
+          "minimum": 28985336.442930467,
+          "maximum": 42360990.18323166,
+          "cv_pct": 12.719104421845023,
+          "median_ci95": [
+            32763992.453548253,
+            39480991.20692261
+          ],
+          "samples": [
+            39480991.20692261,
+            42360990.18323166,
+            37891857.9383976,
+            34269180.32657898,
+            33685297.34402154,
+            32763992.453548253,
+            28985336.442930467
+          ],
+          "readme_rate": 39620000.0,
+          "versus_readme_pct": -13.505350008634576
+        },
+        "Pipelined GET": {
+          "median": 43058132.99346879,
+          "best": 50788056.17486088,
+          "minimum": 39140048.36128719,
+          "maximum": 50788056.17486088,
+          "cv_pct": 10.040740467734071,
+          "median_ci95": [
+            39770817.060799725,
+            48619395.14701132
+          ],
+          "samples": [
+            46724757.418609664,
+            50788056.17486088,
+            48619395.14701132,
+            43058132.99346879,
+            42374732.73673411,
+            39140048.36128719,
+            39770817.060799725
+          ],
+          "readme_rate": 53380000.0,
+          "versus_readme_pct": -19.336581128758358
+        },
+        "Mixed SET/GET (50/50)": {
+          "median": 19859475.476895764,
+          "best": 21980057.91107838,
+          "minimum": 16059528.346213112,
+          "maximum": 21980057.91107838,
+          "cv_pct": 9.752227169509691,
+          "median_ci95": [
+            18705481.18858967,
+            21071626.948253654
+          ],
+          "samples": [
+            20230633.469990924,
+            19859475.476895764,
+            21980057.91107838,
+            16059528.346213112,
+            18705481.18858967,
+            19112218.345627267,
+            21071626.948253654
+          ],
+          "readme_rate": 45870000.0,
+          "versus_readme_pct": -56.70487142599572
+        },
+        "INCR (atomic counters)": {
+          "median": 81909804.6363789,
+          "best": 92900143.67936221,
+          "minimum": 70569446.38657442,
+          "maximum": 92900143.67936221,
+          "cv_pct": 9.985254508693535,
+          "median_ci95": [
+            72686643.97696541,
+            89083452.42801107
+          ],
+          "samples": [
+            70569446.38657442,
+            78965554.39603412,
+            92900143.67936221,
+            89083452.42801107,
+            83826298.32999991,
+            81909804.6363789,
+            72686643.97696541
+          ],
+          "readme_rate": 108560000.0,
+          "versus_readme_pct": -24.548816657720252
+        },
+        "Hot Key (1 key, contention)": {
+          "median": 107850331.0482089,
+          "best": 118980730.15856522,
+          "minimum": 90945043.68958974,
+          "maximum": 118980730.15856522,
+          "cv_pct": 9.17817876451819,
+          "median_ci95": [
+            100410980.13346668,
+            117985113.00812732
+          ],
+          "samples": [
+            90945043.68958974,
+            103880646.45591126,
+            118980730.15856522,
+            107850331.0482089,
+            108446775.86054441,
+            100410980.13346668,
+            117985113.00812732
+          ],
+          "readme_rate": 37680000.0,
+          "versus_readme_pct": 186.22699322773065
+        },
+        "Pub/Sub publish": {
+          "median": 1578206.350701303,
+          "best": 1648938.3306435805,
+          "minimum": 1340847.6671345667,
+          "maximum": 1648938.3306435805,
+          "cv_pct": 7.242154517541796,
+          "median_ci95": [
+            1442036.6726076654,
+            1641068.787950109
+          ],
+          "samples": [
+            1648938.3306435805,
+            1340847.6671345667,
+            1641068.787950109,
+            1546767.1386104126,
+            1582287.2812338506,
+            1578206.350701303,
+            1442036.6726076654
+          ]
+        },
+        "Pub/Sub delivery": {
+          "median": 62547122.480851054,
+          "best": 75140656.73459971,
+          "minimum": 56398701.09730666,
+          "maximum": 75140656.73459971,
+          "cv_pct": 10.287446193303186,
+          "median_ci95": [
+            58104522.51728338,
+            66616095.723758936
+          ],
+          "samples": [
+            75140656.73459971,
+            56398701.09730666,
+            66616095.723758936,
+            65878417.05969218,
+            58644717.299113326,
+            58104522.51728338,
+            62547122.480851054
+          ],
+          "readme_rate": 113980000.0,
+          "versus_readme_pct": -45.12447580202574
+        }
+      },
+      "tuned": {
+        "Pipeline-64 SET": {
+          "median": 12168092.773832211,
+          "best": 13659331.883640211,
+          "minimum": 9588922.73530723,
+          "maximum": 13659331.883640211,
+          "cv_pct": 12.34865021089279,
+          "median_ci95": [
+            11261064.589980813,
+            13596607.779424502
+          ],
+          "samples": [
+            13596607.779424502,
+            13659331.883640211,
+            13493135.256794397,
+            11261064.589980813,
+            11748375.304353852,
+            12168092.773832211,
+            9588922.73530723
+          ]
+        },
+        "Pipelined SET": {
+          "median": 33757225.590669475,
+          "best": 40854169.9427739,
+          "minimum": 26828250.284910653,
+          "maximum": 40854169.9427739,
+          "cv_pct": 15.568216216658488,
+          "median_ci95": [
+            29671393.35391489,
+            38962435.435445644
+          ],
+          "samples": [
+            38962435.435445644,
+            40854169.9427739,
+            38504433.78298315,
+            33757225.590669475,
+            29671393.35391489,
+            31054377.99217472,
+            26828250.284910653
+          ],
+          "readme_rate": 39620000.0,
+          "versus_readme_pct": -14.7975123910412
+        },
+        "Pipelined GET": {
+          "median": 37953134.52319261,
+          "best": 49919488.84999295,
+          "minimum": 33642483.53442657,
+          "maximum": 49919488.84999295,
+          "cv_pct": 16.510841405213874,
+          "median_ci95": [
+            35537446.178404495,
+            48420142.97509502
+          ],
+          "samples": [
+            49919488.84999295,
+            46539946.41812532,
+            48420142.97509502,
+            37953134.52319261,
+            36555488.96336905,
+            35537446.178404495,
+            33642483.53442657
+          ],
+          "readme_rate": 53380000.0,
+          "versus_readme_pct": -28.900085194468705
+        },
+        "Mixed SET/GET (50/50)": {
+          "median": 18025559.414073423,
+          "best": 20495699.911635865,
+          "minimum": 15758722.527773054,
+          "maximum": 20495699.911635865,
+          "cv_pct": 10.418670182705828,
+          "median_ci95": [
+            16120965.318352027,
+            20305133.292353738
+          ],
+          "samples": [
+            18025559.414073423,
+            20495699.911635865,
+            20305133.292353738,
+            15758722.527773054,
+            16120965.318352027,
+            17269032.688776474,
+            18951086.364866763
+          ],
+          "readme_rate": 45870000.0,
+          "versus_readme_pct": -60.70294437742877
+        },
+        "INCR (atomic counters)": {
+          "median": 78093901.74743305,
+          "best": 97891356.55052005,
+          "minimum": 62076810.74177133,
+          "maximum": 97891356.55052005,
+          "cv_pct": 16.692468884789136,
+          "median_ci95": [
+            69642853.22544666,
+            97180607.55145474
+          ],
+          "samples": [
+            75539156.95581427,
+            78093901.74743305,
+            62076810.74177133,
+            79088860.47372593,
+            97180607.55145474,
+            69642853.22544666,
+            97891356.55052005
+          ],
+          "readme_rate": 108560000.0,
+          "versus_readme_pct": -28.06383405726506
+        },
+        "Hot Key (1 key, contention)": {
+          "median": 109420283.24228144,
+          "best": 138697821.0821964,
+          "minimum": 82983545.70168856,
+          "maximum": 138697821.0821964,
+          "cv_pct": 16.979622259734846,
+          "median_ci95": [
+            98157293.45712046,
+            130015879.35940968
+          ],
+          "samples": [
+            104339055.07379818,
+            138697821.0821964,
+            82983545.70168856,
+            109420283.24228144,
+            114401744.6754177,
+            98157293.45712046,
+            130015879.35940968
+          ],
+          "readme_rate": 37680000.0,
+          "versus_readme_pct": 190.39353302091678
+        },
+        "Pub/Sub publish": {
+          "median": 1627279.5406428524,
+          "best": 1867792.9748850798,
+          "minimum": 1372899.5163677721,
+          "maximum": 1867792.9748850798,
+          "cv_pct": 11.08419724217381,
+          "median_ci95": [
+            1454730.1259225307,
+            1758465.1928227423
+          ],
+          "samples": [
+            1676356.8942594025,
+            1481046.909406108,
+            1454730.1259225307,
+            1627279.5406428524,
+            1867792.9748850798,
+            1372899.5163677721,
+            1758465.1928227423
+          ]
+        },
+        "Pub/Sub delivery": {
+          "median": 65957022.31192172,
+          "best": 81695175.10120378,
+          "minimum": 50088264.11986454,
+          "maximum": 81695175.10120378,
+          "cv_pct": 16.6201082731636,
+          "median_ci95": [
+            57412291.71559749,
+            77111446.34598415
+          ],
+          "samples": [
+            77111446.34598415,
+            65957022.31192172,
+            61503064.91606065,
+            66659101.303062774,
+            81695175.10120378,
+            57412291.71559749,
+            50088264.11986454
+          ],
+          "readme_rate": 113980000.0,
+          "versus_readme_pct": -42.13281074581354
+        }
+      }
+    },
+    "in-process": {}
+  },
+  "samples": [
+    {
+      "transport": "tcp",
+      "side": "tuned",
+      "mode": "key",
+      "round": -1,
+      "rows": {
+        "Pipeline-64 SET": {
+          "ops": 30000000,
+          "elapsed_ns": 1986399901,
+          "ops_per_sec": 15102699.101473626
+        },
+        "Pipelined SET": {
+          "ops": 30000000,
+          "elapsed_ns": 749885774,
+          "ops_per_sec": 40006092.98130251
+        },
+        "Pipelined GET": {
+          "ops": 30000000,
+          "elapsed_ns": 651081811,
+          "ops_per_sec": 46077158.80424127
+        }
+      },
+      "peak_rss_kib": 844304,
+      "cpu_seconds": 19.24,
+      "cpu_ns_per_operation": 213.77777777777777,
+      "host_before": {
+        "cpu_busy_pct": 11.663807890222985,
+        "pressure_avg10": {
+          "cpu": 0.15,
+          "memory": 0.0,
+          "io": 0.38
+        },
+        "load_average": [
+          2.31591796875,
+          5.71337890625,
+          9.23291015625
+        ]
+      },
+      "pressure_after": {
+        "cpu": 4.25,
+        "memory": 0.0,
+        "io": 0.17
+      },
+      "unattributed_cpu_cores": 2.047117944184123
+    },
+    {
+      "transport": "tcp",
+      "side": "current",
+      "mode": "key",
+      "round": -1,
+      "rows": {
+        "Pipeline-64 SET": {
+          "ops": 30000000,
+          "elapsed_ns": 1868481682,
+          "ops_per_sec": 16055817.024595266
+        },
+        "Pipelined SET": {
+          "ops": 30000000,
+          "elapsed_ns": 742328471,
+          "ops_per_sec": 40413376.519947596
+        },
+        "Pipelined GET": {
+          "ops": 30000000,
+          "elapsed_ns": 565047229,
+          "ops_per_sec": 53092907.03556392
+        }
+      },
+      "peak_rss_kib": 845592,
+      "cpu_seconds": 19.05,
+      "cpu_ns_per_operation": 211.66666666666666,
+      "host_before": {
+        "cpu_busy_pct": 3.098106712564544,
+        "pressure_avg10": {
+          "cpu": 4.25,
+          "memory": 0.0,
+          "io": 0.17
+        },
+        "load_average": [
+          2.29052734375,
+          5.6513671875,
+          9.19384765625
+        ]
+      },
+      "pressure_after": {
+        "cpu": 4.53,
+        "memory": 0.0,
+        "io": 0.09
+      },
+      "unattributed_cpu_cores": 1.8098268451736887
+    },
+    {
+      "transport": "tcp",
+      "side": "current",
+      "mode": "key",
+      "round": 0,
+      "rows": {
+        "Pipeline-64 SET": {
+          "ops": 30000000,
+          "elapsed_ns": 1962131352,
+          "ops_per_sec": 15289496.276292108
+        },
+        "Pipelined SET": {
+          "ops": 30000000,
+          "elapsed_ns": 759859342,
+          "ops_per_sec": 39480991.20692261
+        },
+        "Pipelined GET": {
+          "ops": 30000000,
+          "elapsed_ns": 642057908,
+          "ops_per_sec": 46724757.418609664
+        }
+      },
+      "peak_rss_kib": 844068,
+      "cpu_seconds": 19.46,
+      "cpu_ns_per_operation": 216.22222222222223,
+      "host_before": {
+        "cpu_busy_pct": 10.085470085470085,
+        "pressure_avg10": {
+          "cpu": 5.34,
+          "memory": 0.0,
+          "io": 0.43
+        },
+        "load_average": [
+          3.1943359375,
+          5.7294921875,
+          9.18115234375
+        ]
+      },
+      "pressure_after": {
+        "cpu": 6.13,
+        "memory": 0.0,
+        "io": 0.75
+      },
+      "unattributed_cpu_cores": 2.0920686426169843
+    },
+    {
+      "transport": "tcp",
+      "side": "tuned",
+      "mode": "key",
+      "round": 0,
+      "rows": {
+        "Pipeline-64 SET": {
+          "ops": 30000000,
+          "elapsed_ns": 2206432699,
+          "ops_per_sec": 13596607.779424502
+        },
+        "Pipelined SET": {
+          "ops": 30000000,
+          "elapsed_ns": 769972402,
+          "ops_per_sec": 38962435.435445644
+        },
+        "Pipelined GET": {
+          "ops": 30000000,
+          "elapsed_ns": 600967692,
+          "ops_per_sec": 49919488.84999295
+        }
+      },
+      "peak_rss_kib": 844892,
+      "cpu_seconds": 20.05,
+      "cpu_ns_per_operation": 222.77777777777777,
+      "host_before": {
+        "cpu_busy_pct": 11.512027491408935,
+        "pressure_avg10": {
+          "cpu": 6.13,
+          "memory": 0.0,
+          "io": 0.75
+        },
+        "load_average": [
+          3.41943359375,
+          5.734375,
+          9.1640625
+        ]
+      },
+      "pressure_after": {
+        "cpu": 8.1,
+        "memory": 0.0,
+        "io": 0.33
+      },
+      "unattributed_cpu_cores": 2.282447857459482
+    },
+    {
+      "transport": "tcp",
+      "side": "tuned",
+      "mode": "key",
+      "round": 1,
+      "rows": {
+        "Pipeline-64 SET": {
+          "ops": 30000000,
+          "elapsed_ns": 2196300687,
+          "ops_per_sec": 13659331.883640211
+        },
+        "Pipelined SET": {
+          "ops": 30000000,
+          "elapsed_ns": 734319166,
+          "ops_per_sec": 40854169.9427739
+        },
+        "Pipelined GET": {
+          "ops": 30000000,
+          "elapsed_ns": 644607532,
+          "ops_per_sec": 46539946.41812532
+        }
+      },
+      "peak_rss_kib": 844988,
+      "cpu_seconds": 19.52,
+      "cpu_ns_per_operation": 216.88888888888889,
+      "host_before": {
+        "cpu_busy_pct": 6.013745704467354,
+        "pressure_avg10": {
+          "cpu": 8.1,
+          "memory": 0.0,
+          "io": 0.33
+        },
+        "load_average": [
+          4.3193359375,
+          5.85693359375,
+          9.16748046875
+        ]
+      },
+      "pressure_after": {
+        "cpu": 7.88,
+        "memory": 0.0,
+        "io": 0.18
+      },
+      "unattributed_cpu_cores": 2.1207822502006093
+    },
+    {
+      "transport": "tcp",
+      "side": "current",
+      "mode": "key",
+      "round": 1,
+      "rows": {
+        "Pipeline-64 SET": {
+          "ops": 30000000,
+          "elapsed_ns": 2124333554,
+          "ops_per_sec": 14122076.04757346
+        },
+        "Pipelined SET": {
+          "ops": 30000000,
+          "elapsed_ns": 708198743,
+          "ops_per_sec": 42360990.18323166
+        },
+        "Pipelined GET": {
+          "ops": 30000000,
+          "elapsed_ns": 590690061,
+          "ops_per_sec": 50788056.17486088
+        }
+      },
+      "peak_rss_kib": 845520,
+      "cpu_seconds": 19.36,
+      "cpu_ns_per_operation": 215.11111111111111,
+      "host_before": {
+        "cpu_busy_pct": 14.0893470790378,
+        "pressure_avg10": {
+          "cpu": 8.44,
+          "memory": 0.0,
+          "io": 0.15
+        },
+        "load_average": [
+          5.2548828125,
+          6.025390625,
+          9.20458984375
+        ]
+      },
+      "pressure_after": {
+        "cpu": 7.91,
+        "memory": 0.0,
+        "io": 0.08
+      },
+      "unattributed_cpu_cores": 2.0242559342521207
+    },
+    {
+      "transport": "tcp",
+      "side": "current",
+      "mode": "key",
+      "round": 2,
+      "rows": {
+        "Pipeline-64 SET": {
+          "ops": 30000000,
+          "elapsed_ns": 2307257238,
+          "ops_per_sec": 13002451.354754401
+        },
+        "Pipelined SET": {
+          "ops": 30000000,
+          "elapsed_ns": 791726815,
+          "ops_per_sec": 37891857.9383976
+        },
+        "Pipelined GET": {
+          "ops": 30000000,
+          "elapsed_ns": 617037705,
+          "ops_per_sec": 48619395.14701132
+        }
+      },
+      "peak_rss_kib": 844204,
+      "cpu_seconds": 19.86,
+      "cpu_ns_per_operation": 220.66666666666666,
+      "host_before": {
+        "cpu_busy_pct": 8.23327615780446,
+        "pressure_avg10": {
+          "cpu": 7.91,
+          "memory": 0.0,
+          "io": 0.08
+        },
+        "load_average": [
+          6.34033203125,
+          6.23779296875,
+          9.23974609375
+        ]
+      },
+      "pressure_after": {
+        "cpu": 9.49,
+        "memory": 0.0,
+        "io": 0.37
+      },
+      "unattributed_cpu_cores": 2.5511481574440427
+    },
+    {
+      "transport": "tcp",
+      "side": "tuned",
+      "mode": "key",
+      "round": 2,
+      "rows": {
+        "Pipeline-64 SET": {
+          "ops": 30000000,
+          "elapsed_ns": 2223352796,
+          "ops_per_sec": 13493135.256794397
+        },
+        "Pipelined SET": {
+          "ops": 30000000,
+          "elapsed_ns": 779131052,
+          "ops_per_sec": 38504433.78298315
+        },
+        "Pipelined GET": {
+          "ops": 30000000,
+          "elapsed_ns": 619576857,
+          "ops_per_sec": 48420142.97509502
+        }
+      },
+      "peak_rss_kib": 844884,
+      "cpu_seconds": 20.42,
+      "cpu_ns_per_operation": 226.88888888888889,
+      "host_before": {
+        "cpu_busy_pct": 7.573149741824441,
+        "pressure_avg10": {
+          "cpu": 9.4,
+          "memory": 0.0,
+          "io": 0.3
+        },
+        "load_average": [
+          7.7548828125,
+          6.53271484375,
+          9.3193359375
+        ]
+      },
+      "pressure_after": {
+        "cpu": 8.64,
+        "memory": 0.0,
+        "io": 0.86
+      },
+      "unattributed_cpu_cores": 2.444576066317772
+    },
+    {
+      "transport": "tcp",
+      "side": "tuned",
+      "mode": "key",
+      "round": 3,
+      "rows": {
+        "Pipeline-64 SET": {
+          "ops": 30000000,
+          "elapsed_ns": 2664046526,
+          "ops_per_sec": 11261064.589980813
+        },
+        "Pipelined SET": {
+          "ops": 30000000,
+          "elapsed_ns": 888698626,
+          "ops_per_sec": 33757225.590669475
+        },
+        "Pipelined GET": {
+          "ops": 30000000,
+          "elapsed_ns": 790448546,
+          "ops_per_sec": 37953134.52319261
+        }
+      },
+      "peak_rss_kib": 844268,
+      "cpu_seconds": 21.21,
+      "cpu_ns_per_operation": 235.66666666666666,
+      "host_before": {
+        "cpu_busy_pct": 7.0085470085470085,
+        "pressure_avg10": {
+          "cpu": 9.43,
+          "memory": 0.0,
+          "io": 0.88
+        },
+        "load_average": [
+          8.2314453125,
+          6.66552734375,
+          9.33203125
+        ]
+      },
+      "pressure_after": {
+        "cpu": 11.86,
+        "memory": 0.0,
+        "io": 1.19
+      },
+      "unattributed_cpu_cores": 3.484598828751321
+    },
+    {
+      "transport": "tcp",
+      "side": "current",
+      "mode": "key",
+      "round": 3,
+      "rows": {
+        "Pipeline-64 SET": {
+          "ops": 30000000,
+          "elapsed_ns": 2497067342,
+          "ops_per_sec": 12014093.29072071
+        },
+        "Pipelined SET": {
+          "ops": 30000000,
+          "elapsed_ns": 875422164,
+          "ops_per_sec": 34269180.32657898
+        },
+        "Pipelined GET": {
+          "ops": 30000000,
+          "elapsed_ns": 696732485,
+          "ops_per_sec": 43058132.99346879
+        }
+      },
+      "peak_rss_kib": 845724,
+      "cpu_seconds": 20.97,
+      "cpu_ns_per_operation": 233.0,
+      "host_before": {
+        "cpu_busy_pct": 7.3883161512027495,
+        "pressure_avg10": {
+          "cpu": 11.86,
+          "memory": 0.0,
+          "io": 1.19
+        },
+        "load_average": [
+          8.599609375,
+          6.8056640625,
+          9.349609375
+        ]
+      },
+      "pressure_after": {
+        "cpu": 9.91,
+        "memory": 0.0,
+        "io": 0.9
+      },
+      "unattributed_cpu_cores": 2.568333650285623
+    },
+    {
+      "transport": "tcp",
+      "side": "current",
+      "mode": "key",
+      "round": 4,
+      "rows": {
+        "Pipeline-64 SET": {
+          "ops": 30000000,
+          "elapsed_ns": 2680600458,
+          "ops_per_sec": 11191522.373454731
+        },
+        "Pipelined SET": {
+          "ops": 30000000,
+          "elapsed_ns": 890596265,
+          "ops_per_sec": 33685297.34402154
+        },
+        "Pipelined GET": {
+          "ops": 30000000,
+          "elapsed_ns": 707969067,
+          "ops_per_sec": 42374732.73673411
+        }
+      },
+      "peak_rss_kib": 843856,
+      "cpu_seconds": 21.42,
+      "cpu_ns_per_operation": 238.0,
+      "host_before": {
+        "cpu_busy_pct": 12.34991423670669,
+        "pressure_avg10": {
+          "cpu": 10.83,
+          "memory": 0.0,
+          "io": 0.92
+        },
+        "load_average": [
+          8.7919921875,
+          6.87548828125,
+          9.35888671875
+        ]
+      },
+      "pressure_after": {
+        "cpu": 11.1,
+        "memory": 0.0,
+        "io": 0.96
+      },
+      "unattributed_cpu_cores": 2.77044913889362
+    },
+    {
+      "transport": "tcp",
+      "side": "tuned",
+      "mode": "key",
+      "round": 4,
+      "rows": {
+        "Pipeline-64 SET": {
+          "ops": 30000000,
+          "elapsed_ns": 2553544573,
+          "ops_per_sec": 11748375.304353852
+        },
+        "Pipelined SET": {
+          "ops": 30000000,
+          "elapsed_ns": 1011074864,
+          "ops_per_sec": 29671393.35391489
+        },
+        "Pipelined GET": {
+          "ops": 30000000,
+          "elapsed_ns": 820670188,
+          "ops_per_sec": 36555488.96336905
+        }
+      },
+      "peak_rss_kib": 845988,
+      "cpu_seconds": 22.13,
+      "cpu_ns_per_operation": 245.88888888888889,
+      "host_before": {
+        "cpu_busy_pct": 13.117546848381602,
+        "pressure_avg10": {
+          "cpu": 9.63,
+          "memory": 0.0,
+          "io": 0.97
+        },
+        "load_average": [
+          8.5068359375,
+          6.92529296875,
+          9.33642578125
+        ]
+      },
+      "pressure_after": {
+        "cpu": 10.19,
+        "memory": 0.0,
+        "io": 0.98
+      },
+      "unattributed_cpu_cores": 3.030972249905356
+    },
+    {
+      "transport": "tcp",
+      "side": "tuned",
+      "mode": "key",
+      "round": 5,
+      "rows": {
+        "Pipeline-64 SET": {
+          "ops": 30000000,
+          "elapsed_ns": 2465464437,
+          "ops_per_sec": 12168092.773832211
+        },
+        "Pipelined SET": {
+          "ops": 30000000,
+          "elapsed_ns": 966047364,
+          "ops_per_sec": 31054377.99217472
+        },
+        "Pipelined GET": {
+          "ops": 30000000,
+          "elapsed_ns": 844179963,
+          "ops_per_sec": 35537446.178404495
+        }
+      },
+      "peak_rss_kib": 845036,
+      "cpu_seconds": 21.85,
+      "cpu_ns_per_operation": 242.77777777777777,
+      "host_before": {
+        "cpu_busy_pct": 12.178387650085764,
+        "pressure_avg10": {
+          "cpu": 10.88,
+          "memory": 0.0,
+          "io": 0.99
+        },
+        "load_average": [
+          8.2255859375,
+          6.89306640625,
+          9.31298828125
+        ]
+      },
+      "pressure_after": {
+        "cpu": 12.15,
+        "memory": 0.0,
+        "io": 1.14
+      },
+      "unattributed_cpu_cores": 2.9741585915595006
+    },
+    {
+      "transport": "tcp",
+      "side": "current",
+      "mode": "key",
+      "round": 5,
+      "rows": {
+        "Pipeline-64 SET": {
+          "ops": 30000000,
+          "elapsed_ns": 2313530320,
+          "ops_per_sec": 12967195.5196161
+        },
+        "Pipelined SET": {
+          "ops": 30000000,
+          "elapsed_ns": 915639327,
+          "ops_per_sec": 32763992.453548253
+        },
+        "Pipelined GET": {
+          "ops": 30000000,
+          "elapsed_ns": 766478358,
+          "ops_per_sec": 39140048.36128719
+        }
+      },
+      "peak_rss_kib": 845220,
+      "cpu_seconds": 21.84,
+      "cpu_ns_per_operation": 242.66666666666666,
+      "host_before": {
+        "cpu_busy_pct": 7.0085470085470085,
+        "pressure_avg10": {
+          "cpu": 12.15,
+          "memory": 0.0,
+          "io": 1.14
+        },
+        "load_average": [
+          8.6748046875,
+          7.04248046875,
+          9.3359375
+        ]
+      },
+      "pressure_after": {
+        "cpu": 10.8,
+        "memory": 0.0,
+        "io": 1.06
+      },
+      "unattributed_cpu_cores": 2.713612702235277
+    },
+    {
+      "transport": "tcp",
+      "side": "current",
+      "mode": "key",
+      "round": 6,
+      "rows": {
+        "Pipeline-64 SET": {
+          "ops": 30000000,
+          "elapsed_ns": 2446566112,
+          "ops_per_sec": 12262084.33643178
+        },
+        "Pipelined SET": {
+          "ops": 30000000,
+          "elapsed_ns": 1035006099,
+          "ops_per_sec": 28985336.442930467
+        },
+        "Pipelined GET": {
+          "ops": 30000000,
+          "elapsed_ns": 754321943,
+          "ops_per_sec": 39770817.060799725
+        }
+      },
+      "peak_rss_kib": 846548,
+      "cpu_seconds": 22.67,
+      "cpu_ns_per_operation": 251.88888888888889,
+      "host_before": {
+        "cpu_busy_pct": 8.547008547008547,
+        "pressure_avg10": {
+          "cpu": 10.47,
+          "memory": 0.0,
+          "io": 1.05
+        },
+        "load_average": [
+          8.42333984375,
+          7.04150390625,
+          9.310546875
+        ]
+      },
+      "pressure_after": {
+        "cpu": 11.97,
+        "memory": 0.12,
+        "io": 2.02
+      },
+      "unattributed_cpu_cores": 3.350312300047598
+    },
+    {
+      "transport": "tcp",
+      "side": "tuned",
+      "mode": "key",
+      "round": 6,
+      "rows": {
+        "Pipeline-64 SET": {
+          "ops": 30000000,
+          "elapsed_ns": 3128610046,
+          "ops_per_sec": 9588922.73530723
+        },
+        "Pipelined SET": {
+          "ops": 30000000,
+          "elapsed_ns": 1118224248,
+          "ops_per_sec": 26828250.284910653
+        },
+        "Pipelined GET": {
+          "ops": 30000000,
+          "elapsed_ns": 891729648,
+          "ops_per_sec": 33642483.53442657
+        }
+      },
+      "peak_rss_kib": 845392,
+      "cpu_seconds": 24.22,
+      "cpu_ns_per_operation": 269.1111111111111,
+      "host_before": {
+        "cpu_busy_pct": 6.701030927835052,
+        "pressure_avg10": {
+          "cpu": 11.97,
+          "memory": 0.12,
+          "io": 2.02
+        },
+        "load_average": [
+          7.916015625,
+          6.97509765625,
+          9.26416015625
+        ]
+      },
+      "pressure_after": {
+        "cpu": 16.38,
+        "memory": 0.04,
+        "io": 2.54
+      },
+      "unattributed_cpu_cores": 3.9293092632968185
+    },
+    {
+      "transport": "tcp",
+      "side": "tuned",
+      "mode": "mix",
+      "round": -1,
+      "rows": {
+        "Mixed SET/GET (50/50)": {
+          "ops": 6000000,
+          "elapsed_ns": 274293527,
+          "ops_per_sec": 21874376.93343744
+        },
+        "INCR (atomic counters)": {
+          "ops": 6000000,
+          "elapsed_ns": 100758360,
+          "ops_per_sec": 59548408.68787464
+        },
+        "Hot Key (1 key, contention)": {
+          "ops": 30000000,
+          "elapsed_ns": 311917390,
+          "ops_per_sec": 96179312.09285894
+        }
+      },
+      "peak_rss_kib": 113304,
+      "cpu_seconds": 2.65,
+      "cpu_ns_per_operation": 63.095238095238095,
+      "host_before": {
+        "cpu_busy_pct": 12.478632478632479,
+        "pressure_avg10": {
+          "cpu": 16.38,
+          "memory": 0.04,
+          "io": 2.54
+        },
+        "load_average": [
+          9.1240234375,
+          7.2578125,
+          9.33154296875
+        ]
+      },
+      "pressure_after": {
+        "cpu": 14.86,
+        "memory": 0.03,
+        "io": 2.44
+      },
+      "unattributed_cpu_cores": 4.775888248591733
+    },
+    {
+      "transport": "tcp",
+      "side": "current",
+      "mode": "mix",
+      "round": -1,
+      "rows": {
+        "Mixed SET/GET (50/50)": {
+          "ops": 6000000,
+          "elapsed_ns": 308472409,
+          "ops_per_sec": 19450686.106581416
+        },
+        "INCR (atomic counters)": {
+          "ops": 6000000,
+          "elapsed_ns": 63129872,
+          "ops_per_sec": 95042169.57702686
+        },
+        "Hot Key (1 key, contention)": {
+          "ops": 30000000,
+          "elapsed_ns": 287351354,
+          "ops_per_sec": 104401804.90675537
+        }
+      },
+      "peak_rss_kib": 110072,
+      "cpu_seconds": 2.67,
+      "cpu_ns_per_operation": 63.57142857142857,
+      "host_before": {
+        "cpu_busy_pct": 7.890222984562607,
+        "pressure_avg10": {
+          "cpu": 12.22,
+          "memory": 0.02,
+          "io": 2.77
+        },
+        "load_average": [
+          8.55322265625,
+          7.17041015625,
+          9.2919921875
+        ]
+      },
+      "pressure_after": {
+        "cpu": 12.22,
+        "memory": 0.02,
+        "io": 2.77
+      },
+      "unattributed_cpu_cores": 3.185259308760062
+    },
+    {
+      "transport": "tcp",
+      "side": "current",
+      "mode": "mix",
+      "round": 0,
+      "rows": {
+        "Mixed SET/GET (50/50)": {
+          "ops": 6000000,
+          "elapsed_ns": 296579937,
+          "ops_per_sec": 20230633.469990924
+        },
+        "INCR (atomic counters)": {
+          "ops": 6000000,
+          "elapsed_ns": 85022631,
+          "ops_per_sec": 70569446.38657442
+        },
+        "Hot Key (1 key, contention)": {
+          "ops": 30000000,
+          "elapsed_ns": 329869543,
+          "ops_per_sec": 90945043.68958974
+        }
+      },
+      "peak_rss_kib": 113432,
+      "cpu_seconds": 2.89,
+      "cpu_ns_per_operation": 68.80952380952381,
+      "host_before": {
+        "cpu_busy_pct": 10.977701543739279,
+        "pressure_avg10": {
+          "cpu": 9.86,
+          "memory": 0.01,
+          "io": 2.7
+        },
+        "load_average": [
+          8.55322265625,
+          7.17041015625,
+          9.2919921875
+        ]
+      },
+      "pressure_after": {
+        "cpu": 9.86,
+        "memory": 0.01,
+        "io": 2.7
+      },
+      "unattributed_cpu_cores": 3.5654249706816534
+    },
+    {
+      "transport": "tcp",
+      "side": "tuned",
+      "mode": "mix",
+      "round": 0,
+      "rows": {
+        "Mixed SET/GET (50/50)": {
+          "ops": 6000000,
+          "elapsed_ns": 332860682,
+          "ops_per_sec": 18025559.414073423
+        },
+        "INCR (atomic counters)": {
+          "ops": 6000000,
+          "elapsed_ns": 79429004,
+          "ops_per_sec": 75539156.95581427
+        },
+        "Hot Key (1 key, contention)": {
+          "ops": 30000000,
+          "elapsed_ns": 287524168,
+          "ops_per_sec": 104339055.07379818
+        }
+      },
+      "peak_rss_kib": 113180,
+      "cpu_seconds": 2.63,
+      "cpu_ns_per_operation": 62.61904761904762,
+      "host_before": {
+        "cpu_busy_pct": 11.53184165232358,
+        "pressure_avg10": {
+          "cpu": 7.89,
+          "memory": 0.0,
+          "io": 2.5
+        },
+        "load_average": [
+          7.7119140625,
+          7.033203125,
+          9.22412109375
+        ]
+      },
+      "pressure_after": {
+        "cpu": 7.89,
+        "memory": 0.0,
+        "io": 2.5
+      },
+      "unattributed_cpu_cores": 4.316160796064566
+    },
+    {
+      "transport": "tcp",
+      "side": "tuned",
+      "mode": "mix",
+      "round": 1,
+      "rows": {
+        "Mixed SET/GET (50/50)": {
+          "ops": 6000000,
+          "elapsed_ns": 292744333,
+          "ops_per_sec": 20495699.911635865
+        },
+        "INCR (atomic counters)": {
+          "ops": 6000000,
+          "elapsed_ns": 76830583,
+          "ops_per_sec": 78093901.74743305
+        },
+        "Hot Key (1 key, contention)": {
+          "ops": 30000000,
+          "elapsed_ns": 216297558,
+          "ops_per_sec": 138697821.0821964
+        }
+      },
+      "peak_rss_kib": 113584,
+      "cpu_seconds": 2.38,
+      "cpu_ns_per_operation": 56.666666666666664,
+      "host_before": {
+        "cpu_busy_pct": 14.212328767123287,
+        "pressure_avg10": {
+          "cpu": 5.73,
+          "memory": 0.08,
+          "io": 1.74
+        },
+        "load_average": [
+          8.31982421875,
+          7.1943359375,
+          9.25341796875
+        ]
+      },
+      "pressure_after": {
+        "cpu": 5.78,
+        "memory": 0.25,
+        "io": 1.43
+      },
+      "unattributed_cpu_cores": 3.1904694036785393
+    },
+    {
+      "transport": "tcp",
+      "side": "current",
+      "mode": "mix",
+      "round": 1,
+      "rows": {
+        "Mixed SET/GET (50/50)": {
+          "ops": 6000000,
+          "elapsed_ns": 302122783,
+          "ops_per_sec": 19859475.476895764
+        },
+        "INCR (atomic counters)": {
+          "ops": 6000000,
+          "elapsed_ns": 75982497,
+          "ops_per_sec": 78965554.39603412
+        },
+        "Hot Key (1 key, contention)": {
+          "ops": 30000000,
+          "elapsed_ns": 288792966,
+          "ops_per_sec": 103880646.45591126
+        }
+      },
+      "peak_rss_kib": 113352,
+      "cpu_seconds": 2.7,
+      "cpu_ns_per_operation": 64.28571428571429,
+      "host_before": {
+        "cpu_busy_pct": 13.504273504273504,
+        "pressure_avg10": {
+          "cpu": 4.19,
+          "memory": 0.07,
+          "io": 1.57
+        },
+        "load_average": [
+          7.36279296875,
+          7.037109375,
+          9.16845703125
+        ]
+      },
+      "pressure_after": {
+        "cpu": 4.19,
+        "memory": 0.07,
+        "io": 1.57
+      },
+      "unattributed_cpu_cores": 3.8872900468879186
+    },
+    {
+      "transport": "tcp",
+      "side": "current",
+      "mode": "mix",
+      "round": 2,
+      "rows": {
+        "Mixed SET/GET (50/50)": {
+          "ops": 6000000,
+          "elapsed_ns": 272974713,
+          "ops_per_sec": 21980057.91107838
+        },
+        "INCR (atomic counters)": {
+          "ops": 6000000,
+          "elapsed_ns": 64585476,
+          "ops_per_sec": 92900143.67936221
+        },
+        "Hot Key (1 key, contention)": {
+          "ops": 30000000,
+          "elapsed_ns": 252141670,
+          "ops_per_sec": 118980730.15856522
+        }
+      },
+      "peak_rss_kib": 113184,
+      "cpu_seconds": 2.48,
+      "cpu_ns_per_operation": 59.04761904761905,
+      "host_before": {
+        "cpu_busy_pct": 13.230240549828178,
+        "pressure_avg10": {
+          "cpu": 5.13,
+          "memory": 0.04,
+          "io": 1.41
+        },
+        "load_average": [
+          7.09326171875,
+          6.986328125,
+          9.140625
+        ]
+      },
+      "pressure_after": {
+        "cpu": 4.56,
+        "memory": 0.04,
+        "io": 1.16
+      },
+      "unattributed_cpu_cores": 3.1292636447347575
+    },
+    {
+      "transport": "tcp",
+      "side": "tuned",
+      "mode": "mix",
+      "round": 2,
+      "rows": {
+        "Mixed SET/GET (50/50)": {
+          "ops": 6000000,
+          "elapsed_ns": 295491781,
+          "ops_per_sec": 20305133.292353738
+        },
+        "INCR (atomic counters)": {
+          "ops": 6000000,
+          "elapsed_ns": 96654450,
+          "ops_per_sec": 62076810.74177133
+        },
+        "Hot Key (1 key, contention)": {
+          "ops": 30000000,
+          "elapsed_ns": 361517452,
+          "ops_per_sec": 82983545.70168856
+        }
+      },
+      "peak_rss_kib": 113128,
+      "cpu_seconds": 2.68,
+      "cpu_ns_per_operation": 63.80952380952381,
+      "host_before": {
+        "cpu_busy_pct": 12.776831345826235,
+        "pressure_avg10": {
+          "cpu": 4.13,
+          "memory": 0.02,
+          "io": 1.26
+        },
+        "load_average": [
+          6.92529296875,
+          6.953125,
+          9.1181640625
+        ]
+      },
+      "pressure_after": {
+        "cpu": 6.28,
+        "memory": 0.01,
+        "io": 1.22
+      },
+      "unattributed_cpu_cores": 4.888807640390854
+    },
+    {
+      "transport": "tcp",
+      "side": "tuned",
+      "mode": "mix",
+      "round": 3,
+      "rows": {
+        "Mixed SET/GET (50/50)": {
+          "ops": 6000000,
+          "elapsed_ns": 380741522,
+          "ops_per_sec": 15758722.527773054
+        },
+        "INCR (atomic counters)": {
+          "ops": 6000000,
+          "elapsed_ns": 75864034,
+          "ops_per_sec": 79088860.47372593
+        },
+        "Hot Key (1 key, contention)": {
+          "ops": 30000000,
+          "elapsed_ns": 274172202,
+          "ops_per_sec": 109420283.24228144
+        }
+      },
+      "peak_rss_kib": 112624,
+      "cpu_seconds": 2.59,
+      "cpu_ns_per_operation": 61.666666666666664,
+      "host_before": {
+        "cpu_busy_pct": 14.795918367346939,
+        "pressure_avg10": {
+          "cpu": 4.41,
+          "memory": 0.0,
+          "io": 0.97
+        },
+        "load_average": [
+          6.1611328125,
+          6.7890625,
+          9.04150390625
+        ]
+      },
+      "pressure_after": {
+        "cpu": 4.15,
+        "memory": 0.0,
+        "io": 0.97
+      },
+      "unattributed_cpu_cores": 4.532855885475811
+    },
+    {
+      "transport": "tcp",
+      "side": "current",
+      "mode": "mix",
+      "round": 3,
+      "rows": {
+        "Mixed SET/GET (50/50)": {
+          "ops": 6000000,
+          "elapsed_ns": 373609976,
+          "ops_per_sec": 16059528.346213112
+        },
+        "INCR (atomic counters)": {
+          "ops": 6000000,
+          "elapsed_ns": 67352576,
+          "ops_per_sec": 89083452.42801107
+        },
+        "Hot Key (1 key, contention)": {
+          "ops": 30000000,
+          "elapsed_ns": 278163263,
+          "ops_per_sec": 107850331.0482089
+        }
+      },
+      "peak_rss_kib": 113244,
+      "cpu_seconds": 2.73,
+      "cpu_ns_per_operation": 65.0,
+      "host_before": {
+        "cpu_busy_pct": 14.0893470790378,
+        "pressure_avg10": {
+          "cpu": 5.57,
+          "memory": 0.0,
+          "io": 0.98
+        },
+        "load_average": [
+          6.708984375,
+          6.892578125,
+          9.06298828125
+        ]
+      },
+      "pressure_after": {
+        "cpu": 4.93,
+        "memory": 0.0,
+        "io": 0.98
+      },
+      "unattributed_cpu_cores": 4.2581202373010685
+    },
+    {
+      "transport": "tcp",
+      "side": "current",
+      "mode": "mix",
+      "round": 4,
+      "rows": {
+        "Mixed SET/GET (50/50)": {
+          "ops": 6000000,
+          "elapsed_ns": 320761596,
+          "ops_per_sec": 18705481.18858967
+        },
+        "INCR (atomic counters)": {
+          "ops": 6000000,
+          "elapsed_ns": 71576583,
+          "ops_per_sec": 83826298.32999991
+        },
+        "Hot Key (1 key, contention)": {
+          "ops": 30000000,
+          "elapsed_ns": 276633397,
+          "ops_per_sec": 108446775.86054441
+        }
+      },
+      "peak_rss_kib": 110116,
+      "cpu_seconds": 2.6,
+      "cpu_ns_per_operation": 61.904761904761905,
+      "host_before": {
+        "cpu_busy_pct": 14.940577249575552,
+        "pressure_avg10": {
+          "cpu": 3.88,
+          "memory": 0.16,
+          "io": 0.78
+        },
+        "load_average": [
+          6.20556640625,
+          6.77978515625,
+          9.0029296875
+        ]
+      },
+      "pressure_after": {
+        "cpu": 3.88,
+        "memory": 0.16,
+        "io": 0.78
+      },
+      "unattributed_cpu_cores": 3.9088554551220764
+    },
+    {
+      "transport": "tcp",
+      "side": "tuned",
+      "mode": "mix",
+      "round": 4,
+      "rows": {
+        "Mixed SET/GET (50/50)": {
+          "ops": 6000000,
+          "elapsed_ns": 372186149,
+          "ops_per_sec": 16120965.318352027
+        },
+        "INCR (atomic counters)": {
+          "ops": 6000000,
+          "elapsed_ns": 61740713,
+          "ops_per_sec": 97180607.55145474
+        },
+        "Hot Key (1 key, contention)": {
+          "ops": 30000000,
+          "elapsed_ns": 262233763,
+          "ops_per_sec": 114401744.6754177
+        }
+      },
+      "peak_rss_kib": 112516,
+      "cpu_seconds": 2.56,
+      "cpu_ns_per_operation": 60.95238095238095,
+      "host_before": {
+        "cpu_busy_pct": 14.505119453924914,
+        "pressure_avg10": {
+          "cpu": 3.57,
+          "memory": 0.07,
+          "io": 0.47
+        },
+        "load_average": [
+          5.40478515625,
+          6.5888671875,
+          8.91650390625
+        ]
+      },
+      "pressure_after": {
+        "cpu": 4.01,
+        "memory": 0.24,
+        "io": 0.56
+      },
+      "unattributed_cpu_cores": 4.2736059848593
+    },
+    {
+      "transport": "tcp",
+      "side": "tuned",
+      "mode": "mix",
+      "round": 5,
+      "rows": {
+        "Mixed SET/GET (50/50)": {
+          "ops": 6000000,
+          "elapsed_ns": 347442738,
+          "ops_per_sec": 17269032.688776474
+        },
+        "INCR (atomic counters)": {
+          "ops": 6000000,
+          "elapsed_ns": 86153851,
+          "ops_per_sec": 69642853.22544666
+        },
+        "Hot Key (1 key, contention)": {
+          "ops": 30000000,
+          "elapsed_ns": 305631899,
+          "ops_per_sec": 98157293.45712046
+        }
+      },
+      "peak_rss_kib": 113544,
+      "cpu_seconds": 2.61,
+      "cpu_ns_per_operation": 62.142857142857146,
+      "host_before": {
+        "cpu_busy_pct": 14.505119453924914,
+        "pressure_avg10": {
+          "cpu": 3.54,
+          "memory": 0.1,
+          "io": 1.15
+        },
+        "load_average": [
+          5.2119140625,
+          6.52880859375,
+          8.88427734375
+        ]
+      },
+      "pressure_after": {
+        "cpu": 5.44,
+        "memory": 0.08,
+        "io": 1.31
+      },
+      "unattributed_cpu_cores": 4.424258426142119
+    },
+    {
+      "transport": "tcp",
+      "side": "current",
+      "mode": "mix",
+      "round": 5,
+      "rows": {
+        "Mixed SET/GET (50/50)": {
+          "ops": 6000000,
+          "elapsed_ns": 313935300,
+          "ops_per_sec": 19112218.345627267
+        },
+        "INCR (atomic counters)": {
+          "ops": 6000000,
+          "elapsed_ns": 73251304,
+          "ops_per_sec": 81909804.6363789
+        },
+        "Hot Key (1 key, contention)": {
+          "ops": 30000000,
+          "elapsed_ns": 298772106,
+          "ops_per_sec": 100410980.13346668
+        }
+      },
+      "peak_rss_kib": 109104,
+      "cpu_seconds": 2.62,
+      "cpu_ns_per_operation": 62.38095238095238,
+      "host_before": {
+        "cpu_busy_pct": 11.683848797250858,
+        "pressure_avg10": {
+          "cpu": 3.0,
+          "memory": 0.14,
+          "io": 1.55
+        },
+        "load_average": [
+          4.5927734375,
+          6.27685546875,
+          8.73779296875
+        ]
+      },
+      "pressure_after": {
+        "cpu": 3.36,
+        "memory": 0.12,
+        "io": 1.27
+      },
+      "unattributed_cpu_cores": 3.7188870122910105
+    },
+    {
+      "transport": "tcp",
+      "side": "current",
+      "mode": "mix",
+      "round": 6,
+      "rows": {
+        "Mixed SET/GET (50/50)": {
+          "ops": 6000000,
+          "elapsed_ns": 284743082,
+          "ops_per_sec": 21071626.948253654
+        },
+        "INCR (atomic counters)": {
+          "ops": 6000000,
+          "elapsed_ns": 82546114,
+          "ops_per_sec": 72686643.97696541
+        },
+        "Hot Key (1 key, contention)": {
+          "ops": 30000000,
+          "elapsed_ns": 254269367,
+          "ops_per_sec": 117985113.00812732
+        }
+      },
+      "peak_rss_kib": 112552,
+      "cpu_seconds": 2.6,
+      "cpu_ns_per_operation": 61.904761904761905,
+      "host_before": {
+        "cpu_busy_pct": 10.616438356164384,
+        "pressure_avg10": {
+          "cpu": 4.2,
+          "memory": 0.09,
+          "io": 1.04
+        },
+        "load_average": [
+          4.384765625,
+          6.20556640625,
+          8.701171875
+        ]
+      },
+      "pressure_after": {
+        "cpu": 4.2,
+        "memory": 0.09,
+        "io": 1.04
+      },
+      "unattributed_cpu_cores": 3.7817043592691766
+    },
+    {
+      "transport": "tcp",
+      "side": "tuned",
+      "mode": "mix",
+      "round": 6,
+      "rows": {
+        "Mixed SET/GET (50/50)": {
+          "ops": 6000000,
+          "elapsed_ns": 316604541,
+          "ops_per_sec": 18951086.364866763
+        },
+        "INCR (atomic counters)": {
+          "ops": 6000000,
+          "elapsed_ns": 61292439,
+          "ops_per_sec": 97891356.55052005
+        },
+        "Hot Key (1 key, contention)": {
+          "ops": 30000000,
+          "elapsed_ns": 230741046,
+          "ops_per_sec": 130015879.35940968
+        }
+      },
+      "peak_rss_kib": 113640,
+      "cpu_seconds": 2.51,
+      "cpu_ns_per_operation": 59.76190476190476,
+      "host_before": {
+        "cpu_busy_pct": 13.117546848381602,
+        "pressure_avg10": {
+          "cpu": 3.5,
+          "memory": 0.02,
+          "io": 1.38
+        },
+        "load_average": [
+          4.02392578125,
+          6.06689453125,
+          8.62890625
+        ]
+      },
+      "pressure_after": {
+        "cpu": 3.5,
+        "memory": 0.02,
+        "io": 1.38
+      },
+      "unattributed_cpu_cores": 3.452712033724757
+    },
+    {
+      "transport": "tcp",
+      "side": "tuned",
+      "mode": "pub",
+      "round": -1,
+      "rows": {
+        "Pub/Sub publish": {
+          "ops": 600000,
+          "elapsed_ns": 320734324,
+          "ops_per_sec": 1870707.17133474
+        },
+        "Pub/Sub delivery": {
+          "ops": 30000000,
+          "elapsed_ns": 400345747,
+          "ops_per_sec": 74935228.42394526
+        }
+      },
+      "peak_rss_kib": 57056,
+      "cpu_seconds": 1.21,
+      "cpu_ns_per_operation": 39.54248366013072,
+      "host_before": {
+        "cpu_busy_pct": 12.991452991452991,
+        "pressure_avg10": {
+          "cpu": 3.65,
+          "memory": 0.01,
+          "io": 0.75
+        },
+        "load_average": [
+          3.94189453125,
+          6.015625,
+          8.5986328125
+        ]
+      },
+      "pressure_after": {
+        "cpu": 3.65,
+        "memory": 0.01,
+        "io": 0.75
+      },
+      "unattributed_cpu_cores": 5.2401537900517345
+    },
+    {
+      "transport": "tcp",
+      "side": "current",
+      "mode": "pub",
+      "round": -1,
+      "rows": {
+        "Pub/Sub publish": {
+          "ops": 600000,
+          "elapsed_ns": 415173077,
+          "ops_per_sec": 1445180.4156848062
+        },
+        "Pub/Sub delivery": {
+          "ops": 30000000,
+          "elapsed_ns": 508079117,
+          "ops_per_sec": 59045922.17278633
+        }
+      },
+      "peak_rss_kib": 54092,
+      "cpu_seconds": 1.25,
+      "cpu_ns_per_operation": 40.849673202614376,
+      "host_before": {
+        "cpu_busy_pct": 14.285714285714286,
+        "pressure_avg10": {
+          "cpu": 3.79,
+          "memory": 0.0,
+          "io": 1.0
+        },
+        "load_average": [
+          3.8037109375,
+          5.916015625,
+          8.5380859375
+        ]
+      },
+      "pressure_after": {
+        "cpu": 5.46,
+        "memory": 0.0,
+        "io": 1.18
+      },
+      "unattributed_cpu_cores": 6.878900318649489
+    },
+    {
+      "transport": "tcp",
+      "side": "current",
+      "mode": "pub",
+      "round": 0,
+      "rows": {
+        "Pub/Sub publish": {
+          "ops": 600000,
+          "elapsed_ns": 363870491,
+          "ops_per_sec": 1648938.3306435805
+        },
+        "Pub/Sub delivery": {
+          "ops": 30000000,
+          "elapsed_ns": 399251235,
+          "ops_per_sec": 75140656.73459971
+        }
+      },
+      "peak_rss_kib": 64292,
+      "cpu_seconds": 1.31,
+      "cpu_ns_per_operation": 42.810457516339866,
+      "host_before": {
+        "cpu_busy_pct": 12.307692307692308,
+        "pressure_avg10": {
+          "cpu": 5.24,
+          "memory": 0.0,
+          "io": 1.45
+        },
+        "load_average": [
+          4.14013671875,
+          5.95068359375,
+          8.53515625
+        ]
+      },
+      "pressure_after": {
+        "cpu": 5.24,
+        "memory": 0.0,
+        "io": 1.45
+      },
+      "unattributed_cpu_cores": 3.954656022771089
+    },
+    {
+      "transport": "tcp",
+      "side": "tuned",
+      "mode": "pub",
+      "round": 0,
+      "rows": {
+        "Pub/Sub publish": {
+          "ops": 600000,
+          "elapsed_ns": 357919010,
+          "ops_per_sec": 1676356.8942594025
+        },
+        "Pub/Sub delivery": {
+          "ops": 30000000,
+          "elapsed_ns": 389047300,
+          "ops_per_sec": 77111446.34598415
+        }
+      },
+      "peak_rss_kib": 59468,
+      "cpu_seconds": 1.29,
+      "cpu_ns_per_operation": 42.15686274509804,
+      "host_before": {
+        "cpu_busy_pct": 11.794871794871796,
+        "pressure_avg10": {
+          "cpu": 5.18,
+          "memory": 0.0,
+          "io": 0.97
+        },
+        "load_average": [
+          3.96875,
+          5.884765625,
+          8.5
+        ]
+      },
+      "pressure_after": {
+        "cpu": 5.18,
+        "memory": 0.0,
+        "io": 0.97
+      },
+      "unattributed_cpu_cores": 4.099557798096788
+    },
+    {
+      "transport": "tcp",
+      "side": "tuned",
+      "mode": "pub",
+      "round": 1,
+      "rows": {
+        "Pub/Sub publish": {
+          "ops": 600000,
+          "elapsed_ns": 405118836,
+          "ops_per_sec": 1481046.909406108
+        },
+        "Pub/Sub delivery": {
+          "ops": 30000000,
+          "elapsed_ns": 454841637,
+          "ops_per_sec": 65957022.31192172
+        }
+      },
+      "peak_rss_kib": 53428,
+      "cpu_seconds": 1.3,
+      "cpu_ns_per_operation": 42.48366013071895,
+      "host_before": {
+        "cpu_busy_pct": 14.480408858603067,
+        "pressure_avg10": {
+          "cpu": 5.28,
+          "memory": 0.0,
+          "io": 0.83
+        },
+        "load_average": [
+          3.89111328125,
+          5.83642578125,
+          8.47021484375
+        ]
+      },
+      "pressure_after": {
+        "cpu": 5.28,
+        "memory": 0.0,
+        "io": 0.83
+      },
+      "unattributed_cpu_cores": 5.9180295250916375
+    },
+    {
+      "transport": "tcp",
+      "side": "current",
+      "mode": "pub",
+      "round": 1,
+      "rows": {
+        "Pub/Sub publish": {
+          "ops": 600000,
+          "elapsed_ns": 447478125,
+          "ops_per_sec": 1340847.6671345667
+        },
+        "Pub/Sub delivery": {
+          "ops": 30000000,
+          "elapsed_ns": 531927144,
+          "ops_per_sec": 56398701.09730666
+        }
+      },
+      "peak_rss_kib": 51880,
+      "cpu_seconds": 1.38,
+      "cpu_ns_per_operation": 45.09803921568628,
+      "host_before": {
+        "cpu_busy_pct": 14.408233276157805,
+        "pressure_avg10": {
+          "cpu": 6.09,
+          "memory": 0.0,
+          "io": 1.25
+        },
+        "load_average": [
+          3.6591796875,
+          5.755859375,
+          8.4296875
+        ]
+      },
+      "pressure_after": {
+        "cpu": 6.08,
+        "memory": 0.18,
+        "io": 1.38
+      },
+      "unattributed_cpu_cores": 5.492966382429925
+    },
+    {
+      "transport": "tcp",
+      "side": "current",
+      "mode": "pub",
+      "round": 2,
+      "rows": {
+        "Pub/Sub publish": {
+          "ops": 600000,
+          "elapsed_ns": 365615387,
+          "ops_per_sec": 1641068.787950109
+        },
+        "Pub/Sub delivery": {
+          "ops": 30000000,
+          "elapsed_ns": 450341613,
+          "ops_per_sec": 66616095.723758936
+        }
+      },
+      "peak_rss_kib": 66344,
+      "cpu_seconds": 1.39,
+      "cpu_ns_per_operation": 45.42483660130719,
+      "host_before": {
+        "cpu_busy_pct": 14.017094017094017,
+        "pressure_avg10": {
+          "cpu": 4.17,
+          "memory": 0.18,
+          "io": 1.98
+        },
+        "load_average": [
+          3.6123046875,
+          5.6806640625,
+          8.37646484375
+        ]
+      },
+      "pressure_after": {
+        "cpu": 4.5,
+        "memory": 0.15,
+        "io": 1.98
+      },
+      "unattributed_cpu_cores": 3.963501144700895
+    },
+    {
+      "transport": "tcp",
+      "side": "tuned",
+      "mode": "pub",
+      "round": 2,
+      "rows": {
+        "Pub/Sub publish": {
+          "ops": 600000,
+          "elapsed_ns": 412447635,
+          "ops_per_sec": 1454730.1259225307
+        },
+        "Pub/Sub delivery": {
+          "ops": 30000000,
+          "elapsed_ns": 487780569,
+          "ops_per_sec": 61503064.91606065
+        }
+      },
+      "peak_rss_kib": 64376,
+      "cpu_seconds": 1.36,
+      "cpu_ns_per_operation": 44.44444444444444,
+      "host_before": {
+        "cpu_busy_pct": 12.842465753424657,
+        "pressure_avg10": {
+          "cpu": 3.65,
+          "memory": 0.06,
+          "io": 1.99
+        },
+        "load_average": [
+          4.306640625,
+          5.7578125,
+          8.37255859375
+        ]
+      },
+      "pressure_after": {
+        "cpu": 3.65,
+        "memory": 0.06,
+        "io": 1.99
+      },
+      "unattributed_cpu_cores": 5.171948441798797
+    },
+    {
+      "transport": "tcp",
+      "side": "tuned",
+      "mode": "pub",
+      "round": 3,
+      "rows": {
+        "Pub/Sub publish": {
+          "ops": 600000,
+          "elapsed_ns": 368713540,
+          "ops_per_sec": 1627279.5406428524
+        },
+        "Pub/Sub delivery": {
+          "ops": 30000000,
+          "elapsed_ns": 450051072,
+          "ops_per_sec": 66659101.303062774
+        }
+      },
+      "peak_rss_kib": 59376,
+      "cpu_seconds": 1.37,
+      "cpu_ns_per_operation": 44.77124183006536,
+      "host_before": {
+        "cpu_busy_pct": 13.675213675213675,
+        "pressure_avg10": {
+          "cpu": 5.34,
+          "memory": 0.05,
+          "io": 2.17
+        },
+        "load_average": [
+          3.96142578125,
+          5.662109375,
+          8.3271484375
+        ]
+      },
+      "pressure_after": {
+        "cpu": 5.34,
+        "memory": 0.05,
+        "io": 2.17
+      },
+      "unattributed_cpu_cores": 3.9156669430091777
+    },
+    {
+      "transport": "tcp",
+      "side": "current",
+      "mode": "pub",
+      "round": 3,
+      "rows": {
+        "Pub/Sub publish": {
+          "ops": 600000,
+          "elapsed_ns": 387905836,
+          "ops_per_sec": 1546767.1386104126
+        },
+        "Pub/Sub delivery": {
+          "ops": 30000000,
+          "elapsed_ns": 455384348,
+          "ops_per_sec": 65878417.05969218
+        }
+      },
+      "peak_rss_kib": 55948,
+      "cpu_seconds": 1.44,
+      "cpu_ns_per_operation": 47.05882352941177,
+      "host_before": {
+        "cpu_busy_pct": 11.243611584327088,
+        "pressure_avg10": {
+          "cpu": 6.18,
+          "memory": 0.04,
+          "io": 2.32
+        },
+        "load_average": [
+          3.96142578125,
+          5.662109375,
+          8.3271484375
+        ]
+      },
+      "pressure_after": {
+        "cpu": 6.18,
+        "memory": 0.04,
+        "io": 2.32
+      },
+      "unattributed_cpu_cores": 3.976217523896617
+    },
+    {
+      "transport": "tcp",
+      "side": "current",
+      "mode": "pub",
+      "round": 4,
+      "rows": {
+        "Pub/Sub publish": {
+          "ops": 600000,
+          "elapsed_ns": 379197891,
+          "ops_per_sec": 1582287.2812338506
+        },
+        "Pub/Sub delivery": {
+          "ops": 30000000,
+          "elapsed_ns": 511555028,
+          "ops_per_sec": 58644717.299113326
+        }
+      },
+      "peak_rss_kib": 57428,
+      "cpu_seconds": 1.28,
+      "cpu_ns_per_operation": 41.830065359477125,
+      "host_before": {
+        "cpu_busy_pct": 9.931506849315069,
+        "pressure_avg10": {
+          "cpu": 6.18,
+          "memory": 0.04,
+          "io": 2.32
+        },
+        "load_average": [
+          3.96142578125,
+          5.662109375,
+          8.3271484375
+        ]
+      },
+      "pressure_after": {
+        "cpu": 9.23,
+        "memory": 0.03,
+        "io": 2.44
+      },
+      "unattributed_cpu_cores": 6.032604400457138
+    },
+    {
+      "transport": "tcp",
+      "side": "tuned",
+      "mode": "pub",
+      "round": 4,
+      "rows": {
+        "Pub/Sub publish": {
+          "ops": 600000,
+          "elapsed_ns": 321234745,
+          "ops_per_sec": 1867792.9748850798
+        },
+        "Pub/Sub delivery": {
+          "ops": 30000000,
+          "elapsed_ns": 367218749,
+          "ops_per_sec": 81695175.10120378
+        }
+      },
+      "peak_rss_kib": 61228,
+      "cpu_seconds": 1.23,
+      "cpu_ns_per_operation": 40.19607843137255,
+      "host_before": {
+        "cpu_busy_pct": 10.273972602739725,
+        "pressure_avg10": {
+          "cpu": 9.23,
+          "memory": 0.03,
+          "io": 2.44
+        },
+        "load_average": [
+          3.80419921875,
+          5.60107421875,
+          8.29296875
+        ]
+      },
+      "pressure_after": {
+        "cpu": 9.91,
+        "memory": 0.03,
+        "io": 2.0
+      },
+      "unattributed_cpu_cores": 3.4360743270724354
+    },
+    {
+      "transport": "tcp",
+      "side": "tuned",
+      "mode": "pub",
+      "round": 5,
+      "rows": {
+        "Pub/Sub publish": {
+          "ops": 600000,
+          "elapsed_ns": 437031256,
+          "ops_per_sec": 1372899.5163677721
+        },
+        "Pub/Sub delivery": {
+          "ops": 30000000,
+          "elapsed_ns": 522536187,
+          "ops_per_sec": 57412291.71559749
+        }
+      },
+      "peak_rss_kib": 57564,
+      "cpu_seconds": 1.44,
+      "cpu_ns_per_operation": 47.05882352941177,
+      "host_before": {
+        "cpu_busy_pct": 12.88659793814433,
+        "pressure_avg10": {
+          "cpu": 9.91,
+          "memory": 0.03,
+          "io": 2.0
+        },
+        "load_average": [
+          3.80419921875,
+          5.60107421875,
+          8.29296875
+        ]
+      },
+      "pressure_after": {
+        "cpu": 9.91,
+        "memory": 0.03,
+        "io": 2.0
+      },
+      "unattributed_cpu_cores": 5.33100883831763
+    },
+    {
+      "transport": "tcp",
+      "side": "current",
+      "mode": "pub",
+      "round": 5,
+      "rows": {
+        "Pub/Sub publish": {
+          "ops": 600000,
+          "elapsed_ns": 380178422,
+          "ops_per_sec": 1578206.350701303
+        },
+        "Pub/Sub delivery": {
+          "ops": 30000000,
+          "elapsed_ns": 516310929,
+          "ops_per_sec": 58104522.51728338
+        }
+      },
+      "peak_rss_kib": 53108,
+      "cpu_seconds": 1.35,
+      "cpu_ns_per_operation": 44.11764705882353,
+      "host_before": {
+        "cpu_busy_pct": 14.7008547008547,
+        "pressure_avg10": {
+          "cpu": 11.01,
+          "memory": 0.02,
+          "io": 2.0
+        },
+        "load_average": [
+          3.80419921875,
+          5.60107421875,
+          8.29296875
+        ]
+      },
+      "pressure_after": {
+        "cpu": 10.65,
+        "memory": 0.01,
+        "io": 2.18
+      },
+      "unattributed_cpu_cores": 5.512403366976693
+    },
+    {
+      "transport": "tcp",
+      "side": "current",
+      "mode": "pub",
+      "round": 6,
+      "rows": {
+        "Pub/Sub publish": {
+          "ops": 600000,
+          "elapsed_ns": 416078184,
+          "ops_per_sec": 1442036.6726076654
+        },
+        "Pub/Sub delivery": {
+          "ops": 30000000,
+          "elapsed_ns": 479638372,
+          "ops_per_sec": 62547122.480851054
+        }
+      },
+      "peak_rss_kib": 57396,
+      "cpu_seconds": 1.4,
+      "cpu_ns_per_operation": 45.751633986928105,
+      "host_before": {
+        "cpu_busy_pct": 14.7008547008547,
+        "pressure_avg10": {
+          "cpu": 10.65,
+          "memory": 0.01,
+          "io": 2.18
+        },
+        "load_average": [
+          5.1015625,
+          5.84033203125,
+          8.35595703125
+        ]
+      },
+      "pressure_after": {
+        "cpu": 11.25,
+        "memory": 0.01,
+        "io": 2.15
+      },
+      "unattributed_cpu_cores": 4.476178993818584
+    },
+    {
+      "transport": "tcp",
+      "side": "tuned",
+      "mode": "pub",
+      "round": 6,
+      "rows": {
+        "Pub/Sub publish": {
+          "ops": 600000,
+          "elapsed_ns": 341206640,
+          "ops_per_sec": 1758465.1928227423
+        },
+        "Pub/Sub delivery": {
+          "ops": 30000000,
+          "elapsed_ns": 598942697,
+          "ops_per_sec": 50088264.11986454
+        }
+      },
+      "peak_rss_kib": 55432,
+      "cpu_seconds": 1.38,
+      "cpu_ns_per_operation": 45.09803921568628,
+      "host_before": {
+        "cpu_busy_pct": 12.392426850258175,
+        "pressure_avg10": {
+          "cpu": 10.84,
+          "memory": 0.01,
+          "io": 1.94
+        },
+        "load_average": [
+          5.1015625,
+          5.84033203125,
+          8.35595703125
+        ]
+      },
+      "pressure_after": {
+        "cpu": 10.84,
+        "memory": 0.01,
+        "io": 1.94
+      },
+      "unattributed_cpu_cores": 3.196875102689771
+    }
+  ]
+}

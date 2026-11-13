@@ -1,0 +1,13 @@
+{
+  "source_and_client_hashes": "verified",
+  "source_changes_this_run": false,
+  "normal_workloads": 20,
+  "measured_suites": 9,
+  "warmups_excluded": 3,
+  "verified_pubsub_deliveries": 120000000,
+  "oom_kills": 0,
+  "visual_review": "Desktop and mobile inspected; passed",
+  "metric_SVGs": 60,
+  "protected_container": "healthy; unchanged",
+  "owned_benchmark_containers_remaining": 0
+}

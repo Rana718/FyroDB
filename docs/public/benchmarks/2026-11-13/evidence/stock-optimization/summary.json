@@ -1,0 +1,182 @@
+[
+  {
+    "core": "single",
+    "command": "GET",
+    "pipeline": 1,
+    "baseline_rps": 275824.03,
+    "optimized_rps": 275862.06,
+    "ratio": 1.0001378777621368,
+    "change_percent": 0.013787776213680658
+  },
+  {
+    "core": "single",
+    "command": "SET",
+    "pipeline": 1,
+    "baseline_rps": 266631.12,
+    "optimized_rps": 266631.12,
+    "ratio": 1.0,
+    "change_percent": 0.0
+  },
+  {
+    "core": "single",
+    "command": "HSET",
+    "pipeline": 1,
+    "baseline_rps": 228545.3,
+    "optimized_rps": 249968.73,
+    "ratio": 1.0937382217004683,
+    "change_percent": 9.37382217004683
+  },
+  {
+    "core": "single",
+    "command": "GET",
+    "pipeline": 16,
+    "baseline_rps": 2423948.5,
+    "optimized_rps": 2423948.5,
+    "ratio": 1.0,
+    "change_percent": 0.0
+  },
+  {
+    "core": "single",
+    "command": "SET",
+    "pipeline": 16,
+    "baseline_rps": 2563839.5,
+    "optimized_rps": 2563708.0,
+    "ratio": 0.9999487097378755,
+    "change_percent": -0.005129026212447041
+  },
+  {
+    "core": "single",
+    "command": "GET",
+    "pipeline": 64,
+    "baseline_rps": 4207869.0,
+    "optimized_rps": 4207869.0,
+    "ratio": 1.0,
+    "change_percent": 0.0
+  },
+  {
+    "core": "single",
+    "command": "SET",
+    "pipeline": 64,
+    "baseline_rps": 4207869.0,
+    "optimized_rps": 4207869.0,
+    "ratio": 1.0,
+    "change_percent": 0.0
+  },
+  {
+    "core": "single",
+    "command": "HSET",
+    "pipeline": 64,
+    "baseline_rps": 929454.44,
+    "optimized_rps": 1426940.62,
+    "ratio": 1.5352453639362895,
+    "change_percent": 53.52453639362895
+  },
+  {
+    "core": "single",
+    "command": "GET",
+    "pipeline": 256,
+    "baseline_rps": 4995005.0,
+    "optimized_rps": 4992511.0,
+    "ratio": 0.9995007012004993,
+    "change_percent": -0.049929879950072475
+  },
+  {
+    "core": "single",
+    "command": "SET",
+    "pipeline": 256,
+    "baseline_rps": 4710738.0,
+    "optimized_rps": 4990020.0,
+    "ratio": 1.0592862519630681,
+    "change_percent": 5.928625196306814
+  },
+  {
+    "core": "multi",
+    "command": "GET",
+    "pipeline": 1,
+    "baseline_rps": 444345.72,
+    "optimized_rps": 470477.53,
+    "ratio": 1.0588096358844192,
+    "change_percent": 5.880963588441923
+  },
+  {
+    "core": "multi",
+    "command": "SET",
+    "pipeline": 1,
+    "baseline_rps": 444345.72,
+    "optimized_rps": 470477.53,
+    "ratio": 1.0588096358844192,
+    "change_percent": 5.880963588441923
+  },
+  {
+    "core": "multi",
+    "command": "HSET",
+    "pipeline": 1,
+    "baseline_rps": 444345.72,
+    "optimized_rps": 470477.53,
+    "ratio": 1.0588096358844192,
+    "change_percent": 5.880963588441923
+  },
+  {
+    "core": "multi",
+    "command": "GET",
+    "pipeline": 16,
+    "baseline_rps": 4443457.0,
+    "optimized_rps": 4998750.5,
+    "ratio": 1.124968802443683,
+    "change_percent": 12.496880244368302
+  },
+  {
+    "core": "multi",
+    "command": "SET",
+    "pipeline": 16,
+    "baseline_rps": 4704775.5,
+    "optimized_rps": 4997501.5,
+    "ratio": 1.06221890927633,
+    "change_percent": 6.221890927632989
+  },
+  {
+    "core": "multi",
+    "command": "GET",
+    "pipeline": 64,
+    "baseline_rps": 7269026.5,
+    "optimized_rps": 7403020.0,
+    "ratio": 1.0184334862446849,
+    "change_percent": 1.8433486244684882
+  },
+  {
+    "core": "multi",
+    "command": "SET",
+    "pipeline": 64,
+    "baseline_rps": 7138268.5,
+    "optimized_rps": 7268498.0,
+    "ratio": 1.0182438500316988,
+    "change_percent": 1.8243850031698816
+  },
+  {
+    "core": "multi",
+    "command": "HSET",
+    "pipeline": 64,
+    "baseline_rps": 4442470.0,
+    "optimized_rps": 6662225.0,
+    "ratio": 1.4996668519990006,
+    "change_percent": 49.96668519990006
+  },
+  {
+    "core": "multi",
+    "command": "GET",
+    "pipeline": 256,
+    "baseline_rps": 7254262.0,
+    "optimized_rps": 7254262.0,
+    "ratio": 1.0,
+    "change_percent": 0.0
+  },
+  {
+    "core": "multi",
+    "command": "SET",
+    "pipeline": 256,
+    "baseline_rps": 7249003.0,
+    "optimized_rps": 7254262.0,
+    "ratio": 1.000725479076226,
+    "change_percent": 0.07254790762261099
+  }
+]

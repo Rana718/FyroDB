@@ -1,0 +1,133 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="923" viewBox="0 0 1120 923" role="img" aria-labelledby="title desc">
+<title id="title">Earlier standard-client comparison · single core</title><desc id="desc">Older FyroDB build, Dragonfly and standalone Redis. Median-only archive; range not encoded here.. Source: standard-benchmark. Historical experiment, not the current d5a178b runtime. M ops/s.</desc>
+<style>text{font-family:Inter,system-ui,sans-serif;fill:#203943}.title{font-size:25px;font-weight:650}.sub{font-size:14px;fill:#55737c}.name{font-size:21px;font-weight:600}.label{font-size:14px;fill:#55737c}.value{font-size:24px;font-weight:600}.range{font-size:12px;fill:#657d84}</style>
+<rect width="1120" height="923" fill="#f5f8f8"/>
+<text class="title" x="28" y="38">Earlier standard-client comparison · single core</text>
+<text class="sub" x="28" y="66">Older FyroDB build, Dragonfly and standalone Redis. Median-only archive; range not encoded here.</text>
+<rect x="28.0" y="88" width="340.0" height="798" rx="10" fill="white" stroke="#d4dfe1"/>
+<text class="name" x="46.0" y="116">Earlier FyroDB build</text>
+<text class="label" x="46.0" y="157">P1 · GET</text>
+<text class="value" x="46.0" y="184">0.267M</text>
+<rect x="46.0" y="194" width="304.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="46.0" y="194" width="304.00" height="6" rx="3" fill="#287c77"/>
+<text class="range" x="46.0" y="218">Median only; raw attempts archived</text>
+<text class="label" x="46.0" y="245">P1 · SET</text>
+<text class="value" x="46.0" y="272">0.250M</text>
+<rect x="46.0" y="282" width="304.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="46.0" y="282" width="304.00" height="6" rx="3" fill="#287c77"/>
+<text class="range" x="46.0" y="306">Median only; raw attempts archived</text>
+<text class="label" x="46.0" y="333">P16 · GET</text>
+<text class="value" x="46.0" y="360">2.221M</text>
+<rect x="46.0" y="370" width="304.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="46.0" y="370" width="304.00" height="6" rx="3" fill="#287c77"/>
+<text class="range" x="46.0" y="394">Median only; raw attempts archived</text>
+<text class="label" x="46.0" y="421">P16 · SET</text>
+<text class="value" x="46.0" y="448">2.500M</text>
+<rect x="46.0" y="458" width="304.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="46.0" y="458" width="304.00" height="6" rx="3" fill="#287c77"/>
+<text class="range" x="46.0" y="482">Median only; raw attempts archived</text>
+<text class="label" x="46.0" y="509">P64 · GET</text>
+<text class="value" x="46.0" y="536">3.997M</text>
+<rect x="46.0" y="546" width="304.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="46.0" y="546" width="304.00" height="6" rx="3" fill="#287c77"/>
+<text class="range" x="46.0" y="570">Median only; raw attempts archived</text>
+<text class="label" x="46.0" y="597">P64 · SET</text>
+<text class="value" x="46.0" y="624">3.997M</text>
+<rect x="46.0" y="634" width="304.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="46.0" y="634" width="304.00" height="6" rx="3" fill="#287c77"/>
+<text class="range" x="46.0" y="658">Median only; raw attempts archived</text>
+<text class="label" x="46.0" y="685">P256 · GET</text>
+<text class="value" x="46.0" y="712">4.985M</text>
+<rect x="46.0" y="722" width="304.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="46.0" y="722" width="304.00" height="6" rx="3" fill="#287c77"/>
+<text class="range" x="46.0" y="746">Median only; raw attempts archived</text>
+<text class="label" x="46.0" y="773">P256 · SET</text>
+<text class="value" x="46.0" y="800">3.994M</text>
+<rect x="46.0" y="810" width="304.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="46.0" y="810" width="304.00" height="6" rx="3" fill="#287c77"/>
+<text class="range" x="46.0" y="834">Median only; raw attempts archived</text>
+<rect x="390.0" y="88" width="340.0" height="798" rx="10" fill="white" stroke="#d4dfe1"/>
+<text class="name" x="408.0" y="116">Dragonfly</text>
+<text class="label" x="408.0" y="157">P1 · GET</text>
+<text class="value" x="408.0" y="184">0.190M</text>
+<rect x="408.0" y="194" width="304.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="408.0" y="194" width="217.10" height="6" rx="3" fill="#7a8996"/>
+<text class="range" x="408.0" y="218">Median only; raw attempts archived</text>
+<text class="label" x="408.0" y="245">P1 · SET</text>
+<text class="value" x="408.0" y="272">0.182M</text>
+<rect x="408.0" y="282" width="304.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="408.0" y="282" width="221.11" height="6" rx="3" fill="#7a8996"/>
+<text class="range" x="408.0" y="306">Median only; raw attempts archived</text>
+<text class="label" x="408.0" y="333">P16 · GET</text>
+<text class="value" x="408.0" y="360">0.689M</text>
+<rect x="408.0" y="370" width="304.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="408.0" y="370" width="94.24" height="6" rx="3" fill="#7a8996"/>
+<text class="range" x="408.0" y="394">Median only; raw attempts archived</text>
+<text class="label" x="408.0" y="421">P16 · SET</text>
+<text class="value" x="408.0" y="448">0.644M</text>
+<rect x="408.0" y="458" width="304.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="408.0" y="458" width="78.30" height="6" rx="3" fill="#7a8996"/>
+<text class="range" x="408.0" y="482">Median only; raw attempts archived</text>
+<text class="label" x="408.0" y="509">P64 · GET</text>
+<text class="value" x="408.0" y="536">0.799M</text>
+<rect x="408.0" y="546" width="304.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="408.0" y="546" width="60.75" height="6" rx="3" fill="#7a8996"/>
+<text class="range" x="408.0" y="570">Median only; raw attempts archived</text>
+<text class="label" x="408.0" y="597">P64 · SET</text>
+<text class="value" x="408.0" y="624">0.712M</text>
+<rect x="408.0" y="634" width="304.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="408.0" y="634" width="54.19" height="6" rx="3" fill="#7a8996"/>
+<text class="range" x="408.0" y="658">Median only; raw attempts archived</text>
+<text class="label" x="408.0" y="685">P256 · GET</text>
+<text class="value" x="408.0" y="712">0.767M</text>
+<rect x="408.0" y="722" width="304.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="408.0" y="722" width="46.79" height="6" rx="3" fill="#7a8996"/>
+<text class="range" x="408.0" y="746">Median only; raw attempts archived</text>
+<text class="label" x="408.0" y="773">P256 · SET</text>
+<text class="value" x="408.0" y="800">0.688M</text>
+<rect x="408.0" y="810" width="304.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="408.0" y="810" width="52.38" height="6" rx="3" fill="#7a8996"/>
+<text class="range" x="408.0" y="834">Median only; raw attempts archived</text>
+<rect x="752.0" y="88" width="340.0" height="798" rx="10" fill="white" stroke="#d4dfe1"/>
+<text class="name" x="770.0" y="116">Redis</text>
+<text class="label" x="770.0" y="157">P1 · GET</text>
+<text class="value" x="770.0" y="184">0.250M</text>
+<rect x="770.0" y="194" width="304.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="770.0" y="194" width="284.93" height="6" rx="3" fill="#796a95"/>
+<text class="range" x="770.0" y="218">Median only; raw attempts archived</text>
+<text class="label" x="770.0" y="245">P1 · SET</text>
+<text class="value" x="770.0" y="272">0.235M</text>
+<rect x="770.0" y="282" width="304.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="770.0" y="282" width="286.12" height="6" rx="3" fill="#796a95"/>
+<text class="range" x="770.0" y="306">Median only; raw attempts archived</text>
+<text class="label" x="770.0" y="333">P16 · GET</text>
+<text class="value" x="770.0" y="360">1.249M</text>
+<rect x="770.0" y="370" width="304.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="770.0" y="370" width="170.99" height="6" rx="3" fill="#796a95"/>
+<text class="range" x="770.0" y="394">Median only; raw attempts archived</text>
+<text class="label" x="770.0" y="421">P16 · SET</text>
+<text class="value" x="770.0" y="448">1.249M</text>
+<rect x="770.0" y="458" width="304.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="770.0" y="458" width="151.89" height="6" rx="3" fill="#796a95"/>
+<text class="range" x="770.0" y="482">Median only; raw attempts archived</text>
+<text class="label" x="770.0" y="509">P64 · GET</text>
+<text class="value" x="770.0" y="536">1.663M</text>
+<rect x="770.0" y="546" width="304.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="770.0" y="546" width="126.51" height="6" rx="3" fill="#796a95"/>
+<text class="range" x="770.0" y="570">Median only; raw attempts archived</text>
+<text class="label" x="770.0" y="597">P64 · SET</text>
+<text class="value" x="770.0" y="624">1.536M</text>
+<rect x="770.0" y="634" width="304.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="770.0" y="634" width="116.80" height="6" rx="3" fill="#796a95"/>
+<text class="range" x="770.0" y="658">Median only; raw attempts archived</text>
+<text class="label" x="770.0" y="685">P256 · GET</text>
+<text class="value" x="770.0" y="712">1.666M</text>
+<rect x="770.0" y="722" width="304.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="770.0" y="722" width="101.60" height="6" rx="3" fill="#796a95"/>
+<text class="range" x="770.0" y="746">Median only; raw attempts archived</text>
+<text class="label" x="770.0" y="773">P256 · SET</text>
+<text class="value" x="770.0" y="800">1.662M</text>
+<rect x="770.0" y="810" width="304.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="770.0" y="810" width="126.53" height="6" rx="3" fill="#796a95"/>
+<text class="range" x="770.0" y="834">Median only; raw attempts archived</text>
+<text class="range" x="28" y="909">Source: standard-benchmark. Historical experiment, not the current d5a178b runtime. M ops/s.</text></svg>

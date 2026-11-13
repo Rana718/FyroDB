@@ -1,0 +1,25 @@
+{
+  "workspace": {
+    "passed": 779,
+    "failed": 0,
+    "ignored": 3
+  },
+  "clippy": "passed with io-uring/all targets",
+  "io_uring_large_reply_tests": 13,
+  "docker_isolation_passed": 6,
+  "save_restart_passed": 2,
+  "docker_affinity_passed": 2,
+  "large_reply_cases_passed": 3,
+  "benchmark_samples": 216,
+  "sample_counts": {
+    "small-acceptance": 24,
+    "standard-final": 108,
+    "capacity-final": 36,
+    "hot-final": 24,
+    "scale-final": 12,
+    "fresh-small": 12
+  },
+  "oom_kills": 0,
+  "newly_measured_samples": 90,
+  "reused_peer_samples": 126
+}

@@ -1,0 +1,673 @@
+{
+  "metadata": {
+    "status": "complete",
+    "cpu": "11th Gen Intel(R) Core(TM) i5-11400H @ 2.70GHz",
+    "initial_pressure": {
+      "cpu": 0.84,
+      "memory": 0.0,
+      "io": 0.07
+    },
+    "governor": "powersave",
+    "server_cpus": [
+      0,
+      1,
+      2,
+      3,
+      6,
+      7,
+      8,
+      9
+    ],
+    "client_cpus": [
+      4,
+      5,
+      10,
+      11
+    ],
+    "direct_cpus": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+    ],
+    "workers": 8,
+    "runs": 7,
+    "warmups": 1,
+    "inner": 1,
+    "hotkey_duration_seconds": 8.0,
+    "counts": {
+      "clients": 100,
+      "kv_per_client": 100000,
+      "mixed_per_client": 20000,
+      "hotkey_per_client": 100000,
+      "subscribers": 50,
+      "publishers": 10,
+      "messages_per_publisher": 20000
+    },
+    "binary_sha256": {
+      "current": "4ec156d07b33bccdf4845f7de7586166d3fe7bcdbac47b641f17f0b52106bc03",
+      "tuned": "9b7f5c4b997dc18f7cb080267ea38217be6c781b882946ee77bea44f8e15d48d",
+      "tcp-bench": "694535e448acdda854546242ebc57d6f497d9f370ed37510fbd76cf1a84afed2"
+    },
+    "readme_basis": "Historical best-of-three claims with conflicting TCP/in-process labels; rates are references, not matched measurements."
+  },
+  "results": {
+    "tcp": {
+      "current": {
+        "Hot Key (1 key, contention) sustained": {
+          "median": 129584460.37760302,
+          "best": 135799640.19382438,
+          "minimum": 109347190.51785238,
+          "maximum": 135799640.19382438,
+          "cv_pct": 6.922105162661489,
+          "median_ci95": [
+            122861499.19179702,
+            131183523.47124994
+          ],
+          "samples": [
+            135799640.19382438,
+            129584460.37760302,
+            122861499.19179702,
+            123030231.8865034,
+            131183523.47124994,
+            109347190.51785238,
+            131070089.15384021
+          ]
+        }
+      },
+      "tuned": {
+        "Hot Key (1 key, contention) sustained": {
+          "median": 135565659.23330137,
+          "best": 146858973.3733095,
+          "minimum": 114167416.39697073,
+          "maximum": 146858973.3733095,
+          "cv_pct": 7.6981846801991,
+          "median_ci95": [
+            132441177.12159285,
+            142935335.54698366
+          ],
+          "samples": [
+            142935335.54698366,
+            146858973.3733095,
+            132441177.12159285,
+            135565659.23330137,
+            136224809.76350573,
+            134942031.4763186,
+            114167416.39697073
+          ]
+        }
+      }
+    },
+    "in-process": {}
+  },
+  "samples": [
+    {
+      "transport": "tcp",
+      "side": "tuned",
+      "mode": "hotkey",
+      "round": -1,
+      "rows": {
+        "Hot Key (1 key, contention) sustained": {
+          "ops": 1211887500,
+          "elapsed_ns": 8001490279,
+          "ops_per_sec": 151457723.21696275
+        }
+      },
+      "peak_rss_kib": 13556,
+      "cpu_seconds": 33.11,
+      "cpu_ns_per_operation": 27.32101783375107,
+      "host_before": {
+        "cpu_busy_pct": 17.487266553480474,
+        "pressure_avg10": {
+          "cpu": 0.68,
+          "memory": 0.0,
+          "io": 0.06
+        },
+        "load_average": [
+          4.3056640625,
+          5.27880859375,
+          7.11865234375
+        ]
+      },
+      "pressure_after": {
+        "cpu": 19.67,
+        "memory": 0.18,
+        "io": 0.02
+      },
+      "unattributed_cpu_cores": 4.487153710542067
+    },
+    {
+      "transport": "tcp",
+      "side": "current",
+      "mode": "hotkey",
+      "round": -1,
+      "rows": {
+        "Hot Key (1 key, contention) sustained": {
+          "ops": 1052204000,
+          "elapsed_ns": 8001469616,
+          "ops_per_sec": 131501342.94029918
+        }
+      },
+      "peak_rss_kib": 14704,
+      "cpu_seconds": 34.99,
+      "cpu_ns_per_operation": 33.25400777795941,
+      "host_before": {
+        "cpu_busy_pct": 11.13013698630137,
+        "pressure_avg10": {
+          "cpu": 19.67,
+          "memory": 0.18,
+          "io": 0.02
+        },
+        "load_average": [
+          6.36669921875,
+          5.6962890625,
+          7.2353515625
+        ]
+      },
+      "pressure_after": {
+        "cpu": 28.67,
+        "memory": 0.08,
+        "io": 0.01
+      },
+      "unattributed_cpu_cores": 4.683635549601103
+    },
+    {
+      "transport": "tcp",
+      "side": "current",
+      "mode": "hotkey",
+      "round": 0,
+      "rows": {
+        "Hot Key (1 key, contention) sustained": {
+          "ops": 1086468000,
+          "elapsed_ns": 8000521934,
+          "ops_per_sec": 135799640.19382438
+        }
+      },
+      "peak_rss_kib": 14880,
+      "cpu_seconds": 37.95,
+      "cpu_ns_per_operation": 34.92969880383039,
+      "host_before": {
+        "cpu_busy_pct": 7.6923076923076925,
+        "pressure_avg10": {
+          "cpu": 28.67,
+          "memory": 0.08,
+          "io": 0.01
+        },
+        "load_average": [
+          8.1298828125,
+          6.10107421875,
+          7.35107421875
+        ]
+      },
+      "pressure_after": {
+        "cpu": 29.19,
+        "memory": 0.03,
+        "io": 0.0
+      },
+      "unattributed_cpu_cores": 4.282620037460242
+    },
+    {
+      "transport": "tcp",
+      "side": "tuned",
+      "mode": "hotkey",
+      "round": 0,
+      "rows": {
+        "Hot Key (1 key, contention) sustained": {
+          "ops": 1143505500,
+          "elapsed_ns": 8000159622,
+          "ops_per_sec": 142935335.54698366
+        }
+      },
+      "peak_rss_kib": 13512,
+      "cpu_seconds": 34.01,
+      "cpu_ns_per_operation": 29.741877061369618,
+      "host_before": {
+        "cpu_busy_pct": 6.996587030716723,
+        "pressure_avg10": {
+          "cpu": 29.52,
+          "memory": 0.02,
+          "io": 0.0
+        },
+        "load_average": [
+          7.98486328125,
+          6.14501953125,
+          7.3525390625
+        ]
+      },
+      "pressure_after": {
+        "cpu": 34.07,
+        "memory": 0.16,
+        "io": 0.0
+      },
+      "unattributed_cpu_cores": 4.551872042623134
+    },
+    {
+      "transport": "tcp",
+      "side": "tuned",
+      "mode": "hotkey",
+      "round": 1,
+      "rows": {
+        "Hot Key (1 key, contention) sustained": {
+          "ops": 1175053500,
+          "elapsed_ns": 8001237330,
+          "ops_per_sec": 146858973.3733095
+        }
+      },
+      "peak_rss_kib": 13656,
+      "cpu_seconds": 35.21,
+      "cpu_ns_per_operation": 29.964593101505592,
+      "host_before": {
+        "cpu_busy_pct": 9.76027397260274,
+        "pressure_avg10": {
+          "cpu": 34.07,
+          "memory": 0.16,
+          "io": 0.0
+        },
+        "load_average": [
+          9.5078125,
+          6.49169921875,
+          7.45849609375
+        ]
+      },
+      "pressure_after": {
+        "cpu": 34.29,
+        "memory": 0.07,
+        "io": 0.0
+      },
+      "unattributed_cpu_cores": 4.372968246243053
+    },
+    {
+      "transport": "tcp",
+      "side": "current",
+      "mode": "hotkey",
+      "round": 1,
+      "rows": {
+        "Hot Key (1 key, contention) sustained": {
+          "ops": 1036700500,
+          "elapsed_ns": 8000191512,
+          "ops_per_sec": 129584460.37760302
+        }
+      },
+      "peak_rss_kib": 12800,
+      "cpu_seconds": 37.16,
+      "cpu_ns_per_operation": 35.84448931972156,
+      "host_before": {
+        "cpu_busy_pct": 10.4631217838765,
+        "pressure_avg10": {
+          "cpu": 34.29,
+          "memory": 0.07,
+          "io": 0.0
+        },
+        "load_average": [
+          11.80029296875,
+          7.07177734375,
+          7.63623046875
+        ]
+      },
+      "pressure_after": {
+        "cpu": 36.91,
+        "memory": 0.02,
+        "io": 0.0
+      },
+      "unattributed_cpu_cores": 4.419708368864564
+    },
+    {
+      "transport": "tcp",
+      "side": "current",
+      "mode": "hotkey",
+      "round": 2,
+      "rows": {
+        "Hot Key (1 key, contention) sustained": {
+          "ops": 983060000,
+          "elapsed_ns": 8001367446,
+          "ops_per_sec": 122861499.19179702
+        }
+      },
+      "peak_rss_kib": 12924,
+      "cpu_seconds": 36.04,
+      "cpu_ns_per_operation": 36.66103798343946,
+      "host_before": {
+        "cpu_busy_pct": 19.83050847457627,
+        "pressure_avg10": {
+          "cpu": 36.91,
+          "memory": 0.02,
+          "io": 0.0
+        },
+        "load_average": [
+          13.6220703125,
+          7.6142578125,
+          7.80712890625
+        ]
+      },
+      "pressure_after": {
+        "cpu": 37.75,
+        "memory": 0.01,
+        "io": 0.09
+      },
+      "unattributed_cpu_cores": 4.779210853037523
+    },
+    {
+      "transport": "tcp",
+      "side": "tuned",
+      "mode": "hotkey",
+      "round": 2,
+      "rows": {
+        "Hot Key (1 key, contention) sustained": {
+          "ops": 1059671500,
+          "elapsed_ns": 8001072801,
+          "ops_per_sec": 132441177.12159285
+        }
+      },
+      "peak_rss_kib": 13552,
+      "cpu_seconds": 32.15,
+      "cpu_ns_per_operation": 30.339591090257688,
+      "host_before": {
+        "cpu_busy_pct": 13.162393162393162,
+        "pressure_avg10": {
+          "cpu": 37.75,
+          "memory": 0.01,
+          "io": 0.09
+        },
+        "load_average": [
+          16.33251953125,
+          8.38671875,
+          8.056640625
+        ]
+      },
+      "pressure_after": {
+        "cpu": 39.26,
+        "memory": 0.0,
+        "io": 0.04
+      },
+      "unattributed_cpu_cores": 4.898547657279466
+    },
+    {
+      "transport": "tcp",
+      "side": "tuned",
+      "mode": "hotkey",
+      "round": 3,
+      "rows": {
+        "Hot Key (1 key, contention) sustained": {
+          "ops": 1084643500,
+          "elapsed_ns": 8000872095,
+          "ops_per_sec": 135565659.23330137
+        }
+      },
+      "peak_rss_kib": 13316,
+      "cpu_seconds": 33.0,
+      "cpu_ns_per_operation": 30.424743245130774,
+      "host_before": {
+        "cpu_busy_pct": 7.056798623063683,
+        "pressure_avg10": {
+          "cpu": 38.48,
+          "memory": 0.0,
+          "io": 0.03
+        },
+        "load_average": [
+          16.2255859375,
+          8.49658203125,
+          8.09423828125
+        ]
+      },
+      "pressure_after": {
+        "cpu": 37.84,
+        "memory": 0.0,
+        "io": 0.01
+      },
+      "unattributed_cpu_cores": 4.691398365715523
+    },
+    {
+      "transport": "tcp",
+      "side": "current",
+      "mode": "hotkey",
+      "round": 3,
+      "rows": {
+        "Hot Key (1 key, contention) sustained": {
+          "ops": 984292000,
+          "elapsed_ns": 8000407582,
+          "ops_per_sec": 123030231.8865034
+        }
+      },
+      "peak_rss_kib": 13028,
+      "cpu_seconds": 35.57,
+      "cpu_ns_per_operation": 36.13765020949068,
+      "host_before": {
+        "cpu_busy_pct": 7.863247863247863,
+        "pressure_avg10": {
+          "cpu": 37.84,
+          "memory": 0.0,
+          "io": 0.01
+        },
+        "load_average": [
+          17.30615234375,
+          8.9765625,
+          8.25439453125
+        ]
+      },
+      "pressure_after": {
+        "cpu": 38.85,
+        "memory": 0.0,
+        "io": 0.0
+      },
+      "unattributed_cpu_cores": 4.603825183495055
+    },
+    {
+      "transport": "tcp",
+      "side": "current",
+      "mode": "hotkey",
+      "round": 4,
+      "rows": {
+        "Hot Key (1 key, contention) sustained": {
+          "ops": 1049486000,
+          "elapsed_ns": 8000135781,
+          "ops_per_sec": 131183523.47124994
+        }
+      },
+      "peak_rss_kib": 12972,
+      "cpu_seconds": 37.76,
+      "cpu_ns_per_operation": 35.97951759242143,
+      "host_before": {
+        "cpu_busy_pct": 14.017094017094017,
+        "pressure_avg10": {
+          "cpu": 35.98,
+          "memory": 0.0,
+          "io": 0.0
+        },
+        "load_average": [
+          19.19091796875,
+          9.6533203125,
+          8.48291015625
+        ]
+      },
+      "pressure_after": {
+        "cpu": 37.58,
+        "memory": 0.0,
+        "io": 0.0
+      },
+      "unattributed_cpu_cores": 4.35427325528414
+    },
+    {
+      "transport": "tcp",
+      "side": "tuned",
+      "mode": "hotkey",
+      "round": 4,
+      "rows": {
+        "Hot Key (1 key, contention) sustained": {
+          "ops": 1090050500,
+          "elapsed_ns": 8001850044,
+          "ops_per_sec": 136224809.76350573
+        }
+      },
+      "peak_rss_kib": 13340,
+      "cpu_seconds": 32.94,
+      "cpu_ns_per_operation": 30.21878344168458,
+      "host_before": {
+        "cpu_busy_pct": 17.17687074829932,
+        "pressure_avg10": {
+          "cpu": 37.58,
+          "memory": 0.0,
+          "io": 0.0
+        },
+        "load_average": [
+          19.22216796875,
+          9.97705078125,
+          8.60107421875
+        ]
+      },
+      "pressure_after": {
+        "cpu": 38.71,
+        "memory": 0.0,
+        "io": 0.0
+      },
+      "unattributed_cpu_cores": 4.784783198401609
+    },
+    {
+      "transport": "tcp",
+      "side": "tuned",
+      "mode": "hotkey",
+      "round": 5,
+      "rows": {
+        "Hot Key (1 key, contention) sustained": {
+          "ops": 1079634500,
+          "elapsed_ns": 8000728077,
+          "ops_per_sec": 134942031.4763186
+        }
+      },
+      "peak_rss_kib": 13516,
+      "cpu_seconds": 32.72,
+      "cpu_ns_per_operation": 30.306552819495856,
+      "host_before": {
+        "cpu_busy_pct": 11.643835616438356,
+        "pressure_avg10": {
+          "cpu": 38.71,
+          "memory": 0.0,
+          "io": 0.0
+        },
+        "load_average": [
+          19.60498046875,
+          10.2099609375,
+          8.68408203125
+        ]
+      },
+      "pressure_after": {
+        "cpu": 37.22,
+        "memory": 0.0,
+        "io": 0.0
+      },
+      "unattributed_cpu_cores": 4.627140247658298
+    },
+    {
+      "transport": "tcp",
+      "side": "current",
+      "mode": "hotkey",
+      "round": 5,
+      "rows": {
+        "Hot Key (1 key, contention) sustained": {
+          "ops": 874971000,
+          "elapsed_ns": 8001769372,
+          "ops_per_sec": 109347190.51785238
+        }
+      },
+      "peak_rss_kib": 13152,
+      "cpu_seconds": 32.14,
+      "cpu_ns_per_operation": 36.7326459962673,
+      "host_before": {
+        "cpu_busy_pct": 14.983164983164983,
+        "pressure_avg10": {
+          "cpu": 36.46,
+          "memory": 0.0,
+          "io": 0.18
+        },
+        "load_average": [
+          19.73291015625,
+          10.548828125,
+          8.81103515625
+        ]
+      },
+      "pressure_after": {
+        "cpu": 43.38,
+        "memory": 0.0,
+        "io": 0.2
+      },
+      "unattributed_cpu_cores": 5.447903351298161
+    },
+    {
+      "transport": "tcp",
+      "side": "current",
+      "mode": "hotkey",
+      "round": 6,
+      "rows": {
+        "Hot Key (1 key, contention) sustained": {
+          "ops": 1048577000,
+          "elapsed_ns": 8000124260,
+          "ops_per_sec": 131070089.15384021
+        }
+      },
+      "peak_rss_kib": 12956,
+      "cpu_seconds": 37.49,
+      "cpu_ns_per_operation": 35.75321602514646,
+      "host_before": {
+        "cpu_busy_pct": 7.666098807495741,
+        "pressure_avg10": {
+          "cpu": 43.38,
+          "memory": 0.0,
+          "io": 0.2
+        },
+        "load_average": [
+          20.5556640625,
+          11.02587890625,
+          8.9853515625
+        ]
+      },
+      "pressure_after": {
+        "cpu": 40.21,
+        "memory": 0.0,
+        "io": 0.09
+      },
+      "unattributed_cpu_cores": 4.398293696092846
+    },
+    {
+      "transport": "tcp",
+      "side": "tuned",
+      "mode": "hotkey",
+      "round": 6,
+      "rows": {
+        "Hot Key (1 key, contention) sustained": {
+          "ops": 913433500,
+          "elapsed_ns": 8000824831,
+          "ops_per_sec": 114167416.39697073
+        }
+      },
+      "peak_rss_kib": 13460,
+      "cpu_seconds": 28.28,
+      "cpu_ns_per_operation": 30.960108207110864,
+      "host_before": {
+        "cpu_busy_pct": 8.376068376068377,
+        "pressure_avg10": {
+          "cpu": 37.82,
+          "memory": 0.0,
+          "io": 0.07
+        },
+        "load_average": [
+          21.5751953125,
+          11.56689453125,
+          9.18408203125
+        ]
+      },
+      "pressure_after": {
+        "cpu": 45.88,
+        "memory": 0.69,
+        "io": 1.82
+      },
+      "unattributed_cpu_cores": 5.593927226415577
+    }
+  ]
+}

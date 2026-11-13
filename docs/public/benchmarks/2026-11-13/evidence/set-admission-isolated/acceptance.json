@@ -1,0 +1,11 @@
+{
+  "status": "candidate not retained",
+  "reason": "No reliable throughput benefit established; multiple slower benchmark medians and substantial host variation. User requested stable performance without regressions.",
+  "checkpoint": "d5a178b6536397f26131527df3d4b217e9a66462",
+  "retained_runtime": "source-identical to checkpoint except added cfg(test) module",
+  "retained_changes": "six additional regression tests; uncommitted",
+  "candidate_image": "sha256:7eb4eb12eeec3ae05aeb2c1a611f8ca6d77e98fef5aa9b1be42c7bab75c18aa8",
+  "candidate_source": "frozen-candidate-source/",
+  "locked_instruction_reduction_percent": 0.4817472923395738,
+  "locked_counter_is_throughput": false
+}

@@ -1,0 +1,8 @@
+{
+  "measured_suites": 9,
+  "discarded_warmup_suites": 3,
+  "phases_per_suite": 20,
+  "subscriber_deliveries_verified_total": 120000000,
+  "oom_kills": 0,
+  "source_image": "sha256:3d5ef33d50f9dc4d5e321dbd196cbed3c5e644bfbdb2be32c6108fd6be4f3980"
+}

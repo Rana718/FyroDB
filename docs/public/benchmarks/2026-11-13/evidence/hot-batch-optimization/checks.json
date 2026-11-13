@@ -1,0 +1,35 @@
+{
+  "workspace": {
+    "passed": 736,
+    "failed": 0,
+    "ignored": 4,
+    "log": "workspace-tests.log"
+  },
+  "clippy": "passed",
+  "io_uring_compile": "passed",
+  "docker_isolation": {
+    "passed": 6,
+    "seconds_per_case": 15
+  },
+  "docker_large_reply": {
+    "passed": 3
+  },
+  "save_restart": {
+    "passed": 2,
+    "persisted_types": [
+      "string",
+      "hash",
+      "list",
+      "set",
+      "zset",
+      "stream",
+      "json",
+      "bitmap",
+      "hll",
+      "geo",
+      "FLAT vector index",
+      "TTL",
+      "deletion"
+    ]
+  }
+}

@@ -1,0 +1,207 @@
+---
+title: Benchmarks
+description: Performance comparison against Redis, DragonflyDB, and DiceDB.
+order: 17
+---
+
+## Test Setup
+
+- **Hardware**: 6-core Intel i5-11400H (12 hardware threads)
+- **Network**: Loopback TCP (127.0.0.1)
+- **Clients**: 100 concurrent connections
+- **Operations**: 1M total (10K per client)
+- **FyroDB**: 1 node
+- **Redis**: 6-node Redis Cluster (7 containers)
+- **Pipeline**: 100 commands per batch
+- **Pub/Sub**: 50 subscribers, 10 publishers, 200K messages, pipeline 200
+
+All tests run with the same Go benchmark tool. Best of three runs.
+
+## KV Throughput
+
+| Metric           | FyroDB      | Redis Cluster (6 nodes)    | DragonflyDB | DiceDB (1 node) |
+| ---------------- | ----------- | -------------------------- | ----------- | --------------- |
+| Pipeline-64 SET  | **15.41M**  | 5.75M                      | 4.09M       | 766K            |
+| Pipelined SET    | **39.62M**  | 7.56M                      | 4.16M       | 1.62M           |
+| Pipelined GET    | **53.38M**  | 11.29M                     | 4.09M       | 1.88M           |
+
+<BenchmarkChart id="pipeline64" />
+
+<BenchmarkChart id="set" />
+
+<BenchmarkChart id="get" />
+
+## Mixed Workload Throughput
+
+| Metric                | FyroDB      | Redis Cluster (6 nodes)    | DragonflyDB | Speedup |
+| --------------------- | ----------- | -------------------------- | ----------- | ------- |
+| Mixed SET/GET (50/50) | **45.87M**  | 7.24M                      | 5.15M       | 6.3×    |
+| INCR (counters)       | **108.56M** | 6.32M                      | 6.84M       | 17.2×   |
+| HSET/HGET (sessions)  | **44.44M**  | 7.95M                      | 5.81M       | 5.6×    |
+| LPUSH/RPOP (queue)    | **66.93M**  | 7.19M                      | 6.23M       | 9.3×    |
+| SADD (per-client sets)| **40.38M**  | 6.34M                      | 5.00M       | 6.4×    |
+| ZADD (per-client zsets)| **17.83M** | 4.55M                      | 4.36M       | 3.9×    |
+| JSON.GET (docs)       | **26.21M**  | 3.38M                      | 151.5K      | 7.8×    |
+| JSON.SET (docs)       | **16.28M**  | 3.38M                      | 151.5K      | 4.8×    |
+| SET+EXPIRE (cache TTL)| **15.14M**  | 2.64M                      | 2.41M       | 5.7×    |
+| Hot Key (contention)  | **37.68M**  | 2.03M                      | 2.15M       | 18.6×   |
+| Producer/Consumer     | **40.61M**  | 981.3K                     | 1.75M       | 23.2×   |
+| XADD (streams)        | **23.76M**  | 4.27M                      | —           | 5.6×    |
+| SETBIT/BITCOUNT (bitmap)| **38.11M**| 5.94M                      | —           | 6.4×    |
+| PFADD/PFCOUNT (HLL)   | **63.43M**  | 6.03M                      | —           | 10.5×   |
+| GEOADD/GEODIST (geo)  | **10.06M**  | 3.07M                      | —           | 3.3×    |
+
+<BenchmarkChart id="mixed" />
+
+<BenchmarkChart id="incr" />
+
+<BenchmarkChart id="hash" />
+
+<BenchmarkChart id="list" />
+
+<BenchmarkChart id="sadd" />
+
+<BenchmarkChart id="zadd" />
+
+<BenchmarkChart id="json" />
+
+<BenchmarkChart id="expire" />
+
+<BenchmarkChart id="hotkey" />
+
+<BenchmarkChart id="prodcons" />
+
+## Pub/Sub Throughput
+
+| Metric           | FyroDB      | Redis Cluster (6 nodes)    | DragonflyDB | DiceDB (1 node) |
+| ---------------- | ----------- | -------------------------- | ----------- | --------------- |
+| Publish ops/sec  | **2.29M**   | 147.1K                     | 315.5K      | 167.8K          |
+| Delivery msg/sec | **113.98M** | 7.35M                      | 15.43M      | 8.39M           |
+
+<BenchmarkChart id="pubsub-publish" />
+
+<BenchmarkChart id="pubsub" />
+
+## Vector & Search Workloads
+
+| Benchmark                     | Elapsed | Throughput       | Notes / Filtering |
+| ----------------------------- | ------- | ---------------- | ----------------- |
+| Vector HSET load              | 499ms   | 100.2k ops/sec   | Embedding ingestion rate |
+| Vector KNN-10 (FLAT)          | 2.169s  | 922 ops/sec      | Exact L2/Cosine scan |
+| Vector KNN-10 +tag filter     | 691ms   | 1.4k ops/sec     | Pre-filtered KNN search |
+| Filter Tag+Num                | 211ms   | 4.7k ops/sec     | Tag & numeric range query |
+| Text term                     | 29ms    | 34.3k ops/sec    | Single term BM25 search |
+| Text + Tag                    | 42ms    | 23.9k ops/sec    | Hybrid lexical + tag filter |
+| Text negation                 | 49ms    | 20.3k ops/sec    | NOT filter query |
+| Vector KNN-10 (8 clients)     | 1.079s  | 1.9k ops/sec     | Concurrent KNN queries |
+| Vector HNSW KNN-10            | 410ms   | 4.9k ops/sec     | Graph-based ANN search |
+| Vector HNSW M=32 KNN-10       | 1.016s  | 2.0k ops/sec     | High-recall graph search |
+
+## In-Process Engine Summary & Latencies
+
+Direct engine performance without network hop measured via `without_tcp` benchmark harness across 12 hardware threads:
+
+| Benchmark | Elapsed | Throughput | Avg Latency / Item |
+| :--- | :--- | :--- | :--- |
+| **Pipeline-64 SET** | 649ms | 15.41M ops/sec | ~64.9 ns/op |
+| **Pipelined SET** | 252ms | 39.62M ops/sec | ~25.2 ns/op |
+| **Pipelined GET** | 187ms | 53.38M ops/sec | ~18.7 ns/op |
+| **Pub/Sub publish** | 87ms | 2.29M ops/sec | ~436.7 ns/op |
+| **Pub/Sub delivery** | 88ms | 113.98M ops/sec | ~8.77 ns/msg |
+| **Mixed SET/GET (50/50)** | 44ms | 45.87M ops/sec | ~21.8 ns/op |
+| **INCR (atomic counters)** | 18ms | 108.56M ops/sec | ~9.2 ns/op |
+| **HSET/HGET (sessions)** | 45ms | 44.44M ops/sec | ~22.5 ns/op |
+| **LPUSH/RPOP (queue)** | 30ms | 66.93M ops/sec | ~14.9 ns/op |
+| **SADD (per-client sets)** | 50ms | 40.38M ops/sec | ~24.8 ns/op |
+| **ZADD (per-client zsets)** | 112ms | 17.83M ops/sec | ~56.1 ns/op |
+| **JSON.GET (documents)** | 76ms | 26.21M ops/sec | ~38.1 ns/op |
+| **JSON.SET (documents)** | 123ms | 16.28M ops/sec | ~61.4 ns/op |
+| **SET+EXPIRE (cache TTL)** | 132ms | 15.14M ops/sec | ~66.0 ns/op |
+| **Hot Key (1 key, contention)** | 265ms | 37.68M ops/sec | ~26.5 ns/op |
+| **Producer/Consumer (50+50)** | 49ms | 40.61M ops/sec | ~24.6 ns/op |
+| **XADD (streams)** | 84ms | 23.76M ops/sec | ~42.1 ns/op |
+| **SETBIT/BITCOUNT (bitmap)** | 52ms | 38.11M ops/sec | ~26.2 ns/op |
+| **PFADD/PFCOUNT (HyperLogLog)** | 32ms | 63.43M ops/sec | ~15.8 ns/op |
+| **GEOADD/GEODIST (geospatial)** | 199ms | 10.06M ops/sec | ~99.4 ns/op |
+| **Vector HSET load** | 499ms | 100.2k ops/sec | ~9.98 µs/op |
+| **Vector KNN-10** | 2.169s | 922 ops/sec | ~1.08 ms/query |
+| **Vector KNN-10 +tag filter** | 691ms | 1.4k ops/sec | ~691 µs/query |
+| **Filter Tag+Num** | 211ms | 4.7k ops/sec | ~211 µs/query |
+| **Text term** | 29ms | 34.3k ops/sec | ~29.1 µs/query |
+| **Text + Tag** | 42ms | 23.9k ops/sec | ~42.0 µs/query |
+| **Text negation** | 49ms | 20.3k ops/sec | ~49.2 µs/query |
+| **Vector KNN-10 (8 clients)** | 1.079s | 1.9k ops/sec | ~539 µs/query |
+| **Vector HNSW KNN-10** | 410ms | 4.9k ops/sec | ~205 µs/query |
+| **Vector HNSW M=32 KNN-10** | 1.016s | 2.0k ops/sec | ~508 µs/query |
+
+## Resource Usage
+
+Measured over the full benchmark suite across all processes.
+
+| Metric           | FyroDB (1 node, PID 2258)  | Redis Cluster (6 nodes, 7 containers) | DragonflyDB (1 node) |
+| ---------------- | -------------------------- | ------------------------------------- | -------------------- |
+| Peak RSS         | **294.19 MB**              | 767.63 MB                             | 235.80 MB            |
+| Avg RSS          | 168.81 MB                  | 347.46 MB                             | **171.86 MB**        |
+| Peak CPU         | **79.6%**                  | 442.1%                                | 957.5%               |
+| Avg CPU          | **42.5%**                  | 125.2%                                | 430.6%               |
+
+<BenchmarkChart id="rss-peak" />
+
+<BenchmarkChart id="cpu-avg" />
+
+Two things worth reading carefully:
+
+- The DragonflyDB numbers are freshly measured for this release as a single
+  multi-threaded node on the same 6-core/12-thread machine; the DiceDB column is
+  an earlier measurement carried over and was not re-run, so treat it as indicative.
+- DragonflyDB is a single multi-threaded process, so it is the closest
+  single-node comparison to a single FyroDB node. It uses every core at once
+  (peak CPU 957.5%) yet FyroDB still delivers higher throughput on every workload
+  while using a fraction of the CPU. See [Production Tips](/docs/production-tips).
+
+## Why FyroDB Is Faster
+
+| Factor       | Redis                    | DragonflyDB                     | FyroDB                                   |
+| ------------ | ------------------------ | ------------------------------- | ---------------------------------------- |
+| Threading    | Single-threaded          | Multi-threaded (shared-nothing) | Thread-per-core (one epoll loop per CPU) |
+| Hash map     | Custom, single-thread    | Dash (lock per segment)         | Lock-free sharded map with EBR           |
+| Writes       | In-place (single thread) | Lock + copy                     | Per-key spinlock, in-place, no clone     |
+| Reads        | Single thread            | Lock per segment                | Wait-free via seqlock + EBR              |
+| Value access | Copy                     | Copy                            | Zero-copy GET (direct to TCP buffer)     |
+| Pub/Sub      | Single-thread fan-out    | Thread-per-connection           | Lock-free Arc snapshot, per-CPU delivery |
+| Hash probe   | Deref entry per step     | Segment scan                    | Hash tag in the slot pointer rejects non-matches without a deref |
+| Hot key      | Serialized by design     | Lock per segment                | Reads never lock; writers back off then yield |
+| Cluster      | 16384-slot array         | n/a                             | Shared flat routing table, version-checked per connection |
+
+## Run Your Own Benchmark
+
+The benchmark tool lives in the repository, so start from a clone:
+
+```bash
+git clone https://github.com/Rana718/FyroDB && cd FyroDB/bench
+
+go run .                            # Full (KV + Pub/Sub + Mixed)
+go run . -m key                     # KV only
+go run . -m pub                     # Pub/Sub only
+go run . -m mix                     # Mixed workloads only
+go run . -p 6379                    # Against Redis
+go run . -cluster addr1,addr2,...   # Against a cluster
+```
+
+The clone also ships shortcuts that start each side with a matched core count and
+tear it down again. Run `task --list` inside it to see them; the cluster ones are
+`redis-up-12` / `bench-redis-cluster-12` and `fyro-up` / `bench-fyro-cluster-12`,
+plus 6-core equivalents without the `-12` suffix.
+
+Reproducing these numbers depends on details that are easy to get wrong, so the
+committed Redis compose files pin one master per core, disable persistence, use
+host networking so no NAT hop sits on the critical path, and assign slot ranges
+that match the harness's own key-to-node mapping. Without that last part a handful
+of boundary slots get sent to the wrong node and the harness treats the resulting
+`MOVED` as fatal.
+
+| Flag        | Default | Description                       |
+| ----------- | ------- | --------------------------------- |
+| `-p`        | `8000`  | Server port                       |
+| `-m`        | `all`   | Mode: `all`, `key`, `pub`, `mix`  |
+| `--cluster` |         | Comma-separated cluster addresses |

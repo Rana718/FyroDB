@@ -1,0 +1,20 @@
+{
+  "runtime_source_unchanged": true,
+  "runtime_image": "sha256:3d5ef33d50f9dc4d5e321dbd196cbed3c5e644bfbdb2be32c6108fd6be4f3980",
+  "benchmark_harness_hashes_verified": true,
+  "primary_measured_suites": 15,
+  "primary_warmup_suites": 5,
+  "primary_oom_kills": 0,
+  "verified_subscriber_deliveries": 200000000,
+  "policy_tests_passed": 5,
+  "workspace_tests_passed": 783,
+  "workspace_failed": 0,
+  "workspace_ignored": 3,
+  "feature_reply_tests_passed": 13,
+  "clippy": "passed",
+  "valid_SVGs": 62,
+  "visual_review": "desktop and responsive mobile inspected; passed",
+  "retained_experimental_runtime_changes": false,
+  "protected_container": "healthy; unchanged",
+  "owned_benchmark_containers_remaining": 0
+}

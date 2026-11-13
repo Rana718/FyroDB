@@ -1,0 +1,13 @@
+{
+  "status": "passed",
+  "runtime": "checkpoint d5a178b; experimental runtime changes reverted",
+  "workspace": {
+    "passed": 789,
+    "failed": 0,
+    "ignored": 3
+  },
+  "io_uring_reply_tests": 14,
+  "clippy": "passed all targets with io-uring",
+  "fmt": "passed",
+  "diff": "passed"
+}

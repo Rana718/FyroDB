@@ -1,0 +1,131 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="1275" viewBox="0 0 1120 1275" role="img" aria-labelledby="title desc">
+<title id="title">Separate multi-process capacity diagnostic · 6 workers</title><desc id="desc">Six official clients; total completed requests / slowest reported client duration. Not the stock score.. Source: large-path-verified / capacity-final. Same CPU budgets. Three-round medians/ranges; M ops/s and MiB.</desc>
+<style>text{font-family:Inter,system-ui,sans-serif;fill:#203943}.title{font-size:25px;font-weight:650}.sub{font-size:14px;fill:#55737c}.name{font-size:21px;font-weight:600}.label{font-size:14px;fill:#55737c}.value{font-size:24px;font-weight:600}.range{font-size:12px;fill:#657d84}</style>
+<rect width="1120" height="1275" fill="#f5f8f8"/>
+<text class="title" x="28" y="38">Separate multi-process capacity diagnostic · 6 workers</text>
+<text class="sub" x="28" y="66">Six official clients; total completed requests / slowest reported client duration. Not the stock score.</text>
+<rect x="28.0" y="88" width="521.0" height="1150" rx="10" fill="white" stroke="#d4dfe1"/>
+<text class="name" x="46.0" y="116">FyroDB retained build</text>
+<text class="label" x="46.0" y="157">64 B · GET</text>
+<text class="value" x="46.0" y="184">26.810M</text>
+<rect x="46.0" y="194" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="46.0" y="194" width="485.00" height="6" rx="3" fill="#287c77"/>
+<text class="range" x="46.0" y="218">Range 24.876M – 26.940M</text>
+<text class="label" x="46.0" y="245">64 B · SET</text>
+<text class="value" x="46.0" y="272">24.716M</text>
+<rect x="46.0" y="282" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="46.0" y="282" width="485.00" height="6" rx="3" fill="#287c77"/>
+<text class="range" x="46.0" y="306">Range 24.403M – 28.028M</text>
+<text class="label" x="46.0" y="333">64 B · Peak RSS</text>
+<text class="value" x="46.0" y="360">28.4 MiB</text>
+<rect x="46.0" y="370" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="46.0" y="370" width="153.11" height="6" rx="3" fill="#287c77"/>
+<text class="range" x="46.0" y="394">Range 28.4 MiB – 28.5 MiB</text>
+<text class="label" x="46.0" y="421">1,024 B · GET</text>
+<text class="value" x="46.0" y="448">5.758M</text>
+<rect x="46.0" y="458" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="46.0" y="458" width="485.00" height="6" rx="3" fill="#287c77"/>
+<text class="range" x="46.0" y="482">Range 5.084M – 6.109M</text>
+<text class="label" x="46.0" y="509">1,024 B · SET</text>
+<text class="value" x="46.0" y="536">2.542M</text>
+<rect x="46.0" y="546" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="46.0" y="546" width="485.00" height="6" rx="3" fill="#287c77"/>
+<text class="range" x="46.0" y="570">Range 2.490M – 2.551M</text>
+<text class="label" x="46.0" y="597">1,024 B · Peak RSS</text>
+<text class="value" x="46.0" y="624">161.9 MiB</text>
+<rect x="46.0" y="634" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="46.0" y="634" width="405.67" height="6" rx="3" fill="#287c77"/>
+<text class="range" x="46.0" y="658">Range 127.1 MiB – 161.9 MiB</text>
+<text class="label" x="46.0" y="685">8,192 B · GET</text>
+<text class="value" x="46.0" y="712">0.809M</text>
+<rect x="46.0" y="722" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="46.0" y="722" width="485.00" height="6" rx="3" fill="#287c77"/>
+<text class="range" x="46.0" y="746">Range 0.806M – 0.854M</text>
+<text class="label" x="46.0" y="773">8,192 B · SET</text>
+<text class="value" x="46.0" y="800">0.441M</text>
+<rect x="46.0" y="810" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="46.0" y="810" width="485.00" height="6" rx="3" fill="#287c77"/>
+<text class="range" x="46.0" y="834">Range 0.438M – 0.453M</text>
+<text class="label" x="46.0" y="861">8,192 B · Peak RSS</text>
+<text class="value" x="46.0" y="888">895.1 MiB</text>
+<rect x="46.0" y="898" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="46.0" y="898" width="434.63" height="6" rx="3" fill="#287c77"/>
+<text class="range" x="46.0" y="922">Range 874.1 MiB – 901.5 MiB</text>
+<text class="label" x="46.0" y="949">10,240 B · GET</text>
+<text class="value" x="46.0" y="976">0.684M</text>
+<rect x="46.0" y="986" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="46.0" y="986" width="485.00" height="6" rx="3" fill="#287c77"/>
+<text class="range" x="46.0" y="1010">Range 0.669M – 0.704M</text>
+<text class="label" x="46.0" y="1037">10,240 B · SET</text>
+<text class="value" x="46.0" y="1064">0.266M</text>
+<rect x="46.0" y="1074" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="46.0" y="1074" width="485.00" height="6" rx="3" fill="#287c77"/>
+<text class="range" x="46.0" y="1098">Range 0.263M – 0.267M</text>
+<text class="label" x="46.0" y="1125">10,240 B · Peak RSS</text>
+<text class="value" x="46.0" y="1152">1109.5 MiB</text>
+<rect x="46.0" y="1162" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="46.0" y="1162" width="418.99" height="6" rx="3" fill="#287c77"/>
+<text class="range" x="46.0" y="1186">Range 1081.0 MiB – 1109.9 MiB</text>
+<rect x="571.0" y="88" width="521.0" height="1150" rx="10" fill="white" stroke="#d4dfe1"/>
+<text class="name" x="589.0" y="116">Dragonfly</text>
+<text class="label" x="589.0" y="157">64 B · GET</text>
+<text class="value" x="589.0" y="184">3.139M</text>
+<rect x="589.0" y="194" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="589.0" y="194" width="56.78" height="6" rx="3" fill="#7a8996"/>
+<text class="range" x="589.0" y="218">Range 3.114M – 3.145M</text>
+<text class="label" x="589.0" y="245">64 B · SET</text>
+<text class="value" x="589.0" y="272">2.642M</text>
+<rect x="589.0" y="282" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="589.0" y="282" width="51.85" height="6" rx="3" fill="#7a8996"/>
+<text class="range" x="589.0" y="306">Range 2.636M – 2.643M</text>
+<text class="label" x="589.0" y="333">64 B · Peak RSS</text>
+<text class="value" x="589.0" y="360">90.0 MiB</text>
+<rect x="589.0" y="370" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="589.0" y="370" width="485.00" height="6" rx="3" fill="#7a8996"/>
+<text class="range" x="589.0" y="394">Range 89.8 MiB – 90.5 MiB</text>
+<text class="label" x="589.0" y="421">1,024 B · GET</text>
+<text class="value" x="589.0" y="448">1.424M</text>
+<rect x="589.0" y="458" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="589.0" y="458" width="119.97" height="6" rx="3" fill="#7a8996"/>
+<text class="range" x="589.0" y="482">Range 1.407M – 1.439M</text>
+<text class="label" x="589.0" y="509">1,024 B · SET</text>
+<text class="value" x="589.0" y="536">1.026M</text>
+<rect x="589.0" y="546" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="589.0" y="546" width="195.78" height="6" rx="3" fill="#7a8996"/>
+<text class="range" x="589.0" y="570">Range 1.019M – 1.027M</text>
+<text class="label" x="589.0" y="597">1,024 B · Peak RSS</text>
+<text class="value" x="589.0" y="624">193.5 MiB</text>
+<rect x="589.0" y="634" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="589.0" y="634" width="485.00" height="6" rx="3" fill="#7a8996"/>
+<text class="range" x="589.0" y="658">Range 192.1 MiB – 193.6 MiB</text>
+<text class="label" x="589.0" y="685">8,192 B · GET</text>
+<text class="value" x="589.0" y="712">0.409M</text>
+<rect x="589.0" y="722" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="589.0" y="722" width="245.12" height="6" rx="3" fill="#7a8996"/>
+<text class="range" x="589.0" y="746">Range 0.407M – 0.414M</text>
+<text class="label" x="589.0" y="773">8,192 B · SET</text>
+<text class="value" x="589.0" y="800">0.219M</text>
+<rect x="589.0" y="810" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="589.0" y="810" width="240.33" height="6" rx="3" fill="#7a8996"/>
+<text class="range" x="589.0" y="834">Range 0.216M – 0.220M</text>
+<text class="label" x="589.0" y="861">8,192 B · Peak RSS</text>
+<text class="value" x="589.0" y="888">998.8 MiB</text>
+<rect x="589.0" y="898" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="589.0" y="898" width="485.00" height="6" rx="3" fill="#7a8996"/>
+<text class="range" x="589.0" y="922">Range 978.9 MiB – 999.4 MiB</text>
+<text class="label" x="589.0" y="949">10,240 B · GET</text>
+<text class="value" x="589.0" y="976">0.347M</text>
+<rect x="589.0" y="986" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="589.0" y="986" width="245.90" height="6" rx="3" fill="#7a8996"/>
+<text class="range" x="589.0" y="1010">Range 0.345M – 0.348M</text>
+<text class="label" x="589.0" y="1037">10,240 B · SET</text>
+<text class="value" x="589.0" y="1064">0.179M</text>
+<rect x="589.0" y="1074" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="589.0" y="1074" width="325.47" height="6" rx="3" fill="#7a8996"/>
+<text class="range" x="589.0" y="1098">Range 0.176M – 0.179M</text>
+<text class="label" x="589.0" y="1125">10,240 B · Peak RSS</text>
+<text class="value" x="589.0" y="1152">1284.3 MiB</text>
+<rect x="589.0" y="1162" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="589.0" y="1162" width="485.00" height="6" rx="3" fill="#7a8996"/>
+<text class="range" x="589.0" y="1186">Range 1274.2 MiB – 1287.5 MiB</text>
+<text class="range" x="28" y="1261">Source: large-path-verified / capacity-final. Same CPU budgets. Three-round medians/ranges; M ops/s and MiB.</text></svg>

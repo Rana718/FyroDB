@@ -1,0 +1,7 @@
+{
+  "baseline": 1.01183755,
+  "candidate": 1.00696305,
+  "percent_change": -0.4817472923395738,
+  "scope": "Diagnostic user-space locked-load hardware events percompletedSET,notmutexcountorserverthroughput",
+  "event": "IntelTigerLakeMEM_INST_RETIRED.LOCK_LOADS Event0xd0UMask0x21"
+}

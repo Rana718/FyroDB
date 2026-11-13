@@ -1,0 +1,36 @@
+{
+  "status": "COMPLETE",
+  "objective": "Investigated apparent core-scaling drop andfull-lockfreeclaim. Fixedcomparisonpolicyanddocumentation;rejectedallruntimecounterrewriteswithrealworkloadregressions.",
+  "retained": [
+    "READMEguardedconcurrencydescriptionandDockerbenchmarkusage",
+    "scripts/bench_docker_normal.py: equalprocesspriorityguard, explicitCPUsharing, fixedclientbudgets, wholewarmup+3medians, immutableimage/client/sourcehashes, exactmemoryandoperationchecks, ownedresourcecleanup",
+    "scripts/test_bench_docker_normal.py:5policyregressions",
+    "crates/customhash/tests/access_epochs.rs:4guard-contention/drain/nested/unwindregressions"
+  ],
+  "runtime": "Byte/source-identicalpreviousverified3d5image. Alloriginal5GET/SETsource/testchangesfrompriortaskpreserved. No newruntimeperformance/RAMchangeclaimed.",
+  "results": "CorrectedfixedclientGETM/s1worker20.13,2workers32.96,3workers44.62,6workers47.42.6workersuse3physical+SMT.12workerall6physicalsharedclientGET55.90M/s,SET43.35M/s.20fullsuites=15timed5warm;200Msubscriberrecipientdeliveriesverified.",
+  "validation": {
+    "runtime_source_unchanged": true,
+    "runtime_image": "sha256:3d5ef33d50f9dc4d5e321dbd196cbed3c5e644bfbdb2be32c6108fd6be4f3980",
+    "benchmark_harness_hashes_verified": true,
+    "primary_measured_suites": 15,
+    "primary_warmup_suites": 5,
+    "primary_oom_kills": 0,
+    "verified_subscriber_deliveries": 200000000,
+    "policy_tests_passed": 5,
+    "workspace_tests_passed": 783,
+    "workspace_failed": 0,
+    "workspace_ignored": 3,
+    "feature_reply_tests_passed": 13,
+    "clippy": "passed",
+    "valid_SVGs": 62,
+    "visual_review": "desktop and responsive mobile inspected; passed",
+    "retained_experimental_runtime_changes": false,
+    "protected_container": "healthy; unchanged",
+    "owned_benchmark_containers_remaining": 0
+  },
+  "prior_trials": "Allrejectedcounterv1/v2/v3andtelemetry/3GiBreferenceOOMretainedintemp/scaling-contention-20261113,temp/scaling-balanced-20261113,temp/scaling-writers-20261113. EarliernativeclientNI16vsDockerserver0biascorrectedbyallDockernice0. Fullnormal4GiBboth; no user/hostprioritychanges.",
+  "report": "/run/media/rana/DEV/code/Experment/og-m/temp/scaling-verified-20261113/report.html",
+  "next": [],
+  "git": "No commit made. Existinguntracked scriptscachepreserved;onlynewknownownpycremoved. Productioncontainerhealthyuntouched."
+}

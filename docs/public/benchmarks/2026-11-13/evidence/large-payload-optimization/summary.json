@@ -1,0 +1,82 @@
+[
+  {
+    "workload": "64B",
+    "command": "GET",
+    "pipeline": 1,
+    "baseline_rps": 724112.9400000001,
+    "optimized_rps": 715819.6200000001,
+    "ratio": 0.9885469247380112
+  },
+  {
+    "workload": "64B",
+    "command": "SET",
+    "pipeline": 1,
+    "baseline_rps": 708048.12,
+    "optimized_rps": 716161.38,
+    "ratio": 1.0114586279813864
+  },
+  {
+    "workload": "64B",
+    "command": "GET",
+    "pipeline": 64,
+    "baseline_rps": 16471771.499999998,
+    "optimized_rps": 18201697.5,
+    "ratio": 1.1050236764151324
+  },
+  {
+    "workload": "64B",
+    "command": "SET",
+    "pipeline": 64,
+    "baseline_rps": 17021298.0,
+    "optimized_rps": 21195448.5,
+    "ratio": 1.2452310334969754
+  },
+  {
+    "workload": "64B",
+    "command": "GET",
+    "pipeline": 256,
+    "baseline_rps": 20721358.5,
+    "optimized_rps": 23180638.5,
+    "ratio": 1.118683338256997
+  },
+  {
+    "workload": "64B",
+    "command": "SET",
+    "pipeline": 256,
+    "baseline_rps": 16589463.0,
+    "optimized_rps": 23579646.000000004,
+    "ratio": 1.4213628253066422
+  },
+  {
+    "workload": "16KiB",
+    "command": "GET",
+    "pipeline": 64,
+    "baseline_rps": 125369.04,
+    "optimized_rps": 124921.20000000001,
+    "ratio": 0.9964278262001529
+  },
+  {
+    "workload": "16KiB",
+    "command": "SET",
+    "pipeline": 64,
+    "baseline_rps": 207165.84,
+    "optimized_rps": 208400.46000000002,
+    "ratio": 1.0059595732578306
+  },
+  {
+    "workload": "256KiB",
+    "command": "GET",
+    "pipeline": 64,
+    "baseline_rps": 9854.939999999999,
+    "optimized_rps": 15770.76,
+    "ratio": 1.6002898038953055
+  },
+  {
+    "workload": "256KiB",
+    "command": "SET",
+    "pipeline": 16,
+    "baseline_rps": 10459.380000000001,
+    "optimized_rps": 10489.44,
+    "ratio": 1.0028739753216729
+  }
+]

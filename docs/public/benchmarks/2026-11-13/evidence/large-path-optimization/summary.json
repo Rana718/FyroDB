@@ -1,0 +1,1234 @@
+[
+  {
+    "mode": "standard",
+    "core": "multi",
+    "size": 5,
+    "cohort": "",
+    "versions": {
+      "dragonfly": {
+        "GET": {
+          "median": 3328937.5,
+          "low": 3326722.5,
+          "high": 3629810.5
+        },
+        "SET": {
+          "median": 2852289.75,
+          "low": 2850663.75,
+          "high": 2852289.75
+        },
+        "RAM": {
+          "median": 84.76171875,
+          "low": 84.7421875,
+          "high": 84.99609375
+        },
+        "container_RAM": {
+          "median": 101.046875,
+          "low": 100.84765625,
+          "high": 101.06640625
+        },
+        "contended": 0
+      },
+      "candidate": {
+        "GET": {
+          "median": 6649021.5,
+          "low": 6644603.5,
+          "high": 6705039.5
+        },
+        "SET": {
+          "median": 6656511.0,
+          "low": 6640191.0,
+          "high": 6764454.0
+        },
+        "RAM": {
+          "median": 20.94921875,
+          "low": 20.8515625,
+          "high": 20.96875
+        },
+        "container_RAM": {
+          "median": 21.9140625,
+          "low": 21.74609375,
+          "high": 21.94921875
+        },
+        "contended": 0
+      },
+      "baseline": {
+        "GET": {
+          "median": 6666915.0,
+          "low": 6640191.0,
+          "high": 7974584.0
+        },
+        "SET": {
+          "median": 7961885.0,
+          "low": 6644603.5,
+          "high": 7968229.5
+        },
+        "RAM": {
+          "median": 21.10546875,
+          "low": 21.0859375,
+          "high": 21.1171875
+        },
+        "container_RAM": {
+          "median": 21.5859375,
+          "low": 21.48828125,
+          "high": 21.609375
+        },
+        "contended": 0
+      }
+    }
+  },
+  {
+    "mode": "standard",
+    "core": "multi",
+    "size": 64,
+    "cohort": "",
+    "versions": {
+      "dragonfly": {
+        "GET": {
+          "median": 3070349.5,
+          "low": 3069407.0,
+          "high": 3072235.75
+        },
+        "SET": {
+          "median": 2661024.0,
+          "low": 2660316.0,
+          "high": 2661024.0
+        },
+        "RAM": {
+          "median": 93.1796875,
+          "low": 90.8984375,
+          "high": 93.5546875
+        },
+        "container_RAM": {
+          "median": 102.796875,
+          "low": 102.59375,
+          "high": 107.17578125
+        },
+        "contended": 0
+      },
+      "candidate": {
+        "GET": {
+          "median": 7980948.0,
+          "low": 6653445.0,
+          "high": 7980948.0
+        },
+        "SET": {
+          "median": 6749561.5,
+          "low": 6735935.5,
+          "high": 7974584.0
+        },
+        "RAM": {
+          "median": 31.08203125,
+          "low": 30.91796875,
+          "high": 31.140625
+        },
+        "container_RAM": {
+          "median": 32.16015625,
+          "low": 31.765625,
+          "high": 32.28515625
+        },
+        "contended": 0
+      },
+      "baseline": {
+        "GET": {
+          "median": 6768177.5,
+          "low": 6649021.5,
+          "high": 7980948.0
+        },
+        "SET": {
+          "median": 7968229.5,
+          "low": 6640191.0,
+          "high": 7974584.0
+        },
+        "RAM": {
+          "median": 28.75390625,
+          "low": 28.71484375,
+          "high": 28.8046875
+        },
+        "container_RAM": {
+          "median": 30.2578125,
+          "low": 29.99609375,
+          "high": 30.328125
+        },
+        "contended": 0
+      }
+    }
+  },
+  {
+    "mode": "standard",
+    "core": "multi",
+    "size": 1024,
+    "cohort": "",
+    "versions": {
+      "dragonfly": {
+        "GET": {
+          "median": 1426144.88,
+          "low": 1425738.25,
+          "high": 1426348.25
+        },
+        "SET": {
+          "median": 1024891.94,
+          "low": 1023554.5,
+          "high": 1050102.75
+        },
+        "RAM": {
+          "median": 192.77734375,
+          "low": 191.12109375,
+          "high": 193.5546875
+        },
+        "container_RAM": {
+          "median": 273.17578125,
+          "low": 270.77734375,
+          "high": 278.28125
+        },
+        "contended": 0
+      },
+      "candidate": {
+        "GET": {
+          "median": 4995068.5,
+          "low": 4438583.0,
+          "high": 4995068.5
+        },
+        "SET": {
+          "median": 2490692.0,
+          "low": 2489451.75,
+          "high": 2491933.25
+        },
+        "RAM": {
+          "median": 127.1171875,
+          "low": 125.39453125,
+          "high": 156.01171875
+        },
+        "container_RAM": {
+          "median": 147.3359375,
+          "low": 143.83984375,
+          "high": 163.95703125
+        },
+        "contended": 0
+      },
+      "baseline": {
+        "GET": {
+          "median": 4992575.0,
+          "low": 4438583.0,
+          "high": 4995068.5
+        },
+        "SET": {
+          "median": 2490071.75,
+          "low": 2489451.75,
+          "high": 2491028.0
+        },
+        "RAM": {
+          "median": 132.84375,
+          "low": 131.05078125,
+          "high": 133.0859375
+        },
+        "container_RAM": {
+          "median": 152.9296875,
+          "low": 151.44140625,
+          "high": 153.51171875
+        },
+        "contended": 1
+      }
+    }
+  },
+  {
+    "mode": "standard",
+    "core": "multi",
+    "size": 4096,
+    "cohort": "",
+    "versions": {
+      "dragonfly": {
+        "GET": {
+          "median": 614289.94,
+          "low": 613912.88,
+          "high": 665157.31
+        },
+        "SET": {
+          "median": 417824.94,
+          "low": 399990.44,
+          "high": 418261.81
+        },
+        "RAM": {
+          "median": 529.5390625,
+          "low": 529.05859375,
+          "high": 539.9140625
+        },
+        "container_RAM": {
+          "median": 700.20703125,
+          "low": 673.65625,
+          "high": 702.55859375
+        },
+        "contended": 0
+      },
+      "candidate": {
+        "GET": {
+          "median": 1330757.12,
+          "low": 1330697.25,
+          "high": 1331621.25
+        },
+        "SET": {
+          "median": 643956.25,
+          "low": 642714.62,
+          "high": 648549.94
+        },
+        "RAM": {
+          "median": 453.61328125,
+          "low": 453.51953125,
+          "high": 453.9375
+        },
+        "container_RAM": {
+          "median": 490.87109375,
+          "low": 479.25390625,
+          "high": 501.19921875
+        },
+        "contended": 3
+      },
+      "baseline": {
+        "GET": {
+          "median": 1331575.25,
+          "low": 1141606.12,
+          "high": 1331599.25
+        },
+        "SET": {
+          "median": 646871.94,
+          "low": 643334.81,
+          "high": 648549.94
+        },
+        "RAM": {
+          "median": 453.06640625,
+          "low": 452.66015625,
+          "high": 454.078125
+        },
+        "container_RAM": {
+          "median": 488.91015625,
+          "low": 488.1015625,
+          "high": 500.6796875
+        },
+        "contended": 3
+      }
+    }
+  },
+  {
+    "mode": "standard",
+    "core": "multi",
+    "size": 8192,
+    "cohort": "",
+    "versions": {
+      "dragonfly": {
+        "GET": {
+          "median": 420458.28,
+          "low": 382212.94,
+          "high": 420636.78
+        },
+        "SET": {
+          "median": 214353.02,
+          "low": 213986.09,
+          "high": 219890.95
+        },
+        "RAM": {
+          "median": 998.18359375,
+          "low": 992.296875,
+          "high": 998.44921875
+        },
+        "container_RAM": {
+          "median": 1238.7421875,
+          "low": 1224.3203125,
+          "high": 1238.765625
+        },
+        "contended": 0
+      },
+      "candidate": {
+        "GET": {
+          "median": 614835.25,
+          "low": 577473.19,
+          "high": 666020.31
+        },
+        "SET": {
+          "median": 482190.97,
+          "low": 479417.06,
+          "high": 490227.47
+        },
+        "RAM": {
+          "median": 902.72265625,
+          "low": 897.95703125,
+          "high": 906.80859375
+        },
+        "container_RAM": {
+          "median": 949.3125,
+          "low": 945.953125,
+          "high": 955.62890625
+        },
+        "contended": 3
+      },
+      "baseline": {
+        "GET": {
+          "median": 614821.06,
+          "low": 614289.94,
+          "high": 614854.88
+        },
+        "SET": {
+          "median": 313205.12,
+          "low": 312129.84,
+          "high": 325435.75
+        },
+        "RAM": {
+          "median": 874.7109375,
+          "low": 874.234375,
+          "high": 909.30859375
+        },
+        "container_RAM": {
+          "median": 935.1796875,
+          "low": 926.484375,
+          "high": 954.84375
+        },
+        "contended": 3
+      }
+    }
+  },
+  {
+    "mode": "standard",
+    "core": "multi",
+    "size": 10240,
+    "cohort": "",
+    "versions": {
+      "dragonfly": {
+        "GET": {
+          "median": 319662.31,
+          "low": 307380.97,
+          "high": 319710.19
+        },
+        "SET": {
+          "median": 179576.95,
+          "low": 176253.8,
+          "high": 179851.45
+        },
+        "RAM": {
+          "median": 1279.23046875,
+          "low": 1276.8203125,
+          "high": 1289.89453125
+        },
+        "container_RAM": {
+          "median": 1487.71875,
+          "low": 1479.984375,
+          "high": 1509.88671875
+        },
+        "contended": 0
+      },
+      "candidate": {
+        "GET": {
+          "median": 470154.91,
+          "low": 470065.31,
+          "high": 470257.97
+        },
+        "SET": {
+          "median": 248834.03,
+          "low": 248834.03,
+          "high": 250078.52
+        },
+        "RAM": {
+          "median": 1110.83984375,
+          "low": 1110.15625,
+          "high": 1112.84765625
+        },
+        "container_RAM": {
+          "median": 1184.98828125,
+          "low": 1184.62890625,
+          "high": 1190.0859375
+        },
+        "contended": 3
+      },
+      "baseline": {
+        "GET": {
+          "median": 499636.06,
+          "low": 443953.16,
+          "high": 499755.38
+        },
+        "SET": {
+          "median": 244484.55,
+          "low": 240082.58,
+          "high": 250109.78
+        },
+        "RAM": {
+          "median": 1109.6953125,
+          "low": 1078.453125,
+          "high": 1111.69921875
+        },
+        "container_RAM": {
+          "median": 1185.65625,
+          "low": 1153.5078125,
+          "high": 1211.08984375
+        },
+        "contended": 2
+      }
+    }
+  },
+  {
+    "mode": "standard",
+    "core": "single",
+    "size": 5,
+    "cohort": "",
+    "versions": {
+      "dragonfly": {
+        "GET": {
+          "median": 867614.81,
+          "low": 849195.62,
+          "high": 907041.12
+        },
+        "SET": {
+          "median": 738998.56,
+          "low": 725804.06,
+          "high": 814475.31
+        },
+        "RAM": {
+          "median": 62.80078125,
+          "low": 61.30078125,
+          "high": 62.81640625
+        },
+        "container_RAM": {
+          "median": 97.8125,
+          "low": 95.19140625,
+          "high": 99.71875
+        },
+        "contended": 0
+      },
+      "candidate": {
+        "GET": {
+          "median": 6720301.0,
+          "low": 6704525.0,
+          "high": 7974584.0
+        },
+        "SET": {
+          "median": 7968229.5,
+          "low": 6704525.0,
+          "high": 7974584.0
+        },
+        "RAM": {
+          "median": 22.12109375,
+          "low": 16.75,
+          "high": 22.14453125
+        },
+        "container_RAM": {
+          "median": 20.671875,
+          "low": 15.3984375,
+          "high": 20.96875
+        },
+        "contended": 0
+      },
+      "baseline": {
+        "GET": {
+          "median": 6672213.5,
+          "low": 6644603.5,
+          "high": 6758677.0
+        },
+        "SET": {
+          "median": 6678372.5,
+          "low": 6649021.5,
+          "high": 6746221.0
+        },
+        "RAM": {
+          "median": 22.19140625,
+          "low": 16.76171875,
+          "high": 22.21484375
+        },
+        "container_RAM": {
+          "median": 20.90625,
+          "low": 15.34375,
+          "high": 20.94140625
+        },
+        "contended": 0
+      }
+    }
+  },
+  {
+    "mode": "standard",
+    "core": "single",
+    "size": 64,
+    "cohort": "",
+    "versions": {
+      "dragonfly": {
+        "GET": {
+          "median": 712818.31,
+          "low": 700784.56,
+          "high": 739162.38
+        },
+        "SET": {
+          "median": 676644.44,
+          "low": 676415.56,
+          "high": 739053.12
+        },
+        "RAM": {
+          "median": 67.82421875,
+          "low": 67.09375,
+          "high": 68.14453125
+        },
+        "container_RAM": {
+          "median": 76.6484375,
+          "low": 75.87109375,
+          "high": 80.74609375
+        },
+        "contended": 0
+      },
+      "candidate": {
+        "GET": {
+          "median": 7974584.0,
+          "low": 6809213.5,
+          "high": 7980948.0
+        },
+        "SET": {
+          "median": 6690737.5,
+          "low": 6644603.5,
+          "high": 7974584.0
+        },
+        "RAM": {
+          "median": 28.91015625,
+          "low": 23.46875,
+          "high": 29.05859375
+        },
+        "container_RAM": {
+          "median": 31.32421875,
+          "low": 28.1953125,
+          "high": 31.42578125
+        },
+        "contended": 0
+      },
+      "baseline": {
+        "GET": {
+          "median": 7980948.0,
+          "low": 6649021.5,
+          "high": 7980948.0
+        },
+        "SET": {
+          "median": 6763935.0,
+          "low": 6644603.5,
+          "high": 7968229.5
+        },
+        "RAM": {
+          "median": 29.0546875,
+          "low": 23.59375,
+          "high": 29.08203125
+        },
+        "container_RAM": {
+          "median": 31.3515625,
+          "low": 25.765625,
+          "high": 31.37890625
+        },
+        "contended": 0
+      }
+    }
+  },
+  {
+    "mode": "standard",
+    "core": "single",
+    "size": 1024,
+    "cohort": "",
+    "versions": {
+      "dragonfly": {
+        "GET": {
+          "median": 443484.31,
+          "low": 443484.31,
+          "high": 443582.66
+        },
+        "SET": {
+          "median": 403165.94,
+          "low": 403133.44,
+          "high": 411510.97
+        },
+        "RAM": {
+          "median": 164.13671875,
+          "low": 162.8984375,
+          "high": 168.73046875
+        },
+        "container_RAM": {
+          "median": 235.0234375,
+          "low": 234.34375,
+          "high": 236.625
+        },
+        "contended": 0
+      },
+      "candidate": {
+        "GET": {
+          "median": 1815234.75,
+          "low": 1736736.38,
+          "high": 1815564.25
+        },
+        "SET": {
+          "median": 1900803.62,
+          "low": 1900803.62,
+          "high": 1900803.62
+        },
+        "RAM": {
+          "median": 130.37890625,
+          "low": 124.875,
+          "high": 131.6796875
+        },
+        "container_RAM": {
+          "median": 144.21484375,
+          "low": 139.55859375,
+          "high": 148.68359375
+        },
+        "contended": 0
+      },
+      "baseline": {
+        "GET": {
+          "median": 1814905.25,
+          "low": 1814905.25,
+          "high": 1815564.25
+        },
+        "SET": {
+          "median": 1901164.88,
+          "low": 1900442.38,
+          "high": 1901164.88
+        },
+        "RAM": {
+          "median": 124.90625,
+          "low": 124.734375,
+          "high": 132.12890625
+        },
+        "container_RAM": {
+          "median": 139.9609375,
+          "low": 139.44140625,
+          "high": 139.9765625
+        },
+        "contended": 0
+      }
+    }
+  },
+  {
+    "mode": "standard",
+    "core": "single",
+    "size": 4096,
+    "cohort": "",
+    "versions": {
+      "dragonfly": {
+        "GET": {
+          "median": 241884.39,
+          "low": 241824.2,
+          "high": 241941.2
+        },
+        "SET": {
+          "median": 215507.81,
+          "low": 215368.59,
+          "high": 221375.55
+        },
+        "RAM": {
+          "median": 502.28125,
+          "low": 500.875,
+          "high": 503.97265625
+        },
+        "container_RAM": {
+          "median": 636.62109375,
+          "low": 611.71484375,
+          "high": 642.47265625
+        },
+        "contended": 0
+      },
+      "candidate": {
+        "GET": {
+          "median": 886974.69,
+          "low": 797817.31,
+          "high": 886974.69
+        },
+        "SET": {
+          "median": 611472.94,
+          "low": 611067.81,
+          "high": 611472.94
+        },
+        "RAM": {
+          "median": 446.1484375,
+          "low": 445.92578125,
+          "high": 448.0546875
+        },
+        "container_RAM": {
+          "median": 491.1875,
+          "low": 487.59375,
+          "high": 492.625
+        },
+        "contended": 0
+      },
+      "baseline": {
+        "GET": {
+          "median": 335495.62,
+          "low": 332633.97,
+          "high": 347003.47
+        },
+        "SET": {
+          "median": 611286.06,
+          "low": 611099.31,
+          "high": 662294.06
+        },
+        "RAM": {
+          "median": 482.90625,
+          "low": 467.8046875,
+          "high": 493.84765625
+        },
+        "container_RAM": {
+          "median": 508.5625,
+          "low": 486.91796875,
+          "high": 518.703125
+        },
+        "contended": 0
+      }
+    }
+  },
+  {
+    "mode": "standard",
+    "core": "single",
+    "size": 8192,
+    "cohort": "",
+    "versions": {
+      "dragonfly": {
+        "GET": {
+          "median": 128841.02,
+          "low": 128774.66,
+          "high": 130924.13
+        },
+        "SET": {
+          "median": 144716.59,
+          "low": 142163.59,
+          "high": 144758.48
+        },
+        "RAM": {
+          "median": 960.48046875,
+          "low": 956.67578125,
+          "high": 962.32421875
+        },
+        "container_RAM": {
+          "median": 1186.41796875,
+          "low": 1175.26953125,
+          "high": 1186.75390625
+        },
+        "contended": 0
+      },
+      "candidate": {
+        "GET": {
+          "median": 570161.94,
+          "low": 505915.56,
+          "high": 570161.94
+        },
+        "SET": {
+          "median": 379946.16,
+          "low": 378812.09,
+          "high": 396850.78
+        },
+        "RAM": {
+          "median": 866.8046875,
+          "low": 866.7421875,
+          "high": 873.2421875
+        },
+        "container_RAM": {
+          "median": 912.234375,
+          "low": 907.94140625,
+          "high": 921.0859375
+        },
+        "contended": 0
+      },
+      "baseline": {
+        "GET": {
+          "median": 186181.83,
+          "low": 181717.92,
+          "high": 190072.03
+        },
+        "SET": {
+          "median": 317663.28,
+          "low": 305502.97,
+          "high": 317783.28
+        },
+        "RAM": {
+          "median": 926.76953125,
+          "low": 904.28515625,
+          "high": 955.046875
+        },
+        "container_RAM": {
+          "median": 945.82421875,
+          "low": 923.453125,
+          "high": 974.5546875
+        },
+        "contended": 0
+      }
+    }
+  },
+  {
+    "mode": "standard",
+    "core": "single",
+    "size": 10240,
+    "cohort": "",
+    "versions": {
+      "dragonfly": {
+        "GET": {
+          "median": 106452.08,
+          "low": 106446.41,
+          "high": 107899.23
+        },
+        "SET": {
+          "median": 120613.16,
+          "low": 120563.17,
+          "high": 120649.54
+        },
+        "RAM": {
+          "median": 1244.69140625,
+          "low": 1218.75390625,
+          "high": 1267.2890625
+        },
+        "container_RAM": {
+          "median": 1405.37109375,
+          "low": 1401.1171875,
+          "high": 1435.69140625
+        },
+        "contended": 0
+      },
+      "candidate": {
+        "GET": {
+          "median": 443389.03,
+          "low": 421398.06,
+          "high": 499033.94
+        },
+        "SET": {
+          "median": 227106.61,
+          "low": 226797.59,
+          "high": 227571.72
+        },
+        "RAM": {
+          "median": 1074.80859375,
+          "low": 1073.765625,
+          "high": 1075.7421875
+        },
+        "container_RAM": {
+          "median": 1112.9140625,
+          "low": 1111.3828125,
+          "high": 1113.12890625
+        },
+        "contended": 0
+      },
+      "baseline": {
+        "GET": {
+          "median": 159879.81,
+          "low": 159841.52,
+          "high": 162929.94
+        },
+        "SET": {
+          "median": 227029.28,
+          "low": 227029.28,
+          "high": 227055.06
+        },
+        "RAM": {
+          "median": 1130.0625,
+          "low": 1107.29296875,
+          "high": 1158.1171875
+        },
+        "container_RAM": {
+          "median": 1147.734375,
+          "low": 1118.98046875,
+          "high": 1169.76953125
+        },
+        "contended": 0
+      }
+    }
+  },
+  {
+    "mode": "capacity",
+    "core": "multi",
+    "size": 64,
+    "cohort": "",
+    "versions": {
+      "dragonfly": {
+        "GET": {
+          "median": 3138820.32,
+          "low": 3113800.32,
+          "high": 3145336.14
+        },
+        "SET": {
+          "median": 2642222.04,
+          "low": 2635536.96,
+          "high": 2642920.14
+        },
+        "RAM": {
+          "median": 90.03125,
+          "low": 89.78125,
+          "high": 90.46484375
+        },
+        "container_RAM": {
+          "median": 106.625,
+          "low": 106.26953125,
+          "high": 107.515625
+        },
+        "contended": 0
+      },
+      "candidate": {
+        "GET": {
+          "median": 26839188.0,
+          "low": 25563093.0,
+          "high": 27057039.0
+        },
+        "SET": {
+          "median": 25381425.0,
+          "low": 25000704.0,
+          "high": 26110395.0
+        },
+        "RAM": {
+          "median": 28.546875,
+          "low": 28.1796875,
+          "high": 28.57421875
+        },
+        "container_RAM": {
+          "median": 29.72265625,
+          "low": 29.57421875,
+          "high": 29.7734375
+        },
+        "contended": 0
+      },
+      "baseline": {
+        "GET": {
+          "median": 25853883.0,
+          "low": 25446009.0,
+          "high": 26610648.0
+        },
+        "SET": {
+          "median": 25961271.0,
+          "low": 25446009.0,
+          "high": 26124036.0
+        },
+        "RAM": {
+          "median": 28.47265625,
+          "low": 28.27734375,
+          "high": 28.53125
+        },
+        "container_RAM": {
+          "median": 29.71875,
+          "low": 29.45703125,
+          "high": 29.8671875
+        },
+        "contended": 0
+      }
+    }
+  },
+  {
+    "mode": "capacity",
+    "core": "multi",
+    "size": 1024,
+    "cohort": "",
+    "versions": {
+      "dragonfly": {
+        "GET": {
+          "median": 1424223.3599999999,
+          "low": 1407189.5399999998,
+          "high": 1439392.02
+        },
+        "SET": {
+          "median": 1025943.3600000001,
+          "low": 1019043.84,
+          "high": 1027207.86
+        },
+        "RAM": {
+          "median": 193.54296875,
+          "low": 192.06640625,
+          "high": 193.59765625
+        },
+        "container_RAM": {
+          "median": 253.95703125,
+          "low": 251.76171875,
+          "high": 256.82421875
+        },
+        "contended": 0
+      },
+      "candidate": {
+        "GET": {
+          "median": 5831426.279999999,
+          "low": 5441183.64,
+          "high": 6321678.720000001
+        },
+        "SET": {
+          "median": 2530591.14,
+          "low": 2468138.2800000003,
+          "high": 2933674.5
+        },
+        "RAM": {
+          "median": 161.82421875,
+          "low": 161.65234375,
+          "high": 162.05078125
+        },
+        "container_RAM": {
+          "median": 177.078125,
+          "low": 176.77734375,
+          "high": 177.56640625
+        },
+        "contended": 0
+      },
+      "baseline": {
+        "GET": {
+          "median": 6169584.0,
+          "low": 5977822.14,
+          "high": 6305735.279999999
+        },
+        "SET": {
+          "median": 2469967.14,
+          "low": 2464488.96,
+          "high": 2503353.18
+        },
+        "RAM": {
+          "median": 127.296875,
+          "low": 127.1328125,
+          "high": 161.8359375
+        },
+        "container_RAM": {
+          "median": 143.48046875,
+          "low": 142.16015625,
+          "high": 177.23046875
+        },
+        "contended": 1
+      }
+    }
+  },
+  {
+    "mode": "capacity",
+    "core": "multi",
+    "size": 8192,
+    "cohort": "",
+    "versions": {
+      "dragonfly": {
+        "GET": {
+          "median": 408700.80000000005,
+          "low": 406955.69999999995,
+          "high": 413685.0
+        },
+        "SET": {
+          "median": 218685.30000000002,
+          "low": 216415.19999999998,
+          "high": 219983.28
+        },
+        "RAM": {
+          "median": 998.8203125,
+          "low": 978.90234375,
+          "high": 999.44921875
+        },
+        "container_RAM": {
+          "median": 1238.0390625,
+          "low": 1187.19921875,
+          "high": 1273.28125
+        },
+        "contended": 0
+      },
+      "candidate": {
+        "GET": {
+          "median": 1009282.86,
+          "low": 864539.04,
+          "high": 1051159.6199999999
+        },
+        "SET": {
+          "median": 419406.54000000004,
+          "low": 413343.24,
+          "high": 430966.37999999995
+        },
+        "RAM": {
+          "median": 900.5546875,
+          "low": 874.26953125,
+          "high": 901.04296875
+        },
+        "container_RAM": {
+          "median": 960.10546875,
+          "low": 949.9609375,
+          "high": 999.859375
+        },
+        "contended": 0
+      },
+      "baseline": {
+        "GET": {
+          "median": 905614.5,
+          "low": 883233.8400000001,
+          "high": 999704.2799999999
+        },
+        "SET": {
+          "median": 330538.08,
+          "low": 327134.34,
+          "high": 330592.68
+        },
+        "RAM": {
+          "median": 899.29296875,
+          "low": 874.36328125,
+          "high": 900.8984375
+        },
+        "container_RAM": {
+          "median": 979.0078125,
+          "low": 976.54296875,
+          "high": 992.91796875
+        },
+        "contended": 2
+      }
+    }
+  },
+  {
+    "mode": "capacity",
+    "core": "multi",
+    "size": 10240,
+    "cohort": "",
+    "versions": {
+      "dragonfly": {
+        "GET": {
+          "median": 346564.14,
+          "low": 345070.32,
+          "high": 348131.52
+        },
+        "SET": {
+          "median": 178601.46,
+          "low": 176428.74,
+          "high": 179257.32
+        },
+        "RAM": {
+          "median": 1284.30859375,
+          "low": 1274.1796875,
+          "high": 1287.53125
+        },
+        "container_RAM": {
+          "median": 1491.28125,
+          "low": 1475.82421875,
+          "high": 1491.640625
+        },
+        "contended": 1
+      },
+      "candidate": {
+        "GET": {
+          "median": 668026.68,
+          "low": 651500.04,
+          "high": 699059.76
+        },
+        "SET": {
+          "median": 262789.92,
+          "low": 259720.74000000002,
+          "high": 265192.5
+        },
+        "RAM": {
+          "median": 1103.78515625,
+          "low": 1101.640625,
+          "high": 1104.09765625
+        },
+        "container_RAM": {
+          "median": 1219.61328125,
+          "low": 1207.5234375,
+          "high": 1221.1875
+        },
+        "contended": 2
+      },
+      "baseline": {
+        "GET": {
+          "median": 672064.5,
+          "low": 666247.6799999999,
+          "high": 706462.3799999999
+        },
+        "SET": {
+          "median": 263343.18,
+          "low": 263239.26,
+          "high": 267032.39999999997
+        },
+        "RAM": {
+          "median": 1078.32421875,
+          "low": 1078.30859375,
+          "high": 1101.6015625
+        },
+        "container_RAM": {
+          "median": 1199.421875,
+          "low": 1192.26171875,
+          "high": 1204.16015625
+        },
+        "contended": 1
+      }
+    }
+  }
+]

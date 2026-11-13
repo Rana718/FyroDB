@@ -1,0 +1,15 @@
+{
+  "source_and_tests_match_measured_image": true,
+  "protected_container": "healthy and unchanged",
+  "owned_benchmark_containers_remaining": 0,
+  "ui_states": 48,
+  "metric_svgs_validated": 336,
+  "visual_review": {
+    "result": "passed",
+    "desktop": true,
+    "mobile": true,
+    "hot_key": true
+  },
+  "git_diff_check": "passed",
+  "cargo_fmt": "passed"
+}

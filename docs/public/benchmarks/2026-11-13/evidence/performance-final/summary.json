@@ -1,0 +1,1370 @@
+{
+  "metadata": {
+    "cpu": "11th Gen Intel(R) Core(TM) i5-11400H @ 2.70GHz",
+    "governor": "powersave",
+    "server_cpus": [
+      0,
+      1,
+      2,
+      3,
+      6,
+      7,
+      8,
+      9
+    ],
+    "client_cpus": [
+      4,
+      5,
+      10,
+      11
+    ],
+    "direct_cpus": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+    ],
+    "workers": 8,
+    "runs": 7,
+    "warmups": 1,
+    "inner": 3,
+    "hotkey_duration_seconds": 8.0,
+    "counts": {
+      "clients": 100,
+      "kv_per_client": 100000,
+      "mixed_per_client": 20000,
+      "hotkey_per_client": 100000,
+      "subscribers": 50,
+      "publishers": 10,
+      "messages_per_publisher": 20000
+    },
+    "binary_sha256": {
+      "current": "4ec156d07b33bccdf4845f7de7586166d3fe7bcdbac47b641f17f0b52106bc03",
+      "tuned": "d33d30daeecdc28a7bdae61612662dfaa84581432b9e87729c0fa40620c1011f",
+      "tcp-bench": "694535e448acdda854546242ebc57d6f497d9f370ed37510fbd76cf1a84afed2"
+    },
+    "readme_basis": "Historical best-of-three claims with conflicting TCP/in-process labels; rates are references, not matched measurements.",
+    "status": "interrupted",
+    "note": "Stopped because substantial host contention and swapping made throughput unstable; complete sustained hot-key samples retained."
+  },
+  "results": {
+    "tcp": {
+      "current": {
+        "Hot Key (1 key, contention) sustained": {
+          "median": 41723446.48961146,
+          "best": 52927462.4130205,
+          "minimum": 30968710.364985086,
+          "maximum": 52927462.4130205,
+          "cv_pct": 19.549351398548605,
+          "median_ci95": [
+            33212580.29777493,
+            48016880.02098114
+          ],
+          "samples": [
+            33212580.29777493,
+            35956597.87816788,
+            30968710.364985086,
+            42825537.9900675,
+            41723446.48961146,
+            52927462.4130205,
+            48016880.02098114
+          ]
+        },
+        "Pipeline-64 SET": {
+          "median": 6074390.310073291,
+          "best": 7422136.865262192,
+          "minimum": 4932320.5381530775,
+          "maximum": 7422136.865262192,
+          "cv_pct": 14.77945097861055,
+          "median_ci95": [
+            5154718.784663787,
+            7030861.465806822
+          ],
+          "samples": [
+            7030861.465806822,
+            5154718.784663787,
+            4932320.5381530775,
+            7422136.865262192,
+            6096057.482154668,
+            6007348.575650984,
+            6074390.310073291
+          ]
+        },
+        "Pipelined SET": {
+          "median": 22475969.558672696,
+          "best": 25435268.70875123,
+          "minimum": 20630360.046049826,
+          "maximum": 25435268.70875123,
+          "cv_pct": 7.515536902211836,
+          "median_ci95": [
+            21242859.3721435,
+            24595433.748029042
+          ],
+          "samples": [
+            20630360.046049826,
+            22600923.854800284,
+            22431146.11653964,
+            24595433.748029042,
+            22475969.558672696,
+            25435268.70875123,
+            21242859.3721435
+          ],
+          "readme_rate": 39620000.0,
+          "versus_readme_pct": -43.2711520477721
+        },
+        "Pipelined GET": {
+          "median": 26269259.218737468,
+          "best": 32862070.75468702,
+          "minimum": 20752880.942429997,
+          "maximum": 32862070.75468702,
+          "cv_pct": 14.911105742860812,
+          "median_ci95": [
+            23449098.67530875,
+            28431963.131067894
+          ],
+          "samples": [
+            20752880.942429997,
+            26343976.39609923,
+            26269259.218737468,
+            32862070.75468702,
+            24193749.117170095,
+            28431963.131067894,
+            23449098.67530875
+          ],
+          "readme_rate": 53380000.0,
+          "versus_readme_pct": -50.788199290488066
+        },
+        "Mixed SET/GET (50/50)": {
+          "median": 10784217.474587109,
+          "best": 12084375.088706866,
+          "minimum": 10324783.407726152,
+          "maximum": 12084375.088706866,
+          "cv_pct": 6.685805719854961,
+          "median_ci95": [
+            10324783.407726152,
+            12084375.088706866
+          ],
+          "samples": [
+            11419080.237088425,
+            12084375.088706866,
+            10784217.474587109,
+            10324783.407726152,
+            10439523.059949484
+          ],
+          "readme_rate": 45870000.0,
+          "versus_readme_pct": -76.48960655202288
+        },
+        "INCR (atomic counters)": {
+          "median": 48913253.08750033,
+          "best": 57690482.67607688,
+          "minimum": 35527207.05490751,
+          "maximum": 57690482.67607688,
+          "cv_pct": 16.657694817455976,
+          "median_ci95": [
+            35527207.05490751,
+            57690482.67607688
+          ],
+          "samples": [
+            46995086.029321976,
+            35527207.05490751,
+            49167815.868758515,
+            48913253.08750033,
+            57690482.67607688
+          ],
+          "readme_rate": 108560000.0,
+          "versus_readme_pct": -54.9435767432753
+        },
+        "Hot Key (1 key, contention)": {
+          "median": 66045033.05676088,
+          "best": 68991710.14238691,
+          "minimum": 48914731.94037199,
+          "maximum": 68991710.14238691,
+          "cv_pct": 14.845394843583211,
+          "median_ci95": [
+            48914731.94037199,
+            68991710.14238691
+          ],
+          "samples": [
+            54016724.31247459,
+            68991710.14238691,
+            67747269.64163506,
+            48914731.94037199,
+            66045033.05676088
+          ],
+          "readme_rate": 37680000.0,
+          "versus_readme_pct": 75.27875015063927
+        }
+      },
+      "tuned": {
+        "Hot Key (1 key, contention) sustained": {
+          "median": 39253139.41840871,
+          "best": 51765805.11761727,
+          "minimum": 33559943.981964104,
+          "maximum": 51765805.11761727,
+          "cv_pct": 15.245965753382485,
+          "median_ci95": [
+            34462722.690753505,
+            42969358.40345986
+          ],
+          "samples": [
+            33559943.981964104,
+            38278308.880404055,
+            39253139.41840871,
+            42969358.40345986,
+            51765805.11761727,
+            39643817.14308848,
+            34462722.690753505
+          ]
+        },
+        "Pipeline-64 SET": {
+          "median": 5248959.035104941,
+          "best": 8750127.719780907,
+          "minimum": 5155778.807010663,
+          "maximum": 8750127.719780907,
+          "cv_pct": 25.132180821529026,
+          "median_ci95": [
+            5185991.68948462,
+            7955351.364786005
+          ],
+          "samples": [
+            5248959.035104941,
+            5397856.91682921,
+            5155778.807010663,
+            8750127.719780907,
+            5193741.009413579,
+            7955351.364786005,
+            5185991.68948462
+          ]
+        },
+        "Pipelined SET": {
+          "median": 22253447.40244751,
+          "best": 25216919.853199802,
+          "minimum": 19547434.524941184,
+          "maximum": 25216919.853199802,
+          "cv_pct": 8.89358857309836,
+          "median_ci95": [
+            20851895.27056919,
+            24092405.74765778
+          ],
+          "samples": [
+            19547434.524941184,
+            21123247.767276585,
+            23246803.672592655,
+            25216919.853199802,
+            20851895.27056919,
+            24092405.74765778,
+            22253447.40244751
+          ],
+          "readme_rate": 39620000.0,
+          "versus_readme_pct": -43.83279302764384
+        },
+        "Pipelined GET": {
+          "median": 25008348.93308986,
+          "best": 28154258.424448825,
+          "minimum": 20151259.965220388,
+          "maximum": 28154258.424448825,
+          "cv_pct": 10.441268479742043,
+          "median_ci95": [
+            24245761.85032482,
+            27454324.526268195
+          ],
+          "samples": [
+            20151259.965220388,
+            24320296.574278127,
+            25569915.836212907,
+            28154258.424448825,
+            25008348.93308986,
+            27454324.526268195,
+            24245761.85032482
+          ],
+          "readme_rate": 53380000.0,
+          "versus_readme_pct": -53.15033920365332
+        },
+        "Mixed SET/GET (50/50)": {
+          "median": 10851938.36677231,
+          "best": 11653051.77830406,
+          "minimum": 9236249.225321142,
+          "maximum": 11653051.77830406,
+          "cv_pct": 8.272981314824042,
+          "median_ci95": [
+            9777495.107960448,
+            11528904.35291998
+          ],
+          "samples": [
+            11653051.77830406,
+            11404756.927535903,
+            10318740.990599753,
+            11164518.155008148,
+            9236249.225321142,
+            10539358.578536473
+          ],
+          "readme_rate": 45870000.0,
+          "versus_readme_pct": -76.34196998741594
+        },
+        "INCR (atomic counters)": {
+          "median": 48506154.380162016,
+          "best": 60137825.67301218,
+          "minimum": 41318749.88056299,
+          "maximum": 60137825.67301218,
+          "cv_pct": 13.538510810162911,
+          "median_ci95": [
+            42639631.17511855,
+            56201745.20460439
+          ],
+          "samples": [
+            47622464.7198693,
+            41318749.88056299,
+            49389844.04045473,
+            60137825.67301218,
+            43960512.46967412,
+            52265664.73619659
+          ],
+          "readme_rate": 108560000.0,
+          "versus_readme_pct": -55.318575552540516
+        },
+        "Hot Key (1 key, contention)": {
+          "median": 61859286.74628907,
+          "best": 71473316.27717938,
+          "minimum": 53819537.11807448,
+          "maximum": 71473316.27717938,
+          "cv_pct": 11.387705910212299,
+          "median_ci95": [
+            55255651.47771333,
+            70349711.75119147
+          ],
+          "samples": [
+            58899699.195702225,
+            56691765.83735218,
+            69226107.22520357,
+            64818874.29687591,
+            53819537.11807448,
+            71473316.27717938
+          ],
+          "readme_rate": 37680000.0,
+          "versus_readme_pct": 64.17008159843172
+        }
+      }
+    },
+    "in-process": {}
+  },
+  "samples": [
+    {
+      "transport": "tcp",
+      "side": "tuned",
+      "mode": "hotkey",
+      "round": -1,
+      "rows": {
+        "Hot Key (1 key, contention) sustained": {
+          "ops": 276333000,
+          "elapsed_ns": 8001974085,
+          "ops_per_sec": 34533103.589774996
+        }
+      },
+      "peak_rss_kib": 14000,
+      "cpu_seconds": 11.530000000000001,
+      "cpu_ns_per_operation": 41.725020174933874
+    },
+    {
+      "transport": "tcp",
+      "side": "current",
+      "mode": "hotkey",
+      "round": -1,
+      "rows": {
+        "Hot Key (1 key, contention) sustained": {
+          "ops": 277629500,
+          "elapsed_ns": 8002891450,
+          "ops_per_sec": 34691149.034640476
+        }
+      },
+      "peak_rss_kib": 12928,
+      "cpu_seconds": 12.56,
+      "cpu_ns_per_operation": 45.240149191638494
+    },
+    {
+      "transport": "tcp",
+      "side": "current",
+      "mode": "hotkey",
+      "round": 0,
+      "rows": {
+        "Hot Key (1 key, contention) sustained": {
+          "ops": 265947500,
+          "elapsed_ns": 8007432654,
+          "ops_per_sec": 33212580.29777493
+        }
+      },
+      "peak_rss_kib": 13140,
+      "cpu_seconds": 12.19,
+      "cpu_ns_per_operation": 45.836114270673725
+    },
+    {
+      "transport": "tcp",
+      "side": "tuned",
+      "mode": "hotkey",
+      "round": 0,
+      "rows": {
+        "Hot Key (1 key, contention) sustained": {
+          "ops": 268598000,
+          "elapsed_ns": 8003529450,
+          "ops_per_sec": 33559943.981964104
+        }
+      },
+      "peak_rss_kib": 13772,
+      "cpu_seconds": 11.03,
+      "cpu_ns_per_operation": 41.065086113820655
+    },
+    {
+      "transport": "tcp",
+      "side": "tuned",
+      "mode": "hotkey",
+      "round": 1,
+      "rows": {
+        "Hot Key (1 key, contention) sustained": {
+          "ops": 306385500,
+          "elapsed_ns": 8004154545,
+          "ops_per_sec": 38278308.880404055
+        }
+      },
+      "peak_rss_kib": 13600,
+      "cpu_seconds": 12.41,
+      "cpu_ns_per_operation": 40.50452779260115
+    },
+    {
+      "transport": "tcp",
+      "side": "current",
+      "mode": "hotkey",
+      "round": 1,
+      "rows": {
+        "Hot Key (1 key, contention) sustained": {
+          "ops": 287860000,
+          "elapsed_ns": 8005762975,
+          "ops_per_sec": 35956597.87816788
+        }
+      },
+      "peak_rss_kib": 12936,
+      "cpu_seconds": 12.89,
+      "cpu_ns_per_operation": 44.778711873827554
+    },
+    {
+      "transport": "tcp",
+      "side": "current",
+      "mode": "hotkey",
+      "round": 2,
+      "rows": {
+        "Hot Key (1 key, contention) sustained": {
+          "ops": 247790000,
+          "elapsed_ns": 8001301865,
+          "ops_per_sec": 30968710.364985086
+        }
+      },
+      "peak_rss_kib": 12996,
+      "cpu_seconds": 11.22,
+      "cpu_ns_per_operation": 45.28027765446547
+    },
+    {
+      "transport": "tcp",
+      "side": "tuned",
+      "mode": "hotkey",
+      "round": 2,
+      "rows": {
+        "Hot Key (1 key, contention) sustained": {
+          "ops": 314168500,
+          "elapsed_ns": 8003652820,
+          "ops_per_sec": 39253139.41840871
+        }
+      },
+      "peak_rss_kib": 13452,
+      "cpu_seconds": 12.43,
+      "cpu_ns_per_operation": 39.56475585553612
+    },
+    {
+      "transport": "tcp",
+      "side": "tuned",
+      "mode": "hotkey",
+      "round": 3,
+      "rows": {
+        "Hot Key (1 key, contention) sustained": {
+          "ops": 343813000,
+          "elapsed_ns": 8001352889,
+          "ops_per_sec": 42969358.40345986
+        }
+      },
+      "peak_rss_kib": 13396,
+      "cpu_seconds": 13.65,
+      "cpu_ns_per_operation": 39.701814649242465
+    },
+    {
+      "transport": "tcp",
+      "side": "current",
+      "mode": "hotkey",
+      "round": 3,
+      "rows": {
+        "Hot Key (1 key, contention) sustained": {
+          "ops": 342768000,
+          "elapsed_ns": 8003822394,
+          "ops_per_sec": 42825537.9900675
+        }
+      },
+      "peak_rss_kib": 12888,
+      "cpu_seconds": 15.19,
+      "cpu_ns_per_operation": 44.31568874574056
+    },
+    {
+      "transport": "tcp",
+      "side": "current",
+      "mode": "hotkey",
+      "round": 4,
+      "rows": {
+        "Hot Key (1 key, contention) sustained": {
+          "ops": 333897000,
+          "elapsed_ns": 8002622700,
+          "ops_per_sec": 41723446.48961146
+        }
+      },
+      "peak_rss_kib": 12884,
+      "cpu_seconds": 14.83,
+      "cpu_ns_per_operation": 44.41489441354669
+    },
+    {
+      "transport": "tcp",
+      "side": "tuned",
+      "mode": "hotkey",
+      "round": 4,
+      "rows": {
+        "Hot Key (1 key, contention) sustained": {
+          "ops": 414270500,
+          "elapsed_ns": 8002782900,
+          "ops_per_sec": 51765805.11761727
+        }
+      },
+      "peak_rss_kib": 13348,
+      "cpu_seconds": 15.99,
+      "cpu_ns_per_operation": 38.59796920128274
+    },
+    {
+      "transport": "tcp",
+      "side": "tuned",
+      "mode": "hotkey",
+      "round": 5,
+      "rows": {
+        "Hot Key (1 key, contention) sustained": {
+          "ops": 317266000,
+          "elapsed_ns": 8002912506,
+          "ops_per_sec": 39643817.14308848
+        }
+      },
+      "peak_rss_kib": 13420,
+      "cpu_seconds": 12.33,
+      "cpu_ns_per_operation": 38.86328821871868
+    },
+    {
+      "transport": "tcp",
+      "side": "current",
+      "mode": "hotkey",
+      "round": 5,
+      "rows": {
+        "Hot Key (1 key, contention) sustained": {
+          "ops": 423532000,
+          "elapsed_ns": 8002121785,
+          "ops_per_sec": 52927462.4130205
+        }
+      },
+      "peak_rss_kib": 12984,
+      "cpu_seconds": 18.15,
+      "cpu_ns_per_operation": 42.853904781693004
+    },
+    {
+      "transport": "tcp",
+      "side": "current",
+      "mode": "hotkey",
+      "round": 6,
+      "rows": {
+        "Hot Key (1 key, contention) sustained": {
+          "ops": 384296500,
+          "elapsed_ns": 8003362564,
+          "ops_per_sec": 48016880.02098114
+        }
+      },
+      "peak_rss_kib": 12936,
+      "cpu_seconds": 16.63,
+      "cpu_ns_per_operation": 43.273878372558684
+    },
+    {
+      "transport": "tcp",
+      "side": "tuned",
+      "mode": "hotkey",
+      "round": 6,
+      "rows": {
+        "Hot Key (1 key, contention) sustained": {
+          "ops": 275801500,
+          "elapsed_ns": 8002893517,
+          "ops_per_sec": 34462722.690753505
+        }
+      },
+      "peak_rss_kib": 13144,
+      "cpu_seconds": 11.12,
+      "cpu_ns_per_operation": 40.3188525080538
+    },
+    {
+      "transport": "tcp",
+      "side": "tuned",
+      "mode": "key",
+      "round": -1,
+      "rows": {
+        "Pipeline-64 SET": {
+          "ops": 30000000,
+          "elapsed_ns": 14524969219,
+          "ops_per_sec": 2065408.8520034337
+        },
+        "Pipelined SET": {
+          "ops": 30000000,
+          "elapsed_ns": 2349361357,
+          "ops_per_sec": 12769427.704518083
+        },
+        "Pipelined GET": {
+          "ops": 30000000,
+          "elapsed_ns": 2349258816,
+          "ops_per_sec": 12769985.06749458
+        }
+      },
+      "peak_rss_kib": 845956,
+      "cpu_seconds": 43.24,
+      "cpu_ns_per_operation": 480.44444444444446
+    },
+    {
+      "transport": "tcp",
+      "side": "current",
+      "mode": "key",
+      "round": -1,
+      "rows": {
+        "Pipeline-64 SET": {
+          "ops": 30000000,
+          "elapsed_ns": 7919641420,
+          "ops_per_sec": 3788050.2928123735
+        },
+        "Pipelined SET": {
+          "ops": 30000000,
+          "elapsed_ns": 1676879843,
+          "ops_per_sec": 17890369.50097086
+        },
+        "Pipelined GET": {
+          "ops": 30000000,
+          "elapsed_ns": 1484388545,
+          "ops_per_sec": 20210341.895355977
+        }
+      },
+      "peak_rss_kib": 843608,
+      "cpu_seconds": 35.800000000000004,
+      "cpu_ns_per_operation": 397.7777777777779
+    },
+    {
+      "transport": "tcp",
+      "side": "current",
+      "mode": "key",
+      "round": 0,
+      "rows": {
+        "Pipeline-64 SET": {
+          "ops": 30000000,
+          "elapsed_ns": 4266902448,
+          "ops_per_sec": 7030861.465806822
+        },
+        "Pipelined SET": {
+          "ops": 30000000,
+          "elapsed_ns": 1454167544,
+          "ops_per_sec": 20630360.046049826
+        },
+        "Pipelined GET": {
+          "ops": 30000000,
+          "elapsed_ns": 1445582427,
+          "ops_per_sec": 20752880.942429997
+        }
+      },
+      "peak_rss_kib": 843836,
+      "cpu_seconds": 28.74,
+      "cpu_ns_per_operation": 319.3333333333333
+    },
+    {
+      "transport": "tcp",
+      "side": "tuned",
+      "mode": "key",
+      "round": 0,
+      "rows": {
+        "Pipeline-64 SET": {
+          "ops": 30000000,
+          "elapsed_ns": 5715418962,
+          "ops_per_sec": 5248959.035104941
+        },
+        "Pipelined SET": {
+          "ops": 30000000,
+          "elapsed_ns": 1534728251,
+          "ops_per_sec": 19547434.524941184
+        },
+        "Pipelined GET": {
+          "ops": 30000000,
+          "elapsed_ns": 1488740657,
+          "ops_per_sec": 20151259.965220388
+        }
+      },
+      "peak_rss_kib": 843532,
+      "cpu_seconds": 30.66,
+      "cpu_ns_per_operation": 340.6666666666667
+    },
+    {
+      "transport": "tcp",
+      "side": "tuned",
+      "mode": "key",
+      "round": 1,
+      "rows": {
+        "Pipeline-64 SET": {
+          "ops": 30000000,
+          "elapsed_ns": 5557761249,
+          "ops_per_sec": 5397856.91682921
+        },
+        "Pipelined SET": {
+          "ops": 30000000,
+          "elapsed_ns": 1420236146,
+          "ops_per_sec": 21123247.767276585
+        },
+        "Pipelined GET": {
+          "ops": 30000000,
+          "elapsed_ns": 1233537589,
+          "ops_per_sec": 24320296.574278127
+        }
+      },
+      "peak_rss_kib": 844532,
+      "cpu_seconds": 30.43,
+      "cpu_ns_per_operation": 338.1111111111111
+    },
+    {
+      "transport": "tcp",
+      "side": "current",
+      "mode": "key",
+      "round": 1,
+      "rows": {
+        "Pipeline-64 SET": {
+          "ops": 30000000,
+          "elapsed_ns": 5819910116,
+          "ops_per_sec": 5154718.784663787
+        },
+        "Pipelined SET": {
+          "ops": 30000000,
+          "elapsed_ns": 1327379367,
+          "ops_per_sec": 22600923.854800284
+        },
+        "Pipelined GET": {
+          "ops": 30000000,
+          "elapsed_ns": 1138780249,
+          "ops_per_sec": 26343976.39609923
+        }
+      },
+      "peak_rss_kib": 845208,
+      "cpu_seconds": 30.21,
+      "cpu_ns_per_operation": 335.6666666666667
+    },
+    {
+      "transport": "tcp",
+      "side": "current",
+      "mode": "key",
+      "round": 2,
+      "rows": {
+        "Pipeline-64 SET": {
+          "ops": 30000000,
+          "elapsed_ns": 6082329761,
+          "ops_per_sec": 4932320.5381530775
+        },
+        "Pipelined SET": {
+          "ops": 30000000,
+          "elapsed_ns": 1337426088,
+          "ops_per_sec": 22431146.11653964
+        },
+        "Pipelined GET": {
+          "ops": 30000000,
+          "elapsed_ns": 1142019261,
+          "ops_per_sec": 26269259.218737468
+        }
+      },
+      "peak_rss_kib": 842844,
+      "cpu_seconds": 30.79,
+      "cpu_ns_per_operation": 342.1111111111111
+    },
+    {
+      "transport": "tcp",
+      "side": "tuned",
+      "mode": "key",
+      "round": 2,
+      "rows": {
+        "Pipeline-64 SET": {
+          "ops": 30000000,
+          "elapsed_ns": 5818713549,
+          "ops_per_sec": 5155778.807010663
+        },
+        "Pipelined SET": {
+          "ops": 30000000,
+          "elapsed_ns": 1290499994,
+          "ops_per_sec": 23246803.672592655
+        },
+        "Pipelined GET": {
+          "ops": 30000000,
+          "elapsed_ns": 1173253764,
+          "ops_per_sec": 25569915.836212907
+        }
+      },
+      "peak_rss_kib": 842876,
+      "cpu_seconds": 31.13,
+      "cpu_ns_per_operation": 345.8888888888889
+    },
+    {
+      "transport": "tcp",
+      "side": "tuned",
+      "mode": "key",
+      "round": 3,
+      "rows": {
+        "Pipeline-64 SET": {
+          "ops": 30000000,
+          "elapsed_ns": 3428521384,
+          "ops_per_sec": 8750127.719780907
+        },
+        "Pipelined SET": {
+          "ops": 30000000,
+          "elapsed_ns": 1189677414,
+          "ops_per_sec": 25216919.853199802
+        },
+        "Pipelined GET": {
+          "ops": 30000000,
+          "elapsed_ns": 1065558167,
+          "ops_per_sec": 28154258.424448825
+        }
+      },
+      "peak_rss_kib": 844704,
+      "cpu_seconds": 25.72,
+      "cpu_ns_per_operation": 285.77777777777777
+    },
+    {
+      "transport": "tcp",
+      "side": "current",
+      "mode": "key",
+      "round": 3,
+      "rows": {
+        "Pipeline-64 SET": {
+          "ops": 30000000,
+          "elapsed_ns": 4041962651,
+          "ops_per_sec": 7422136.865262192
+        },
+        "Pipelined SET": {
+          "ops": 30000000,
+          "elapsed_ns": 1219738603,
+          "ops_per_sec": 24595433.748029042
+        },
+        "Pipelined GET": {
+          "ops": 30000000,
+          "elapsed_ns": 912906561,
+          "ops_per_sec": 32862070.75468702
+        }
+      },
+      "peak_rss_kib": 844532,
+      "cpu_seconds": 27.16,
+      "cpu_ns_per_operation": 301.77777777777777
+    },
+    {
+      "transport": "tcp",
+      "side": "current",
+      "mode": "key",
+      "round": 4,
+      "rows": {
+        "Pipeline-64 SET": {
+          "ops": 30000000,
+          "elapsed_ns": 4921213438,
+          "ops_per_sec": 6096057.482154668
+        },
+        "Pipelined SET": {
+          "ops": 30000000,
+          "elapsed_ns": 1334758882,
+          "ops_per_sec": 22475969.558672696
+        },
+        "Pipelined GET": {
+          "ops": 30000000,
+          "elapsed_ns": 1239989712,
+          "ops_per_sec": 24193749.117170095
+        }
+      },
+      "peak_rss_kib": 842976,
+      "cpu_seconds": 28.6,
+      "cpu_ns_per_operation": 317.77777777777777
+    },
+    {
+      "transport": "tcp",
+      "side": "tuned",
+      "mode": "key",
+      "round": 4,
+      "rows": {
+        "Pipeline-64 SET": {
+          "ops": 30000000,
+          "elapsed_ns": 5776183284,
+          "ops_per_sec": 5193741.009413579
+        },
+        "Pipelined SET": {
+          "ops": 30000000,
+          "elapsed_ns": 1438718141,
+          "ops_per_sec": 20851895.27056919
+        },
+        "Pipelined GET": {
+          "ops": 30000000,
+          "elapsed_ns": 1199599385,
+          "ops_per_sec": 25008348.93308986
+        }
+      },
+      "peak_rss_kib": 844300,
+      "cpu_seconds": 30.54,
+      "cpu_ns_per_operation": 339.3333333333333
+    },
+    {
+      "transport": "tcp",
+      "side": "tuned",
+      "mode": "key",
+      "round": 5,
+      "rows": {
+        "Pipeline-64 SET": {
+          "ops": 30000000,
+          "elapsed_ns": 3771046510,
+          "ops_per_sec": 7955351.364786005
+        },
+        "Pipelined SET": {
+          "ops": 30000000,
+          "elapsed_ns": 1245205660,
+          "ops_per_sec": 24092405.74765778
+        },
+        "Pipelined GET": {
+          "ops": 30000000,
+          "elapsed_ns": 1092724025,
+          "ops_per_sec": 27454324.526268195
+        }
+      },
+      "peak_rss_kib": 845928,
+      "cpu_seconds": 26.04,
+      "cpu_ns_per_operation": 289.3333333333333
+    },
+    {
+      "transport": "tcp",
+      "side": "current",
+      "mode": "key",
+      "round": 5,
+      "rows": {
+        "Pipeline-64 SET": {
+          "ops": 30000000,
+          "elapsed_ns": 4993883678,
+          "ops_per_sec": 6007348.575650984
+        },
+        "Pipelined SET": {
+          "ops": 30000000,
+          "elapsed_ns": 1179464638,
+          "ops_per_sec": 25435268.70875123
+        },
+        "Pipelined GET": {
+          "ops": 30000000,
+          "elapsed_ns": 1055150496,
+          "ops_per_sec": 28431963.131067894
+        }
+      },
+      "peak_rss_kib": 843280,
+      "cpu_seconds": 28.46,
+      "cpu_ns_per_operation": 316.22222222222223
+    },
+    {
+      "transport": "tcp",
+      "side": "current",
+      "mode": "key",
+      "round": 6,
+      "rows": {
+        "Pipeline-64 SET": {
+          "ops": 30000000,
+          "elapsed_ns": 4938767262,
+          "ops_per_sec": 6074390.310073291
+        },
+        "Pipelined SET": {
+          "ops": 30000000,
+          "elapsed_ns": 1412239260,
+          "ops_per_sec": 21242859.3721435
+        },
+        "Pipelined GET": {
+          "ops": 30000000,
+          "elapsed_ns": 1279366871,
+          "ops_per_sec": 23449098.67530875
+        }
+      },
+      "peak_rss_kib": 844652,
+      "cpu_seconds": 28.37,
+      "cpu_ns_per_operation": 315.22222222222223
+    },
+    {
+      "transport": "tcp",
+      "side": "tuned",
+      "mode": "key",
+      "round": 6,
+      "rows": {
+        "Pipeline-64 SET": {
+          "ops": 30000000,
+          "elapsed_ns": 5784814515,
+          "ops_per_sec": 5185991.68948462
+        },
+        "Pipelined SET": {
+          "ops": 30000000,
+          "elapsed_ns": 1348105732,
+          "ops_per_sec": 22253447.40244751
+        },
+        "Pipelined GET": {
+          "ops": 30000000,
+          "elapsed_ns": 1237329649,
+          "ops_per_sec": 24245761.85032482
+        }
+      },
+      "peak_rss_kib": 843520,
+      "cpu_seconds": 32.73,
+      "cpu_ns_per_operation": 363.66666666666663
+    },
+    {
+      "transport": "tcp",
+      "side": "tuned",
+      "mode": "mix",
+      "round": -1,
+      "rows": {
+        "Mixed SET/GET (50/50)": {
+          "ops": 6000000,
+          "elapsed_ns": 650519973,
+          "ops_per_sec": 9223390.90117376
+        },
+        "INCR (atomic counters)": {
+          "ops": 6000000,
+          "elapsed_ns": 123792288,
+          "ops_per_sec": 48468285.84346062
+        },
+        "Hot Key (1 key, contention)": {
+          "ops": 30000000,
+          "elapsed_ns": 446926477,
+          "ops_per_sec": 67125134.76797214
+        }
+      },
+      "peak_rss_kib": 111264,
+      "cpu_seconds": 3.34,
+      "cpu_ns_per_operation": 79.52380952380952
+    },
+    {
+      "transport": "tcp",
+      "side": "current",
+      "mode": "mix",
+      "round": -1,
+      "rows": {
+        "Mixed SET/GET (50/50)": {
+          "ops": 6000000,
+          "elapsed_ns": 481087710,
+          "ops_per_sec": 12471738.261615537
+        },
+        "INCR (atomic counters)": {
+          "ops": 6000000,
+          "elapsed_ns": 153934142,
+          "ops_per_sec": 38977707.752449095
+        },
+        "Hot Key (1 key, contention)": {
+          "ops": 30000000,
+          "elapsed_ns": 499838648,
+          "ops_per_sec": 60019368.49028929
+        }
+      },
+      "peak_rss_kib": 108672,
+      "cpu_seconds": 3.32,
+      "cpu_ns_per_operation": 79.04761904761905
+    },
+    {
+      "transport": "tcp",
+      "side": "current",
+      "mode": "mix",
+      "round": 0,
+      "rows": {
+        "Mixed SET/GET (50/50)": {
+          "ops": 6000000,
+          "elapsed_ns": 525436364,
+          "ops_per_sec": 11419080.237088425
+        },
+        "INCR (atomic counters)": {
+          "ops": 6000000,
+          "elapsed_ns": 127672923,
+          "ops_per_sec": 46995086.029321976
+        },
+        "Hot Key (1 key, contention)": {
+          "ops": 30000000,
+          "elapsed_ns": 555383548,
+          "ops_per_sec": 54016724.31247459
+        }
+      },
+      "peak_rss_kib": 110884,
+      "cpu_seconds": 3.41,
+      "cpu_ns_per_operation": 81.19047619047619
+    },
+    {
+      "transport": "tcp",
+      "side": "tuned",
+      "mode": "mix",
+      "round": 0,
+      "rows": {
+        "Mixed SET/GET (50/50)": {
+          "ops": 6000000,
+          "elapsed_ns": 514886582,
+          "ops_per_sec": 11653051.77830406
+        },
+        "INCR (atomic counters)": {
+          "ops": 6000000,
+          "elapsed_ns": 125990959,
+          "ops_per_sec": 47622464.7198693
+        },
+        "Hot Key (1 key, contention)": {
+          "ops": 30000000,
+          "elapsed_ns": 509340462,
+          "ops_per_sec": 58899699.195702225
+        }
+      },
+      "peak_rss_kib": 111280,
+      "cpu_seconds": 3.27,
+      "cpu_ns_per_operation": 77.85714285714286
+    },
+    {
+      "transport": "tcp",
+      "side": "tuned",
+      "mode": "mix",
+      "round": 1,
+      "rows": {
+        "Mixed SET/GET (50/50)": {
+          "ops": 6000000,
+          "elapsed_ns": 526096263,
+          "ops_per_sec": 11404756.927535903
+        },
+        "INCR (atomic counters)": {
+          "ops": 6000000,
+          "elapsed_ns": 145212525,
+          "ops_per_sec": 41318749.88056299
+        },
+        "Hot Key (1 key, contention)": {
+          "ops": 30000000,
+          "elapsed_ns": 529177378,
+          "ops_per_sec": 56691765.83735218
+        }
+      },
+      "peak_rss_kib": 111080,
+      "cpu_seconds": 3.34,
+      "cpu_ns_per_operation": 79.52380952380952
+    },
+    {
+      "transport": "tcp",
+      "side": "current",
+      "mode": "mix",
+      "round": 1,
+      "rows": {
+        "Mixed SET/GET (50/50)": {
+          "ops": 6000000,
+          "elapsed_ns": 496508918,
+          "ops_per_sec": 12084375.088706866
+        },
+        "INCR (atomic counters)": {
+          "ops": 6000000,
+          "elapsed_ns": 168884652,
+          "ops_per_sec": 35527207.05490751
+        },
+        "Hot Key (1 key, contention)": {
+          "ops": 30000000,
+          "elapsed_ns": 434834851,
+          "ops_per_sec": 68991710.14238691
+        }
+      },
+      "peak_rss_kib": 109756,
+      "cpu_seconds": 3.41,
+      "cpu_ns_per_operation": 81.19047619047619
+    },
+    {
+      "transport": "tcp",
+      "side": "current",
+      "mode": "mix",
+      "round": 2,
+      "rows": {
+        "Mixed SET/GET (50/50)": {
+          "ops": 6000000,
+          "elapsed_ns": 556368602,
+          "ops_per_sec": 10784217.474587109
+        },
+        "INCR (atomic counters)": {
+          "ops": 6000000,
+          "elapsed_ns": 122031046,
+          "ops_per_sec": 49167815.868758515
+        },
+        "Hot Key (1 key, contention)": {
+          "ops": 30000000,
+          "elapsed_ns": 442822274,
+          "ops_per_sec": 67747269.64163506
+        }
+      },
+      "peak_rss_kib": 109776,
+      "cpu_seconds": 3.32,
+      "cpu_ns_per_operation": 79.04761904761905
+    },
+    {
+      "transport": "tcp",
+      "side": "tuned",
+      "mode": "mix",
+      "round": 2,
+      "rows": {
+        "Mixed SET/GET (50/50)": {
+          "ops": 6000000,
+          "elapsed_ns": 581466286,
+          "ops_per_sec": 10318740.990599753
+        },
+        "INCR (atomic counters)": {
+          "ops": 6000000,
+          "elapsed_ns": 121482465,
+          "ops_per_sec": 49389844.04045473
+        },
+        "Hot Key (1 key, contention)": {
+          "ops": 30000000,
+          "elapsed_ns": 433362516,
+          "ops_per_sec": 69226107.22520357
+        }
+      },
+      "peak_rss_kib": 113084,
+      "cpu_seconds": 3.34,
+      "cpu_ns_per_operation": 79.52380952380952
+    },
+    {
+      "transport": "tcp",
+      "side": "tuned",
+      "mode": "mix",
+      "round": 3,
+      "rows": {
+        "Mixed SET/GET (50/50)": {
+          "ops": 6000000,
+          "elapsed_ns": 537416834,
+          "ops_per_sec": 11164518.155008148
+        },
+        "INCR (atomic counters)": {
+          "ops": 6000000,
+          "elapsed_ns": 99770817,
+          "ops_per_sec": 60137825.67301218
+        },
+        "Hot Key (1 key, contention)": {
+          "ops": 30000000,
+          "elapsed_ns": 462828155,
+          "ops_per_sec": 64818874.29687591
+        }
+      },
+      "peak_rss_kib": 111728,
+      "cpu_seconds": 3.24,
+      "cpu_ns_per_operation": 77.14285714285714
+    },
+    {
+      "transport": "tcp",
+      "side": "current",
+      "mode": "mix",
+      "round": 3,
+      "rows": {
+        "Mixed SET/GET (50/50)": {
+          "ops": 6000000,
+          "elapsed_ns": 581125992,
+          "ops_per_sec": 10324783.407726152
+        },
+        "INCR (atomic counters)": {
+          "ops": 6000000,
+          "elapsed_ns": 122666141,
+          "ops_per_sec": 48913253.08750033
+        },
+        "Hot Key (1 key, contention)": {
+          "ops": 30000000,
+          "elapsed_ns": 613312162,
+          "ops_per_sec": 48914731.94037199
+        }
+      },
+      "peak_rss_kib": 110652,
+      "cpu_seconds": 3.45,
+      "cpu_ns_per_operation": 82.14285714285714
+    },
+    {
+      "transport": "tcp",
+      "side": "current",
+      "mode": "mix",
+      "round": 4,
+      "rows": {
+        "Mixed SET/GET (50/50)": {
+          "ops": 6000000,
+          "elapsed_ns": 574738900,
+          "ops_per_sec": 10439523.059949484
+        },
+        "INCR (atomic counters)": {
+          "ops": 6000000,
+          "elapsed_ns": 104003290,
+          "ops_per_sec": 57690482.67607688
+        },
+        "Hot Key (1 key, contention)": {
+          "ops": 30000000,
+          "elapsed_ns": 454235521,
+          "ops_per_sec": 66045033.05676088
+        }
+      },
+      "peak_rss_kib": 111184,
+      "cpu_seconds": 3.35,
+      "cpu_ns_per_operation": 79.76190476190476
+    },
+    {
+      "transport": "tcp",
+      "side": "tuned",
+      "mode": "mix",
+      "round": 4,
+      "rows": {
+        "Mixed SET/GET (50/50)": {
+          "ops": 6000000,
+          "elapsed_ns": 649614346,
+          "ops_per_sec": 9236249.225321142
+        },
+        "INCR (atomic counters)": {
+          "ops": 6000000,
+          "elapsed_ns": 136486125,
+          "ops_per_sec": 43960512.46967412
+        },
+        "Hot Key (1 key, contention)": {
+          "ops": 30000000,
+          "elapsed_ns": 557418395,
+          "ops_per_sec": 53819537.11807448
+        }
+      },
+      "peak_rss_kib": 110832,
+      "cpu_seconds": 3.45,
+      "cpu_ns_per_operation": 82.14285714285714
+    },
+    {
+      "transport": "tcp",
+      "side": "tuned",
+      "mode": "mix",
+      "round": 5,
+      "rows": {
+        "Mixed SET/GET (50/50)": {
+          "ops": 6000000,
+          "elapsed_ns": 569294607,
+          "ops_per_sec": 10539358.578536473
+        },
+        "INCR (atomic counters)": {
+          "ops": 6000000,
+          "elapsed_ns": 114798119,
+          "ops_per_sec": 52265664.73619659
+        },
+        "Hot Key (1 key, contention)": {
+          "ops": 30000000,
+          "elapsed_ns": 419737065,
+          "ops_per_sec": 71473316.27717938
+        }
+      },
+      "peak_rss_kib": 110888,
+      "cpu_seconds": 3.32,
+      "cpu_ns_per_operation": 79.04761904761905
+    }
+  ]
+}

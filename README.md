@@ -53,20 +53,31 @@ volumes:
   fyrodb-data:
 ```
 
-**Historical reported rates (6-core i5-11400H, 100 clients, best of three):**
+**Current normal Go TCP suite — retained runtime d5a178b, three-run medians:**
 
-| Benchmark | FyroDB | Redis Cluster (12 nodes) | Speedup |
-|---|---|---|---|
-| Pipelined GET | 53.38M ops/sec | 11.62M ops/sec | 4.59× |
-| Pipelined SET | 39.62M ops/sec | 6.53M ops/sec | 6.07× |
-| Mixed SET/GET | 45.87M ops/sec | 5.82M ops/sec | 7.88× |
-| INCR (counters) | 108.56M ops/sec | 6.54M ops/sec | 16.6× |
-| Pub/Sub delivery | 113.98M msg/sec | 8.09M msg/sec | 14.1× |
-| Hot Key contention | 37.68M ops/sec | 1.61M ops/sec | 23.4× |
+![Current worker scaling, throughput and peak RSS](docs/public/benchmarks/2026-11-13/normal-scaling.svg)
 
-Full benchmark table → [Benchmarks docs](https://fyrodb.vercel.app/docs/benchmarks)
+With dedicated clients, pipelined GET measured **20.130M / 32.962M / 44.616M / 47.419M ops/s** at one/two/three/six workers. Six workers use three physical cores plus SMT. The separate twelve-worker shared-client run measured **55.897M GET/s** and **43.347M SET/s**; it uses a different CPU budget. Server/client priority is verified equal. The suite uses 10M operations per KV phase, 2M per ordinary mixed phase and 10M for the hot-key phase, and verifies ten million Pub/Sub recipient deliveries.
 
-The current harness uses 10M operations per KV phase, 2M per mixed phase, and 10M for the hot-key phase. The benchmark docs repeat some figures under both TCP and in-process headings; treat the table above as a historical reference, not a matched current measurement. In-process batched storage calls also credit equivalent logical operations and are not TCP request/reply rates.
+[All twenty workloads, standard Redis-client and Dragonfly comparisons, payload/memory graphs, safety tests and methods](BENCHMARKS.md) · [Graph viewer and all archived campaigns](docs/public/benchmarks/2026-11-13/index.html) · [CSV](docs/public/benchmarks/2026-11-13/numbers.csv) · [Evidence hashes](docs/public/benchmarks/2026-11-13/manifest.json).
+
+The latest lock-reduction candidate passed safety checks but produced mixed/slower throughput, so its runtime changes were reverted. Six regression tests were retained; the recorded retained-source validation is **789 passed, zero failed**, plus 14 io-uring-feature reply tests. The earlier large-payload optimizations remain.
+
+<details>
+<summary>Historical reported peaks — best of three, older methodology</summary>
+
+| Benchmark | Previously reported FyroDB rate |
+| --- | --- |
+| Pipelined GET | 53.38M ops/sec |
+| Pipelined SET | 39.62M ops/sec |
+| Mixed SET/GET | 45.87M ops/sec |
+| INCR | 108.56M ops/sec |
+| Pub/Sub delivery | 113.98M messages/sec |
+| Hot key | 37.68M ops/sec |
+
+The higher historical figures are preserved as references. Old docs repeated some under both TCP and direct-engine headings, and cluster/workload descriptions differed. They are not matched current measurements or current competitor speedups. [Historical tables and original page](docs/src/content/benchmark-history.mdx).
+
+</details>
 
 For repeatable TCP measurements with fixed CPU placement, discarded warmups, seven alternating runs, raw samples, confidence intervals, and memory readings:
 
@@ -175,6 +186,7 @@ Full reference → [Configuration docs](https://fyrodb.vercel.app/docs/configura
 |---|---|
 | Documentation | https://fyrodb.vercel.app/docs/introduction |
 | Architecture | [ARCHITECTURE.md](ARCHITECTURE.md) |
+| Benchmarks and evidence | [BENCHMARKS.md](BENCHMARKS.md) |
 | Changelog | [CHANGELOG.md](CHANGELOG.md) |
 | Contributing | [CONTRIBUTING.md](CONTRIBUTING.md) |
 | Docker Hub | https://hub.docker.com/r/rana718/fyrodb |

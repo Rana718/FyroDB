@@ -1,0 +1,373 @@
+[
+  {
+    "title": "Multi core \u00b7 64B \u00b7 P256",
+    "pipeline": 256,
+    "folder": "copy-probe",
+    "sides": {
+      "baseline": {
+        "metrics": {
+          "GET": {
+            "mops": 22.416786,
+            "min_mops": 19.896792,
+            "max_mops": 23.87805,
+            "peak_rss_mib": 174.75,
+            "server_ns_per_op": 248.2432724861122,
+            "p99_ms": 2.103
+          },
+          "SET": {
+            "mops": 24.606613499999995,
+            "min_mops": 22.5583755,
+            "max_mops": 24.655146,
+            "peak_rss_mib": 175.6484375,
+            "server_ns_per_op": 202.08925325755837,
+            "p99_ms": 2.311
+          }
+        },
+        "loaded_rss_mib": 172.6328125,
+        "image": "sha256:b6db9aff555fadf064243e301afa9df47fe55b1a49c90787ef96dbc9efc483d7",
+        "rounds": 3
+      },
+      "candidate": {
+        "metrics": {
+          "GET": {
+            "mops": 28.353072,
+            "min_mops": 26.889291,
+            "max_mops": 30.998535,
+            "peak_rss_mib": 175.12109375,
+            "server_ns_per_op": 166.24952200611835,
+            "p99_ms": 2.031
+          },
+          "SET": {
+            "mops": 25.680864,
+            "min_mops": 22.8993075,
+            "max_mops": 26.364693,
+            "peak_rss_mib": 175.84765625,
+            "server_ns_per_op": 173.84023484499403,
+            "p99_ms": 2.471
+          }
+        },
+        "loaded_rss_mib": 172.7734375,
+        "image": "sha256:89dc86b63afaa7b8a7bbe38a899e67fea18fb47ce37810d88495b6c469ca51b8",
+        "rounds": 3
+      }
+    }
+  },
+  {
+    "title": "Multi core \u00b7 64B \u00b7 P64",
+    "pipeline": 64,
+    "folder": "copy-probe",
+    "sides": {
+      "baseline": {
+        "metrics": {
+          "GET": {
+            "mops": 18.423015,
+            "min_mops": 17.2414005,
+            "max_mops": 19.920345,
+            "peak_rss_mib": 173.5234375,
+            "server_ns_per_op": 263.87010224626914,
+            "p99_ms": 1.167
+          },
+          "SET": {
+            "mops": 21.1954485,
+            "min_mops": 19.361109,
+            "max_mops": 22.4416815,
+            "peak_rss_mib": 173.28515625,
+            "server_ns_per_op": 181.3528378683675,
+            "p99_ms": 1.191
+          }
+        },
+        "loaded_rss_mib": 172.6328125,
+        "image": "sha256:b6db9aff555fadf064243e301afa9df47fe55b1a49c90787ef96dbc9efc483d7",
+        "rounds": 3
+      },
+      "candidate": {
+        "metrics": {
+          "GET": {
+            "mops": 21.431661,
+            "min_mops": 20.226564,
+            "max_mops": 21.4362555,
+            "peak_rss_mib": 173.72265625,
+            "server_ns_per_op": 203.07520006374395,
+            "p99_ms": 0.847
+          },
+          "SET": {
+            "mops": 22.237074,
+            "min_mops": 21.258531,
+            "max_mops": 22.4921565,
+            "peak_rss_mib": 173.69140625,
+            "server_ns_per_op": 143.89130581912858,
+            "p99_ms": 0.559
+          }
+        },
+        "loaded_rss_mib": 172.7734375,
+        "image": "sha256:89dc86b63afaa7b8a7bbe38a899e67fea18fb47ce37810d88495b6c469ca51b8",
+        "rounds": 3
+      }
+    }
+  },
+  {
+    "title": "Single core \u00b7 64B \u00b7 P256",
+    "pipeline": 256,
+    "folder": "single-core",
+    "sides": {
+      "baseline": {
+        "metrics": {
+          "GET": {
+            "mops": 5.138943719999999,
+            "min_mops": 5.09098086,
+            "max_mops": 5.47666128,
+            "peak_rss_mib": 175.34375,
+            "server_ns_per_op": 179.31791419209506,
+            "p99_ms": 4.319
+          },
+          "SET": {
+            "mops": 9.15506628,
+            "min_mops": 8.267058,
+            "max_mops": 9.8720475,
+            "peak_rss_mib": 175.12890625,
+            "server_ns_per_op": 97.82321025539288,
+            "p99_ms": 2.663
+          }
+        },
+        "loaded_rss_mib": 173.20703125,
+        "image": "sha256:b6db9aff555fadf064243e301afa9df47fe55b1a49c90787ef96dbc9efc483d7",
+        "rounds": 3
+      },
+      "candidate": {
+        "metrics": {
+          "GET": {
+            "mops": 8.3498895,
+            "min_mops": 8.172474,
+            "max_mops": 8.508551279999999,
+            "peak_rss_mib": 175.421875,
+            "server_ns_per_op": 108.47803444347738,
+            "p99_ms": 2.887
+          },
+          "SET": {
+            "mops": 11.981291279999999,
+            "min_mops": 10.79955,
+            "max_mops": 12.2854845,
+            "peak_rss_mib": 175.21875,
+            "server_ns_per_op": 72.85200248310466,
+            "p99_ms": 2.415
+          }
+        },
+        "loaded_rss_mib": 173.296875,
+        "image": "sha256:89dc86b63afaa7b8a7bbe38a899e67fea18fb47ce37810d88495b6c469ca51b8",
+        "rounds": 3
+      }
+    }
+  },
+  {
+    "title": "Multi core \u00b7 64B \u00b7 P1",
+    "pipeline": 1,
+    "folder": "no-pipeline",
+    "sides": {
+      "baseline": {
+        "metrics": {
+          "GET": {
+            "mops": 0.72533844,
+            "min_mops": 0.72063414,
+            "max_mops": 0.7327796999999999,
+            "peak_rss_mib": 173.15625,
+            "server_ns_per_op": 4074.2653333333333,
+            "p99_ms": 0.175
+          },
+          "SET": {
+            "mops": 0.72324012,
+            "min_mops": 0.7093875599999999,
+            "max_mops": 0.7405578599999999,
+            "peak_rss_mib": 173.12109375,
+            "server_ns_per_op": 4177.668000000001,
+            "p99_ms": 0.167
+          }
+        },
+        "loaded_rss_mib": 172.7890625,
+        "image": "sha256:b6db9aff555fadf064243e301afa9df47fe55b1a49c90787ef96dbc9efc483d7",
+        "rounds": 3
+      },
+      "candidate": {
+        "metrics": {
+          "GET": {
+            "mops": 0.7281553799999999,
+            "min_mops": 0.7092198600000001,
+            "max_mops": 0.7352941199999999,
+            "peak_rss_mib": 173.30859375,
+            "server_ns_per_op": 4044.066333333333,
+            "p99_ms": 0.175
+          },
+          "SET": {
+            "mops": 0.72289152,
+            "min_mops": 0.7043906999999999,
+            "max_mops": 0.72709644,
+            "peak_rss_mib": 173.0078125,
+            "server_ns_per_op": 4148.536999999999,
+            "p99_ms": 0.175
+          }
+        },
+        "loaded_rss_mib": 172.95703125,
+        "image": "sha256:89dc86b63afaa7b8a7bbe38a899e67fea18fb47ce37810d88495b6c469ca51b8",
+        "rounds": 3
+      }
+    }
+  },
+  {
+    "title": "Multi core \u00b7 5B \u00b7 P256",
+    "pipeline": 256,
+    "folder": "small-5B",
+    "sides": {
+      "baseline": {
+        "metrics": {
+          "GET": {
+            "mops": 35.932908,
+            "min_mops": 35.549691,
+            "max_mops": 36.088518,
+            "peak_rss_mib": 111.78515625,
+            "server_ns_per_op": 80.55949883841487,
+            "p99_ms": 1.647
+          },
+          "SET": {
+            "mops": 33.933246,
+            "min_mops": 33.333759,
+            "max_mops": 34.258746,
+            "peak_rss_mib": 111.85546875,
+            "server_ns_per_op": 104.53160199549448,
+            "p99_ms": 1.431
+          }
+        },
+        "loaded_rss_mib": 110.93359375,
+        "image": "sha256:b6db9aff555fadf064243e301afa9df47fe55b1a49c90787ef96dbc9efc483d7",
+        "rounds": 3
+      },
+      "candidate": {
+        "metrics": {
+          "GET": {
+            "mops": 36.643926,
+            "min_mops": 36.430341,
+            "max_mops": 37.552113,
+            "peak_rss_mib": 111.7734375,
+            "server_ns_per_op": 76.1828548594578,
+            "p99_ms": 1.175
+          },
+          "SET": {
+            "mops": 33.693153,
+            "min_mops": 33.24510900000001,
+            "max_mops": 35.261382,
+            "peak_rss_mib": 111.828125,
+            "server_ns_per_op": 105.53811911207536,
+            "p99_ms": 1.679
+          }
+        },
+        "loaded_rss_mib": 110.83203125,
+        "image": "sha256:89dc86b63afaa7b8a7bbe38a899e67fea18fb47ce37810d88495b6c469ca51b8",
+        "rounds": 3
+      }
+    }
+  },
+  {
+    "title": "Multi core \u00b7 16KiB \u00b7 P64",
+    "pipeline": 64,
+    "folder": "large-16KiB",
+    "sides": {
+      "baseline": {
+        "metrics": {
+          "GET": {
+            "mops": 0.12000552,
+            "min_mops": 0.10777566000000001,
+            "max_mops": 0.12119778,
+            "peak_rss_mib": 263.34765625,
+            "server_ns_per_op": 43475.90669228891,
+            "p99_ms": 60.639
+          },
+          "SET": {
+            "mops": 0.20643216,
+            "min_mops": 0.18495912000000003,
+            "max_mops": 0.21236598,
+            "peak_rss_mib": 239.7109375,
+            "server_ns_per_op": 23418.54830100049,
+            "p99_ms": 42.143
+          }
+        },
+        "loaded_rss_mib": 182.68359375,
+        "image": "sha256:b6db9aff555fadf064243e301afa9df47fe55b1a49c90787ef96dbc9efc483d7",
+        "rounds": 3
+      },
+      "candidate": {
+        "metrics": {
+          "GET": {
+            "mops": 0.10826502,
+            "min_mops": 0.10742249999999999,
+            "max_mops": 0.12657918,
+            "peak_rss_mib": 259.515625,
+            "server_ns_per_op": 48257.56847852611,
+            "p99_ms": 55.551
+          },
+          "SET": {
+            "mops": 0.20626974,
+            "min_mops": 0.18125225999999997,
+            "max_mops": 0.20840046,
+            "peak_rss_mib": 236.53515625,
+            "server_ns_per_op": 23440.367252318207,
+            "p99_ms": 44.287
+          }
+        },
+        "loaded_rss_mib": 180.984375,
+        "image": "sha256:89dc86b63afaa7b8a7bbe38a899e67fea18fb47ce37810d88495b6c469ca51b8",
+        "rounds": 3
+      }
+    }
+  },
+  {
+    "title": "Multi core \u00b7 256KiB \u00b7 P16",
+    "pipeline": 16,
+    "folder": "large-256KiB",
+    "sides": {
+      "baseline": {
+        "metrics": {
+          "GET": {
+            "mops": 0.008909640000000002,
+            "min_mops": 0.00885678,
+            "max_mops": 0.00905958,
+            "peak_rss_mib": 736.2890625,
+            "server_ns_per_op": 573540.5397173488,
+            "p99_ms": 189.439
+          },
+          "SET": {
+            "mops": 0.01035054,
+            "min_mops": 0.009142860000000001,
+            "max_mops": 0.010432799999999999,
+            "peak_rss_mib": 654.3671875,
+            "server_ns_per_op": 451103.4661306042,
+            "p99_ms": 213.375
+          }
+        },
+        "loaded_rss_mib": 615.57421875,
+        "image": "sha256:b6db9aff555fadf064243e301afa9df47fe55b1a49c90787ef96dbc9efc483d7",
+        "rounds": 3
+      },
+      "candidate": {
+        "metrics": {
+          "GET": {
+            "mops": 0.0090297,
+            "min_mops": 0.008427120000000001,
+            "max_mops": 0.00912,
+            "peak_rss_mib": 728.98828125,
+            "server_ns_per_op": 591607.6998050682,
+            "p99_ms": 163.839
+          },
+          "SET": {
+            "mops": 0.00952758,
+            "min_mops": 0.009388619999999999,
+            "max_mops": 0.01036038,
+            "peak_rss_mib": 644.42578125,
+            "server_ns_per_op": 444168.7378167642,
+            "p99_ms": 207.615
+          }
+        },
+        "loaded_rss_mib": 607.6328125,
+        "image": "sha256:89dc86b63afaa7b8a7bbe38a899e67fea18fb47ce37810d88495b6c469ca51b8",
+        "rounds": 3
+      }
+    }
+  }
+]

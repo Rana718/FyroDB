@@ -1,0 +1,41 @@
+{
+  "objective": "Current NEW task after commit522c2b9: improve hashmap/GET/SET large-payload performance and RAM without small-payload regression. Investigate10x/20x target honestly; do not promise it.",
+  "baseline_commit": "522c2b9",
+  "baseline_tag": "fyrodb:baseline-522c2b9",
+  "protected_container": "fyro-a4085354-a4a6-4087-846a-d24e2e5cd3ca port10000; never stop/redeploy/pause it or any other user jobs. No host sysctl/security/governor changes.",
+  "git": "Only scripts/__pycache__/ was pre-existing. Do not commit new work unless user asks. Code comments max2lines. No agents unless explicitly requested.",
+  "current_changes": [
+    "GET: single-core direct guarded streaming floor4KiB; original unique send_batch preserved; repeated branch OUTLINED, owned encoded large reply reused through bounded4write progress; only unsent repetitions expanded on backpressure.",
+    "SET: NO TLS history. Original generic overwrite_bytes is text-identical to baseline (small-copy-invariance.json). New streaming method only called from const STREAMING large>=8KiB unique-key SET batches. Scalar/repeated-key/small SET retains cached copy. AVX full64B lines, SFENCE before tail/return; fallback on unsupported CPUs.",
+    "Tests:64alignments/tails anddirect streaming core; clone/storage-reuse;4KiB boundaries;repeated replies with scripts/overwrites/backpressure;concurrent reads/writes/snapshots;fixture port reserved until child listens;8 parallel suites passed."
+  ],
+  "prototype_images": {
+    "get": "fyrodb:large-get-probe (iov2+single4K; iov2 subsequently rejected)",
+    "copy": "fyrodb:large-copy-probe (iov2+single4K+unconditional streaming copy>=8K)",
+    "path": "fyrodb:large-path-probe (originaliov3+single4K+repeat-direct+unconditional streaming copy)",
+    "adaptive": "fyrodb:large-adaptive-probe (rejected TLS-history policy; retained diagnostic results)"
+  },
+  "completed_experiments": [
+    "profile-baseline PMU ownUID1000:10KiB SET~39k usercycles,170LLCmisses/op; copy/bandwidth major. All instrumentation separate from comparison numbers.",
+    "copy-diagnostic.rs compiled with pinned RustAlpine/musl/v3; diagnostic only, not server headline. Streaming stores2-3x cold-copy speed, hot4KiB slower -> threshold8K.",
+    "get-pilot16stock samples:4KiB single GET0.380M->0.998M,10KiB single0.195M->0.532M,~35MiB lessRSS. Multi results varied.",
+    "copy-ablation27samples,6unmodified stock clients:64B/1KiB controls within~2%;10KiB SET median0.312M->0.457M(~46%), server CPU/op down~56%. GET-onlyiov2~5%lower -> reverted original framing.",
+    "Hot-guard24cases detected cached-payload regressions with unconditional streaming; final source excludes streaming for scalar/repeated keys, removes TLS history, and isolates new copies from the original small path."
+  ],
+  "current_checks": "Isolated source preflight779passed0failed3perfignored,clippyclean. Image fyrodb:large-isolated-candidate sha256:6bd1bffaca77d15eb7325391357f5c65b37ead412f65f1aca554bf1856e01502. Source frozen candidate-source.json/isolated-source.json.",
+  "next": [
+    "Do not duplicate build/timing. Wait session1820 build success; create candidate-source.json from source-pending.json with new image ID, assert source hashes unchanged. Start python3 -u temp/large-path-verified/finish.py >finish.log, retain sessionID.",
+    "Revision report root is temp/large-path-verified. Pre-seeded126 immutable baseline/Dragonfly samples (reuse.json). Rerun78candidate samples from new image, total204finalrecords. Stageorderhot24(firstcandidate12new),small24,standard108,capacity36,scale12,release/state/affinity,workspace/clippy/uring.",
+    "New source fix: dispatch_repeated_get send_repeated ONLY multicore; single-worker uses original repeat_reply. Single-worker unique GET4KiB threshold retained. Large SET uniqueness guard compares existing full hashes (conservative collision fallback), avoids key-byte memcmp. Other source/test files unchanged from v1 frozen.",
+    "Confirmed v1 hot regression:10KiB single P256GET median~.333M vs baseline~.416M. Must verify revised hot controls before accepting. Final source commentsmax2lines. No subagents or commit.",
+    "After FINISHED summarize_checks.py/build_report.py/check_report.py. Check temp HTML links and actual attribution (peer measurements reused earlier, no paired/rotating-new-run claim). Rendervisual_check.py desktop/mobile/hot onlyAFTERtiming. Inspectimages.",
+    "Final fmt/gitdiffcheck,sourcehashes,healthyprotectedcontainer. Remove only own tests/e2e/python pyc exactfiles/emptydir; leave pre-existing scripts/__pycache__. Final actualmeasuredgains,RAMlimits/tests/reportlink. No10x/20xclaim."
+  ],
+  "benchmark_tools": "matrix.py=one official redis-benchmark8.8.3 process4threads64connections, default100kkeys; optionalKEYS THREADS PIPELINES REQUESTS. capacity.py=6unmodified processes64totalconns, conservative aggregate total/slowest official CSV duration; PMU/PROFILE_UID diagnostics optional. SERVER single[0], multi[0,1,2,6,7,8] (3physical/6logical);CLIENT[3,4,5,9,10,11]. Server3GiB/no swap. Baseline snapshots and all hypotheses in this root. Never alter past reports/data.",
+  "prior_completed_report": "temp/deep-balanced-optimization/report.html belongs to committed baseline522.772tests passed,18.36Mdeliveries; do not overwrite. Current new task uses separate large-path-optimization root.",
+  "active_runner": "Old coordinator1414144 ended after scale12 completed; all old trial timing immutable and preserved. No live benchmark containers. Building revised image: session1820, logtemp/large-path-verified/build.log. Then source+image freeze and finish.py revision runner.",
+  "standard_summary": "Single-core GET median2.64x@4KiB,3.06x@8KiB,2.77x@10KiB, with~5-8% lowerRSS.8KiB multicoreSET+54%.Small/multicore results mixed; stock-client250ms quantization and contention retained. No10x/20x claim.",
+  "final_image": "fyrodb:large-verified-candidate (building)",
+  "original_trial_report_root": "temp/large-path-optimization",
+  "final_report_root": "temp/large-path-verified"
+}

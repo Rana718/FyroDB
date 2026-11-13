@@ -12,6 +12,12 @@ v0.3.1 brings the Redis Lua scripting engine to FyroDB, alongside major write-pa
 
 ---
 
+## Current development follow-up
+
+The retained d5a178b runtime includes subsequent safety and large-payload work. [Current benchmarks](/docs/benchmarks) records the normal Go TCP suite, standard-client/Dragonfly comparisons, payload and memory sweeps, and rejected trials. The old release figures and shard-capacity statements below describe the release at publication; current shards start at eight slots, and mutable values use map admission and entry guards rather than fully lock-free access.
+
+The latest small-SET admission-reuse candidate was reverted after mixed/slower throughput, despite passing safety checks. Six new regressions were retained; the validation snapshot is 789 workspace tests passed, zero failed, plus 14 io-uring-feature large-reply tests. [Current architecture](/docs/architecture) · [historical benchmark peaks](/docs/benchmark-history).
+
 ## Highlights
 
 ### Unix Domain Socket Support

@@ -1,0 +1,231 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="2155" viewBox="0 0 1120 2155" role="img" aria-labelledby="title desc">
+<title id="title">Every normal TCP workload · current runtime</title><desc id="desc">Six workers use 3 physical cores + SMT; 12 share all 6 physical cores with clients.. Source: scaling-verified-20261113. Three-run medians and ranges. Delivery uses M messages/s.</desc>
+<style>text{font-family:Inter,system-ui,sans-serif;fill:#203943}.title{font-size:25px;font-weight:650}.sub{font-size:14px;fill:#55737c}.name{font-size:21px;font-weight:600}.label{font-size:14px;fill:#55737c}.value{font-size:24px;font-weight:600}.range{font-size:12px;fill:#657d84}</style>
+<rect width="1120" height="2155" fill="#f5f8f8"/>
+<text class="title" x="28" y="38">Every normal TCP workload · current runtime</text>
+<text class="sub" x="28" y="66">Six workers use 3 physical cores + SMT; 12 share all 6 physical cores with clients.</text>
+<rect x="28.0" y="88" width="521.0" height="2030" rx="10" fill="white" stroke="#d4dfe1"/>
+<text class="name" x="46.0" y="116">6 workers / dedicated clients</text>
+<text class="label" x="46.0" y="157">Pipeline-64 SET</text>
+<text class="value" x="46.0" y="184">13.240M</text>
+<rect x="46.0" y="194" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="46.0" y="194" width="441.00" height="6" rx="3" fill="#287c77"/>
+<text class="range" x="46.0" y="218">Range 12.721M – 13.384M</text>
+<text class="label" x="46.0" y="245">Pipelined SET</text>
+<text class="value" x="46.0" y="272">37.704M</text>
+<rect x="46.0" y="282" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="46.0" y="282" width="421.86" height="6" rx="3" fill="#287c77"/>
+<text class="range" x="46.0" y="306">Range 34.751M – 40.336M</text>
+<text class="label" x="46.0" y="333">Pipelined GET</text>
+<text class="value" x="46.0" y="360">47.419M</text>
+<rect x="46.0" y="370" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="46.0" y="370" width="411.44" height="6" rx="3" fill="#287c77"/>
+<text class="range" x="46.0" y="394">Range 39.377M – 49.284M</text>
+<text class="label" x="46.0" y="421">Pub/Sub publish</text>
+<text class="value" x="46.0" y="448">2.360M</text>
+<rect x="46.0" y="458" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="46.0" y="458" width="485.00" height="6" rx="3" fill="#287c77"/>
+<text class="range" x="46.0" y="482">Range 2.092M – 2.544M</text>
+<text class="label" x="46.0" y="509">Pub/Sub delivery</text>
+<text class="value" x="46.0" y="536">116.361M</text>
+<rect x="46.0" y="546" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="46.0" y="546" width="485.00" height="6" rx="3" fill="#287c77"/>
+<text class="range" x="46.0" y="570">Range 104.326M – 126.893M</text>
+<text class="label" x="46.0" y="597">Mixed SET/GET (50/50)</text>
+<text class="value" x="46.0" y="624">37.984M</text>
+<rect x="46.0" y="634" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="46.0" y="634" width="397.27" height="6" rx="3" fill="#287c77"/>
+<text class="range" x="46.0" y="658">Range 35.419M – 39.158M</text>
+<text class="label" x="46.0" y="685">INCR (atomic counters)</text>
+<text class="value" x="46.0" y="712">45.858M</text>
+<rect x="46.0" y="722" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="46.0" y="722" width="301.02" height="6" rx="3" fill="#287c77"/>
+<text class="range" x="46.0" y="746">Range 40.688M – 48.812M</text>
+<text class="label" x="46.0" y="773">HSET/HGET (sessions)</text>
+<text class="value" x="46.0" y="800">39.977M</text>
+<rect x="46.0" y="810" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="46.0" y="810" width="323.34" height="6" rx="3" fill="#287c77"/>
+<text class="range" x="46.0" y="834">Range 39.702M – 42.694M</text>
+<text class="label" x="46.0" y="861">LPUSH/RPOP (queue)</text>
+<text class="value" x="46.0" y="888">30.177M</text>
+<rect x="46.0" y="898" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="46.0" y="898" width="380.11" height="6" rx="3" fill="#287c77"/>
+<text class="range" x="46.0" y="922">Range 23.721M – 30.873M</text>
+<text class="label" x="46.0" y="949">SADD (per-client sets)</text>
+<text class="value" x="46.0" y="976">39.432M</text>
+<rect x="46.0" y="986" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="46.0" y="986" width="391.91" height="6" rx="3" fill="#287c77"/>
+<text class="range" x="46.0" y="1010">Range 36.997M – 43.968M</text>
+<text class="label" x="46.0" y="1037">ZADD (per-client zsets)</text>
+<text class="value" x="46.0" y="1064">8.444M</text>
+<rect x="46.0" y="1074" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="46.0" y="1074" width="385.96" height="6" rx="3" fill="#287c77"/>
+<text class="range" x="46.0" y="1098">Range 8.384M – 9.235M</text>
+<text class="label" x="46.0" y="1125">JSON.SET (documents)</text>
+<text class="value" x="46.0" y="1152">7.322M</text>
+<rect x="46.0" y="1162" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="46.0" y="1162" width="344.43" height="6" rx="3" fill="#287c77"/>
+<text class="range" x="46.0" y="1186">Range 7.256M – 7.614M</text>
+<text class="label" x="46.0" y="1213">JSON.GET (documents)</text>
+<text class="value" x="46.0" y="1240">25.001M</text>
+<rect x="46.0" y="1250" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="46.0" y="1250" width="427.84" height="6" rx="3" fill="#287c77"/>
+<text class="range" x="46.0" y="1274">Range 23.753M – 26.453M</text>
+<text class="label" x="46.0" y="1301">SET+EXPIRE (cache TTL)</text>
+<text class="value" x="46.0" y="1328">7.808M</text>
+<rect x="46.0" y="1338" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="46.0" y="1338" width="387.61" height="6" rx="3" fill="#287c77"/>
+<text class="range" x="46.0" y="1362">Range 7.709M – 9.555M</text>
+<text class="label" x="46.0" y="1389">Hot Key (1 key, contention)</text>
+<text class="value" x="46.0" y="1416">118.612M</text>
+<rect x="46.0" y="1426" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="46.0" y="1426" width="358.18" height="6" rx="3" fill="#287c77"/>
+<text class="range" x="46.0" y="1450">Range 26.236M – 122.218M</text>
+<text class="label" x="46.0" y="1477">Producer/Consumer (50+50)</text>
+<text class="value" x="46.0" y="1504">3.270M</text>
+<rect x="46.0" y="1514" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="46.0" y="1514" width="118.16" height="6" rx="3" fill="#287c77"/>
+<text class="range" x="46.0" y="1538">Range 2.935M – 11.463M</text>
+<text class="label" x="46.0" y="1565">XADD (streams)</text>
+<text class="value" x="46.0" y="1592">15.041M</text>
+<rect x="46.0" y="1602" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="46.0" y="1602" width="461.95" height="6" rx="3" fill="#287c77"/>
+<text class="range" x="46.0" y="1626">Range 12.851M – 15.518M</text>
+<text class="label" x="46.0" y="1653">SETBIT/BITCOUNT (bitmap)</text>
+<text class="value" x="46.0" y="1680">14.912M</text>
+<rect x="46.0" y="1690" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="46.0" y="1690" width="311.23" height="6" rx="3" fill="#287c77"/>
+<text class="range" x="46.0" y="1714">Range 13.967M – 15.277M</text>
+<text class="label" x="46.0" y="1741">PFADD/PFCOUNT (HyperLogLog)</text>
+<text class="value" x="46.0" y="1768">53.095M</text>
+<rect x="46.0" y="1778" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="46.0" y="1778" width="430.84" height="6" rx="3" fill="#287c77"/>
+<text class="range" x="46.0" y="1802">Range 46.786M – 55.385M</text>
+<text class="label" x="46.0" y="1829">GEOADD/GEODIST (geospatial)</text>
+<text class="value" x="46.0" y="1856">5.178M</text>
+<rect x="46.0" y="1866" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="46.0" y="1866" width="443.13" height="6" rx="3" fill="#287c77"/>
+<text class="range" x="46.0" y="1890">Range 5.031M – 5.443M</text>
+<text class="label" x="46.0" y="1917">Peak RSS</text>
+<text class="value" x="46.0" y="1944">1296.5 MiB</text>
+<rect x="46.0" y="1954" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="46.0" y="1954" width="393.79" height="6" rx="3" fill="#287c77"/>
+<text class="range" x="46.0" y="1978">Range 1289.7 MiB – 1303.3 MiB</text>
+<text class="label" x="46.0" y="2005">Peak container memory</text>
+<text class="value" x="46.0" y="2032">1308.2 MiB</text>
+<rect x="46.0" y="2042" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="46.0" y="2042" width="394.28" height="6" rx="3" fill="#287c77"/>
+<text class="range" x="46.0" y="2066">Range 1299.9 MiB – 1313.9 MiB</text>
+<rect x="571.0" y="88" width="521.0" height="2030" rx="10" fill="white" stroke="#d4dfe1"/>
+<text class="name" x="589.0" y="116">12 workers / shared clients</text>
+<text class="label" x="589.0" y="157">Pipeline-64 SET</text>
+<text class="value" x="589.0" y="184">14.561M</text>
+<rect x="589.0" y="194" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="589.0" y="194" width="485.00" height="6" rx="3" fill="#7a8996"/>
+<text class="range" x="589.0" y="218">Range 13.698M – 15.527M</text>
+<text class="label" x="589.0" y="245">Pipelined SET</text>
+<text class="value" x="589.0" y="272">43.347M</text>
+<rect x="589.0" y="282" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="589.0" y="282" width="485.00" height="6" rx="3" fill="#7a8996"/>
+<text class="range" x="589.0" y="306">Range 42.798M – 44.188M</text>
+<text class="label" x="589.0" y="333">Pipelined GET</text>
+<text class="value" x="589.0" y="360">55.897M</text>
+<rect x="589.0" y="370" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="589.0" y="370" width="485.00" height="6" rx="3" fill="#7a8996"/>
+<text class="range" x="589.0" y="394">Range 51.758M – 55.953M</text>
+<text class="label" x="589.0" y="421">Pub/Sub publish</text>
+<text class="value" x="589.0" y="448">2.142M</text>
+<rect x="589.0" y="458" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="589.0" y="458" width="440.17" height="6" rx="3" fill="#7a8996"/>
+<text class="range" x="589.0" y="482">Range 1.782M – 2.211M</text>
+<text class="label" x="589.0" y="509">Pub/Sub delivery</text>
+<text class="value" x="589.0" y="536">104.294M</text>
+<rect x="589.0" y="546" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="589.0" y="546" width="434.70" height="6" rx="3" fill="#7a8996"/>
+<text class="range" x="589.0" y="570">Range 87.020M – 106.271M</text>
+<text class="label" x="589.0" y="597">Mixed SET/GET (50/50)</text>
+<text class="value" x="589.0" y="624">46.372M</text>
+<rect x="589.0" y="634" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="589.0" y="634" width="485.00" height="6" rx="3" fill="#7a8996"/>
+<text class="range" x="589.0" y="658">Range 40.657M – 49.953M</text>
+<text class="label" x="589.0" y="685">INCR (atomic counters)</text>
+<text class="value" x="589.0" y="712">73.887M</text>
+<rect x="589.0" y="722" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="589.0" y="722" width="485.00" height="6" rx="3" fill="#7a8996"/>
+<text class="range" x="589.0" y="746">Range 65.230M – 73.992M</text>
+<text class="label" x="589.0" y="773">HSET/HGET (sessions)</text>
+<text class="value" x="589.0" y="800">59.965M</text>
+<rect x="589.0" y="810" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="589.0" y="810" width="485.00" height="6" rx="3" fill="#7a8996"/>
+<text class="range" x="589.0" y="834">Range 53.552M – 68.550M</text>
+<text class="label" x="589.0" y="861">LPUSH/RPOP (queue)</text>
+<text class="value" x="589.0" y="888">38.505M</text>
+<rect x="589.0" y="898" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="589.0" y="898" width="485.00" height="6" rx="3" fill="#7a8996"/>
+<text class="range" x="589.0" y="922">Range 37.396M – 39.454M</text>
+<text class="label" x="589.0" y="949">SADD (per-client sets)</text>
+<text class="value" x="589.0" y="976">48.798M</text>
+<rect x="589.0" y="986" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="589.0" y="986" width="485.00" height="6" rx="3" fill="#7a8996"/>
+<text class="range" x="589.0" y="1010">Range 43.667M – 54.889M</text>
+<text class="label" x="589.0" y="1037">ZADD (per-client zsets)</text>
+<text class="value" x="589.0" y="1064">10.610M</text>
+<rect x="589.0" y="1074" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="589.0" y="1074" width="485.00" height="6" rx="3" fill="#7a8996"/>
+<text class="range" x="589.0" y="1098">Range 10.009M – 13.490M</text>
+<text class="label" x="589.0" y="1125">JSON.SET (documents)</text>
+<text class="value" x="589.0" y="1152">10.310M</text>
+<rect x="589.0" y="1162" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="589.0" y="1162" width="485.00" height="6" rx="3" fill="#7a8996"/>
+<text class="range" x="589.0" y="1186">Range 7.963M – 11.100M</text>
+<text class="label" x="589.0" y="1213">JSON.GET (documents)</text>
+<text class="value" x="589.0" y="1240">28.341M</text>
+<rect x="589.0" y="1250" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="589.0" y="1250" width="485.00" height="6" rx="3" fill="#7a8996"/>
+<text class="range" x="589.0" y="1274">Range 28.038M – 29.032M</text>
+<text class="label" x="589.0" y="1301">SET+EXPIRE (cache TTL)</text>
+<text class="value" x="589.0" y="1328">9.769M</text>
+<rect x="589.0" y="1338" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="589.0" y="1338" width="485.00" height="6" rx="3" fill="#7a8996"/>
+<text class="range" x="589.0" y="1362">Range 6.633M – 9.944M</text>
+<text class="label" x="589.0" y="1389">Hot Key (1 key, contention)</text>
+<text class="value" x="589.0" y="1416">160.608M</text>
+<rect x="589.0" y="1426" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="589.0" y="1426" width="485.00" height="6" rx="3" fill="#7a8996"/>
+<text class="range" x="589.0" y="1450">Range 153.924M – 186.676M</text>
+<text class="label" x="589.0" y="1477">Producer/Consumer (50+50)</text>
+<text class="value" x="589.0" y="1504">13.421M</text>
+<rect x="589.0" y="1514" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="589.0" y="1514" width="485.00" height="6" rx="3" fill="#7a8996"/>
+<text class="range" x="589.0" y="1538">Range 13.176M – 15.398M</text>
+<text class="label" x="589.0" y="1565">XADD (streams)</text>
+<text class="value" x="589.0" y="1592">15.792M</text>
+<rect x="589.0" y="1602" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="589.0" y="1602" width="485.00" height="6" rx="3" fill="#7a8996"/>
+<text class="range" x="589.0" y="1626">Range 13.559M – 17.099M</text>
+<text class="label" x="589.0" y="1653">SETBIT/BITCOUNT (bitmap)</text>
+<text class="value" x="589.0" y="1680">23.238M</text>
+<rect x="589.0" y="1690" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="589.0" y="1690" width="485.00" height="6" rx="3" fill="#7a8996"/>
+<text class="range" x="589.0" y="1714">Range 22.882M – 25.643M</text>
+<text class="label" x="589.0" y="1741">PFADD/PFCOUNT (HyperLogLog)</text>
+<text class="value" x="589.0" y="1768">59.769M</text>
+<rect x="589.0" y="1778" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="589.0" y="1778" width="485.00" height="6" rx="3" fill="#7a8996"/>
+<text class="range" x="589.0" y="1802">Range 54.966M – 60.639M</text>
+<text class="label" x="589.0" y="1829">GEOADD/GEODIST (geospatial)</text>
+<text class="value" x="589.0" y="1856">5.667M</text>
+<rect x="589.0" y="1866" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="589.0" y="1866" width="485.00" height="6" rx="3" fill="#7a8996"/>
+<text class="range" x="589.0" y="1890">Range 5.604M – 6.910M</text>
+<text class="label" x="589.0" y="1917">Peak RSS</text>
+<text class="value" x="589.0" y="1944">1596.8 MiB</text>
+<rect x="589.0" y="1954" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="589.0" y="1954" width="485.00" height="6" rx="3" fill="#7a8996"/>
+<text class="range" x="589.0" y="1978">Range 1380.3 MiB – 1601.5 MiB</text>
+<text class="label" x="589.0" y="2005">Peak container memory</text>
+<text class="value" x="589.0" y="2032">1609.2 MiB</text>
+<rect x="589.0" y="2042" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="589.0" y="2042" width="485.00" height="6" rx="3" fill="#7a8996"/>
+<text class="range" x="589.0" y="2066">Range 1393.4 MiB – 1614.2 MiB</text>
+<text class="range" x="28" y="2141">Source: scaling-verified-20261113. Three-run medians and ranges. Delivery uses M messages/s.</text></svg>

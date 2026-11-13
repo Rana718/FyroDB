@@ -1,0 +1,1577 @@
+[
+  {
+    "size": 5,
+    "core": "single",
+    "pipeline": 256,
+    "sides": {
+      "baseline": {
+        "loaded_rss_mib": 112.01171875,
+        "rounds": 3,
+        "metrics": {
+          "GET": {
+            "mops": 16.685847,
+            "min_mops": 14.9037015,
+            "max_mops": 19.5957885,
+            "peak_rss_mib": 113.125,
+            "ns_per_op": 52.399121207078984,
+            "p99_ms": 2.087,
+            "client_cores": 1.7830456600750533,
+            "server_cores": 0.8743237193957751,
+            "contended": 1
+          },
+          "SET": {
+            "mops": 16.420992,
+            "min_mops": 15.488463,
+            "max_mops": 16.593558,
+            "peak_rss_mib": 112.9453125,
+            "ns_per_op": 55.31864243079732,
+            "p99_ms": 1.695,
+            "client_cores": 1.6182633209404758,
+            "server_cores": 0.9041111986037734,
+            "contended": 0
+          }
+        }
+      },
+      "candidate": {
+        "loaded_rss_mib": 111.83203125,
+        "rounds": 3,
+        "metrics": {
+          "GET": {
+            "mops": 15.848469,
+            "min_mops": 15.4326915,
+            "max_mops": 19.121193,
+            "peak_rss_mib": 112.88671875,
+            "ns_per_op": 55.35954086029764,
+            "p99_ms": 2.207,
+            "client_cores": 1.6260190075143115,
+            "server_cores": 0.8856998033928498,
+            "contended": 1
+          },
+          "SET": {
+            "mops": 16.000614,
+            "min_mops": 14.985589499999998,
+            "max_mops": 16.2256095,
+            "peak_rss_mib": 112.703125,
+            "ns_per_op": 56.7663868374121,
+            "p99_ms": 1.839,
+            "client_cores": 1.6047375598831004,
+            "server_cores": 0.9066338111033034,
+            "contended": 0
+          }
+        }
+      }
+    }
+  },
+  {
+    "size": 5,
+    "core": "multi",
+    "pipeline": 256,
+    "sides": {
+      "baseline": {
+        "loaded_rss_mib": 110.828125,
+        "rounds": 3,
+        "metrics": {
+          "GET": {
+            "mops": 38.521296,
+            "min_mops": 31.645974,
+            "max_mops": 38.865636,
+            "peak_rss_mib": 111.78125,
+            "ns_per_op": 72.78590834037324,
+            "p99_ms": 1.255,
+            "client_cores": 5.541104250855349,
+            "server_cores": 2.723179241979783,
+            "contended": 0
+          },
+          "SET": {
+            "mops": 31.979939999999996,
+            "min_mops": 29.386212,
+            "max_mops": 35.348631,
+            "peak_rss_mib": 111.8984375,
+            "ns_per_op": 101.76387742236899,
+            "p99_ms": 1.855,
+            "client_cores": 4.837876829951377,
+            "server_cores": 3.228040910244029,
+            "contended": 2
+          }
+        }
+      },
+      "candidate": {
+        "loaded_rss_mib": 111.34375,
+        "rounds": 3,
+        "metrics": {
+          "GET": {
+            "mops": 38.715168,
+            "min_mops": 38.037765,
+            "max_mops": 39.185454,
+            "peak_rss_mib": 111.83984375,
+            "ns_per_op": 71.96156889191818,
+            "p99_ms": 1.575,
+            "client_cores": 5.58533496177674,
+            "server_cores": 2.748068108805007,
+            "contended": 0
+          },
+          "SET": {
+            "mops": 35.038989,
+            "min_mops": 34.071987,
+            "max_mops": 35.676519,
+            "peak_rss_mib": 111.9921875,
+            "ns_per_op": 92.9047308194455,
+            "p99_ms": 1.767,
+            "client_cores": 5.289761802971012,
+            "server_cores": 3.3034567446605774,
+            "contended": 0
+          }
+        }
+      }
+    }
+  },
+  {
+    "size": 16,
+    "core": "single",
+    "pipeline": 256,
+    "sides": {
+      "baseline": {
+        "loaded_rss_mib": 113.75,
+        "rounds": 3,
+        "metrics": {
+          "GET": {
+            "mops": 17.3316885,
+            "min_mops": 16.0348215,
+            "max_mops": 18.940122,
+            "peak_rss_mib": 115.11328125,
+            "ns_per_op": 51.180567999522154,
+            "p99_ms": 1.559,
+            "client_cores": 1.8074032829281854,
+            "server_cores": 0.8890790732349378,
+            "contended": 0
+          },
+          "SET": {
+            "mops": 14.933376,
+            "min_mops": 12.626748000000003,
+            "max_mops": 16.234389,
+            "peak_rss_mib": 114.93359375,
+            "ns_per_op": 60.3445827680217,
+            "p99_ms": 1.759,
+            "client_cores": 1.5504191338316609,
+            "server_cores": 0.9011483440379887,
+            "contended": 0
+          }
+        }
+      },
+      "candidate": {
+        "loaded_rss_mib": 111.84765625,
+        "rounds": 3,
+        "metrics": {
+          "GET": {
+            "mops": 19.04835,
+            "min_mops": 18.4622475,
+            "max_mops": 19.4433915,
+            "peak_rss_mib": 113.15234375,
+            "ns_per_op": 46.77457052315858,
+            "p99_ms": 1.487,
+            "client_cores": 1.8723772549813087,
+            "server_cores": 0.8909783904248078,
+            "contended": 0
+          },
+          "SET": {
+            "mops": 15.6991905,
+            "min_mops": 14.065239,
+            "max_mops": 16.190583,
+            "peak_rss_mib": 112.953125,
+            "ns_per_op": 57.51245818827225,
+            "p99_ms": 1.831,
+            "client_cores": 1.6007572509700128,
+            "server_cores": 0.9028990372209709,
+            "contended": 0
+          }
+        }
+      }
+    }
+  },
+  {
+    "size": 16,
+    "core": "multi",
+    "pipeline": 256,
+    "sides": {
+      "baseline": {
+        "loaded_rss_mib": 111.0078125,
+        "rounds": 3,
+        "metrics": {
+          "GET": {
+            "mops": 34.13013,
+            "min_mops": 32.971077,
+            "max_mops": 36.765177,
+            "peak_rss_mib": 112.171875,
+            "ns_per_op": 79.29976496300847,
+            "p99_ms": 1.815,
+            "client_cores": 5.266178886985447,
+            "server_cores": 2.7065112871569244,
+            "contended": 1
+          },
+          "SET": {
+            "mops": 32.041422,
+            "min_mops": 31.309104,
+            "max_mops": 37.216701,
+            "peak_rss_mib": 112.41015625,
+            "ns_per_op": 110.17714973248343,
+            "p99_ms": 1.951,
+            "client_cores": 4.954933258668629,
+            "server_cores": 3.5302325493356888,
+            "contended": 2
+          }
+        }
+      },
+      "candidate": {
+        "loaded_rss_mib": 111.6640625,
+        "rounds": 3,
+        "metrics": {
+          "GET": {
+            "mops": 35.95875,
+            "min_mops": 34.674507,
+            "max_mops": 36.724671,
+            "peak_rss_mib": 112.5,
+            "ns_per_op": 77.71017530975604,
+            "p99_ms": 1.631,
+            "client_cores": 5.511200494333673,
+            "server_cores": 2.715017981317679,
+            "contended": 1
+          },
+          "SET": {
+            "mops": 34.590549,
+            "min_mops": 31.766607,
+            "max_mops": 35.137485,
+            "peak_rss_mib": 112.71875,
+            "ns_per_op": 99.2480696247088,
+            "p99_ms": 1.727,
+            "client_cores": 5.35836660304583,
+            "server_cores": 3.487327557717161,
+            "contended": 0
+          }
+        }
+      }
+    }
+  },
+  {
+    "size": 23,
+    "core": "single",
+    "pipeline": 256,
+    "sides": {
+      "baseline": {
+        "loaded_rss_mib": 111.484375,
+        "rounds": 3,
+        "metrics": {
+          "GET": {
+            "mops": 18.576564,
+            "min_mops": 16.269606,
+            "max_mops": 18.599598,
+            "peak_rss_mib": 112.79296875,
+            "ns_per_op": 48.2096820815414,
+            "p99_ms": 1.631,
+            "client_cores": 1.833681933045171,
+            "server_cores": 0.8949671486550915,
+            "contended": 0
+          },
+          "SET": {
+            "mops": 14.354619000000001,
+            "min_mops": 13.5201225,
+            "max_mops": 15.5931135,
+            "peak_rss_mib": 112.85546875,
+            "ns_per_op": 63.43846396298381,
+            "p99_ms": 2.063,
+            "client_cores": 1.4603426669683885,
+            "server_cores": 0.9082255225016361,
+            "contended": 0
+          }
+        }
+      },
+      "candidate": {
+        "loaded_rss_mib": 112.03125,
+        "rounds": 3,
+        "metrics": {
+          "GET": {
+            "mops": 17.412159,
+            "min_mops": 16.63035,
+            "max_mops": 18.072984,
+            "peak_rss_mib": 113.3359375,
+            "ns_per_op": 51.19480078631648,
+            "p99_ms": 1.911,
+            "client_cores": 1.8333063174085116,
+            "server_cores": 0.8925657054921092,
+            "contended": 0
+          },
+          "SET": {
+            "mops": 15.5769225,
+            "min_mops": 15.536589,
+            "max_mops": 15.674583,
+            "peak_rss_mib": 113.37109375,
+            "ns_per_op": 58.383824727797105,
+            "p99_ms": 1.927,
+            "client_cores": 1.5782792014777631,
+            "server_cores": 0.909440313038479,
+            "contended": 0
+          }
+        }
+      }
+    }
+  },
+  {
+    "size": 23,
+    "core": "multi",
+    "pipeline": 256,
+    "sides": {
+      "baseline": {
+        "loaded_rss_mib": 111.0390625,
+        "rounds": 3,
+        "metrics": {
+          "GET": {
+            "mops": 34.317528,
+            "min_mops": 33.178926,
+            "max_mops": 34.602519,
+            "peak_rss_mib": 112.20703125,
+            "ns_per_op": 77.72331514156619,
+            "p99_ms": 1.607,
+            "client_cores": 5.597931861386895,
+            "server_cores": 2.6672720436235218,
+            "contended": 0
+          },
+          "SET": {
+            "mops": 33.256164,
+            "min_mops": 32.873529,
+            "max_mops": 33.613878,
+            "peak_rss_mib": 112.6640625,
+            "ns_per_op": 107.86717930010498,
+            "p99_ms": 1.871,
+            "client_cores": 5.301589897132517,
+            "server_cores": 3.587248605021696,
+            "contended": 0
+          }
+        }
+      },
+      "candidate": {
+        "loaded_rss_mib": 113.87109375,
+        "rounds": 3,
+        "metrics": {
+          "GET": {
+            "mops": 33.818493,
+            "min_mops": 33.772806,
+            "max_mops": 33.944766,
+            "peak_rss_mib": 114.64453125,
+            "ns_per_op": 81.18468083608529,
+            "p99_ms": 1.543,
+            "client_cores": 5.522511538957682,
+            "server_cores": 2.745543560562385,
+            "contended": 0
+          },
+          "SET": {
+            "mops": 31.990173000000002,
+            "min_mops": 30.912297000000002,
+            "max_mops": 33.990918,
+            "peak_rss_mib": 114.875,
+            "ns_per_op": 116.06573435860021,
+            "p99_ms": 2.055,
+            "client_cores": 5.011963891562458,
+            "server_cores": 3.6253881987196173,
+            "contended": 0
+          }
+        }
+      }
+    }
+  },
+  {
+    "size": 24,
+    "core": "single",
+    "pipeline": 256,
+    "sides": {
+      "baseline": {
+        "loaded_rss_mib": 142.69921875,
+        "rounds": 3,
+        "metrics": {
+          "GET": {
+            "mops": 8.907705720000001,
+            "min_mops": 8.8446795,
+            "max_mops": 8.9129985,
+            "peak_rss_mib": 144.07421875,
+            "ns_per_op": 105.52874769608847,
+            "p99_ms": 2.791,
+            "client_cores": 0.8975374616059243,
+            "server_cores": 0.9391182710047936,
+            "contended": 0
+          },
+          "SET": {
+            "mops": 10.0237725,
+            "min_mops": 9.846128279999999,
+            "max_mops": 10.420685279999999,
+            "peak_rss_mib": 144.046875,
+            "ns_per_op": 92.97586306019183,
+            "p99_ms": 2.559,
+            "client_cores": 0.9949891985008097,
+            "server_cores": 0.9319688993065167,
+            "contended": 0
+          }
+        }
+      },
+      "candidate": {
+        "loaded_rss_mib": 142.6328125,
+        "rounds": 3,
+        "metrics": {
+          "GET": {
+            "mops": 8.910351,
+            "min_mops": 8.8290615,
+            "max_mops": 8.93955672,
+            "peak_rss_mib": 143.9375,
+            "ns_per_op": 105.48364942786198,
+            "p99_ms": 2.895,
+            "client_cores": 0.8947598436423402,
+            "server_cores": 0.9398963411631993,
+            "contended": 0
+          },
+          "SET": {
+            "mops": 10.225341720000001,
+            "min_mops": 9.75647172,
+            "max_mops": 10.239300720000001,
+            "peak_rss_mib": 143.97265625,
+            "ns_per_op": 91.33839260572395,
+            "p99_ms": 2.639,
+            "client_cores": 0.9841107901735013,
+            "server_cores": 0.9339662765490487,
+            "contended": 0
+          }
+        }
+      }
+    }
+  },
+  {
+    "size": 24,
+    "core": "multi",
+    "pipeline": 256,
+    "sides": {
+      "baseline": {
+        "loaded_rss_mib": 143.83984375,
+        "rounds": 3,
+        "metrics": {
+          "GET": {
+            "mops": 28.296912,
+            "min_mops": 28.129755,
+            "max_mops": 28.678314,
+            "peak_rss_mib": 145.015625,
+            "ns_per_op": 169.46836080498167,
+            "p99_ms": 2.087,
+            "client_cores": 4.476840721203248,
+            "server_cores": 4.860066864230557,
+            "contended": 0
+          },
+          "SET": {
+            "mops": 25.873551,
+            "min_mops": 25.310373,
+            "max_mops": 26.157804,
+            "peak_rss_mib": 145.4375,
+            "ns_per_op": 191.5581680554489,
+            "p99_ms": 2.255,
+            "client_cores": 4.013220434178082,
+            "server_cores": 4.956290030649227,
+            "contended": 0
+          }
+        }
+      },
+      "candidate": {
+        "loaded_rss_mib": 144.3671875,
+        "rounds": 3,
+        "metrics": {
+          "GET": {
+            "mops": 28.353072,
+            "min_mops": 28.161441,
+            "max_mops": 28.457964,
+            "peak_rss_mib": 145.25390625,
+            "ns_per_op": 177.0123042425057,
+            "p99_ms": 2.151,
+            "client_cores": 4.47070733755856,
+            "server_cores": 4.985525617376918,
+            "contended": 0
+          },
+          "SET": {
+            "mops": 25.284774,
+            "min_mops": 25.163886,
+            "max_mops": 26.281545,
+            "peak_rss_mib": 145.56640625,
+            "ns_per_op": 189.42521535724347,
+            "p99_ms": 2.247,
+            "client_cores": 3.934130212227663,
+            "server_cores": 4.978387321546085,
+            "contended": 1
+          }
+        }
+      }
+    }
+  },
+  {
+    "size": 32,
+    "core": "single",
+    "pipeline": 256,
+    "sides": {
+      "baseline": {
+        "loaded_rss_mib": 142.28515625,
+        "rounds": 3,
+        "metrics": {
+          "GET": {
+            "mops": 8.82386772,
+            "min_mops": 8.76714,
+            "max_mops": 8.86558872,
+            "peak_rss_mib": 143.8984375,
+            "ns_per_op": 106.43967938297838,
+            "p99_ms": 2.903,
+            "client_cores": 0.9082071582168766,
+            "server_cores": 0.9391687423770207,
+            "contended": 0
+          },
+          "SET": {
+            "mops": 14.184942,
+            "min_mops": 13.882994999999998,
+            "max_mops": 14.347751999999998,
+            "peak_rss_mib": 143.71484375,
+            "ns_per_op": 64.14930333341869,
+            "p99_ms": 2.239,
+            "client_cores": 1.4719860050406064,
+            "server_cores": 0.9106723798201148,
+            "contended": 0
+          }
+        }
+      },
+      "candidate": {
+        "loaded_rss_mib": 142.6640625,
+        "rounds": 3,
+        "metrics": {
+          "GET": {
+            "mops": 8.792835,
+            "min_mops": 8.70860772,
+            "max_mops": 8.86558872,
+            "peak_rss_mib": 144.21875,
+            "ns_per_op": 106.87716258362344,
+            "p99_ms": 2.887,
+            "client_cores": 0.902517146353212,
+            "server_cores": 0.9397532558659746,
+            "contended": 0
+          },
+          "SET": {
+            "mops": 13.831790999999997,
+            "min_mops": 13.755687,
+            "max_mops": 13.967016,
+            "peak_rss_mib": 144.00390625,
+            "ns_per_op": 65.460886301966,
+            "p99_ms": 2.111,
+            "client_cores": 1.4541307392907112,
+            "server_cores": 0.9058129705181319,
+            "contended": 0
+          }
+        }
+      }
+    }
+  },
+  {
+    "size": 32,
+    "core": "multi",
+    "pipeline": 256,
+    "sides": {
+      "baseline": {
+        "loaded_rss_mib": 141.6953125,
+        "rounds": 3,
+        "metrics": {
+          "GET": {
+            "mops": 28.490394,
+            "min_mops": 26.860404,
+            "max_mops": 29.780013,
+            "peak_rss_mib": 143.15625,
+            "ns_per_op": 177.87128324757444,
+            "p99_ms": 2.119,
+            "client_cores": 4.6344685123200025,
+            "server_cores": 5.067622941008994,
+            "contended": 0
+          },
+          "SET": {
+            "mops": 26.889291,
+            "min_mops": 25.680864,
+            "max_mops": 27.632298,
+            "peak_rss_mib": 143.5703125,
+            "ns_per_op": 178.62845355579444,
+            "p99_ms": 2.263,
+            "client_cores": 4.348043803473476,
+            "server_cores": 4.707604062145643,
+            "contended": 0
+          }
+        }
+      },
+      "candidate": {
+        "loaded_rss_mib": 142.40625,
+        "rounds": 3,
+        "metrics": {
+          "GET": {
+            "mops": 26.702613,
+            "min_mops": 26.695482,
+            "max_mops": 28.345032,
+            "peak_rss_mib": 143.6484375,
+            "ns_per_op": 184.2419517030182,
+            "p99_ms": 2.127,
+            "client_cores": 4.376099913009333,
+            "server_cores": 5.000502448094724,
+            "contended": 0
+          },
+          "SET": {
+            "mops": 26.860404,
+            "min_mops": 24.8019045,
+            "max_mops": 29.257251,
+            "peak_rss_mib": 143.90234375,
+            "ns_per_op": 163.89165218685204,
+            "p99_ms": 2.223,
+            "client_cores": 4.319079145308181,
+            "server_cores": 4.731816202218652,
+            "contended": 0
+          }
+        }
+      }
+    }
+  },
+  {
+    "size": 64,
+    "core": "single",
+    "pipeline": 256,
+    "sides": {
+      "baseline": {
+        "loaded_rss_mib": 173.10546875,
+        "rounds": 3,
+        "metrics": {
+          "GET": {
+            "mops": 8.88923028,
+            "min_mops": 8.242074720000002,
+            "max_mops": 8.955567720000001,
+            "peak_rss_mib": 175.23828125,
+            "ns_per_op": 105.70470760589461,
+            "p99_ms": 2.783,
+            "client_cores": 0.9764992656062607,
+            "server_cores": 0.9396334875888648,
+            "contended": 0
+          },
+          "SET": {
+            "mops": 13.010040000000002,
+            "min_mops": 12.881558999999998,
+            "max_mops": 13.135356000000002,
+            "peak_rss_mib": 175.02734375,
+            "ns_per_op": 69.83081849656975,
+            "p99_ms": 2.375,
+            "client_cores": 1.4161721254948807,
+            "server_cores": 0.9085017418731123,
+            "contended": 0
+          }
+        }
+      },
+      "candidate": {
+        "loaded_rss_mib": 171.37109375,
+        "rounds": 3,
+        "metrics": {
+          "GET": {
+            "mops": 8.655843,
+            "min_mops": 8.648357279999999,
+            "max_mops": 8.68591572,
+            "peak_rss_mib": 173.421875,
+            "ns_per_op": 108.42026999496552,
+            "p99_ms": 2.959,
+            "client_cores": 0.9672241169289181,
+            "server_cores": 0.9395683546661368,
+            "contended": 0
+          },
+          "SET": {
+            "mops": 13.228021499999999,
+            "min_mops": 12.469307279999999,
+            "max_mops": 13.501869,
+            "peak_rss_mib": 173.16796875,
+            "ns_per_op": 68.60873209135434,
+            "p99_ms": 2.255,
+            "client_cores": 1.4619172364521202,
+            "server_cores": 0.9075577831921752,
+            "contended": 0
+          }
+        }
+      }
+    }
+  },
+  {
+    "size": 64,
+    "core": "multi",
+    "pipeline": 256,
+    "sides": {
+      "baseline": {
+        "loaded_rss_mib": 172.54296875,
+        "rounds": 3,
+        "metrics": {
+          "GET": {
+            "mops": 27.255732,
+            "min_mops": 27.189039,
+            "max_mops": 27.785853,
+            "peak_rss_mib": 174.65625,
+            "ns_per_op": 177.71241528108445,
+            "p99_ms": 2.055,
+            "client_cores": 4.8219714159870355,
+            "server_cores": 4.861861304522382,
+            "contended": 0
+          },
+          "SET": {
+            "mops": 22.7327295,
+            "min_mops": 22.099729500000002,
+            "max_mops": 26.441373,
+            "peak_rss_mib": 175.3671875,
+            "ns_per_op": 192.85277148452505,
+            "p99_ms": 2.759,
+            "client_cores": 3.8813297339905546,
+            "server_cores": 4.733624094110431,
+            "contended": 2
+          }
+        }
+      },
+      "candidate": {
+        "loaded_rss_mib": 173.6640625,
+        "rounds": 3,
+        "metrics": {
+          "GET": {
+            "mops": 27.03468,
+            "min_mops": 26.824377,
+            "max_mops": 27.465333,
+            "peak_rss_mib": 174.94921875,
+            "ns_per_op": 176.98435460026113,
+            "p99_ms": 2.135,
+            "client_cores": 4.737546707130789,
+            "server_cores": 4.80436908207055,
+            "contended": 0
+          },
+          "SET": {
+            "mops": 24.5703375,
+            "min_mops": 23.1056565,
+            "max_mops": 25.271994,
+            "peak_rss_mib": 174.3046875,
+            "ns_per_op": 188.11098217942813,
+            "p99_ms": 2.519,
+            "client_cores": 4.148177622534932,
+            "server_cores": 4.648938832717896,
+            "contended": 1
+          }
+        }
+      }
+    }
+  },
+  {
+    "size": 128,
+    "core": "single",
+    "pipeline": 256,
+    "sides": {
+      "baseline": {
+        "loaded_rss_mib": 234.1015625,
+        "rounds": 3,
+        "metrics": {
+          "GET": {
+            "mops": 4.367570639999999,
+            "min_mops": 4.35200028,
+            "max_mops": 4.39311186,
+            "peak_rss_mib": 237.29296875,
+            "ns_per_op": 219.78052584670235,
+            "p99_ms": 5.207,
+            "client_cores": 0.5727590896514387,
+            "server_cores": 0.9602718977893254,
+            "contended": 0
+          },
+          "SET": {
+            "mops": 7.244724,
+            "min_mops": 7.188729,
+            "max_mops": 7.342773,
+            "peak_rss_mib": 237.01953125,
+            "ns_per_op": 129.66910945527943,
+            "p99_ms": 3.607,
+            "client_cores": 0.8675962766422777,
+            "server_cores": 0.93941690932929,
+            "contended": 0
+          }
+        }
+      },
+      "candidate": {
+        "loaded_rss_mib": 234.26953125,
+        "rounds": 3,
+        "metrics": {
+          "GET": {
+            "mops": 7.62364428,
+            "min_mops": 7.328997,
+            "max_mops": 7.726176720000001,
+            "peak_rss_mib": 238.5546875,
+            "ns_per_op": 123.8825900931897,
+            "p99_ms": 3.271,
+            "client_cores": 0.9426908976584986,
+            "server_cores": 0.9440489901264648,
+            "contended": 0
+          },
+          "SET": {
+            "mops": 9.6980025,
+            "min_mops": 9.5323455,
+            "max_mops": 10.06273872,
+            "peak_rss_mib": 237.6171875,
+            "ns_per_op": 94.93253455292549,
+            "p99_ms": 2.991,
+            "client_cores": 1.205283579260918,
+            "server_cores": 0.9206559574256076,
+            "contended": 0
+          }
+        }
+      }
+    }
+  },
+  {
+    "size": 128,
+    "core": "multi",
+    "pipeline": 256,
+    "sides": {
+      "baseline": {
+        "loaded_rss_mib": 234.05859375,
+        "rounds": 3,
+        "metrics": {
+          "GET": {
+            "mops": 17.561499,
+            "min_mops": 16.618287,
+            "max_mops": 17.5911555,
+            "peak_rss_mib": 237.03125,
+            "ns_per_op": 320.5790381318965,
+            "p99_ms": 2.503,
+            "client_cores": 2.9405378314098316,
+            "server_cores": 5.467394551634215,
+            "contended": 0
+          },
+          "SET": {
+            "mops": 14.00748,
+            "min_mops": 13.709448,
+            "max_mops": 14.454528,
+            "peak_rss_mib": 236.21875,
+            "ns_per_op": 363.8340858287664,
+            "p99_ms": 3.679,
+            "client_cores": 2.9574394776620596,
+            "server_cores": 5.242789312006187,
+            "contended": 3
+          }
+        }
+      },
+      "candidate": {
+        "loaded_rss_mib": 234.33203125,
+        "rounds": 3,
+        "metrics": {
+          "GET": {
+            "mops": 18.3611565,
+            "min_mops": 17.9138355,
+            "max_mops": 18.5354025,
+            "peak_rss_mib": 237.953125,
+            "ns_per_op": 279.11651097089447,
+            "p99_ms": 2.511,
+            "client_cores": 3.5382293104374614,
+            "server_cores": 5.1735368752411945,
+            "contended": 0
+          },
+          "SET": {
+            "mops": 14.761779,
+            "min_mops": 14.394604500000002,
+            "max_mops": 15.111550499999998,
+            "peak_rss_mib": 238.47265625,
+            "ns_per_op": 331.68920953036303,
+            "p99_ms": 3.487,
+            "client_cores": 3.1670520083097213,
+            "server_cores": 4.896322807771913,
+            "contended": 3
+          }
+        }
+      }
+    }
+  },
+  {
+    "size": 256,
+    "core": "single",
+    "pipeline": 256,
+    "sides": {
+      "baseline": {
+        "loaded_rss_mib": 357.19140625,
+        "rounds": 3,
+        "metrics": {
+          "GET": {
+            "mops": 2.55718464,
+            "min_mops": 2.5319906399999996,
+            "max_mops": 2.59938468,
+            "peak_rss_mib": 365.453125,
+            "ns_per_op": 376.4704243997064,
+            "p99_ms": 8.303,
+            "client_cores": 0.4402904022143486,
+            "server_cores": 0.9633831893630318,
+            "contended": 0
+          },
+          "SET": {
+            "mops": 5.230791720000001,
+            "min_mops": 3.85698564,
+            "max_mops": 5.327817,
+            "peak_rss_mib": 361.38671875,
+            "ns_per_op": 180.1006728727587,
+            "p99_ms": 5.471,
+            "client_cores": 0.791033219796037,
+            "server_cores": 0.9420691084292548,
+            "contended": 1
+          }
+        }
+      },
+      "candidate": {
+        "loaded_rss_mib": 357.20703125,
+        "rounds": 3,
+        "metrics": {
+          "GET": {
+            "mops": 4.111953000000001,
+            "min_mops": 3.9714873600000002,
+            "max_mops": 4.1363355,
+            "peak_rss_mib": 364.44140625,
+            "ns_per_op": 229.41405840411025,
+            "p99_ms": 6.207,
+            "client_cores": 0.6762404470195645,
+            "server_cores": 0.9456705414698019,
+            "contended": 0
+          },
+          "SET": {
+            "mops": 6.05824314,
+            "min_mops": 6.05448714,
+            "max_mops": 6.212397,
+            "peak_rss_mib": 361.87109375,
+            "ns_per_op": 153.58931005557304,
+            "p99_ms": 4.903,
+            "client_cores": 0.9634758006979212,
+            "server_cores": 0.931461203940594,
+            "contended": 0
+          }
+        }
+      }
+    }
+  },
+  {
+    "size": 256,
+    "core": "multi",
+    "pipeline": 256,
+    "sides": {
+      "baseline": {
+        "loaded_rss_mib": 357.2734375,
+        "rounds": 3,
+        "metrics": {
+          "GET": {
+            "mops": 10.406745,
+            "min_mops": 10.15316928,
+            "max_mops": 10.490586,
+            "peak_rss_mib": 374.59765625,
+            "ns_per_op": 535.8604411903241,
+            "p99_ms": 3.503,
+            "client_cores": 2.0478437727149417,
+            "server_cores": 5.621490042305037,
+            "contended": 0
+          },
+          "SET": {
+            "mops": 8.6068455,
+            "min_mops": 8.517704279999998,
+            "max_mops": 8.934093,
+            "peak_rss_mib": 365.19140625,
+            "ns_per_op": 620.9564443973425,
+            "p99_ms": 5.503,
+            "client_cores": 2.629119735538312,
+            "server_cores": 5.344476179157267,
+            "contended": 3
+          }
+        }
+      },
+      "candidate": {
+        "loaded_rss_mib": 357.85546875,
+        "rounds": 3,
+        "metrics": {
+          "GET": {
+            "mops": 10.79870628,
+            "min_mops": 10.550796,
+            "max_mops": 10.927083,
+            "peak_rss_mib": 372.23828125,
+            "ns_per_op": 519.0092903191454,
+            "p99_ms": 3.687,
+            "client_cores": 2.3795591959855242,
+            "server_cores": 5.553660000744925,
+            "contended": 0
+          },
+          "SET": {
+            "mops": 9.000996,
+            "min_mops": 8.70756672,
+            "max_mops": 9.97811472,
+            "peak_rss_mib": 374.12890625,
+            "ns_per_op": 580.8772237683903,
+            "p99_ms": 5.583,
+            "client_cores": 2.8938136858182815,
+            "server_cores": 5.3213335339434495,
+            "contended": 2
+          }
+        }
+      }
+    }
+  },
+  {
+    "size": 512,
+    "core": "single",
+    "pipeline": 256,
+    "sides": {
+      "baseline": {
+        "loaded_rss_mib": 604.19140625,
+        "rounds": 3,
+        "metrics": {
+          "GET": {
+            "mops": 1.67320704,
+            "min_mops": 1.6681841400000001,
+            "max_mops": 1.67601072,
+            "peak_rss_mib": 614.4140625,
+            "ns_per_op": 576.7511341241809,
+            "p99_ms": 14.391,
+            "client_cores": 0.40504369998595147,
+            "server_cores": 0.9630810969773113,
+            "contended": 0
+          },
+          "SET": {
+            "mops": 3.1693383600000002,
+            "min_mops": 3.07388814,
+            "max_mops": 3.2412288600000005,
+            "peak_rss_mib": 608.390625,
+            "ns_per_op": 296.450103334869,
+            "p99_ms": 7.031,
+            "client_cores": 0.7039073418310546,
+            "server_cores": 0.9364264665207751,
+            "contended": 0
+          }
+        }
+      },
+      "candidate": {
+        "loaded_rss_mib": 604.3203125,
+        "rounds": 3,
+        "metrics": {
+          "GET": {
+            "mops": 2.54903982,
+            "min_mops": 2.44080828,
+            "max_mops": 2.6391641399999997,
+            "peak_rss_mib": 614.35546875,
+            "ns_per_op": 371.30169942669926,
+            "p99_ms": 9.343,
+            "client_cores": 0.6211529209523523,
+            "server_cores": 0.9438887574845477,
+            "contended": 0
+          },
+          "SET": {
+            "mops": 3.09098646,
+            "min_mops": 2.13910014,
+            "max_mops": 3.12576,
+            "peak_rss_mib": 608.7890625,
+            "ns_per_op": 301.7402167792795,
+            "p99_ms": 7.935,
+            "client_cores": 0.7187645373661244,
+            "server_cores": 0.9333849999999999,
+            "contended": 1
+          }
+        }
+      }
+    }
+  },
+  {
+    "size": 512,
+    "core": "multi",
+    "pipeline": 256,
+    "sides": {
+      "baseline": {
+        "loaded_rss_mib": 604.015625,
+        "rounds": 3,
+        "metrics": {
+          "GET": {
+            "mops": 4.9106625,
+            "min_mops": 3.9790496399999995,
+            "max_mops": 5.2861053600000005,
+            "peak_rss_mib": 624.21484375,
+            "ns_per_op": 1162.831389359907,
+            "p99_ms": 6.807,
+            "client_cores": 1.3950188382124635,
+            "server_cores": 5.710272497552594,
+            "contended": 1
+          },
+          "SET": {
+            "mops": 4.03036572,
+            "min_mops": 3.8802405,
+            "max_mops": 4.14145986,
+            "peak_rss_mib": 608.80078125,
+            "ns_per_op": 1364.567974048953,
+            "p99_ms": 10.959,
+            "client_cores": 2.142551822631322,
+            "server_cores": 5.347342607422452,
+            "contended": 3
+          }
+        }
+      },
+      "candidate": {
+        "loaded_rss_mib": 604.8828125,
+        "rounds": 3,
+        "metrics": {
+          "GET": {
+            "mops": 5.35127664,
+            "min_mops": 4.94954964,
+            "max_mops": 5.373358860000001,
+            "peak_rss_mib": 633.36328125,
+            "ns_per_op": 1061.5498362700287,
+            "p99_ms": 6.223,
+            "client_cores": 1.4867482392046656,
+            "server_cores": 5.6511903345764525,
+            "contended": 0
+          },
+          "SET": {
+            "mops": 3.967935,
+            "min_mops": 3.83735964,
+            "max_mops": 4.06602336,
+            "peak_rss_mib": 631.671875,
+            "ns_per_op": 1334.4363859399064,
+            "p99_ms": 9.535,
+            "client_cores": 2.1100310043425456,
+            "server_cores": 5.337038100647855,
+            "contended": 3
+          }
+        }
+      }
+    }
+  },
+  {
+    "size": 1024,
+    "core": "single",
+    "pipeline": 256,
+    "sides": {
+      "baseline": {
+        "loaded_rss_mib": 1104.6640625,
+        "rounds": 3,
+        "metrics": {
+          "GET": {
+            "mops": 1.3390137,
+            "min_mops": 1.3223733,
+            "max_mops": 1.34477436,
+            "peak_rss_mib": 1116.8359375,
+            "ns_per_op": 718.9921411112815,
+            "p99_ms": 15.679,
+            "client_cores": 0.44368565442526775,
+            "server_cores": 0.9606824117118881,
+            "contended": 0
+          },
+          "SET": {
+            "mops": 1.7665897199999998,
+            "min_mops": 1.76161182,
+            "max_mops": 1.7785263599999999,
+            "peak_rss_mib": 1108.65625,
+            "ns_per_op": 531.1874152206178,
+            "p99_ms": 15.207,
+            "client_cores": 0.6441920934992129,
+            "server_cores": 0.9383902271221151,
+            "contended": 0
+          }
+        }
+      },
+      "candidate": {
+        "loaded_rss_mib": 1104.34375,
+        "rounds": 3,
+        "metrics": {
+          "GET": {
+            "mops": 1.6782603600000001,
+            "min_mops": 1.6483903199999999,
+            "max_mops": 1.6850458199999998,
+            "peak_rss_mib": 1116.328125,
+            "ns_per_op": 566.5472157171376,
+            "p99_ms": 13.751,
+            "client_cores": 0.5341374656408361,
+            "server_cores": 0.9478099718632429,
+            "contended": 0
+          },
+          "SET": {
+            "mops": 1.76161182,
+            "min_mops": 1.74990054,
+            "max_mops": 1.7989985400000004,
+            "peak_rss_mib": 1109.1953125,
+            "ns_per_op": 530.1934569512698,
+            "p99_ms": 15.151,
+            "client_cores": 0.6415107838245739,
+            "server_cores": 0.9391820033463947,
+            "contended": 0
+          }
+        }
+      }
+    }
+  },
+  {
+    "size": 1024,
+    "core": "multi",
+    "pipeline": 256,
+    "sides": {
+      "baseline": {
+        "loaded_rss_mib": 1104.9453125,
+        "rounds": 3,
+        "metrics": {
+          "GET": {
+            "mops": 3.069054,
+            "min_mops": 2.98768632,
+            "max_mops": 3.147531,
+            "peak_rss_mib": 1135.5234375,
+            "ns_per_op": 1828.8372838276698,
+            "p99_ms": 9.759,
+            "client_cores": 1.3876179829700548,
+            "server_cores": 5.616175852924835,
+            "contended": 2
+          },
+          "SET": {
+            "mops": 2.3211556800000004,
+            "min_mops": 2.2743105,
+            "max_mops": 2.32926468,
+            "peak_rss_mib": 1133.26953125,
+            "ns_per_op": 2300.7143835589045,
+            "p99_ms": 13.983,
+            "client_cores": 2.3862480873655874,
+            "server_cores": 5.300679475682894,
+            "contended": 3
+          }
+        }
+      },
+      "candidate": {
+        "loaded_rss_mib": 1104.9609375,
+        "rounds": 3,
+        "metrics": {
+          "GET": {
+            "mops": 3.2223213600000005,
+            "min_mops": 3.0261058199999997,
+            "max_mops": 3.37169172,
+            "peak_rss_mib": 1136.8359375,
+            "ns_per_op": 1762.1991885038715,
+            "p99_ms": 10.687,
+            "client_cores": 1.4353258042224397,
+            "server_cores": 5.6579341583435365,
+            "contended": 1
+          },
+          "SET": {
+            "mops": 2.38338504,
+            "min_mops": 2.35740246,
+            "max_mops": 2.49097896,
+            "peak_rss_mib": 1130.9140625,
+            "ns_per_op": 2210.5078050009597,
+            "p99_ms": 13.623,
+            "client_cores": 2.368407382163803,
+            "server_cores": 5.411518652361389,
+            "contended": 3
+          }
+        }
+      }
+    }
+  },
+  {
+    "size": 64,
+    "core": "two",
+    "pipeline": 256,
+    "sides": {
+      "baseline": {
+        "loaded_rss_mib": 175.671875,
+        "rounds": 3,
+        "metrics": {
+          "GET": {
+            "mops": 16.0567245,
+            "min_mops": 15.880782,
+            "max_mops": 16.1084535,
+            "peak_rss_mib": 177.77734375,
+            "ns_per_op": 116.95520297340194,
+            "p99_ms": 1.903,
+            "client_cores": 1.9169334600565162,
+            "server_cores": 1.877698924237695,
+            "contended": 0
+          },
+          "SET": {
+            "mops": 19.3351275,
+            "min_mops": 19.157334,
+            "max_mops": 19.778733,
+            "peak_rss_mib": 177.66015625,
+            "ns_per_op": 93.90332803740112,
+            "p99_ms": 2.103,
+            "client_cores": 2.3848675159425157,
+            "server_cores": 1.8149557859625498,
+            "contended": 0
+          }
+        }
+      },
+      "candidate": {
+        "loaded_rss_mib": 175.5390625,
+        "rounds": 3,
+        "metrics": {
+          "GET": {
+            "mops": 15.728418000000001,
+            "min_mops": 15.6815565,
+            "max_mops": 16.072207499999998,
+            "peak_rss_mib": 177.6484375,
+            "ns_per_op": 117.15904036428334,
+            "p99_ms": 1.951,
+            "client_cores": 1.8765450135489665,
+            "server_cores": 1.872590511629036,
+            "contended": 0
+          },
+          "SET": {
+            "mops": 18.9360495,
+            "min_mops": 18.611814,
+            "max_mops": 19.0333605,
+            "peak_rss_mib": 177.33984375,
+            "ns_per_op": 96.49485486585773,
+            "p99_ms": 2.175,
+            "client_cores": 2.3120734110400387,
+            "server_cores": 1.814922886766389,
+            "contended": 0
+          }
+        }
+      }
+    }
+  },
+  {
+    "size": 64,
+    "core": "three",
+    "pipeline": 256,
+    "sides": {
+      "baseline": {
+        "loaded_rss_mib": 171.91796875,
+        "rounds": 3,
+        "metrics": {
+          "GET": {
+            "mops": 20.108844,
+            "min_mops": 20.080578,
+            "max_mops": 21.510276,
+            "peak_rss_mib": 173.98828125,
+            "ns_per_op": 137.04918577042213,
+            "p99_ms": 1.983,
+            "client_cores": 2.8290397149036894,
+            "server_cores": 2.799897546683603,
+            "contended": 0
+          },
+          "SET": {
+            "mops": 20.982225,
+            "min_mops": 20.2308885,
+            "max_mops": 21.132984,
+            "peak_rss_mib": 174.20703125,
+            "ns_per_op": 128.70702255011133,
+            "p99_ms": 2.415,
+            "client_cores": 3.052677946238768,
+            "server_cores": 2.7005597062265103,
+            "contended": 3
+          }
+        }
+      },
+      "candidate": {
+        "loaded_rss_mib": 171.94140625,
+        "rounds": 3,
+        "metrics": {
+          "GET": {
+            "mops": 20.194119,
+            "min_mops": 19.249524,
+            "max_mops": 20.2965855,
+            "peak_rss_mib": 173.83984375,
+            "ns_per_op": 138.77776364462534,
+            "p99_ms": 1.959,
+            "client_cores": 2.809910464991678,
+            "server_cores": 2.7787889495506053,
+            "contended": 0
+          },
+          "SET": {
+            "mops": 20.7859665,
+            "min_mops": 20.487867,
+            "max_mops": 20.916393,
+            "peak_rss_mib": 173.36328125,
+            "ns_per_op": 130.44476030706807,
+            "p99_ms": 2.503,
+            "client_cores": 3.0419590594195496,
+            "server_cores": 2.7101826696209486,
+            "contended": 3
+          }
+        }
+      }
+    }
+  },
+  {
+    "size": 64,
+    "core": "shared-six",
+    "pipeline": 256,
+    "sides": {
+      "baseline": {
+        "loaded_rss_mib": 173.7109375,
+        "rounds": 3,
+        "metrics": {
+          "GET": {
+            "mops": 23.4249885,
+            "min_mops": 22.894066499999997,
+            "max_mops": 24.734424,
+            "peak_rss_mib": 175.796875,
+            "ns_per_op": 197.39053340117246,
+            "p99_ms": 2.079,
+            "client_cores": 3.668782234453719,
+            "server_cores": 4.723181113756729,
+            "contended": 1
+          },
+          "SET": {
+            "mops": 22.13397,
+            "min_mops": 20.7773265,
+            "max_mops": 22.1584935,
+            "peak_rss_mib": 176.34765625,
+            "ns_per_op": 191.7119260873461,
+            "p99_ms": 2.415,
+            "client_cores": 3.461095985386197,
+            "server_cores": 4.206992410172989,
+            "contended": 3
+          }
+        }
+      },
+      "candidate": {
+        "loaded_rss_mib": 174.22265625,
+        "rounds": 3,
+        "metrics": {
+          "GET": {
+            "mops": 22.356646499999997,
+            "min_mops": 21.335883,
+            "max_mops": 22.9308135,
+            "peak_rss_mib": 175.80859375,
+            "ns_per_op": 211.57011190256767,
+            "p99_ms": 2.327,
+            "client_cores": 3.517982331245935,
+            "server_cores": 4.686308765085863,
+            "contended": 2
+          },
+          "SET": {
+            "mops": 21.0706455,
+            "min_mops": 20.2760085,
+            "max_mops": 21.0795285,
+            "peak_rss_mib": 176.28515625,
+            "ns_per_op": 193.14658772367713,
+            "p99_ms": 2.647,
+            "client_cores": 3.472627931677645,
+            "server_cores": 4.069723279460253,
+            "contended": 3
+          }
+        }
+      }
+    }
+  },
+  {
+    "size": 1024,
+    "core": "single",
+    "pipeline": 32,
+    "sides": {
+      "baseline": {
+        "loaded_rss_mib": 1104.33203125,
+        "rounds": 3,
+        "metrics": {
+          "GET": {
+            "mops": 1.2144920399999999,
+            "min_mops": 1.2097905,
+            "max_mops": 1.25440638,
+            "peak_rss_mib": 1106.99609375,
+            "ns_per_op": 760.9246601643499,
+            "p99_ms": 3.007,
+            "client_cores": 0.6030571178423916,
+            "server_cores": 0.9251280194487509,
+            "contended": 0
+          },
+          "SET": {
+            "mops": 1.7531780400000003,
+            "min_mops": 1.7464423199999999,
+            "max_mops": 1.7556405,
+            "peak_rss_mib": 1106.58203125,
+            "ns_per_op": 514.8800095358781,
+            "p99_ms": 2.255,
+            "client_cores": 0.7800697397258036,
+            "server_cores": 0.9026763259532923,
+            "contended": 0
+          }
+        }
+      },
+      "candidate": {
+        "loaded_rss_mib": 1104.34765625,
+        "rounds": 3,
+        "metrics": {
+          "GET": {
+            "mops": 1.6628081399999999,
+            "min_mops": 1.65729672,
+            "max_mops": 1.68921072,
+            "peak_rss_mib": 1108.59765625,
+            "ns_per_op": 546.2390081406958,
+            "p99_ms": 2.375,
+            "client_cores": 0.7743917644997025,
+            "server_cores": 0.9076681944476229,
+            "contended": 0
+          },
+          "SET": {
+            "mops": 1.73733972,
+            "min_mops": 1.6689131400000001,
+            "max_mops": 1.7812839599999997,
+            "peak_rss_mib": 1107.109375,
+            "ns_per_op": 518.2965658039578,
+            "p99_ms": 2.551,
+            "client_cores": 0.7781970192661612,
+            "server_cores": 0.9036474880101376,
+            "contended": 0
+          }
+        }
+      }
+    }
+  },
+  {
+    "size": 1024,
+    "core": "multi",
+    "pipeline": 32,
+    "sides": {
+      "baseline": {
+        "loaded_rss_mib": 1104.55078125,
+        "rounds": 3,
+        "metrics": {
+          "GET": {
+            "mops": 4.73376564,
+            "min_mops": 3.8554526399999993,
+            "max_mops": 4.950534360000001,
+            "peak_rss_mib": 1107.203125,
+            "ns_per_op": 1137.7822727418181,
+            "p99_ms": 1.879,
+            "client_cores": 2.77806481056515,
+            "server_cores": 5.385994628506326,
+            "contended": 1
+          },
+          "SET": {
+            "mops": 2.92293168,
+            "min_mops": 2.6316,
+            "max_mops": 3.106821,
+            "peak_rss_mib": 1105.546875,
+            "ns_per_op": 1783.4429824561407,
+            "p99_ms": 3.407,
+            "client_cores": 2.33975265127217,
+            "server_cores": 4.910495191666589,
+            "contended": 3
+          }
+        }
+      },
+      "candidate": {
+        "loaded_rss_mib": 1105.125,
+        "rounds": 3,
+        "metrics": {
+          "GET": {
+            "mops": 4.32202272,
+            "min_mops": 3.9024705,
+            "max_mops": 4.75911,
+            "peak_rss_mib": 1108.0625,
+            "ns_per_op": 1220.5741104071167,
+            "p99_ms": 1.959,
+            "client_cores": 2.633815253023256,
+            "server_cores": 5.275349036623347,
+            "contended": 1
+          },
+          "SET": {
+            "mops": 3.1521135,
+            "min_mops": 2.5756807200000003,
+            "max_mops": 3.21546,
+            "peak_rss_mib": 1107.75,
+            "ns_per_op": 1609.5759983920138,
+            "p99_ms": 2.999,
+            "client_cores": 2.3218609323901034,
+            "server_cores": 5.041414145295777,
+            "contended": 3
+          }
+        }
+      }
+    }
+  }
+]

@@ -1,0 +1,20 @@
+{
+  "runtime_image": "sha256:3d5ef33d50f9dc4d5e321dbd196cbed3c5e644bfbdb2be32c6108fd6be4f3980",
+  "runtime_source_matches_prior_verified_release": true,
+  "workspace": {
+    "passed": 783,
+    "failed": 0,
+    "ignored": 3
+  },
+  "benchmark_policy_tests": 5,
+  "io_uring_reply_tests": 13,
+  "primary_suites": 20,
+  "measured_suites": 15,
+  "discarded_warmups": 5,
+  "primary_oom_kills": 0,
+  "verified_subscriber_deliveries": 200000000,
+  "reused_same_image_isolation_cases": 6,
+  "reused_same_image_restart_cases": 2,
+  "prior_3GiB_reference_oom_kills": 1,
+  "experimental_runtime_changes_retained": false
+}

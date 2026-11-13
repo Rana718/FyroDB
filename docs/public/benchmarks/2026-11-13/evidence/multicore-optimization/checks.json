@@ -1,0 +1,15 @@
+{
+  "workspace": {
+    "passed": 742,
+    "failed": 0,
+    "ignored": 4
+  },
+  "clippy": "passed",
+  "io_uring_compile": "passed",
+  "docker_isolation_passed": 6,
+  "save_restart_passed": 2,
+  "docker_affinity_passed": 2,
+  "standard_servers": 27,
+  "capacity_servers": 27,
+  "oom_kills": 0
+}

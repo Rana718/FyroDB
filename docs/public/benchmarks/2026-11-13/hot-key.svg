@@ -1,0 +1,171 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="1627" viewBox="0 0 1120 1627" role="img" aria-labelledby="title desc">
+<title id="title">Large hot-key regression checks · one repeated key</title><desc id="desc">Single/six workers; scalar and deep pipelines. Repeated-key paths preserve guarded payload lifetime.. Source: large-path-verified / hot-final. Three-round medians and min–max; M ops/s.</desc>
+<style>text{font-family:Inter,system-ui,sans-serif;fill:#203943}.title{font-size:25px;font-weight:650}.sub{font-size:14px;fill:#55737c}.name{font-size:21px;font-weight:600}.label{font-size:14px;fill:#55737c}.value{font-size:24px;font-weight:600}.range{font-size:12px;fill:#657d84}</style>
+<rect width="1120" height="1627" fill="#f5f8f8"/>
+<text class="title" x="28" y="38">Large hot-key regression checks · one repeated key</text>
+<text class="sub" x="28" y="66">Single/six workers; scalar and deep pipelines. Repeated-key paths preserve guarded payload lifetime.</text>
+<rect x="28.0" y="88" width="521.0" height="1502" rx="10" fill="white" stroke="#d4dfe1"/>
+<text class="name" x="46.0" y="116">Before large-payload change</text>
+<text class="label" x="46.0" y="157">multi · P1 · 8,192 B · GET</text>
+<text class="value" x="46.0" y="184">0.162M</text>
+<rect x="46.0" y="194" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="46.0" y="194" width="485.00" height="6" rx="3" fill="#287c77"/>
+<text class="range" x="46.0" y="218">Range 0.159M – 0.163M</text>
+<text class="label" x="46.0" y="245">multi · P1 · 8,192 B · SET</text>
+<text class="value" x="46.0" y="272">0.159M</text>
+<rect x="46.0" y="282" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="46.0" y="282" width="485.00" height="6" rx="3" fill="#287c77"/>
+<text class="range" x="46.0" y="306">Range 0.159M – 0.160M</text>
+<text class="label" x="46.0" y="333">multi · P1 · 10,240 B · GET</text>
+<text class="value" x="46.0" y="360">0.158M</text>
+<rect x="46.0" y="370" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="46.0" y="370" width="485.00" height="6" rx="3" fill="#287c77"/>
+<text class="range" x="46.0" y="394">Range 0.157M – 0.158M</text>
+<text class="label" x="46.0" y="421">multi · P1 · 10,240 B · SET</text>
+<text class="value" x="46.0" y="448">0.156M</text>
+<rect x="46.0" y="458" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="46.0" y="458" width="484.24" height="6" rx="3" fill="#287c77"/>
+<text class="range" x="46.0" y="482">Range 0.153M – 0.157M</text>
+<text class="label" x="46.0" y="509">single · P1 · 8,192 B · GET</text>
+<text class="value" x="46.0" y="536">0.169M</text>
+<rect x="46.0" y="546" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="46.0" y="546" width="478.84" height="6" rx="3" fill="#287c77"/>
+<text class="range" x="46.0" y="570">Range 0.168M – 0.169M</text>
+<text class="label" x="46.0" y="597">single · P1 · 8,192 B · SET</text>
+<text class="value" x="46.0" y="624">0.170M</text>
+<rect x="46.0" y="634" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="46.0" y="634" width="485.00" height="6" rx="3" fill="#287c77"/>
+<text class="range" x="46.0" y="658">Range 0.169M – 0.173M</text>
+<text class="label" x="46.0" y="685">single · P1 · 10,240 B · GET</text>
+<text class="value" x="46.0" y="712">0.163M</text>
+<rect x="46.0" y="722" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="46.0" y="722" width="485.00" height="6" rx="3" fill="#287c77"/>
+<text class="range" x="46.0" y="746">Range 0.161M – 0.166M</text>
+<text class="label" x="46.0" y="773">single · P1 · 10,240 B · SET</text>
+<text class="value" x="46.0" y="800">0.165M</text>
+<rect x="46.0" y="810" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="46.0" y="810" width="485.00" height="6" rx="3" fill="#287c77"/>
+<text class="range" x="46.0" y="834">Range 0.160M – 0.167M</text>
+<text class="label" x="46.0" y="861">multi · P256 · 8,192 B · GET</text>
+<text class="value" x="46.0" y="888">0.304M</text>
+<rect x="46.0" y="898" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="46.0" y="898" width="387.81" height="6" rx="3" fill="#287c77"/>
+<text class="range" x="46.0" y="922">Range 0.301M – 0.314M</text>
+<text class="label" x="46.0" y="949">multi · P256 · 8,192 B · SET</text>
+<text class="value" x="46.0" y="976">0.572M</text>
+<rect x="46.0" y="986" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="46.0" y="986" width="485.00" height="6" rx="3" fill="#287c77"/>
+<text class="range" x="46.0" y="1010">Range 0.562M – 0.584M</text>
+<text class="label" x="46.0" y="1037">multi · P256 · 10,240 B · GET</text>
+<text class="value" x="46.0" y="1064">0.236M</text>
+<rect x="46.0" y="1074" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="46.0" y="1074" width="377.99" height="6" rx="3" fill="#287c77"/>
+<text class="range" x="46.0" y="1098">Range 0.231M – 0.243M</text>
+<text class="label" x="46.0" y="1125">multi · P256 · 10,240 B · SET</text>
+<text class="value" x="46.0" y="1152">0.453M</text>
+<rect x="46.0" y="1162" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="46.0" y="1162" width="481.71" height="6" rx="3" fill="#287c77"/>
+<text class="range" x="46.0" y="1186">Range 0.449M – 0.466M</text>
+<text class="label" x="46.0" y="1213">single · P256 · 8,192 B · GET</text>
+<text class="value" x="46.0" y="1240">0.391M</text>
+<rect x="46.0" y="1250" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="46.0" y="1250" width="485.00" height="6" rx="3" fill="#287c77"/>
+<text class="range" x="46.0" y="1274">Range 0.386M – 0.392M</text>
+<text class="label" x="46.0" y="1301">single · P256 · 8,192 B · SET</text>
+<text class="value" x="46.0" y="1328">0.564M</text>
+<rect x="46.0" y="1338" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="46.0" y="1338" width="478.17" height="6" rx="3" fill="#287c77"/>
+<text class="range" x="46.0" y="1362">Range 0.520M – 0.582M</text>
+<text class="label" x="46.0" y="1389">single · P256 · 10,240 B · GET</text>
+<text class="value" x="46.0" y="1416">0.416M</text>
+<rect x="46.0" y="1426" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="46.0" y="1426" width="438.52" height="6" rx="3" fill="#287c77"/>
+<text class="range" x="46.0" y="1450">Range 0.410M – 0.467M</text>
+<text class="label" x="46.0" y="1477">single · P256 · 10,240 B · SET</text>
+<text class="value" x="46.0" y="1504">0.402M</text>
+<rect x="46.0" y="1514" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="46.0" y="1514" width="485.00" height="6" rx="3" fill="#287c77"/>
+<text class="range" x="46.0" y="1538">Range 0.388M – 0.403M</text>
+<rect x="571.0" y="88" width="521.0" height="1502" rx="10" fill="white" stroke="#d4dfe1"/>
+<text class="name" x="589.0" y="116">Retained FyroDB</text>
+<text class="label" x="589.0" y="157">multi · P1 · 8,192 B · GET</text>
+<text class="value" x="589.0" y="184">0.161M</text>
+<rect x="589.0" y="194" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="589.0" y="194" width="481.09" height="6" rx="3" fill="#7a8996"/>
+<text class="range" x="589.0" y="218">Range 0.161M – 0.163M</text>
+<text class="label" x="589.0" y="245">multi · P1 · 8,192 B · SET</text>
+<text class="value" x="589.0" y="272">0.157M</text>
+<rect x="589.0" y="282" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="589.0" y="282" width="478.14" height="6" rx="3" fill="#7a8996"/>
+<text class="range" x="589.0" y="306">Range 0.155M – 0.162M</text>
+<text class="label" x="589.0" y="333">multi · P1 · 10,240 B · GET</text>
+<text class="value" x="589.0" y="360">0.156M</text>
+<rect x="589.0" y="370" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="589.0" y="370" width="478.59" height="6" rx="3" fill="#7a8996"/>
+<text class="range" x="589.0" y="394">Range 0.155M – 0.157M</text>
+<text class="label" x="589.0" y="421">multi · P1 · 10,240 B · SET</text>
+<text class="value" x="589.0" y="448">0.157M</text>
+<rect x="589.0" y="458" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="589.0" y="458" width="485.00" height="6" rx="3" fill="#7a8996"/>
+<text class="range" x="589.0" y="482">Range 0.154M – 0.158M</text>
+<text class="label" x="589.0" y="509">single · P1 · 8,192 B · GET</text>
+<text class="value" x="589.0" y="536">0.172M</text>
+<rect x="589.0" y="546" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="589.0" y="546" width="485.00" height="6" rx="3" fill="#7a8996"/>
+<text class="range" x="589.0" y="570">Range 0.170M – 0.172M</text>
+<text class="label" x="589.0" y="597">single · P1 · 8,192 B · SET</text>
+<text class="value" x="589.0" y="624">0.170M</text>
+<rect x="589.0" y="634" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="589.0" y="634" width="482.94" height="6" rx="3" fill="#7a8996"/>
+<text class="range" x="589.0" y="658">Range 0.169M – 0.171M</text>
+<text class="label" x="589.0" y="685">single · P1 · 10,240 B · GET</text>
+<text class="value" x="589.0" y="712">0.162M</text>
+<rect x="589.0" y="722" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="589.0" y="722" width="481.47" height="6" rx="3" fill="#7a8996"/>
+<text class="range" x="589.0" y="746">Range 0.159M – 0.163M</text>
+<text class="label" x="589.0" y="773">single · P1 · 10,240 B · SET</text>
+<text class="value" x="589.0" y="800">0.162M</text>
+<rect x="589.0" y="810" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="589.0" y="810" width="477.13" height="6" rx="3" fill="#7a8996"/>
+<text class="range" x="589.0" y="834">Range 0.158M – 0.167M</text>
+<text class="label" x="589.0" y="861">multi · P256 · 8,192 B · GET</text>
+<text class="value" x="589.0" y="888">0.380M</text>
+<rect x="589.0" y="898" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="589.0" y="898" width="485.00" height="6" rx="3" fill="#7a8996"/>
+<text class="range" x="589.0" y="922">Range 0.367M – 0.381M</text>
+<text class="label" x="589.0" y="949">multi · P256 · 8,192 B · SET</text>
+<text class="value" x="589.0" y="976">0.544M</text>
+<rect x="589.0" y="986" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="589.0" y="986" width="461.28" height="6" rx="3" fill="#7a8996"/>
+<text class="range" x="589.0" y="1010">Range 0.521M – 0.556M</text>
+<text class="label" x="589.0" y="1037">multi · P256 · 10,240 B · GET</text>
+<text class="value" x="589.0" y="1064">0.303M</text>
+<rect x="589.0" y="1074" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="589.0" y="1074" width="485.00" height="6" rx="3" fill="#7a8996"/>
+<text class="range" x="589.0" y="1098">Range 0.283M – 0.310M</text>
+<text class="label" x="589.0" y="1125">multi · P256 · 10,240 B · SET</text>
+<text class="value" x="589.0" y="1152">0.456M</text>
+<rect x="589.0" y="1162" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="589.0" y="1162" width="485.00" height="6" rx="3" fill="#7a8996"/>
+<text class="range" x="589.0" y="1186">Range 0.455M – 0.466M</text>
+<text class="label" x="589.0" y="1213">single · P256 · 8,192 B · GET</text>
+<text class="value" x="589.0" y="1240">0.385M</text>
+<rect x="589.0" y="1250" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="589.0" y="1250" width="478.40" height="6" rx="3" fill="#7a8996"/>
+<text class="range" x="589.0" y="1274">Range 0.337M – 0.402M</text>
+<text class="label" x="589.0" y="1301">single · P256 · 8,192 B · SET</text>
+<text class="value" x="589.0" y="1328">0.572M</text>
+<rect x="589.0" y="1338" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="589.0" y="1338" width="485.00" height="6" rx="3" fill="#7a8996"/>
+<text class="range" x="589.0" y="1362">Range 0.496M – 0.591M</text>
+<text class="label" x="589.0" y="1389">single · P256 · 10,240 B · GET</text>
+<text class="value" x="589.0" y="1416">0.460M</text>
+<rect x="589.0" y="1426" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="589.0" y="1426" width="485.00" height="6" rx="3" fill="#7a8996"/>
+<text class="range" x="589.0" y="1450">Range 0.315M – 0.466M</text>
+<text class="label" x="589.0" y="1477">single · P256 · 10,240 B · SET</text>
+<text class="value" x="589.0" y="1504">0.399M</text>
+<rect x="589.0" y="1514" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="589.0" y="1514" width="480.54" height="6" rx="3" fill="#7a8996"/>
+<text class="range" x="589.0" y="1538">Range 0.358M – 0.406M</text>
+<text class="range" x="28" y="1613">Source: large-path-verified / hot-final. Three-round medians and min–max; M ops/s.</text></svg>

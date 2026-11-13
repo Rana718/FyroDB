@@ -12,22 +12,17 @@ import {
 } from "react-icons/fi";
 import { HiOutlineChartBar as Gauge } from "react-icons/hi2";
 
-const benchmarks = [
-   { name: "FyroDB", value: 39.62, color: "bg-primary", detail: "39.62M" },
-   {
-      name: "Redis Cluster",
-      value: 7.56,
-      color: "bg-accent-red",
-      detail: "7.56M",
-   },
-   {
-      name: "DragonflyDB",
-      value: 4.16,
-      color: "bg-accent-blue",
-      detail: "4.16M",
-   },
-   { name: "DiceDB (1 node)", value: 1.62, color: "bg-accent-yellow", detail: "1.62M" },
-];
+import { normalBenchmark } from "@/lib/benchmark-summary";
+
+const current = normalBenchmark.configurations[3];
+const benchmarks = normalBenchmark.configurations
+   .filter((c) => [1, 3, 6].includes(c.workers))
+   .map((c) => ({
+      name: c.workers + " worker" + (c.workers === 1 ? "" : "s"),
+      value: c.set_mops,
+      color: c.workers === 6 ? "bg-primary" : "bg-muted",
+      detail: c.set_mops.toFixed(2) + "M",
+   }));
 
 function BenchmarkRows() {
    return (
@@ -39,7 +34,7 @@ function BenchmarkRows() {
             >
                <span
                   className={
-                     item.name === "FyroDB"
+                     item.name === "6 workers"
                         ? "font-semibold text-fg"
                         : "text-muted"
                   }
@@ -49,7 +44,7 @@ function BenchmarkRows() {
                <div className="h-3 overflow-hidden rounded-full bg-code-bg">
                   <div
                      className={`h-full rounded-full ${item.color}`}
-                     style={{ width: `${(item.value / 39.62) * 100}%` }}
+                     style={{ width: `${(item.value / current.set_mops) * 100}%` }}
                   />
                </div>
                <span className="text-right font-mono text-xs text-muted">
@@ -92,8 +87,8 @@ export default function HomePage() {
                   <span className="text-primary">in-memory data.</span>
                </h1>
                <p className="mt-6 max-w-xl text-lg leading-8 text-muted">
-                  FyroDB is a Redis-compatible, lock-free key-value store built
-                  in Rust. More throughput, less machinery, and a familiar
+                  FyroDB is a Redis-compatible, concurrent key-value store built
+                  in Rust, with guarded values, compact storage, and a familiar
                   protocol.
                </p>
                <div className="mt-9 flex flex-wrap items-center gap-3">
@@ -125,17 +120,17 @@ export default function HomePage() {
                <div className="mb-7 flex items-center justify-between border-b border-border pb-4">
                   <div>
                      <p className="text-xs font-medium uppercase tracking-[.18em] text-muted">
-                        Live benchmark
+                        Measured normal TCP suite
                      </p>
                      <p className="mt-1 text-sm text-fg">
-                        SET throughput · pipeline 100
+                        SET · pipeline 100 · median of 3
                      </p>
                   </div>
                   <Gauge size={20} className="text-primary" />
                </div>
                <div className="mb-8 flex items-end gap-3">
                   <span className="text-6xl font-semibold tracking-tight text-fg">
-                     39.62
+                     {current.set_mops.toFixed(2)}
                   </span>
                   <span className="mb-2 font-mono text-lg text-primary">
                      M ops/s
@@ -143,7 +138,7 @@ export default function HomePage() {
                </div>
                <BenchmarkRows />
                <div className="mt-7 flex items-center justify-between border-t border-border pt-4 text-xs text-muted">
-                  <span>100 clients · 1M operations</span>
+                  <span>100 clients · 10M operations · dedicated clients</span>
                   <Link
                      href="/docs/benchmarks"
                      className="text-primary hover:underline"
@@ -157,19 +152,19 @@ export default function HomePage() {
          <section className="border-y border-border bg-card/30">
             <div className="mx-auto grid max-w-7xl grid-cols-2 divide-x divide-border lg:grid-cols-4">
                <div className="p-6 lg:p-8">
-                  <p className="text-3xl font-semibold text-fg">53.38M</p>
-                  <p className="mt-1 text-xs text-muted">GET ops/sec</p>
+                  <p className="text-3xl font-semibold text-fg">{current.get_mops.toFixed(2)}M</p>
+                  <p className="mt-1 text-xs text-muted">GET ops/sec · 6 workers</p>
                </div>
                <div className="p-6 lg:p-8">
-                  <p className="text-3xl font-semibold text-fg">876.28 MB</p>
+                  <p className="text-3xl font-semibold text-fg">{current.rss_mib.toFixed(1)} MiB</p>
                   <p className="mt-1 text-xs text-muted">peak RSS (full suite)</p>
                </div>
                <div className="p-6 lg:p-8">
-                  <p className="text-3xl font-semibold text-fg">108.56M</p>
+                  <p className="text-3xl font-semibold text-fg">{current.incr_mops.toFixed(2)}M</p>
                   <p className="mt-1 text-xs text-muted">INCR ops/sec</p>
                </div>
                <div className="p-6 lg:p-8">
-                  <p className="text-3xl font-semibold text-fg">66.93M</p>
+                  <p className="text-3xl font-semibold text-fg">{current.list_mops.toFixed(2)}M</p>
                   <p className="mt-1 text-xs text-muted">LPUSH/RPOP ops/sec</p>
                </div>
             </div>
@@ -186,13 +181,13 @@ export default function HomePage() {
             <div className="mt-14 grid gap-x-10 gap-y-12 sm:grid-cols-2 lg:grid-cols-3">
                <Feature
                   icon={Lock}
-                  title="Lock-free by design"
-                  text="Concurrent reads and writes without a mutex on the hot path, using atomic snapshots and epoch reclamation."
+                  title="Concurrent with data guards"
+                  text="Entry guards, map admission and epoch reclamation protect values during concurrent reads and writes."
                />
                <Feature
                   icon={Zap}
-                  title="Zero-copy reads"
-                  text="Values write directly to the network buffer, avoiding clones and allocations on GET."
+                  title="Direct, guarded replies"
+                  text="Serialize protected values directly, with bounded scatter/gather for eligible large reply batches."
                />
                <Feature
                   icon={Cpu}
@@ -207,7 +202,7 @@ export default function HomePage() {
                <Feature
                   icon={Radio}
                   title="Fast Pub/Sub"
-                  text="Lock-free fan-out delivers 113.98M messages per second in the published benchmark."
+                  text="Shared encoded frames and grouped worker delivery; the normal suite verifies every subscriber delivery."
                />
                <Feature
                   icon={ShieldCheck}

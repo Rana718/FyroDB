@@ -1,0 +1,42 @@
+{
+  "objective": "Latest user: investigate scaling drop / end-to-end lock-free claim and fix genuine multicore contention while retaining safety and small/large performance.",
+  "status": "trial rejected for performance",
+  "protected_container": "fyro-a4085354-a4a6-4087-846a-d24e2e5cd3ca port10000; never stop/redeploy/pause it or user jobs.",
+  "permissions": "No subagents, no automatic commit. Commentsmax2lines. Preserve earlier5uncommittedGET/SETsource/tests and pre-existing scripts/__pycache__.",
+  "baseline_image": "sha256:3d5ef33d50f9dc4d5e321dbd196cbed3c5e644bfbdb2be32c6108fd6be4f3980",
+  "baseline_tag": "fyrodb:scaling-before",
+  "candidate_image": "sha256:1a6fdfcddead989e329076ff57fafdc7039009ed86d1cec6e7d1ab033ba044c8",
+  "candidate_tag": "fyrodb:scaling-counters-candidate",
+  "source": "Frozen candidate-source.json includes allsrc/cratesRust,includingnewcrateTestfile; productioncodeunchanged afterimagebuild.",
+  "findings": [
+    "EarlierGET50.74M\u219249.38M changedCPUsharing:6worker3physicalserver+3physicalclient vs12workersall6physicalclientshared. Only2.7%dropwithinranges; cannotclaimpurecorescalability regression.",
+    "ActualAccess uses sharedatomicreader/writercounters, entrylocks, perworkerisolationRWlocks; end-to-endnotlock-free. Keepdata-safety.",
+    "StandaloneactualAccess diagnostic: baseline1threadread104Mguard/s\u21926threads20M; candidate6threads322M. TheseareguarddiagnosticsNOTserverRPS."
+  ],
+  "changes": [
+    "crates/customhash/src/access.rs: boundedperthreadcounterlanes, separateCachePaddedread/writeatomics, immutablemapIDseparatecacheline; countersstillSeqCstregister+scanalloppositelanes, Releaseunregister; collisionsaggregate, no weakenedordering.",
+    "NewconstructorCustomMap::with_capacity_and_concurrency(hint), defaults1lane; Store::with_config_workers passesworkers. Hintclamped16,pow2. Singlelanehasnoextraheap. Up to~4KiBpermap fixedcounterstorage; no perkey/conn/commandalloc.",
+    "SkipOTHER_WRITESRefCell scan whenWRITINGcurrentid0; nested/outoforder semantics retained.",
+    "New4nativepublicAPIconcurrency tests16/17actors for1/2/8/16lanes, collisions, drainlastreader/writer, nestedmaps/panic; existing19mutationroutes nowtested1&8lanes.14targetedtests pass."
+  ],
+  "active_runner": "Coordinator intentionally ended at paired-normal review gate; no timing active. Finalworkmovedtemp/scaling-balanced-20261113.",
+  "stages": [
+    "paired-normal24suites=3layouts(single,multi6logical3physical,all12shared)\u00d72images\u00d7(1warm+3timed); unmodifiedGo-mbench20phases; GETCPUphaseestimates recorded. Reviewmedians/rangesbeforegate.",
+    "Afterreviewtouch continue-after-normal; automaticallycandidate-control16GoKVcases(1/2/3/6workerswithfixedclientbudget),stock-guard36officialredis-benchmarkcases(64/1024/10240B,single/multi,bothimages,3rounds).",
+    "Thenreleasevalidation6isolation15s,3queuedreply;state2restart;affinity2;workspace,clippyallio-Dwarnings,io-uring13large tests; FINISHED."
+  ],
+  "completed": [
+    "baselineAccesssource + baseline.patch frozen. baseline-epoch.csv30samples;candidate-epoch.csv30samples diag.",
+    "Controlledbaseline16GoKVcases completed; client3physical/6logicalfixed, worker1,2,3,6. HardwarecounterPMUuseronlyworks ownUID1000; allrecords pass.",
+    "candidateDockerpinnedcompiler1.99.1/musl/v3builtlogcandidate-build.log; localpreflightnew4concurrency +10read_safety pass;mutation19\u00d72expandedpass."
+  ],
+  "next": [
+    "Revised asymmetric reader2 / writer<=16 counters retains safety; before-newimage compare continues in scaling-balanced-20261113. Preserveallv1numbers."
+  ],
+  "prior_results": "PreviouscompletedtasknormalGo report temp/normal-benchmark-current-20261113/report.html atbaseline3d5: singleGET21.70MSET17.32Mpeak780MiB;multi3phys6workerGET50.74MSET39.87Mpeak1156MiB;all6phys12workersclientssharedGET49.38MSET42.61M mixed55.18Mpeak1089MiB. Fullindependentpreviousreport temp/large-path-verified/report.html; bothhistoryimmutable.",
+  "sources": [
+    "https://doc.rust-lang.org/nomicon/atomics.html",
+    "https://docs.rs/crossbeam-utils/latest/crossbeam_utils/struct.CachePadded.html",
+    "https://docs.kernel.org/networking/scaling.html"
+  ]
+}

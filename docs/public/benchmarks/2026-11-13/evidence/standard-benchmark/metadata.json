@@ -1,0 +1,54 @@
+{
+  "images": {
+    "fyrodb": "sha256:5823ed9fc45ca10d1b42d961ac2dc9c6839535f07c019751fc8f06cb7aaff106",
+    "dragonfly": "sha256:94891bb22ce2fb0f7a5a3ff1bb3b2fbbc5830e2523293e47723d87fa3e5b1184",
+    "redis": "sha256:eb1aa641bc5380ed14442398e45a5a51aeaaac919fab811e4f134eb77c71dd2d"
+  },
+  "tool": "redis-benchmark 8.8.3",
+  "server_cpus": {
+    "single": [
+      0
+    ],
+    "multi": [
+      0,
+      1,
+      2,
+      3,
+      6,
+      7,
+      8,
+      9
+    ]
+  },
+  "client_cpus": [
+    4,
+    5,
+    10,
+    11
+  ],
+  "server_memory_bytes": 3221225472,
+  "swap": 0,
+  "client_memory_bytes": 1073741824,
+  "keyspace": 1000000,
+  "value_bytes": 64,
+  "connections": 64,
+  "client_threads": 4,
+  "pipelines": [
+    1,
+    16,
+    64,
+    256
+  ],
+  "repeats": 3,
+  "requests": {
+    "P1": 1000000,
+    "pipelined": 5000000
+  },
+  "notes": [
+    "Official unmodified redis-benchmark and redis-cli only; Python orchestrates Docker and records output.",
+    "Warm SET and100%hit GET; stock SET prefill followed byDBSIZE verification.",
+    "No workload-specific squash/cache changes; persistence off and eviction disabled for all.",
+    "Redis multicore uses8I/Othreads; its command executor remains single-threaded.",
+    "Servers run separately; backend order rotates each measured round."
+  ]
+}

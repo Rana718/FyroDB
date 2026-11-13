@@ -1,0 +1,52 @@
+{
+  "images": {
+    "baseline": "sha256:21cd700d0dd64beb764bf77b4ccb1dae1332770bd699b8656fee772c0ea1caca",
+    "candidate": "sha256:3d5ef33d50f9dc4d5e321dbd196cbed3c5e644bfbdb2be32c6108fd6be4f3980",
+    "dragonfly": "sha256:94891bb22ce2fb0f7a5a3ff1bb3b2fbbc5830e2523293e47723d87fa3e5b1184",
+    "client": "sha256:eb1aa641bc5380ed14442398e45a5a51aeaaac919fab811e4f134eb77c71dd2d"
+  },
+  "layouts": {
+    "single": [
+      0
+    ],
+    "multi": [
+      0,
+      1,
+      2,
+      6,
+      7,
+      8
+    ],
+    "two": [
+      0,
+      1
+    ],
+    "three": [
+      0,
+      1,
+      2
+    ]
+  },
+  "client_cpus": [
+    3,
+    4,
+    5,
+    9,
+    10,
+    11
+  ],
+  "client_processes": 6,
+  "client_threads_per_process": 0,
+  "connections_total": 64,
+  "keyspace": 1000000,
+  "pipeline": 256,
+  "notes": [
+    "Separate capacity diagnostic; never mixed with one-process stock-client results.",
+    "Every client is unmodified official redis-benchmark 8.8.3.",
+    "All six clients are started before a common file gate, checked at10ms intervals.",
+    "Aggregate throughput is total completed requests divided by the slowest stock-reported client duration; per-client CSV rates retained.",
+    "Same client processes, CPU budget, keyspace and memory caps for both servers.",
+    "Every timed attempt retained, including CPU contention; no score-based exclusions.",
+    "Wait up to2seconds for a quiet window before each timed workload; release and flag if still busy."
+  ]
+}

@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="395" viewBox="0 0 1120 395" role="img" aria-labelledby="title desc">
+<title id="title">Earlier independent memtier cross-check</title><desc id="desc">64 B · 4 threads × 16 clients · P64 · 5 seconds · one attempt per command/build. Source: large-payload-optimization / memtier-probe. Historical smoke cross-check, not a current speedup.</desc>
+<style>text{font-family:Inter,system-ui,sans-serif;fill:#203943}.title{font-size:25px;font-weight:650}.sub{font-size:14px;fill:#55737c}.name{font-size:21px;font-weight:600}.label{font-size:14px;fill:#55737c}.value{font-size:24px;font-weight:600}.range{font-size:12px;fill:#657d84}</style>
+<rect width="1120" height="395" fill="#f5f8f8"/>
+<text class="title" x="28" y="38">Earlier independent memtier cross-check</text>
+<text class="sub" x="28" y="66">64 B · 4 threads × 16 clients · P64 · 5 seconds · one attempt per command/build</text>
+<rect x="28.0" y="88" width="521.0" height="270" rx="10" fill="white" stroke="#d4dfe1"/>
+<text class="name" x="46.0" y="116">Earlier baseline build</text>
+<text class="label" x="46.0" y="157">GET</text>
+<text class="value" x="46.0" y="184">3.337M</text>
+<rect x="46.0" y="194" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="46.0" y="194" width="483.60" height="6" rx="3" fill="#287c77"/>
+<text class="range" x="46.0" y="218">Median only; raw attempts archived</text>
+<text class="label" x="46.0" y="245">SET</text>
+<text class="value" x="46.0" y="272">2.801M</text>
+<rect x="46.0" y="282" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="46.0" y="282" width="485.00" height="6" rx="3" fill="#287c77"/>
+<text class="range" x="46.0" y="306">Median only; raw attempts archived</text>
+<rect x="571.0" y="88" width="521.0" height="270" rx="10" fill="white" stroke="#d4dfe1"/>
+<text class="name" x="589.0" y="116">Earlier candidate build</text>
+<text class="label" x="589.0" y="157">GET</text>
+<text class="value" x="589.0" y="184">3.347M</text>
+<rect x="589.0" y="194" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="589.0" y="194" width="485.00" height="6" rx="3" fill="#7a8996"/>
+<text class="range" x="589.0" y="218">Median only; raw attempts archived</text>
+<text class="label" x="589.0" y="245">SET</text>
+<text class="value" x="589.0" y="272">2.760M</text>
+<rect x="589.0" y="282" width="485.0" height="6" rx="3" fill="#e9efef"/>
+<rect x="589.0" y="282" width="478.05" height="6" rx="3" fill="#7a8996"/>
+<text class="range" x="589.0" y="306">Median only; raw attempts archived</text>
+<text class="range" x="28" y="381">Source: large-payload-optimization / memtier-probe. Historical smoke cross-check, not a current speedup.</text></svg>

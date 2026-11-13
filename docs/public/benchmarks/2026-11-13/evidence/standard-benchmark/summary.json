@@ -1,0 +1,534 @@
+{
+  "figures": [
+    {
+      "core": "single",
+      "database": "fyrodb",
+      "command": "SET",
+      "pipeline": 1,
+      "rps": 249937.52,
+      "p99": 0.335,
+      "runs": 3,
+      "cv": 0.01443154241497645
+    },
+    {
+      "core": "single",
+      "database": "fyrodb",
+      "command": "SET",
+      "pipeline": 16,
+      "rps": 2500000.0,
+      "p99": 0.519,
+      "runs": 3,
+      "cv": 0.02885499923244441
+    },
+    {
+      "core": "single",
+      "database": "fyrodb",
+      "command": "SET",
+      "pipeline": 64,
+      "rps": 3996802.5,
+      "p99": 1.255,
+      "runs": 3,
+      "cv": 0.04612530162467675
+    },
+    {
+      "core": "single",
+      "database": "fyrodb",
+      "command": "SET",
+      "pipeline": 256,
+      "rps": 3993763.75,
+      "p99": 4.903,
+      "runs": 3,
+      "cv": 13.323506390294856
+    },
+    {
+      "core": "single",
+      "database": "fyrodb",
+      "command": "GET",
+      "pipeline": 1,
+      "rps": 266666.66,
+      "p99": 0.327,
+      "runs": 3,
+      "cv": 0.015388473819983754
+    },
+    {
+      "core": "single",
+      "database": "fyrodb",
+      "command": "GET",
+      "pipeline": 16,
+      "rps": 2221235.0,
+      "p99": 0.559,
+      "runs": 3,
+      "cv": 0.02565710606926185
+    },
+    {
+      "core": "single",
+      "database": "fyrodb",
+      "command": "GET",
+      "pipeline": 64,
+      "rps": 3996802.5,
+      "p99": 1.183,
+      "runs": 3,
+      "cv": 0.0
+    },
+    {
+      "core": "single",
+      "database": "fyrodb",
+      "command": "GET",
+      "pipeline": 256,
+      "rps": 4985236.0,
+      "p99": 4.159,
+      "runs": 3,
+      "cv": 21.73147763665787
+    },
+    {
+      "core": "single",
+      "database": "dragonfly",
+      "command": "SET",
+      "pipeline": 1,
+      "rps": 181785.12,
+      "p99": 0.487,
+      "runs": 3,
+      "cv": 0.010490976625512108
+    },
+    {
+      "core": "single",
+      "database": "dragonfly",
+      "command": "SET",
+      "pipeline": 16,
+      "rps": 643915.0,
+      "p99": 2.135,
+      "runs": 3,
+      "cv": 1.8275362763507437
+    },
+    {
+      "core": "single",
+      "database": "dragonfly",
+      "command": "SET",
+      "pipeline": 64,
+      "rps": 712453.69,
+      "p99": 8.551,
+      "runs": 3,
+      "cv": 2.00144649178824
+    },
+    {
+      "core": "single",
+      "database": "dragonfly",
+      "command": "SET",
+      "pipeline": 256,
+      "rps": 688163.0,
+      "p99": 29.583,
+      "runs": 3,
+      "cv": 3.4476950062082437
+    },
+    {
+      "core": "single",
+      "database": "dragonfly",
+      "command": "GET",
+      "pipeline": 1,
+      "rps": 190439.92,
+      "p99": 0.471,
+      "runs": 3,
+      "cv": 0.010995155295815295
+    },
+    {
+      "core": "single",
+      "database": "dragonfly",
+      "command": "GET",
+      "pipeline": 16,
+      "rps": 688610.38,
+      "p99": 2.391,
+      "runs": 3,
+      "cv": 2.0385776200107637
+    },
+    {
+      "core": "single",
+      "database": "dragonfly",
+      "command": "GET",
+      "pipeline": 64,
+      "rps": 798722.0,
+      "p99": 6.735,
+      "runs": 3,
+      "cv": 5.926532503370255
+    },
+    {
+      "core": "single",
+      "database": "dragonfly",
+      "command": "GET",
+      "pipeline": 256,
+      "rps": 767253.62,
+      "p99": 26.751,
+      "runs": 3,
+      "cv": 5.697294794942239
+    },
+    {
+      "core": "single",
+      "database": "redis",
+      "command": "SET",
+      "pipeline": 1,
+      "rps": 235238.77,
+      "p99": 0.487,
+      "runs": 3,
+      "cv": 11.787178712072333
+    },
+    {
+      "core": "single",
+      "database": "redis",
+      "command": "SET",
+      "pipeline": 16,
+      "rps": 1249063.25,
+      "p99": 1.279,
+      "runs": 3,
+      "cv": 0.014422671034876697
+    },
+    {
+      "core": "single",
+      "database": "redis",
+      "command": "SET",
+      "pipeline": 64,
+      "rps": 1535626.5,
+      "p99": 4.471,
+      "runs": 3,
+      "cv": 0.030708311833808954
+    },
+    {
+      "core": "single",
+      "database": "redis",
+      "command": "SET",
+      "pipeline": 256,
+      "rps": 1662254.75,
+      "p99": 8.335,
+      "runs": 3,
+      "cv": 4.546911169485357
+    },
+    {
+      "core": "single",
+      "database": "redis",
+      "command": "GET",
+      "pipeline": 1,
+      "rps": 249937.52,
+      "p99": 0.471,
+      "runs": 3,
+      "cv": 0.01443154241497645
+    },
+    {
+      "core": "single",
+      "database": "redis",
+      "command": "GET",
+      "pipeline": 16,
+      "rps": 1249375.38,
+      "p99": 1.303,
+      "runs": 3,
+      "cv": 3.7781640135533334
+    },
+    {
+      "core": "single",
+      "database": "redis",
+      "command": "GET",
+      "pipeline": 64,
+      "rps": 1663340.0,
+      "p99": 3.255,
+      "runs": 3,
+      "cv": 4.549410260592331
+    },
+    {
+      "core": "single",
+      "database": "redis",
+      "command": "GET",
+      "pipeline": 256,
+      "rps": 1666131.88,
+      "p99": 9.991,
+      "runs": 3,
+      "cv": 5.034307100910534
+    },
+    {
+      "core": "multi",
+      "database": "fyrodb",
+      "command": "SET",
+      "pipeline": 1,
+      "rps": 444444.44,
+      "p99": 0.167,
+      "runs": 3,
+      "cv": 0.0
+    },
+    {
+      "core": "multi",
+      "database": "fyrodb",
+      "command": "SET",
+      "pipeline": 16,
+      "rps": 4000000.0,
+      "p99": 0.223,
+      "runs": 3,
+      "cv": 13.262012702458145
+    },
+    {
+      "core": "multi",
+      "database": "fyrodb",
+      "command": "SET",
+      "pipeline": 64,
+      "rps": 6657789.5,
+      "p99": 0.663,
+      "runs": 3,
+      "cv": 0.0
+    },
+    {
+      "core": "multi",
+      "database": "fyrodb",
+      "command": "SET",
+      "pipeline": 256,
+      "rps": 6640361.0,
+      "p99": 1.703,
+      "runs": 3,
+      "cv": 0.0
+    },
+    {
+      "core": "multi",
+      "database": "fyrodb",
+      "command": "GET",
+      "pipeline": 1,
+      "rps": 444247.03,
+      "p99": 0.167,
+      "runs": 3,
+      "cv": 0.02565190741524291
+    },
+    {
+      "core": "multi",
+      "database": "fyrodb",
+      "command": "GET",
+      "pipeline": 16,
+      "rps": 5000000.0,
+      "p99": 0.223,
+      "runs": 3,
+      "cv": 12.414185597218214
+    },
+    {
+      "core": "multi",
+      "database": "fyrodb",
+      "command": "GET",
+      "pipeline": 64,
+      "rps": 6657789.5,
+      "p99": 0.711,
+      "runs": 3,
+      "cv": 0.0
+    },
+    {
+      "core": "multi",
+      "database": "fyrodb",
+      "command": "GET",
+      "pipeline": 256,
+      "rps": 6640361.0,
+      "p99": 1.711,
+      "runs": 3,
+      "cv": 0.0
+    },
+    {
+      "core": "multi",
+      "database": "dragonfly",
+      "command": "SET",
+      "pipeline": 1,
+      "rps": 399840.06,
+      "p99": 0.703,
+      "runs": 3,
+      "cv": 0.06919731640149855
+    },
+    {
+      "core": "multi",
+      "database": "dragonfly",
+      "command": "SET",
+      "pipeline": 16,
+      "rps": 2497502.5,
+      "p99": 0.927,
+      "runs": 3,
+      "cv": 6.658876893832639
+    },
+    {
+      "core": "multi",
+      "database": "dragonfly",
+      "command": "SET",
+      "pipeline": 64,
+      "rps": 3328894.75,
+      "p99": 1.895,
+      "runs": 3,
+      "cv": 8.636965905282459
+    },
+    {
+      "core": "multi",
+      "database": "dragonfly",
+      "command": "SET",
+      "pipeline": 256,
+      "rps": 3322386.75,
+      "p99": 6.535,
+      "runs": 3,
+      "cv": 8.670923129243846
+    },
+    {
+      "core": "multi",
+      "database": "dragonfly",
+      "command": "GET",
+      "pipeline": 1,
+      "rps": 399680.25,
+      "p99": 0.895,
+      "runs": 3,
+      "cv": 5.3995105852512895
+    },
+    {
+      "core": "multi",
+      "database": "dragonfly",
+      "command": "GET",
+      "pipeline": 16,
+      "rps": 2498750.75,
+      "p99": 0.975,
+      "runs": 3,
+      "cv": 7.868660327752878
+    },
+    {
+      "core": "multi",
+      "database": "dragonfly",
+      "command": "GET",
+      "pipeline": 64,
+      "rps": 3996802.5,
+      "p99": 1.535,
+      "runs": 3,
+      "cv": 10.181348030010689
+    },
+    {
+      "core": "multi",
+      "database": "dragonfly",
+      "command": "GET",
+      "pipeline": 256,
+      "rps": 3326807.75,
+      "p99": 6.015,
+      "runs": 3,
+      "cv": 10.80101517772622
+    },
+    {
+      "core": "multi",
+      "database": "redis",
+      "command": "SET",
+      "pipeline": 1,
+      "rps": 400000.0,
+      "p99": 0.231,
+      "runs": 3,
+      "cv": 6.144856476769028
+    },
+    {
+      "core": "multi",
+      "database": "redis",
+      "command": "SET",
+      "pipeline": 16,
+      "rps": 1817521.0,
+      "p99": 0.751,
+      "runs": 3,
+      "cv": 5.60888276102221
+    },
+    {
+      "core": "multi",
+      "database": "redis",
+      "command": "SET",
+      "pipeline": 64,
+      "rps": 1665556.25,
+      "p99": 3.471,
+      "runs": 3,
+      "cv": 0.0
+    },
+    {
+      "core": "multi",
+      "database": "redis",
+      "command": "SET",
+      "pipeline": 256,
+      "rps": 907311.19,
+      "p99": 11.335,
+      "runs": 3,
+      "cv": 0.020594870838782798
+    },
+    {
+      "core": "multi",
+      "database": "redis",
+      "command": "GET",
+      "pipeline": 1,
+      "rps": 400000.0,
+      "p99": 0.207,
+      "runs": 3,
+      "cv": 10.060433976394254
+    },
+    {
+      "core": "multi",
+      "database": "redis",
+      "command": "GET",
+      "pipeline": 16,
+      "rps": 2221235.0,
+      "p99": 0.607,
+      "runs": 3,
+      "cv": 0.0
+    },
+    {
+      "core": "multi",
+      "database": "redis",
+      "command": "GET",
+      "pipeline": 64,
+      "rps": 1998401.25,
+      "p99": 2.767,
+      "runs": 3,
+      "cv": 0.0
+    },
+    {
+      "core": "multi",
+      "database": "redis",
+      "command": "GET",
+      "pipeline": 256,
+      "rps": 1996084.5,
+      "p99": 11.407,
+      "runs": 3,
+      "cv": 0.08304852168000088
+    }
+  ],
+  "memory": [
+    {
+      "core": "single",
+      "database": "fyrodb",
+      "idle_rss_kib": 48.1640625,
+      "loaded_rss_kib": 188.31640625,
+      "final_rss_kib": 188.875,
+      "peak_rss_kib": 190.65625
+    },
+    {
+      "core": "single",
+      "database": "dragonfly",
+      "idle_rss_kib": 47.55078125,
+      "loaded_rss_kib": 162.953125,
+      "final_rss_kib": 163.5859375,
+      "peak_rss_kib": 170.20703125
+    },
+    {
+      "core": "single",
+      "database": "redis",
+      "idle_rss_kib": 28.1875,
+      "loaded_rss_kib": 156.890625,
+      "final_rss_kib": 157.9921875,
+      "peak_rss_kib": 157.9921875
+    },
+    {
+      "core": "multi",
+      "database": "fyrodb",
+      "idle_rss_kib": 48.8359375,
+      "loaded_rss_kib": 188.09375,
+      "final_rss_kib": 190.5,
+      "peak_rss_kib": 191.24609375
+    },
+    {
+      "core": "multi",
+      "database": "dragonfly",
+      "idle_rss_kib": 75.91796875,
+      "loaded_rss_kib": 197.25390625,
+      "final_rss_kib": 191.21484375,
+      "peak_rss_kib": 199.82421875
+    },
+    {
+      "core": "multi",
+      "database": "redis",
+      "idle_rss_kib": 28.5390625,
+      "loaded_rss_kib": 159.7421875,
+      "final_rss_kib": 162.75,
+      "peak_rss_kib": 163.04296875
+    }
+  ]
+}

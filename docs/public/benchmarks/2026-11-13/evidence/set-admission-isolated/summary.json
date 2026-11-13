@@ -1,0 +1,1592 @@
+[
+  {
+    "kind": "normal",
+    "core": "1",
+    "size": 5,
+    "metrics": [
+      "Pipeline-64 SET",
+      "Pipelined SET",
+      "Pipelined GET",
+      "Pub/Sub publish",
+      "Pub/Sub delivery",
+      "Mixed SET/GET (50/50)",
+      "INCR (atomic counters)",
+      "HSET/HGET (sessions)",
+      "LPUSH/RPOP (queue)",
+      "SADD (per-client sets)",
+      "ZADD (per-client zsets)",
+      "JSON.SET (documents)",
+      "JSON.GET (documents)",
+      "SET+EXPIRE (cache TTL)",
+      "Hot Key (1 key, contention)",
+      "Producer/Consumer (50+50)",
+      "XADD (streams)",
+      "SETBIT/BITCOUNT (bitmap)",
+      "PFADD/PFCOUNT (HyperLogLog)",
+      "GEOADD/GEODIST (geospatial)"
+    ],
+    "versions": {
+      "baseline": {
+        "Pipeline-64 SET": {
+          "median": 4404833.326879445,
+          "low": 3966055.9469976756,
+          "high": 4876899.06223927
+        },
+        "Pipelined SET": {
+          "median": 17313171.690140855,
+          "low": 13918110.154465275,
+          "high": 17622292.329496883
+        },
+        "Pipelined GET": {
+          "median": 21321785.499793123,
+          "low": 13354410.45691043,
+          "high": 21924342.706451714
+        },
+        "Pub/Sub publish": {
+          "median": 1311868.13584266,
+          "low": 1131961.9893050194,
+          "high": 1594339.6097063012
+        },
+        "Pub/Sub delivery": {
+          "median": 63794196.04487213,
+          "low": 54949086.15493594,
+          "high": 77608373.788315
+        },
+        "Mixed SET/GET (50/50)": {
+          "median": 14990333.74561498,
+          "low": 11029268.181475623,
+          "high": 16658289.35177074
+        },
+        "INCR (atomic counters)": {
+          "median": 7400690.020355634,
+          "low": 6325553.298123722,
+          "high": 15767258.612652158
+        },
+        "HSET/HGET (sessions)": {
+          "median": 16500842.685660325,
+          "low": 13666163.171050038,
+          "high": 17854165.196859714
+        },
+        "LPUSH/RPOP (queue)": {
+          "median": 9819362.8054438,
+          "low": 7567220.4898416195,
+          "high": 10036205.813195217
+        },
+        "SADD (per-client sets)": {
+          "median": 15238651.26019722,
+          "low": 12132423.141963832,
+          "high": 15725147.815210076
+        },
+        "ZADD (per-client zsets)": {
+          "median": 4214050.0778495185,
+          "low": 4038803.564541402,
+          "high": 4841316.238177703
+        },
+        "JSON.SET (documents)": {
+          "median": 4651899.7489832565,
+          "low": 3627928.8929782584,
+          "high": 4658977.532078522
+        },
+        "JSON.GET (documents)": {
+          "median": 11577742.704292672,
+          "low": 6664208.95083366,
+          "high": 11797888.484706338
+        },
+        "SET+EXPIRE (cache TTL)": {
+          "median": 3305709.6936821137,
+          "low": 2229314.300173109,
+          "high": 3318853.1714150277
+        },
+        "Hot Key (1 key, contention)": {
+          "median": 40625394.47258033,
+          "low": 23630110.786820658,
+          "high": 41588888.167737566
+        },
+        "Producer/Consumer (50+50)": {
+          "median": 9628507.020599416,
+          "low": 8295297.940598549,
+          "high": 9823405.37827024
+        },
+        "XADD (streams)": {
+          "median": 4631103.274563977,
+          "low": 3637623.265934304,
+          "high": 4707667.156944308
+        },
+        "SETBIT/BITCOUNT (bitmap)": {
+          "median": 4798955.371073153,
+          "low": 3735000.873775442,
+          "high": 4804596.680642045
+        },
+        "PFADD/PFCOUNT (HyperLogLog)": {
+          "median": 15802169.230139332,
+          "low": 11541367.654837027,
+          "high": 19018429.923628073
+        },
+        "GEOADD/GEODIST (geospatial)": {
+          "median": 1544997.8431791484,
+          "low": 1196895.831033124,
+          "high": 1734179.7241418287
+        },
+        "RSS": {
+          "median": 781.171875,
+          "low": 779.51171875,
+          "high": 781.83984375
+        },
+        "container": {
+          "median": 807.375,
+          "low": 804.96875,
+          "high": 808.5078125
+        },
+        "contended": null
+      },
+      "candidate": {
+        "Pipeline-64 SET": {
+          "median": 3986267.7143234625,
+          "low": 2401160.3803472714,
+          "high": 4645133.3276988175
+        },
+        "Pipelined SET": {
+          "median": 13446716.31422924,
+          "low": 9458598.263034932,
+          "high": 17575065.93619912
+        },
+        "Pipelined GET": {
+          "median": 17891608.58097793,
+          "low": 13278123.092261516,
+          "high": 21764296.775025703
+        },
+        "Pub/Sub publish": {
+          "median": 1435096.0929580624,
+          "low": 918045.7948416623,
+          "high": 1601102.9293595068
+        },
+        "Pub/Sub delivery": {
+          "median": 68336013.89320365,
+          "low": 44096896.22673001,
+          "high": 76987292.61605792
+        },
+        "Mixed SET/GET (50/50)": {
+          "median": 16623406.744126089,
+          "low": 10395374.44923617,
+          "high": 17626096.2109886
+        },
+        "INCR (atomic counters)": {
+          "median": 14684993.92088978,
+          "low": 5328188.491360087,
+          "high": 15058687.809887558
+        },
+        "HSET/HGET (sessions)": {
+          "median": 16333038.894919,
+          "low": 10917629.48786219,
+          "high": 16687208.48124701
+        },
+        "LPUSH/RPOP (queue)": {
+          "median": 9179601.39820751,
+          "low": 6789623.465984301,
+          "high": 9698952.139274353
+        },
+        "SADD (per-client sets)": {
+          "median": 11834947.058938432,
+          "low": 9428901.523637883,
+          "high": 14761089.478816485
+        },
+        "ZADD (per-client zsets)": {
+          "median": 4761738.169093674,
+          "low": 3549320.4753188933,
+          "high": 4842240.822964007
+        },
+        "JSON.SET (documents)": {
+          "median": 4180900.5600437545,
+          "low": 2885840.9249479165,
+          "high": 4446444.563900154
+        },
+        "JSON.GET (documents)": {
+          "median": 10916542.779371222,
+          "low": 4643350.946646922,
+          "high": 11920254.759207902
+        },
+        "SET+EXPIRE (cache TTL)": {
+          "median": 2936815.334367468,
+          "low": 1950248.6365648448,
+          "high": 3087111.423259238
+        },
+        "Hot Key (1 key, contention)": {
+          "median": 34643432.35127251,
+          "low": 29139302.287846677,
+          "high": 36502186.718248636
+        },
+        "Producer/Consumer (50+50)": {
+          "median": 8566174.630592821,
+          "low": 6937967.947725908,
+          "high": 9397372.221263403
+        },
+        "XADD (streams)": {
+          "median": 4407841.522740337,
+          "low": 3326119.5786687247,
+          "high": 4436117.083751283
+        },
+        "SETBIT/BITCOUNT (bitmap)": {
+          "median": 4158912.2448201915,
+          "low": 3525973.8510147454,
+          "high": 4660659.54568534
+        },
+        "PFADD/PFCOUNT (HyperLogLog)": {
+          "median": 14432464.929272586,
+          "low": 11392107.44087915,
+          "high": 18863540.178873707
+        },
+        "GEOADD/GEODIST (geospatial)": {
+          "median": 1576208.4399603535,
+          "low": 1228267.2254876394,
+          "high": 1585935.8498337483
+        },
+        "RSS": {
+          "median": 781.0390625,
+          "low": 780.8359375,
+          "high": 784.671875
+        },
+        "container": {
+          "median": 807.796875,
+          "low": 803.8828125,
+          "high": 809.515625
+        },
+        "contended": null
+      }
+    }
+  },
+  {
+    "kind": "normal",
+    "core": "3",
+    "size": 5,
+    "metrics": [
+      "Pipeline-64 SET",
+      "Pipelined SET",
+      "Pipelined GET",
+      "Pub/Sub publish",
+      "Pub/Sub delivery",
+      "Mixed SET/GET (50/50)",
+      "INCR (atomic counters)",
+      "HSET/HGET (sessions)",
+      "LPUSH/RPOP (queue)",
+      "SADD (per-client sets)",
+      "ZADD (per-client zsets)",
+      "JSON.SET (documents)",
+      "JSON.GET (documents)",
+      "SET+EXPIRE (cache TTL)",
+      "Hot Key (1 key, contention)",
+      "Producer/Consumer (50+50)",
+      "XADD (streams)",
+      "SETBIT/BITCOUNT (bitmap)",
+      "PFADD/PFCOUNT (HyperLogLog)",
+      "GEOADD/GEODIST (geospatial)"
+    ],
+    "versions": {
+      "baseline": {
+        "Pipeline-64 SET": {
+          "median": 8790737.994058374,
+          "low": 5902436.435984717,
+          "high": 10886446.877897236
+        },
+        "Pipelined SET": {
+          "median": 26939338.31586453,
+          "low": 20932736.707355287,
+          "high": 33706852.33443598
+        },
+        "Pipelined GET": {
+          "median": 35104848.863217056,
+          "low": 25048881.953799766,
+          "high": 43010539.39289497
+        },
+        "Pub/Sub publish": {
+          "median": 1392680.9269394572,
+          "low": 1283732.8074479096,
+          "high": 2567552.5976950233
+        },
+        "Pub/Sub delivery": {
+          "median": 69047438.45568775,
+          "low": 63965213.1584759,
+          "high": 127166225.7898396
+        },
+        "Mixed SET/GET (50/50)": {
+          "median": 26606984.36266288,
+          "low": 15376613.276784504,
+          "high": 31281960.877184346
+        },
+        "INCR (atomic counters)": {
+          "median": 29976812.18635355,
+          "low": 21725337.443100937,
+          "high": 32295356.27655728
+        },
+        "HSET/HGET (sessions)": {
+          "median": 27948647.267305642,
+          "low": 22130977.676659863,
+          "high": 29373574.307674766
+        },
+        "LPUSH/RPOP (queue)": {
+          "median": 17053195.24269741,
+          "low": 10721630.433193592,
+          "high": 18792201.706097014
+        },
+        "SADD (per-client sets)": {
+          "median": 29663795.29038601,
+          "low": 18842774.401812103,
+          "high": 35134451.81752627
+        },
+        "ZADD (per-client zsets)": {
+          "median": 5724830.230016408,
+          "low": 5181420.61636019,
+          "high": 10944378.730138402
+        },
+        "JSON.SET (documents)": {
+          "median": 5312108.202969439,
+          "low": 4341700.070856762,
+          "high": 8778417.228900881
+        },
+        "JSON.GET (documents)": {
+          "median": 18185616.991883997,
+          "low": 12209298.062974716,
+          "high": 24198431.786750257
+        },
+        "SET+EXPIRE (cache TTL)": {
+          "median": 6292106.956719878,
+          "low": 3764555.307226874,
+          "high": 7647308.80955598
+        },
+        "Hot Key (1 key, contention)": {
+          "median": 81700120.68741828,
+          "low": 61363814.45816151,
+          "high": 102563424.06760488
+        },
+        "Producer/Consumer (50+50)": {
+          "median": 13250874.905579234,
+          "low": 9125243.899518946,
+          "high": 15632263.01807772
+        },
+        "XADD (streams)": {
+          "median": 10339946.258025924,
+          "low": 8498110.816852221,
+          "high": 10794973.12645415
+        },
+        "SETBIT/BITCOUNT (bitmap)": {
+          "median": 11857106.359275611,
+          "low": 9508053.411566103,
+          "high": 12556390.908525072
+        },
+        "PFADD/PFCOUNT (HyperLogLog)": {
+          "median": 40032751.59473468,
+          "low": 26219775.759825174,
+          "high": 40578852.460892335
+        },
+        "GEOADD/GEODIST (geospatial)": {
+          "median": 3772339.3574983673,
+          "low": 2897288.653103482,
+          "high": 3976492.0526376604
+        },
+        "RSS": {
+          "median": 1199.375,
+          "low": 795.62890625,
+          "high": 1214.39453125
+        },
+        "container": {
+          "median": 1212.6875,
+          "low": 828.9453125,
+          "high": 1227.5625
+        },
+        "contended": null
+      },
+      "candidate": {
+        "Pipeline-64 SET": {
+          "median": 8248239.415977337,
+          "low": 6505314.941187737,
+          "high": 9222075.883453013
+        },
+        "Pipelined SET": {
+          "median": 29709580.97295045,
+          "low": 19139682.41475206,
+          "high": 37295469.36167309
+        },
+        "Pipelined GET": {
+          "median": 31640305.714708757,
+          "low": 28522215.525839843,
+          "high": 47401270.60717506
+        },
+        "Pub/Sub publish": {
+          "median": 2332211.8193136617,
+          "low": 1666902.8945885447,
+          "high": 2847095.173565826
+        },
+        "Pub/Sub delivery": {
+          "median": 115632323.39252657,
+          "low": 82368983.35966972,
+          "high": 140930402.78895628
+        },
+        "Mixed SET/GET (50/50)": {
+          "median": 31066722.83944379,
+          "low": 21161016.747495227,
+          "high": 32583415.172011107
+        },
+        "INCR (atomic counters)": {
+          "median": 26963522.102524854,
+          "low": 21701861.968757544,
+          "high": 39361583.456672855
+        },
+        "HSET/HGET (sessions)": {
+          "median": 31055120.86753971,
+          "low": 28683168.3611344,
+          "high": 41357904.91937597
+        },
+        "LPUSH/RPOP (queue)": {
+          "median": 12177446.31364254,
+          "low": 11116701.515024658,
+          "high": 17559204.391395476
+        },
+        "SADD (per-client sets)": {
+          "median": 22158344.63870542,
+          "low": 17884842.166133747,
+          "high": 35093366.2518467
+        },
+        "ZADD (per-client zsets)": {
+          "median": 7551719.993338779,
+          "low": 6200532.961850309,
+          "high": 12254410.35769233
+        },
+        "JSON.SET (documents)": {
+          "median": 6858931.101982209,
+          "low": 4910644.295879558,
+          "high": 9667088.480405422
+        },
+        "JSON.GET (documents)": {
+          "median": 19324675.073705517,
+          "low": 10287724.454164332,
+          "high": 23398433.116906796
+        },
+        "SET+EXPIRE (cache TTL)": {
+          "median": 6926683.921798251,
+          "low": 5257423.208183949,
+          "high": 7971644.954556383
+        },
+        "Hot Key (1 key, contention)": {
+          "median": 101762034.04233114,
+          "low": 70905869.0624285,
+          "high": 107993570.71076131
+        },
+        "Producer/Consumer (50+50)": {
+          "median": 15938479.001149546,
+          "low": 14880173.496870903,
+          "high": 16576053.806666307
+        },
+        "XADD (streams)": {
+          "median": 10959377.314483495,
+          "low": 9449375.309594017,
+          "high": 12021603.157478876
+        },
+        "SETBIT/BITCOUNT (bitmap)": {
+          "median": 11892012.322622089,
+          "low": 9517692.41225148,
+          "high": 13054447.089761341
+        },
+        "PFADD/PFCOUNT (HyperLogLog)": {
+          "median": 31791275.777697664,
+          "low": 23644965.82539888,
+          "high": 43660240.54871492
+        },
+        "GEOADD/GEODIST (geospatial)": {
+          "median": 3974747.767624154,
+          "low": 3113625.6336578447,
+          "high": 4176678.050836157
+        },
+        "RSS": {
+          "median": 800.0703125,
+          "low": 796.3046875,
+          "high": 1075.20703125
+        },
+        "container": {
+          "median": 822.3203125,
+          "low": 820.8984375,
+          "high": 1088.4609375
+        },
+        "contended": null
+      }
+    }
+  },
+  {
+    "kind": "normal",
+    "core": "6",
+    "size": 5,
+    "metrics": [
+      "Pipeline-64 SET",
+      "Pipelined SET",
+      "Pipelined GET",
+      "Pub/Sub publish",
+      "Pub/Sub delivery",
+      "Mixed SET/GET (50/50)",
+      "INCR (atomic counters)",
+      "HSET/HGET (sessions)",
+      "LPUSH/RPOP (queue)",
+      "SADD (per-client sets)",
+      "ZADD (per-client zsets)",
+      "JSON.SET (documents)",
+      "JSON.GET (documents)",
+      "SET+EXPIRE (cache TTL)",
+      "Hot Key (1 key, contention)",
+      "Producer/Consumer (50+50)",
+      "XADD (streams)",
+      "SETBIT/BITCOUNT (bitmap)",
+      "PFADD/PFCOUNT (HyperLogLog)",
+      "GEOADD/GEODIST (geospatial)"
+    ],
+    "versions": {
+      "baseline": {
+        "Pipeline-64 SET": {
+          "median": 9477555.613417298,
+          "low": 2354480.5103444625,
+          "high": 12006070.442102943
+        },
+        "Pipelined SET": {
+          "median": 28688756.98085317,
+          "low": 28600467.852173217,
+          "high": 37652281.45188823
+        },
+        "Pipelined GET": {
+          "median": 35571143.11503771,
+          "low": 34381965.75402867,
+          "high": 36490465.145455316
+        },
+        "Pub/Sub publish": {
+          "median": 1416843.877824334,
+          "low": 1262673.7244908814,
+          "high": 1598702.5697321286
+        },
+        "Pub/Sub delivery": {
+          "median": 67829790.20354417,
+          "low": 62794004.275254436,
+          "high": 79491921.34334797
+        },
+        "Mixed SET/GET (50/50)": {
+          "median": 26817148.053693186,
+          "low": 25022552.826862853,
+          "high": 38656070.676904134
+        },
+        "INCR (atomic counters)": {
+          "median": 41977148.018413104,
+          "low": 34234947.18471993,
+          "high": 46534499.07217189
+        },
+        "HSET/HGET (sessions)": {
+          "median": 43611083.163675316,
+          "low": 36112800.13686751,
+          "high": 51068748.90297944
+        },
+        "LPUSH/RPOP (queue)": {
+          "median": 23400777.68974535,
+          "low": 15413879.227169676,
+          "high": 26778520.188446876
+        },
+        "SADD (per-client sets)": {
+          "median": 29586471.514892284,
+          "low": 18035798.22786198,
+          "high": 30201127.580238998
+        },
+        "ZADD (per-client zsets)": {
+          "median": 8043502.996389866,
+          "low": 6133644.796544825,
+          "high": 10245920.115593651
+        },
+        "JSON.SET (documents)": {
+          "median": 6731184.826417771,
+          "low": 5562327.674047798,
+          "high": 9165129.853873964
+        },
+        "JSON.GET (documents)": {
+          "median": 20701160.520514537,
+          "low": 16463500.214231296,
+          "high": 24316295.3793288
+        },
+        "SET+EXPIRE (cache TTL)": {
+          "median": 8142457.107429079,
+          "low": 5950507.959161426,
+          "high": 8526451.999993145
+        },
+        "Hot Key (1 key, contention)": {
+          "median": 108206843.05052966,
+          "low": 75618233.69462742,
+          "high": 112302787.18110852
+        },
+        "Producer/Consumer (50+50)": {
+          "median": 12469095.813617043,
+          "low": 10034490.450230628,
+          "high": 15444252.057112597
+        },
+        "XADD (streams)": {
+          "median": 14239443.620510682,
+          "low": 8931232.257967569,
+          "high": 14606985.009106906
+        },
+        "SETBIT/BITCOUNT (bitmap)": {
+          "median": 15993556.515950853,
+          "low": 10012560.757470246,
+          "high": 17879778.337236043
+        },
+        "PFADD/PFCOUNT (HyperLogLog)": {
+          "median": 38159819.046138085,
+          "low": 25528282.92505823,
+          "high": 42092257.9794083
+        },
+        "GEOADD/GEODIST (geospatial)": {
+          "median": 4021216.016125398,
+          "low": 3069655.2007033117,
+          "high": 4968533.025793063
+        },
+        "RSS": {
+          "median": 1326.73828125,
+          "low": 817.2421875,
+          "high": 1655.23046875
+        },
+        "container": {
+          "median": 1338.12890625,
+          "low": 846.1328125,
+          "high": 1660.2109375
+        },
+        "contended": null
+      },
+      "candidate": {
+        "Pipeline-64 SET": {
+          "median": 8777937.175266085,
+          "low": 8455957.857183702,
+          "high": 12177198.15505219
+        },
+        "Pipelined SET": {
+          "median": 26848530.666234665,
+          "low": 26207848.724439368,
+          "high": 35284201.541101016
+        },
+        "Pipelined GET": {
+          "median": 31127211.0315558,
+          "low": 28990873.415030178,
+          "high": 37724016.10041391
+        },
+        "Pub/Sub publish": {
+          "median": 1630568.9678006002,
+          "low": 1353694.3584747,
+          "high": 2303511.7970267953
+        },
+        "Pub/Sub delivery": {
+          "median": 81152258.19142778,
+          "low": 66652018.77467395,
+          "high": 110007288.20285802
+        },
+        "Mixed SET/GET (50/50)": {
+          "median": 24616068.411894225,
+          "low": 22496389.21704872,
+          "high": 34725661.6302014
+        },
+        "INCR (atomic counters)": {
+          "median": 40274507.82336342,
+          "low": 39296981.71279589,
+          "high": 50998474.91610687
+        },
+        "HSET/HGET (sessions)": {
+          "median": 40089286.056118466,
+          "low": 36775094.170443326,
+          "high": 49533899.62633856
+        },
+        "LPUSH/RPOP (queue)": {
+          "median": 20764201.519898023,
+          "low": 17406649.899014886,
+          "high": 25658473.073761016
+        },
+        "SADD (per-client sets)": {
+          "median": 28822397.539258987,
+          "low": 17408192.413725607,
+          "high": 42803625.48419996
+        },
+        "ZADD (per-client zsets)": {
+          "median": 5482286.727471824,
+          "low": 4089984.4932123427,
+          "high": 8297006.239775988
+        },
+        "JSON.SET (documents)": {
+          "median": 5772068.423519022,
+          "low": 5638709.844579817,
+          "high": 8457440.06415205
+        },
+        "JSON.GET (documents)": {
+          "median": 17117025.15551395,
+          "low": 15443975.13464405,
+          "high": 20412159.25791187
+        },
+        "SET+EXPIRE (cache TTL)": {
+          "median": 5799886.0838574385,
+          "low": 5242231.087574729,
+          "high": 9258866.486140683
+        },
+        "Hot Key (1 key, contention)": {
+          "median": 87008169.78871702,
+          "low": 80433791.66438235,
+          "high": 129134060.69298269
+        },
+        "Producer/Consumer (50+50)": {
+          "median": 11292509.274890758,
+          "low": 5814469.235173758,
+          "high": 13751731.128078226
+        },
+        "XADD (streams)": {
+          "median": 11137195.660814924,
+          "low": 9495702.65092148,
+          "high": 16836325.33494796
+        },
+        "SETBIT/BITCOUNT (bitmap)": {
+          "median": 14516051.781108305,
+          "low": 13827916.993558625,
+          "high": 14888089.02630595
+        },
+        "PFADD/PFCOUNT (HyperLogLog)": {
+          "median": 37832108.93180719,
+          "low": 28105387.445834946,
+          "high": 56628992.71915378
+        },
+        "GEOADD/GEODIST (geospatial)": {
+          "median": 4073747.6069584433,
+          "low": 3547861.0050662355,
+          "high": 5308779.872504342
+        },
+        "RSS": {
+          "median": 1286.19921875,
+          "low": 935.65625,
+          "high": 1299.11328125
+        },
+        "container": {
+          "median": 1304.0625,
+          "low": 956.0,
+          "high": 1309.19921875
+        },
+        "contended": null
+      }
+    }
+  },
+  {
+    "kind": "shared",
+    "core": "all",
+    "size": 5,
+    "metrics": [
+      "Pipeline-64 SET",
+      "Pipelined SET",
+      "Pipelined GET",
+      "Pub/Sub publish",
+      "Pub/Sub delivery",
+      "Mixed SET/GET (50/50)",
+      "INCR (atomic counters)",
+      "HSET/HGET (sessions)",
+      "LPUSH/RPOP (queue)",
+      "SADD (per-client sets)",
+      "ZADD (per-client zsets)",
+      "JSON.SET (documents)",
+      "JSON.GET (documents)",
+      "SET+EXPIRE (cache TTL)",
+      "Hot Key (1 key, contention)",
+      "Producer/Consumer (50+50)",
+      "XADD (streams)",
+      "SETBIT/BITCOUNT (bitmap)",
+      "PFADD/PFCOUNT (HyperLogLog)",
+      "GEOADD/GEODIST (geospatial)"
+    ],
+    "versions": {
+      "baseline": {
+        "Pipeline-64 SET": {
+          "median": 13716430.775948023,
+          "low": 11129770.381384498,
+          "high": 14281202.588594215
+        },
+        "Pipelined SET": {
+          "median": 36932614.310485415,
+          "low": 35121530.857618965,
+          "high": 42225548.00960147
+        },
+        "Pipelined GET": {
+          "median": 47265757.24072643,
+          "low": 43663478.49773444,
+          "high": 47810338.60515307
+        },
+        "Pub/Sub publish": {
+          "median": 1795796.9641423794,
+          "low": 1320997.1398958822,
+          "high": 1846141.8888348432
+        },
+        "Pub/Sub delivery": {
+          "median": 89300196.86406998,
+          "low": 64298793.303260095,
+          "high": 89302704.9226714
+        },
+        "Mixed SET/GET (50/50)": {
+          "median": 40048683.179272726,
+          "low": 25622776.96787027,
+          "high": 43083461.8207825
+        },
+        "INCR (atomic counters)": {
+          "median": 63347032.97384103,
+          "low": 44327969.25748944,
+          "high": 67500666.65345904
+        },
+        "HSET/HGET (sessions)": {
+          "median": 52377221.37688297,
+          "low": 32715448.65033889,
+          "high": 58312198.32001974
+        },
+        "LPUSH/RPOP (queue)": {
+          "median": 42632984.10808621,
+          "low": 17424681.856238116,
+          "high": 44568411.97756462
+        },
+        "SADD (per-client sets)": {
+          "median": 43458606.242515884,
+          "low": 30310279.511546817,
+          "high": 52733921.61186927
+        },
+        "ZADD (per-client zsets)": {
+          "median": 7825285.813967,
+          "low": 7034920.335032031,
+          "high": 9772447.246582938
+        },
+        "JSON.SET (documents)": {
+          "median": 6182827.616110249,
+          "low": 4933272.701438524,
+          "high": 10167730.543427374
+        },
+        "JSON.GET (documents)": {
+          "median": 22353462.13048009,
+          "low": 21043980.287893225,
+          "high": 30168449.762833748
+        },
+        "SET+EXPIRE (cache TTL)": {
+          "median": 7731197.728091681,
+          "low": 7319089.820971806,
+          "high": 9620779.421191301
+        },
+        "Hot Key (1 key, contention)": {
+          "median": 131549810.81624381,
+          "low": 131213925.76543282,
+          "high": 138018587.76372194
+        },
+        "Producer/Consumer (50+50)": {
+          "median": 13276136.903311329,
+          "low": 12265483.871713564,
+          "high": 13746458.018894562
+        },
+        "XADD (streams)": {
+          "median": 11426420.388609815,
+          "low": 3745915.039848698,
+          "high": 12638972.293818139
+        },
+        "SETBIT/BITCOUNT (bitmap)": {
+          "median": 18785830.449238714,
+          "low": 14084348.04781746,
+          "high": 19146142.727620568
+        },
+        "PFADD/PFCOUNT (HyperLogLog)": {
+          "median": 38752017.62379758,
+          "low": 37717793.61996354,
+          "high": 46389119.63610148
+        },
+        "GEOADD/GEODIST (geospatial)": {
+          "median": 4551318.5884507755,
+          "low": 4293911.666726964,
+          "high": 5157440.622566623
+        },
+        "RSS": {
+          "median": 1285.2109375,
+          "low": 854.375,
+          "high": 1516.40234375
+        },
+        "container": {
+          "median": 1308.58203125,
+          "low": 877.55078125,
+          "high": 1531.0234375
+        },
+        "contended": null
+      },
+      "candidate": {
+        "Pipeline-64 SET": {
+          "median": 9164293.277374033,
+          "low": 5761630.915455874,
+          "high": 11978299.666731002
+        },
+        "Pipelined SET": {
+          "median": 27413398.278671052,
+          "low": 25697144.316696603,
+          "high": 35244650.74313346
+        },
+        "Pipelined GET": {
+          "median": 36599475.12985512,
+          "low": 34770633.56850985,
+          "high": 37823270.76733961
+        },
+        "Pub/Sub publish": {
+          "median": 1273282.3821748411,
+          "low": 1267423.3560104312,
+          "high": 1436948.4273461632
+        },
+        "Pub/Sub delivery": {
+          "median": 62682510.70759886,
+          "low": 62630067.77612993,
+          "high": 64694380.415158205
+        },
+        "Mixed SET/GET (50/50)": {
+          "median": 31389846.17892422,
+          "low": 27956542.393545505,
+          "high": 34799746.51168646
+        },
+        "INCR (atomic counters)": {
+          "median": 52142150.76569184,
+          "low": 46226943.04091741,
+          "high": 52208527.75136461
+        },
+        "HSET/HGET (sessions)": {
+          "median": 44753974.86903197,
+          "low": 42461728.9252567,
+          "high": 45026755.46092933
+        },
+        "LPUSH/RPOP (queue)": {
+          "median": 30744741.40021544,
+          "low": 29893724.07420071,
+          "high": 34488478.35643639
+        },
+        "SADD (per-client sets)": {
+          "median": 35274806.97272876,
+          "low": 33646135.28461628,
+          "high": 38039155.33827336
+        },
+        "ZADD (per-client zsets)": {
+          "median": 8316660.439012718,
+          "low": 5841947.2163477875,
+          "high": 9332075.282485886
+        },
+        "JSON.SET (documents)": {
+          "median": 8006763.72967417,
+          "low": 6894600.243200819,
+          "high": 8293706.865856072
+        },
+        "JSON.GET (documents)": {
+          "median": 18798104.113450017,
+          "low": 17197533.16176673,
+          "high": 19469445.34850273
+        },
+        "SET+EXPIRE (cache TTL)": {
+          "median": 6045480.72582102,
+          "low": 5750063.992462172,
+          "high": 6141395.843776585
+        },
+        "Hot Key (1 key, contention)": {
+          "median": 101193465.61410621,
+          "low": 95525927.5947285,
+          "high": 108557586.98282501
+        },
+        "Producer/Consumer (50+50)": {
+          "median": 12261616.548228646,
+          "low": 2216940.0104003083,
+          "high": 12376787.30323314
+        },
+        "XADD (streams)": {
+          "median": 12675385.345974326,
+          "low": 10821549.121746609,
+          "high": 15004208.943182219
+        },
+        "SETBIT/BITCOUNT (bitmap)": {
+          "median": 17951317.874908987,
+          "low": 12921388.777427554,
+          "high": 19330505.905339073
+        },
+        "PFADD/PFCOUNT (HyperLogLog)": {
+          "median": 48798209.88646853,
+          "low": 35226470.80467088,
+          "high": 51263085.25494503
+        },
+        "GEOADD/GEODIST (geospatial)": {
+          "median": 4682910.319839286,
+          "low": 4345911.231229876,
+          "high": 5885637.594342981
+        },
+        "RSS": {
+          "median": 853.109375,
+          "low": 851.8984375,
+          "high": 1293.765625
+        },
+        "container": {
+          "median": 871.73828125,
+          "low": 871.4375,
+          "high": 1313.25
+        },
+        "contended": null
+      }
+    }
+  },
+  {
+    "kind": "stock",
+    "core": "multi",
+    "size": 64,
+    "metrics": [
+      "GET",
+      "SET"
+    ],
+    "versions": {
+      "baseline": {
+        "GET": {
+          "median": 6644603.5,
+          "low": 6644603.5,
+          "high": 6649021.5
+        },
+        "SET": {
+          "median": 6644603.5,
+          "low": 6644603.5,
+          "high": 6649021.5
+        },
+        "RSS": {
+          "median": 31.8515625,
+          "low": 31.8359375,
+          "high": 31.890625
+        },
+        "container": {
+          "median": 30.1171875,
+          "low": 30.0546875,
+          "high": 30.1875
+        },
+        "contended": 0
+      },
+      "candidate": {
+        "GET": {
+          "median": 6649021.5,
+          "low": 6649021.5,
+          "high": 6649021.5
+        },
+        "SET": {
+          "median": 6644603.5,
+          "low": 6644603.5,
+          "high": 6649021.5
+        },
+        "RSS": {
+          "median": 29.10546875,
+          "low": 28.9921875,
+          "high": 29.11328125
+        },
+        "container": {
+          "median": 30.41015625,
+          "low": 30.3984375,
+          "high": 30.609375
+        },
+        "contended": 0
+      }
+    }
+  },
+  {
+    "kind": "stock",
+    "core": "multi",
+    "size": 1024,
+    "metrics": [
+      "GET",
+      "SET"
+    ],
+    "versions": {
+      "baseline": {
+        "GET": {
+          "median": 3070333.25,
+          "low": 2850663.75,
+          "high": 3628468.5
+        },
+        "SET": {
+          "median": 2334842.0,
+          "low": 1989996.5,
+          "high": 2339758.5
+        },
+        "RSS": {
+          "median": 154.66796875,
+          "low": 153.52734375,
+          "high": 156.1640625
+        },
+        "container": {
+          "median": 157.58984375,
+          "low": 154.7265625,
+          "high": 162.5703125
+        },
+        "contended": 3
+      },
+      "candidate": {
+        "GET": {
+          "median": 3629810.5,
+          "low": 3628486.5,
+          "high": 3631107.25
+        },
+        "SET": {
+          "median": 2335932.75,
+          "low": 2087709.38,
+          "high": 2336478.5
+        },
+        "RSS": {
+          "median": 147.359375,
+          "low": 146.71484375,
+          "high": 150.52734375
+        },
+        "container": {
+          "median": 160.9453125,
+          "low": 158.1171875,
+          "high": 162.65234375
+        },
+        "contended": 3
+      }
+    }
+  },
+  {
+    "kind": "stock",
+    "core": "multi",
+    "size": 10240,
+    "metrics": [
+      "GET",
+      "SET"
+    ],
+    "versions": {
+      "baseline": {
+        "GET": {
+          "median": 443957.59,
+          "low": 443379.28,
+          "high": 470281.94
+        },
+        "SET": {
+          "median": 232735.41,
+          "low": 227080.84,
+          "high": 250894.12
+        },
+        "RSS": {
+          "median": 1081.25390625,
+          "low": 1079.73046875,
+          "high": 1081.3359375
+        },
+        "container": {
+          "median": 1187.1953125,
+          "low": 1182.85546875,
+          "high": 1195.09765625
+        },
+        "contended": 3
+      },
+      "candidate": {
+        "GET": {
+          "median": 470045.81,
+          "low": 420618.91,
+          "high": 470158.41
+        },
+        "SET": {
+          "median": 240718.25,
+          "low": 227132.42,
+          "high": 247418.12
+        },
+        "RSS": {
+          "median": 1084.81640625,
+          "low": 1079.17578125,
+          "high": 1085.09375
+        },
+        "container": {
+          "median": 1191.4296875,
+          "low": 1188.86328125,
+          "high": 1193.25
+        },
+        "contended": 3
+      }
+    }
+  },
+  {
+    "kind": "stock",
+    "core": "single",
+    "size": 64,
+    "metrics": [
+      "GET",
+      "SET"
+    ],
+    "versions": {
+      "baseline": {
+        "GET": {
+          "median": 5704579.5,
+          "low": 5701327.5,
+          "high": 5707835.5
+        },
+        "SET": {
+          "median": 6644603.5,
+          "low": 6644603.5,
+          "high": 6649021.5
+        },
+        "RSS": {
+          "median": 29.984375,
+          "low": 29.92578125,
+          "high": 29.9921875
+        },
+        "container": {
+          "median": 27.5625,
+          "low": 27.44921875,
+          "high": 27.69140625
+        },
+        "contended": 2
+      },
+      "candidate": {
+        "GET": {
+          "median": 5704579.5,
+          "low": 4982625.0,
+          "high": 6653445.0
+        },
+        "SET": {
+          "median": 6649021.5,
+          "low": 6640191.0,
+          "high": 6653445.0
+        },
+        "RSS": {
+          "median": 29.03515625,
+          "low": 28.9765625,
+          "high": 29.17578125
+        },
+        "container": {
+          "median": 36.703125,
+          "low": 36.69140625,
+          "high": 36.73046875
+        },
+        "contended": 1
+      }
+    }
+  },
+  {
+    "kind": "stock",
+    "core": "single",
+    "size": 1024,
+    "metrics": [
+      "GET",
+      "SET"
+    ],
+    "versions": {
+      "baseline": {
+        "GET": {
+          "median": 1597464.5,
+          "low": 1478652.62,
+          "high": 1663361.25
+        },
+        "SET": {
+          "median": 1535410.38,
+          "low": 1328920.62,
+          "high": 1663361.25
+        },
+        "RSS": {
+          "median": 135.69921875,
+          "low": 135.6484375,
+          "high": 135.75
+        },
+        "container": {
+          "median": 140.0625,
+          "low": 138.57421875,
+          "high": 142.06640625
+        },
+        "contended": 1
+      },
+      "candidate": {
+        "GET": {
+          "median": 1330689.0,
+          "low": 1108661.62,
+          "high": 1478434.12
+        },
+        "SET": {
+          "median": 1330158.0,
+          "low": 1287812.5,
+          "high": 1478652.62
+        },
+        "RSS": {
+          "median": 132.48828125,
+          "low": 132.421875,
+          "high": 132.5390625
+        },
+        "container": {
+          "median": 140.32421875,
+          "low": 140.1875,
+          "high": 142.3203125
+        },
+        "contended": 3
+      }
+    }
+  },
+  {
+    "kind": "stock",
+    "core": "single",
+    "size": 10240,
+    "metrics": [
+      "GET",
+      "SET"
+    ],
+    "versions": {
+      "baseline": {
+        "GET": {
+          "median": 379963.53,
+          "low": 363733.16,
+          "high": 420018.47
+        },
+        "SET": {
+          "median": 165611.83,
+          "low": 159055.91,
+          "high": 184803.47
+        },
+        "RSS": {
+          "median": 1074.9921875,
+          "low": 1072.703125,
+          "high": 1075.359375
+        },
+        "container": {
+          "median": 1147.03125,
+          "low": 1135.17578125,
+          "high": 1160.0390625
+        },
+        "contended": 3
+      },
+      "candidate": {
+        "GET": {
+          "median": 399306.88,
+          "low": 380252.47,
+          "high": 443585.75
+        },
+        "SET": {
+          "median": 162176.92,
+          "low": 141903.38,
+          "high": 199306.47
+        },
+        "RSS": {
+          "median": 1071.609375,
+          "low": 1070.953125,
+          "high": 1072.74609375
+        },
+        "container": {
+          "median": 1157.4921875,
+          "low": 1132.9375,
+          "high": 1159.93359375
+        },
+        "contended": 2
+      }
+    }
+  },
+  {
+    "kind": "scalar",
+    "core": "multi",
+    "size": 64,
+    "metrics": [
+      "GET",
+      "SET"
+    ],
+    "versions": {
+      "baseline": {
+        "GET": {
+          "median": 171703.3,
+          "low": 169664.06,
+          "high": 175192.7
+        },
+        "SET": {
+          "median": 161134.39,
+          "low": 158755.36,
+          "high": 165727.55
+        },
+        "RSS": {
+          "median": 30.97265625,
+          "low": 30.66796875,
+          "high": 31.015625
+        },
+        "container": {
+          "median": 29.30078125,
+          "low": 28.9765625,
+          "high": 29.5625
+        },
+        "contended": 1
+      },
+      "candidate": {
+        "GET": {
+          "median": 166030.22,
+          "low": 158780.56,
+          "high": 166112.95
+        },
+        "SET": {
+          "median": 165234.62,
+          "low": 164284.55,
+          "high": 175901.5
+        },
+        "RSS": {
+          "median": 27.0,
+          "low": 26.97265625,
+          "high": 27.56640625
+        },
+        "container": {
+          "median": 27.84765625,
+          "low": 27.8125,
+          "high": 27.91015625
+        },
+        "contended": 2
+      }
+    }
+  },
+  {
+    "kind": "scalar",
+    "core": "multi",
+    "size": 1024,
+    "metrics": [
+      "GET",
+      "SET"
+    ],
+    "versions": {
+      "baseline": {
+        "GET": {
+          "median": 166972.78,
+          "low": 155038.77,
+          "high": 177430.8
+        },
+        "SET": {
+          "median": 177999.28,
+          "low": 160926.94,
+          "high": 181554.11
+        },
+        "RSS": {
+          "median": 122.5390625,
+          "low": 121.90625,
+          "high": 122.78515625
+        },
+        "container": {
+          "median": 121.82421875,
+          "low": 121.453125,
+          "high": 122.14453125
+        },
+        "contended": 2
+      },
+      "candidate": {
+        "GET": {
+          "median": 173641.27,
+          "low": 149075.72,
+          "high": 181818.19
+        },
+        "SET": {
+          "median": 171350.23,
+          "low": 159667.89,
+          "high": 176429.06
+        },
+        "RSS": {
+          "median": 119.7109375,
+          "low": 117.34765625,
+          "high": 119.87890625
+        },
+        "container": {
+          "median": 121.3984375,
+          "low": 120.9375,
+          "high": 121.7265625
+        },
+        "contended": 1
+      }
+    }
+  },
+  {
+    "kind": "scalar",
+    "core": "single",
+    "size": 64,
+    "metrics": [
+      "GET",
+      "SET"
+    ],
+    "versions": {
+      "baseline": {
+        "GET": {
+          "median": 174520.06,
+          "low": 169319.33,
+          "high": 180701.12
+        },
+        "SET": {
+          "median": 175223.42,
+          "low": 170473.91,
+          "high": 177904.3
+        },
+        "RSS": {
+          "median": 29.234375,
+          "low": 29.21875,
+          "high": 29.234375
+        },
+        "container": {
+          "median": 26.0546875,
+          "low": 25.99609375,
+          "high": 26.0625
+        },
+        "contended": 1
+      },
+      "candidate": {
+        "GET": {
+          "median": 162892.98,
+          "low": 145857.64,
+          "high": 172980.45
+        },
+        "SET": {
+          "median": 170010.2,
+          "low": 159007.8,
+          "high": 173943.3
+        },
+        "RSS": {
+          "median": 27.33984375,
+          "low": 27.33984375,
+          "high": 27.57421875
+        },
+        "container": {
+          "median": 29.015625,
+          "low": 27.34765625,
+          "high": 29.01953125
+        },
+        "contended": 1
+      }
+    }
+  },
+  {
+    "kind": "scalar",
+    "core": "single",
+    "size": 1024,
+    "metrics": [
+      "GET",
+      "SET"
+    ],
+    "versions": {
+      "baseline": {
+        "GET": {
+          "median": 160745.86,
+          "low": 154059.47,
+          "high": 162495.94
+        },
+        "SET": {
+          "median": 153988.3,
+          "low": 151584.05,
+          "high": 162443.14
+        },
+        "RSS": {
+          "median": 122.41015625,
+          "low": 122.39453125,
+          "high": 122.42578125
+        },
+        "container": {
+          "median": 120.9765625,
+          "low": 120.9453125,
+          "high": 120.9765625
+        },
+        "contended": 2
+      },
+      "candidate": {
+        "GET": {
+          "median": 158629.44,
+          "low": 155738.98,
+          "high": 177809.39
+        },
+        "SET": {
+          "median": 153988.3,
+          "low": 146842.88,
+          "high": 171880.38
+        },
+        "RSS": {
+          "median": 120.58203125,
+          "low": 120.56640625,
+          "high": 120.59765625
+        },
+        "container": {
+          "median": 121.4140625,
+          "low": 121.40234375,
+          "high": 121.4296875
+        },
+        "contended": 2
+      }
+    }
+  }
+]

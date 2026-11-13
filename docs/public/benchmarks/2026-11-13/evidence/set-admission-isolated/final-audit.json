@@ -1,0 +1,97 @@
+{
+  "completed_at": "2026-11-13T13:58:16.919389+00:00",
+  "status": "complete",
+  "checkpoint_commit": "d5a178b6536397f26131527df3d4b217e9a66462",
+  "checkpoint_subject": "Optimize large payload paths and add safe multicore benchmark validation",
+  "decision": "Experimental runtime changes reverted: safety passed but no reliable throughput gain; tests retained uncommitted.",
+  "runtime_source": {
+    "checked_files": 164,
+    "runtime_identical_to_checkpoint": true,
+    "exception": "only an appended #[cfg(test)] module in sock.rs",
+    "candidate_snapshot_hashes_verified": true
+  },
+  "images": {
+    "baseline": "sha256:3d5ef33d50f9dc4d5e321dbd196cbed3c5e644bfbdb2be32c6108fd6be4f3980",
+    "candidate": "sha256:7eb4eb12eeec3ae05aeb2c1a611f8ca6d77e98fef5aa9b1be42c7bab75c18aa8"
+  },
+  "candidate_validation": {
+    "workspace": {
+      "passed": 789,
+      "failed": 0,
+      "ignored": 3
+    },
+    "isolation_passed": 6,
+    "save_restart_passed": 2,
+    "affinity_passed": 2,
+    "large_queued_reply_cases": 3,
+    "io_uring_reply_tests": 14,
+    "primary_samples": 92,
+    "primary_sample_counts": {
+      "normal": 24,
+      "shared": 8,
+      "stock-p256": 36,
+      "scalar-guard": 24
+    },
+    "primary_oom_kills": 0,
+    "clippy": "passed all targets with io-uring",
+    "locked_access_diagnostic": {
+      "baseline": 1.01183755,
+      "candidate": 1.00696305,
+      "percent_change": -0.4817472923395738,
+      "scope": "Diagnostic user-space locked-load hardware events percompletedSET,notmutexcountorserverthroughput",
+      "event": "IntelTigerLakeMEM_INST_RETIRED.LOCK_LOADS Event0xd0UMask0x21"
+    },
+    "checkpoint": "d5a178b6536397f26131527df3d4b217e9a66462"
+  },
+  "retained_validation": {
+    "status": "passed",
+    "runtime": "checkpoint d5a178b; experimental runtime changes reverted",
+    "workspace": {
+      "passed": 789,
+      "failed": 0,
+      "ignored": 3
+    },
+    "io_uring_reply_tests": 14,
+    "clippy": "passed all targets with io-uring",
+    "fmt": "passed",
+    "diff": "passed"
+  },
+  "benchmark_records": 92,
+  "timed_comparison_samples": 84,
+  "go_warmup_suites": 8,
+  "ui_validation": {
+    "states": 14,
+    "metric_svgs": 256,
+    "local_links": "passed",
+    "selection_url_and_focus": "passed",
+    "visually_reviewed": [
+      "report-desktop.png",
+      "report-mobile.png",
+      "report-scalar.png"
+    ]
+  },
+  "protected_container": {
+    "name": "fyro-a4085354-a4a6-4087-846a-d24e2e5cd3ca",
+    "running": true,
+    "health": "healthy",
+    "modified": false
+  },
+  "only_running_container": [
+    "fyro-a4085354-a4a6-4087-846a-d24e2e5cd3ca"
+  ],
+  "sha256": {
+    "candidate.patch": "3f84f67cd28f99acf3380a5542a4c7058b893b76e6d3d8d723cb8fc39729d5aa",
+    "retained.patch": "89399bf9c3860d81178e3b8ab9d6025fdf5da998b57ed9572c83f45a187a4307",
+    "candidate-source.json": "a14134be0a0a8d8a38ab9f4767be4d4108e10d53123fcfbac1ebfc377414e1de",
+    "retained-checks.json": "3507e324a2eef47abe26ecc1857eea3b4cf6d38fc9659bc318cd7f0157d524f3",
+    "checks.json": "ff2969d68026f783f9e0ea383b590dd1d671fcdc7c5a31b30281c5e40de3b988",
+    "summary.json": "e0f91ccfef0601768fbf82d64b775538ef5df11574b21caf72c0acce8466058f",
+    "numbers.csv": "59fcc60d3c5fd77e1c2e7ad8517abc3d1f84e43bc501e9500a2ad96f36481b00",
+    "report.html": "685248f1cde4ab8c6787bd1abb936f73e41425eb81234bf053089d756a0e3760",
+    "ui-states.json": "1a7bc794a7944f7fb555accbc22e5d83a1a613b2756a233832e8406bedf109db",
+    "runtime-source-proof.json": "c7b6b5e35584a8e37a2cdb40c50bf267ba59f67b063d5d65b0f656dce0da339d"
+  },
+  "new_runtime_optimization_retained": false,
+  "new_regression_tests_retained": true,
+  "new_changes_committed": false
+}

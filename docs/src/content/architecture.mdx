@@ -8,9 +8,9 @@ order: 15
 
 FyroDB combines seven key architectural decisions:
 
-1. **Thread-per-core I/O** — one epoll loop per CPU core via `mio`, with `SO_REUSEPORT` for TCP and `dup` socket cloning for Unix domain sockets
-2. **Lock-free hash map** — custom sharded open-addressing map with atomic pointer swaps, epoch-based reclamation, and right-sized initial shard capacity (32K slots)
-3. **Zero-copy data path** — RESP parsing directly from read buffer, GET writes stored value straight to TCP buffer
+1. **Thread-per-core I/O** — one epoll loop per configured worker via `mio`, with `SO_REUSEPORT` for TCP and `dup` socket cloning for Unix domain sockets
+2. **Guarded concurrent hash map** — sharded open addressing with atomic table publication, EBR lifetime protection, map admission and per-entry read/write guards; shards start at eight slots
+3. **Borrowed parsing and direct replies** — parse from the read buffer and serialize protected values directly; eligible large replies use bounded scatter/gather
 4. **Batched writes & run coalescing** — all epoll events processed before flushing responses; `try_fast_tail` parses write runs directly into stack arrays
 5. **Compact, adaptive storage** — inline keys and values, right-sized shard memory, compact collection encodings, and background memory reclamation
 6. **Embedded Lua 5.4 scripting** — Redis-compatible runtime with SHA1 chunk caching, re-entrant in-process command execution, and generational GC
@@ -40,8 +40,8 @@ FyroDB combines seven key architectural decisions:
   <line x1="351" y1="46" x2="369" y2="46" stroke="#6366f1" strokeWidth="1.5" markerEnd="url(#df-arr)"/>
   <rect x="371" y="14" width="106" height="64" rx="7" fill="#1e1b4b" stroke="#6366f1" strokeWidth="1.5"/>
   <text x="424" y="37" textAnchor="middle" fill="#c7d2fe" fontSize="11" fontFamily="ui-monospace,monospace">Store</text>
-  <text x="424" y="52" textAnchor="middle" fill="#818cf8" fontSize="8.5" fontFamily="ui-monospace,monospace">lock-free map</text>
-  <text x="424" y="66" textAnchor="middle" fill="#818cf8" fontSize="8.5" fontFamily="ui-monospace,monospace">per-key spinlock</text>
+  <text x="424" y="52" textAnchor="middle" fill="#818cf8" fontSize="8.5" fontFamily="ui-monospace,monospace">guarded map</text>
+  <text x="424" y="66" textAnchor="middle" fill="#818cf8" fontSize="8.5" fontFamily="ui-monospace,monospace">entry guards</text>
   <line x1="477" y1="46" x2="495" y2="46" stroke="#6366f1" strokeWidth="1.5" markerEnd="url(#df-arr)"/>
   <rect x="497" y="14" width="118" height="64" rx="7" fill="#1e1b4b" stroke="#6366f1" strokeWidth="1.5"/>
   <text x="556" y="37" textAnchor="middle" fill="#c7d2fe" fontSize="11" fontFamily="ui-monospace,monospace">Response</text>
@@ -57,60 +57,65 @@ FyroDB combines seven key architectural decisions:
 Client → TCP (SO_REUSEPORT) → Worker Thread (epoll)
   → read(socket) → RESP Parser (zero-copy, SIMD memchr)
   → Command Dispatch (3-tier: inline → first-byte → enum)
-  → Store Operation (lock-free lookup, per-entry writer lock, EBR pin/unpin)
+  → Store Operation (command isolation, map admission, entry guards, EBR)
   → Response Build (inline bulk headers, batched)
   → write(socket) → Client
 ```
 
-## Lock-Free Hash Map
+## Guarded concurrent hash map
 
-Built from scratch using atomic pointers, CAS loops, and epoch-based reclamation. Full design documented at: [Building a Lock-Free Concurrent HashMap in Rust](https://www.ranadolui.me/blog/custom-concurrent-hashmap-rust)
+### Memory layout
 
-Key properties:
+The current 64-bit build has a 16-byte CompactKey, 24-byte SmallStr, 24-byte FyroDB enum, 32-byte StoreValue and **56-byte `Entry<StoreValue>`**. Compile-time and regression assertions cover these layouts. Allocator rounding and payload allocations are additional memory; the entry is not a guaranteed cache-line-aligned 64-byte allocation.
 
-- Lookups are lock-free atomic probes and never take the entry lock
-- A 15-bit hash tag rides in each slot pointer's unused high bits, so a probe
-  step rejects a non-match without dereferencing the entry and touching its cache
-  line. Addresses that genuinely use those bits are stored untagged, so the scheme
-  stays correct on any virtual-address layout
-- Tables grow at 75% occupancy, which keeps linear-probe chains short
-- Writers serialize only on the matching entry; unrelated keys do not contend
-- Lock, occupied state, and seqlock generation share one atomic state word
-- A mutation costs one compare-exchange plus two plain stores, not five
-  read-modify-writes on the same cache line
-- Waiters spin on a plain load, back off exponentially, then yield. Without the
-  backoff a hot key scaled *negatively* with worker count, because every waiter
-  saw the unlock at once and stampeded the same line with compare-exchanges
-- Keys up to 15 bytes are stored inline; longer keys use one boxed string
-- Shards begin with 32,768 initial capacity (right-sized to eliminate over 100MB of idle pointer arrays across 128 shards) and issue `_mm_prefetch` hints to overlap memory latency during dynamic table rebuilds
-- Retired entries and tables are freed through EBR after a grace period; a thread
-  that exits hands its remaining garbage to a global list instead of leaking it
-- Direct raw-byte key matching (`eq_bytes`) avoids UTF-8 decode cycles on cache hits,
-  allowing pipelined GET runs to synthesize RESP replies directly into the TCP write buffer
-- In-place mutation under per-key spinlock via `SmallStr::overwrite_bytes` eliminates
-  allocations on pipelined SET updates, slashing hot-key contention latency by 2.4×
-- Specialized pipeline run engines process bursts up to 256 keys per pass (`BATCH = 256`),
-  with an early prefetch-ahead bypass that eliminates redundant hashing and slot lookups
-- Zero-allocation `try_fast_tail` parsing inspects wire prefixes in a single 64-bit comparison and extracts arguments into fixed stack arrays (`QUEUE_RUN_MAX * 3`), bypassing general `parse_one()` overhead
-- Greedy `try_fast_set_expire_pair_at` absorbs adjacent `SET` + `EXPIRE` command pairs directly out of socket buffers into atomic fused operations
+CompactKey stores up to fifteen bytes inline and has a special inline representation for eligible sixteen-byte keys. SmallStr stores up to twenty-three value bytes inline. Longer strings allocate payload storage. Empty shards begin with eight slots and grow as needed; the old fixed 32,768-slot starting-capacity description is obsolete.
+
+CustomMap owns the map-level Access admission state, cache-padded shard metadata, published slot-table addresses, a write-observer hook and snapshot control. A shard has an insertion/growth gate and a growth mutex. Entries hold immutable keys, a packed atomic state and mutable values. The packed state carries occupied/lock bits, reader-count information, sequence/hash information and snapshot state.
+
+### Protection layers
+
+1. **Command isolation:** normal commands acquire a shared worker slot. EVAL, EVALSHA, EXEC and WATCH use exclusive command admission, serializing atomic operations and waiting for ordinary commands to leave every slot. Nested redis.call/redis.pcall dispatch reuses that isolation scope.
+2. **Map read/write admission:** try_read_epoch admits a read-only batch only when no writer has registered; its second check pairs with writer registration. Writers register before waiting for admitted readers to drain. Existing writers may proceed concurrently on different entries. Thread-local nesting avoids duplicate registration for an already-held map and preserves out-of-order drops across nested maps.
+3. **Entry read/write guards:** ordinary value reads acquire a shared reader count in the packed entry state. Writers acquire the entry lock and wait for readers to leave. A map read epoch can replace repeated entry admission for an eligible batch, but it is not interchangeable with EBR.
+4. **EBR:** a pin keeps retired entries and tables alive while raw pointers are examined. EBR alone does not permit concurrently reading and mutating a Rust String, Vec or collection.
+5. **Snapshot and watch hooks:** writers capture required pre-images before mutation, publish completion with the existing ordering, then notify the observing hooks. WATCH invalidation includes direct and optimized batch writes.
+
+The sequentially consistent map-admission handshake and acquire/release entry operations remain intact. A sequence recheck after reading an unprotected mutable value is not a substitute for a read guard.
+
+### Reader and writer flow
+
+A reader pins EBR, probes slots, validates the occupied state and full key, acquires the appropriate value protection, checks expiry/type and reads or serializes while that protection remains held. Fallback reads and collection iteration use guarded access. The guard is released before the pin can permit reclamation.
+
+A writer enters command isolation and map write admission, probes the entry, acquires its write lock, captures a snapshot pre-image if required, mutates the value, releases the entry state and issues write-observer/durability notifications. New inserts also coordinate with shard growth. In-place overwrites avoid allocation only when existing capacity and representation suffice.
+
+Unrelated keys still share admission counters, allocator/cache/memory bandwidth and command-isolation machinery. Contended entry operations may spin, back off or yield. There is no wait-free lookup, bounded-retry, starvation-free or linear CPU-scaling guarantee for the complete value path.
+
+### Retained large-payload algorithms
+
+- **Bounded scatter/gather GET:** eligible string runs use stack RESP headers and IoSlice arrays for up to 256 replies. Each unique entry has one read guard; a fixed 512-slot ownership index resolves duplicate pointers and validates key/hash aliases. The global read epoch is released after entry guards are acquired, while the EBR pin and entry guards retain payload lifetime.
+- **Partial-write ownership:** send attempts are bounded. Bytes that were not accepted by the socket are copied into the connection-owned output buffer before payload guards drop, preserving response order through short writes, EINTR, WouldBlock and later mutations.
+- **Repeated-key routing:** multicore repeated large replies can use the guarded vectored path. Single-worker repeats retain the buffered copy/repeat path because the vectored alternative regressed that cohort.
+- **SET prefetch tiles:** small multicore payloads use a shorter prefetch tile; ordinary and large payloads retain the wider batch. Key/state checks, snapshot capture, write admission and per-entry locks remain in both paths.
+- **Large overwrite copies:** selected values of at least 8 KiB can use an AVX non-temporal copy on supported x86-64 CPUs. Alignment/tails are handled and streaming stores are fenced before completion is published. Consecutive duplicates or hash repetition select cached copying conservatively; unsupported CPUs use the ordinary copy.
+- **Allocation discipline:** these changes use bounded local arrays rather than persistent per-key/per-connection metadata. Payload growth, fallback buffering and snapshots can still allocate.
+
+Implementation lives in crates/customhash/src/access.rs and shard.rs, src/storage/store/isolation.rs and watch.rs, and src/handler/conn/fast_path.rs and bulk.rs. The repository architecture document links each source file.
+
+### Rejected experiments
+
+Counter-striping variants and a later handler that retained write admission across adjacent deep small-SET batches passed correctness checks but did not establish acceptable end-to-end gains. They are not in the retained runtime. The latter reduced one diagnostic locked-access instruction count by about 0.48%, while TCP medians were mixed, including slower cases. No new speedup is credited to it.
+
+The six added regressions cover deep binary pipelines and command boundaries, malformed/partial packets, nested admission cleanup, expiry/large-payload transitions, concurrent SET/read/SAVE and WATCH aborts. The retained source passed 789 workspace tests, zero failures, and 14 io-uring-feature large-reply tests. [Evidence, full coverage and graphs](/docs/benchmarks#safety-and-regression-coverage).
 
 ## Compact Values and Collections
 
-- Strings and JSON payloads use `SmallStr`, keeping values up to 23 bytes inline
-- Hashes and lists use compact vector/deque forms for small collections
+- Strings use `SmallStr`, keeping values up to 23 bytes inline; JSON uses a boxed recursive value representation
+- Hashes use compact sequential storage before promotion; lists use a quicklist of packed chunks
 - Sets use sorted integers for numeric members (with $O(1)$ sequential push fast paths), a compact vector for small sets, and promote to a hash set only when needed; `sadd_added_flags_into` streams `:1\r\n` / `:0\r\n` responses directly to connection buffers
 - Pipelined `JSON.GET` runs prefetch cache slots and entries in parallel, streaming raw JSON payloads via `write_bulk_raw`
-- Compact collections promote after 64 elements and can demote again after shrinking
-- Sorted sets use one score-ordered vector instead of duplicate ordered and lookup indexes; `ZSetData::with_capacity` pre-allocates index structures for large sets with `CHUNK_MAX = 64`
+- Promotion and demotion thresholds depend on collection type; the compact form is retained while its workload and size permit
+- Sorted sets use sorted chunks of up to 256 entries plus a member-to-score index for large sets; chunk lengths support rank and range traversal
 - Fast float formatting uses `ryu` for zero-allocation floating point serialization
-- A sorted set's bloom filter probes five bits per member, keeping the
-  false-positive rate near 0.5%. Each false positive costs a full linear scan of
-  the member list, which is the dominant cost of `ZADD` into a large set
-- Removal paths shrink oversized buffers, while background defragmentation compacts long-lived values
-- An emptied list keeps its ring buffer unless it is oversized, so a queue that
-  drains to empty constantly does not free and reallocate on every pop
-- `LPOP`/`RPOP` of a single element write the reply straight into the output
-  buffer, allocating neither a vector nor a string
 
 ## Memory Allocation and Reclamation
 
@@ -242,3 +247,11 @@ table shared by every connection and revalidated with a single atomic load on a
 version counter.
 
 See [Cluster](/docs/cluster) for setup and operations.
+
+## Benchmarks and current status
+
+The current runtime is checkpoint **d5a178b**, image **3d5ef33d50f9**. [Benchmarks](/docs/benchmarks) leads with the normal Go TCP suite, then standard clients, large payloads, memory, hot keys and rejected trials. Historical best-of-three numbers are kept separately. The latest admission-reuse experiment was reverted; no speedup from that candidate is shipped.
+
+<figure><a href="/benchmarks/2026-11-13/normal-scaling.svg"><img src="/benchmarks/2026-11-13/normal-scaling.svg" alt="Retained runtime worker scaling with throughput, RSS and explicit dedicated versus shared client budgets" /></a></figure>
+
+EBR prevents reclamation; value guards prevent concurrent mutation races; command isolation preserves Lua and transaction atomicity. None can be removed merely because a microbenchmark improves.

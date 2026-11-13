@@ -1,0 +1,14 @@
+{
+  ".note.gnu.build-id": {
+    "bytes": 36,
+    "different_bytes": 20,
+    "original_sha256": "f89fce9d82a8d5cc0c5a1de36ad3db9f3cf301c37a6e1dd4b8ccb6ba8cdd3017",
+    "rebuilt_sha256": "cdb3ecf1e258ac5e9b46a2d7784f642d34d64b1e625aa3c26254240d4c45aa6f"
+  },
+  ".rodata": {
+    "bytes": 920460,
+    "different_bytes": 4,
+    "original_sha256": "508298d22cef8275975d39fcfb8e242e186398d67078132a75ca257652cc0c10",
+    "rebuilt_sha256": "79d1babf9a8efd7a401ba6292887924b49ac5a637b01cf0427dff99f260535dc"
+  }
+}

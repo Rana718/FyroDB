@@ -1,0 +1,94 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="483" viewBox="0 0 1120 483" role="img" aria-labelledby="title desc">
+<title id="title">Current normal Go TCP suite · worker scaling</title><desc id="desc">Three-run medians; 12-worker clients share CPUs. Other clients use dedicated CPUs.. Source: scaling-verified-20261113. Throughput: M ops/s. Ranges: min–max. Same retained runtime.</desc>
+<style>text{font-family:Inter,system-ui,sans-serif;fill:#203943}.title{font-size:25px;font-weight:650}.sub{font-size:14px;fill:#55737c}.name{font-size:21px;font-weight:600}.label{font-size:14px;fill:#55737c}.value{font-size:24px;font-weight:600}.range{font-size:12px;fill:#657d84}</style>
+<rect width="1120" height="483" fill="#f5f8f8"/>
+<text class="title" x="28" y="38">Current normal Go TCP suite · worker scaling</text>
+<text class="sub" x="28" y="66">Three-run medians; 12-worker clients share CPUs. Other clients use dedicated CPUs.</text>
+<rect x="28.0" y="88" width="195.2" height="358" rx="10" fill="white" stroke="#d4dfe1"/>
+<text class="name" x="46.0" y="116">1 worker</text>
+<text class="label" x="46.0" y="157">Pipelined GET</text>
+<text class="value" x="46.0" y="184">20.130M</text>
+<rect x="46.0" y="194" width="159.2" height="6" rx="3" fill="#e9efef"/>
+<rect x="46.0" y="194" width="57.33" height="6" rx="3" fill="#287c77"/>
+<text class="range" x="46.0" y="218">Range 19.264M – 20.265M</text>
+<text class="label" x="46.0" y="245">Pipelined SET</text>
+<text class="value" x="46.0" y="272">17.382M</text>
+<rect x="46.0" y="282" width="159.2" height="6" rx="3" fill="#e9efef"/>
+<rect x="46.0" y="282" width="63.84" height="6" rx="3" fill="#287c77"/>
+<text class="range" x="46.0" y="306">Range 16.261M – 17.424M</text>
+<text class="label" x="46.0" y="333">Peak server RSS</text>
+<text class="value" x="46.0" y="360">782.3 MiB</text>
+<rect x="46.0" y="370" width="159.2" height="6" rx="3" fill="#e9efef"/>
+<rect x="46.0" y="370" width="78.00" height="6" rx="3" fill="#287c77"/>
+<text class="range" x="46.0" y="394">Range 781.6 MiB – 784.5 MiB</text>
+<rect x="245.2" y="88" width="195.2" height="358" rx="10" fill="white" stroke="#d4dfe1"/>
+<text class="name" x="263.2" y="116">2 workers</text>
+<text class="label" x="263.2" y="157">Pipelined GET</text>
+<text class="value" x="263.2" y="184">32.962M</text>
+<rect x="263.2" y="194" width="159.2" height="6" rx="3" fill="#e9efef"/>
+<rect x="263.2" y="194" width="93.88" height="6" rx="3" fill="#7a8996"/>
+<text class="range" x="263.2" y="218">Range 31.613M – 35.951M</text>
+<text class="label" x="263.2" y="245">Pipelined SET</text>
+<text class="value" x="263.2" y="272">27.605M</text>
+<rect x="263.2" y="282" width="159.2" height="6" rx="3" fill="#e9efef"/>
+<rect x="263.2" y="282" width="101.39" height="6" rx="3" fill="#7a8996"/>
+<text class="range" x="263.2" y="306">Range 26.620M – 30.200M</text>
+<text class="label" x="263.2" y="333">Peak server RSS</text>
+<text class="value" x="263.2" y="360">794.6 MiB</text>
+<rect x="263.2" y="370" width="159.2" height="6" rx="3" fill="#e9efef"/>
+<rect x="263.2" y="370" width="79.22" height="6" rx="3" fill="#7a8996"/>
+<text class="range" x="263.2" y="394">Range 793.7 MiB – 794.8 MiB</text>
+<rect x="462.4" y="88" width="195.2" height="358" rx="10" fill="white" stroke="#d4dfe1"/>
+<text class="name" x="480.4" y="116">3 workers</text>
+<text class="label" x="480.4" y="157">Pipelined GET</text>
+<text class="value" x="480.4" y="184">44.616M</text>
+<rect x="480.4" y="194" width="159.2" height="6" rx="3" fill="#e9efef"/>
+<rect x="480.4" y="194" width="127.07" height="6" rx="3" fill="#796a95"/>
+<text class="range" x="480.4" y="218">Range 44.458M – 44.780M</text>
+<text class="label" x="480.4" y="245">Pipelined SET</text>
+<text class="value" x="480.4" y="272">32.251M</text>
+<rect x="480.4" y="282" width="159.2" height="6" rx="3" fill="#e9efef"/>
+<rect x="480.4" y="282" width="118.45" height="6" rx="3" fill="#796a95"/>
+<text class="range" x="480.4" y="306">Range 30.616M – 39.781M</text>
+<text class="label" x="480.4" y="333">Peak server RSS</text>
+<text class="value" x="480.4" y="360">797.1 MiB</text>
+<rect x="480.4" y="370" width="159.2" height="6" rx="3" fill="#e9efef"/>
+<rect x="480.4" y="370" width="79.47" height="6" rx="3" fill="#796a95"/>
+<text class="range" x="480.4" y="394">Range 796.5 MiB – 797.5 MiB</text>
+<rect x="679.5999999999999" y="88" width="195.2" height="358" rx="10" fill="white" stroke="#d4dfe1"/>
+<text class="name" x="697.5999999999999" y="116">6 workers /</text>
+<text class="name" x="697.5999999999999" y="138">SMT</text>
+<text class="label" x="697.5999999999999" y="157">Pipelined GET</text>
+<text class="value" x="697.5999999999999" y="184">47.419M</text>
+<rect x="697.5999999999999" y="194" width="159.2" height="6" rx="3" fill="#e9efef"/>
+<rect x="697.5999999999999" y="194" width="135.05" height="6" rx="3" fill="#7d714d"/>
+<text class="range" x="697.5999999999999" y="218">Range 39.377M – 49.284M</text>
+<text class="label" x="697.5999999999999" y="245">Pipelined SET</text>
+<text class="value" x="697.5999999999999" y="272">37.704M</text>
+<rect x="697.5999999999999" y="282" width="159.2" height="6" rx="3" fill="#e9efef"/>
+<rect x="697.5999999999999" y="282" width="138.47" height="6" rx="3" fill="#7d714d"/>
+<text class="range" x="697.5999999999999" y="306">Range 34.751M – 40.336M</text>
+<text class="label" x="697.5999999999999" y="333">Peak server RSS</text>
+<text class="value" x="697.5999999999999" y="360">1296.5 MiB</text>
+<rect x="697.5999999999999" y="370" width="159.2" height="6" rx="3" fill="#e9efef"/>
+<rect x="697.5999999999999" y="370" width="129.26" height="6" rx="3" fill="#7d714d"/>
+<text class="range" x="697.5999999999999" y="394">Range 1289.7 MiB – 1303.3 MiB</text>
+<rect x="896.8" y="88" width="195.2" height="358" rx="10" fill="white" stroke="#d4dfe1"/>
+<text class="name" x="914.8" y="116">12 / shared</text>
+<text class="name" x="914.8" y="138">client</text>
+<text class="label" x="914.8" y="157">Pipelined GET</text>
+<text class="value" x="914.8" y="184">55.897M</text>
+<rect x="914.8" y="194" width="159.2" height="6" rx="3" fill="#e9efef"/>
+<rect x="914.8" y="194" width="159.20" height="6" rx="3" fill="#4b788d"/>
+<text class="range" x="914.8" y="218">Range 51.758M – 55.953M</text>
+<text class="label" x="914.8" y="245">Pipelined SET</text>
+<text class="value" x="914.8" y="272">43.347M</text>
+<rect x="914.8" y="282" width="159.2" height="6" rx="3" fill="#e9efef"/>
+<rect x="914.8" y="282" width="159.20" height="6" rx="3" fill="#4b788d"/>
+<text class="range" x="914.8" y="306">Range 42.798M – 44.188M</text>
+<text class="label" x="914.8" y="333">Peak server RSS</text>
+<text class="value" x="914.8" y="360">1596.8 MiB</text>
+<rect x="914.8" y="370" width="159.2" height="6" rx="3" fill="#e9efef"/>
+<rect x="914.8" y="370" width="159.20" height="6" rx="3" fill="#4b788d"/>
+<text class="range" x="914.8" y="394">Range 1380.3 MiB – 1601.5 MiB</text>
+<text class="range" x="28" y="469">Source: scaling-verified-20261113. Throughput: M ops/s. Ranges: min–max. Same retained runtime.</text></svg>

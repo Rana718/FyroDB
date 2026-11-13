@@ -1,0 +1,126 @@
+{
+  "status": "complete",
+  "images": {
+    "baseline": "sha256:3d5ef33d50f9dc4d5e321dbd196cbed3c5e644bfbdb2be32c6108fd6be4f3980",
+    "candidate": "sha256:3d5ef33d50f9dc4d5e321dbd196cbed3c5e644bfbdb2be32c6108fd6be4f3980"
+  },
+  "client_image": "sha256:3d5ef33d50f9dc4d5e321dbd196cbed3c5e644bfbdb2be32c6108fd6be4f3980",
+  "client_sha256": "d687702e17bea223b37e4381397e7805d63abae7e33c3670d0376e487540a6ac",
+  "go_source_sha256": {
+    "bench/gen_test.go": "d2fd6d487a900fcf5b19f8b869e1b779b426fcc17708ec7c120c13739a54e5d5",
+    "bench/realworld.go": "d1354ab78c70117afb2135cb8db849760a43a94779925de5c1772972dbcc2b60",
+    "bench/pgcache.go": "24fd857789497c619bbb2e34bae1447df6d665d3b3956943edbfc145362fc637",
+    "bench/hist_test.go": "bfa56a4472918c191a53a546ab0a27aec73942fbf128bbcc656afa29975f35d1",
+    "bench/ann_test.go": "ed4e2dcb658fc55ab16aed7de96f8406ed64ec3ef744617beb98a8f5edd01692",
+    "bench/kv.go": "6d1cf078f2ef1f875c06578a3417e2fbea8c110203711f74de69f01170ef23ab",
+    "bench/latency.go": "c8bf27b01a1abb1fba5af671d0d67b508f56b6fdaad58a026223c5c6084fe7ab",
+    "bench/monitor_test.go": "84b8925bd50052152cb5fe0cdef6b7142633ccc18e184afee2551f26b17f83f3",
+    "bench/pubsub.go": "57975263aac188660a1fd8204bd31dfaf6cf94a3e65ca05a6ac5e163fa612635",
+    "bench/memory.go": "143909ddbdac5d2fd782b006c535ccad24d3b17461ddb92440015afbf77c7199",
+    "bench/kv_test.go": "7ee88d2d40b47f162a3bc24ba41ad3b1d9cea8923c00f44177202e2b4ddd52dd",
+    "bench/net_ceiling_test.go": "9770ae801b36847471d7dfc8cdca97e72ef54ff526d5fd13bc9a08e45bb9af9d",
+    "bench/hist.go": "5373558ac4aacc2dc82d7c84c0bf31e9b0238b0f5f0d7c9f2760f095aaa8ead8",
+    "bench/monitor.go": "f1432b3bb35c12de968c8e6ebe6dc5bb7b4c207b74cb22a3afed15aa527e99a3",
+    "bench/ann.go": "7e47df7465f18acf7549130913d6039cd7d2322b58df8a204b637873fd7495e5",
+    "bench/counts_test.go": "a1b8f3c351ec4d34c299d0c7086805ab31e15f08e0f7738cfb5a66863dcea73b",
+    "bench/ceiling_test.go": "3f134dd8eaaddef08301d2672d6310a50f1c9b8598bbb0820354a97df2cb1c96",
+    "bench/vector.go": "095e556e408da5177ea30f29218179c33ce7e0b93716e03ef20dbde48691ad06",
+    "bench/main.go": "2db1dbaed1660ec2682c2fb53782f79840d926a0302d2b334a4e3cb0ef920a87"
+  },
+  "server_cpus": [
+    0,
+    1,
+    2,
+    6,
+    7,
+    8
+  ],
+  "client_cpus": [
+    3,
+    4,
+    5,
+    9,
+    10,
+    11
+  ],
+  "workers": [
+    6
+  ],
+  "shared_cpus": false,
+  "runs": 3,
+  "warmups": 1,
+  "mode": "bench",
+  "server_memory_limit": "4g",
+  "client_memory_limit": "1g",
+  "harness_sha256": "c48f48688ea3aaec9762b444d5f0eca06a85fff0364a124e72f7fb71bc1dc175",
+  "cpu_topology": {
+    "0": {
+      "physical_package_id": "0",
+      "core_id": "0",
+      "thread_siblings_list": "0,6"
+    },
+    "1": {
+      "physical_package_id": "0",
+      "core_id": "1",
+      "thread_siblings_list": "1,7"
+    },
+    "2": {
+      "physical_package_id": "0",
+      "core_id": "2",
+      "thread_siblings_list": "2,8"
+    },
+    "3": {
+      "physical_package_id": "0",
+      "core_id": "3",
+      "thread_siblings_list": "3,9"
+    },
+    "4": {
+      "physical_package_id": "0",
+      "core_id": "4",
+      "thread_siblings_list": "4,10"
+    },
+    "5": {
+      "physical_package_id": "0",
+      "core_id": "5",
+      "thread_siblings_list": "5,11"
+    },
+    "6": {
+      "physical_package_id": "0",
+      "core_id": "0",
+      "thread_siblings_list": "0,6"
+    },
+    "7": {
+      "physical_package_id": "0",
+      "core_id": "1",
+      "thread_siblings_list": "1,7"
+    },
+    "8": {
+      "physical_package_id": "0",
+      "core_id": "2",
+      "thread_siblings_list": "2,8"
+    },
+    "9": {
+      "physical_package_id": "0",
+      "core_id": "3",
+      "thread_siblings_list": "3,9"
+    },
+    "10": {
+      "physical_package_id": "0",
+      "core_id": "4",
+      "thread_siblings_list": "4,10"
+    },
+    "11": {
+      "physical_package_id": "0",
+      "core_id": "5",
+      "thread_siblings_list": "5,11"
+    }
+  },
+  "notes": [
+    "Unmodified Go client and default operation counts.",
+    "Both processes run in Docker; equal niceness is checked before releasing the client.",
+    "Shared-CPU runs require an explicit flag and are separate from dedicated-client scaling.",
+    "Only the two owned benchmark containers share a PID namespace; host PID namespace is not shared.",
+    "Server RSS uses kernel VmHWM; container memory uses memory.peak; client memory is sampled before cgroup exit.",
+    "One complete warmup is retained but excluded; every measured attempt is retained."
+  ]
+}

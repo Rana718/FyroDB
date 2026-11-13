@@ -619,3 +619,94 @@ fn binary_set_fallback_keeps_inserts_and_overwrites_after_long_probe_chains() {
       }
    }
 }
+
+#[test]
+fn deep_small_set_runs_preserve_read_script_transaction_and_fallback_boundaries() {
+   for workers in [1, 6] {
+      for count in [256, 2048] {
+         let store = Arc::new(Store::with_config_workers(8, usize::MAX, workers));
+         let value = [0, 255, b'\r', b'\n', 7];
+         let mut wire = Vec::new();
+         for index in 0..count {
+            wire.extend(command(&[
+               b"SET",
+               format!("batch:{index:012}").as_bytes(),
+               &value,
+            ]));
+         }
+         let mut expected = b"+OK\r\n".repeat(count);
+         wire.extend(command(&[b"GET", b"batch:000000000000"]));
+         expected.extend(bulk(&value));
+         wire.extend(command(&[b"SET", b"watched", b"before"]).repeat(count));
+         expected.extend(b"+OK\r\n".repeat(count));
+         wire.extend(command(&[
+            b"EVAL",
+            b"redis.call('SET',KEYS[1],'script'); return 42",
+            b"1",
+            b"watched",
+         ]));
+         wire.extend(command(&[b"WATCH", b"watched"]));
+         wire.extend(command(&[b"MULTI"]));
+         wire.extend(command(&[b"SET", b"watched", b"queued"]));
+         wire.extend(command(&[b"EXEC"]));
+         wire.extend(command(&[b"GET", b"watched"]));
+         expected.extend(b":42\r\n+OK\r\n+OK\r\n+QUEUED\r\n*1\r\n+OK\r\n$6\r\nqueued\r\n");
+         wire.extend(command(&[b"SET", b"watched", b"plain"]).repeat(count));
+         expected.extend(b"+OK\r\n".repeat(count));
+         wire.extend(command(&[b"SET", b"watched", b"blocked", b"NX"]));
+         wire.extend(command(&[b"PING"]));
+         expected.extend(b"$-1\r\n+PONG\r\n");
+         check_pipeline(Arc::clone(&store), wire, &expected);
+         assert_eq!(store.get("watched").as_deref(), Some("plain"));
+      }
+   }
+}
+
+#[test]
+fn deep_set_admission_releases_on_partial_commands_and_protocol_errors() {
+   for incomplete in [false, true] {
+      let store = Arc::new(Store::with_config_workers(8, usize::MAX, 6));
+      let mut wire = command(&[b"SET", b"key:000000000000", &[b'x'; 64]]).repeat(1024);
+      wire.extend_from_slice(if incomplete {
+         b"*3\r\n$3\r\nSET\r\n$7\r\npartial\r\n$4\r\nta"
+      } else {
+         b"*2\r\n$-2\r\n"
+      });
+      with_connection(Arc::clone(&store), |conn| {
+         conn.parser.filled = wire.len();
+         conn.parser.rbuf = wire;
+         assert_eq!(conn.process_buffered(), incomplete);
+         assert_eq!(conn.parser.wbuf, b"+OK\r\n".repeat(1024));
+         if incomplete {
+            conn.parser.rbuf.extend_from_slice(b"il\r\n");
+            conn.parser.filled = conn.parser.rbuf.len();
+            assert!(conn.process_buffered());
+            assert_eq!(store.get("partial").as_deref(), Some("tail"));
+         }
+      });
+   }
+}
+
+#[test]
+fn deep_set_admission_preserves_expire_pairs_and_large_value_boundaries() {
+   let store = Arc::new(Store::with_config_workers(8, usize::MAX, 6));
+   let prefix = command(&[b"SET", b"prefix:000000000000", &[b'p'; 64]]).repeat(1024);
+   let mut wire = prefix.clone();
+   let mut expected = b"+OK\r\n".repeat(1024);
+   wire.extend(command(&[b"SET", b"expiring", b"value"]));
+   wire.extend(command(&[b"EXPIRE", b"expiring", b"60"]));
+   expected.extend(b"+OK\r\n:1\r\n");
+   for size in [257, 4096, 10240] {
+      wire.extend_from_slice(&prefix);
+      expected.extend(b"+OK\r\n".repeat(1024));
+      let value = vec![255; size];
+      wire.extend(command(&[b"SET", b"large", &value]));
+      wire.extend(command(&[b"GET", b"large"]));
+      expected.extend(b"+OK\r\n");
+      expected.extend(bulk(&value));
+   }
+   check_pipeline(Arc::clone(&store), wire, &expected);
+   let remaining = store.ttl("expiring").unwrap();
+   assert!(remaining > std::time::Duration::ZERO);
+   assert!(remaining <= std::time::Duration::from_secs(60));
+}

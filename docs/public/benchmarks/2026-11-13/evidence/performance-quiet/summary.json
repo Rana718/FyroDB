@@ -1,0 +1,68 @@
+{
+  "metadata": {
+    "status": "failed",
+    "cpu": "11th Gen Intel(R) Core(TM) i5-11400H @ 2.70GHz",
+    "initial_pressure": {
+      "cpu": 5.71,
+      "memory": 0.19,
+      "io": 1.23
+    },
+    "governor": "powersave",
+    "server_cpus": [
+      0,
+      1,
+      2,
+      3,
+      6,
+      7,
+      8,
+      9
+    ],
+    "client_cpus": [
+      4,
+      5,
+      10,
+      11
+    ],
+    "direct_cpus": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+    ],
+    "workers": 8,
+    "runs": 7,
+    "warmups": 1,
+    "inner": 3,
+    "hotkey_duration_seconds": null,
+    "counts": {
+      "clients": 100,
+      "kv_per_client": 100000,
+      "mixed_per_client": 20000,
+      "hotkey_per_client": 100000,
+      "subscribers": 50,
+      "publishers": 10,
+      "messages_per_publisher": 20000
+    },
+    "binary_sha256": {
+      "current": "4ec156d07b33bccdf4845f7de7586166d3fe7bcdbac47b641f17f0b52106bc03",
+      "tuned": "d33d30daeecdc28a7bdae61612662dfaa84581432b9e87729c0fa40620c1011f",
+      "tcp-bench": "694535e448acdda854546242ebc57d6f497d9f370ed37510fbd76cf1a84afed2"
+    },
+    "readme_basis": "Historical best-of-three claims with conflicting TCP/in-process labels; rates are references, not matched measurements.",
+    "error": "RuntimeError"
+  },
+  "results": {
+    "tcp": {},
+    "in-process": {}
+  },
+  "samples": []
+}

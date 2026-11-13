@@ -1,0 +1,1322 @@
+[
+  {
+    "size": 5,
+    "core": "single",
+    "pipeline": 64,
+    "engines": {
+      "dragonfly": {
+        "loaded_rss_mib": 115.45703125,
+        "peak_rss_mib": 119.45703125,
+        "min_peak_rss_mib": 119.12109375,
+        "max_peak_rss_mib": 121.4296875,
+        "peak_cgroup_mib": 144.96875,
+        "client_cores": 0.2757993479153767,
+        "server_cores": 0.9548703361905955,
+        "contended": 0,
+        "metrics": {
+          "GET": {
+            "mops": 0.907441,
+            "min_mops": 0.867679,
+            "max_mops": 0.95038962,
+            "p99_ms": 7.663
+          },
+          "SET": {
+            "mops": 0.76763644,
+            "min_mops": 0.68823125,
+            "max_mops": 0.76775431,
+            "p99_ms": 9.127
+          }
+        }
+      },
+      "fyrodb": {
+        "loaded_rss_mib": 111.96484375,
+        "peak_rss_mib": 112.52734375,
+        "min_peak_rss_mib": 112.46484375,
+        "max_peak_rss_mib": 114.44140625,
+        "peak_cgroup_mib": 111.16015625,
+        "client_cores": 3.4029319517225,
+        "server_cores": 0.6373089105401001,
+        "contended": 1,
+        "metrics": {
+          "GET": {
+            "mops": 6.662225,
+            "min_mops": 6.6577895,
+            "max_mops": 7.993605,
+            "p99_ms": 0.551
+          },
+          "SET": {
+            "mops": 6.662225,
+            "min_mops": 6.6577895,
+            "max_mops": 7.993605,
+            "p99_ms": 0.639
+          }
+        }
+      }
+    }
+  },
+  {
+    "size": 5,
+    "core": "multi",
+    "pipeline": 64,
+    "engines": {
+      "dragonfly": {
+        "loaded_rss_mib": 119.140625,
+        "peak_rss_mib": 119.40234375,
+        "min_peak_rss_mib": 119.15234375,
+        "max_peak_rss_mib": 119.75,
+        "peak_cgroup_mib": 144.8984375,
+        "client_cores": 0.9781755812207065,
+        "server_cores": 5.54577996928433,
+        "contended": 0,
+        "metrics": {
+          "GET": {
+            "mops": 3.3311125,
+            "min_mops": 3.07503075,
+            "max_mops": 3.33222275,
+            "p99_ms": 2.607
+          },
+          "SET": {
+            "mops": 2.664535,
+            "min_mops": 2.4981265,
+            "max_mops": 2.66524525,
+            "p99_ms": 3.903
+          }
+        }
+      },
+      "fyrodb": {
+        "loaded_rss_mib": 111.86328125,
+        "peak_rss_mib": 112.015625,
+        "min_peak_rss_mib": 111.91796875,
+        "max_peak_rss_mib": 112.02734375,
+        "peak_cgroup_mib": 111.72265625,
+        "client_cores": 3.6023564625540003,
+        "server_cores": 0.870628284738,
+        "contended": 0,
+        "metrics": {
+          "GET": {
+            "mops": 7.993605,
+            "min_mops": 6.662225,
+            "max_mops": 7.993605,
+            "p99_ms": 0.687
+          },
+          "SET": {
+            "mops": 7.9872205,
+            "min_mops": 6.662225,
+            "max_mops": 7.993605,
+            "p99_ms": 0.703
+          }
+        }
+      }
+    }
+  },
+  {
+    "size": 16,
+    "core": "single",
+    "pipeline": 64,
+    "engines": {
+      "dragonfly": {
+        "loaded_rss_mib": 115.8515625,
+        "peak_rss_mib": 120.0234375,
+        "min_peak_rss_mib": 119.61328125,
+        "max_peak_rss_mib": 121.01171875,
+        "peak_cgroup_mib": 147.87890625,
+        "client_cores": 0.27813386332027135,
+        "server_cores": 0.9605618346098257,
+        "contended": 0,
+        "metrics": {
+          "GET": {
+            "mops": 0.97352025,
+            "min_mops": 0.950209,
+            "max_mops": 0.9736150600000001,
+            "p99_ms": 6.087
+          },
+          "SET": {
+            "mops": 0.76751862,
+            "min_mops": 0.72590012,
+            "max_mops": 0.78277888,
+            "p99_ms": 8.183
+          }
+        }
+      },
+      "fyrodb": {
+        "loaded_rss_mib": 111.921875,
+        "peak_rss_mib": 112.484375,
+        "min_peak_rss_mib": 112.484375,
+        "max_peak_rss_mib": 112.62890625,
+        "peak_cgroup_mib": 111.609375,
+        "client_cores": 3.54375308230157,
+        "server_cores": 0.692991196986,
+        "contended": 0,
+        "metrics": {
+          "GET": {
+            "mops": 7.993605,
+            "min_mops": 6.662225,
+            "max_mops": 7.993605,
+            "p99_ms": 0.535
+          },
+          "SET": {
+            "mops": 7.9872205,
+            "min_mops": 6.6577895,
+            "max_mops": 7.993605,
+            "p99_ms": 0.599
+          }
+        }
+      }
+    }
+  },
+  {
+    "size": 16,
+    "core": "multi",
+    "pipeline": 64,
+    "engines": {
+      "dragonfly": {
+        "loaded_rss_mib": 119.10546875,
+        "peak_rss_mib": 119.41796875,
+        "min_peak_rss_mib": 118.48828125,
+        "max_peak_rss_mib": 119.984375,
+        "peak_cgroup_mib": 143.6875,
+        "client_cores": 1.0160451596944542,
+        "server_cores": 5.415194259124625,
+        "contended": 0,
+        "metrics": {
+          "GET": {
+            "mops": 3.0721965,
+            "min_mops": 2.855511,
+            "max_mops": 3.33222275,
+            "p99_ms": 3.335
+          },
+          "SET": {
+            "mops": 2.4981265,
+            "min_mops": 2.4981265,
+            "max_mops": 2.66240675,
+            "p99_ms": 4.567
+          }
+        }
+      },
+      "fyrodb": {
+        "loaded_rss_mib": 111.8515625,
+        "peak_rss_mib": 112.02734375,
+        "min_peak_rss_mib": 111.84375,
+        "max_peak_rss_mib": 112.24609375,
+        "peak_cgroup_mib": 112.86328125,
+        "client_cores": 3.546655083309735,
+        "server_cores": 0.8834999809248113,
+        "contended": 0,
+        "metrics": {
+          "GET": {
+            "mops": 7.993605,
+            "min_mops": 6.662225,
+            "max_mops": 7.993605,
+            "p99_ms": 0.967
+          },
+          "SET": {
+            "mops": 6.6577895,
+            "min_mops": 6.6577895,
+            "max_mops": 6.662225,
+            "p99_ms": 1.455
+          }
+        }
+      }
+    }
+  },
+  {
+    "size": 23,
+    "core": "single",
+    "pipeline": 64,
+    "engines": {
+      "dragonfly": {
+        "loaded_rss_mib": 132.42578125,
+        "peak_rss_mib": 136.50390625,
+        "min_peak_rss_mib": 134.61328125,
+        "max_peak_rss_mib": 136.8125,
+        "peak_cgroup_mib": 173.3828125,
+        "client_cores": 0.23297683255815194,
+        "server_cores": 0.9595241029010506,
+        "contended": 2,
+        "metrics": {
+          "GET": {
+            "mops": 0.78271762,
+            "min_mops": 0.67645269,
+            "max_mops": 0.86790488,
+            "p99_ms": 8.367
+          },
+          "SET": {
+            "mops": 0.65436462,
+            "min_mops": 0.54677675,
+            "max_mops": 0.71280919,
+            "p99_ms": 10.159
+          }
+        }
+      },
+      "fyrodb": {
+        "loaded_rss_mib": 112.06640625,
+        "peak_rss_mib": 112.6875,
+        "min_peak_rss_mib": 112.46875,
+        "max_peak_rss_mib": 112.75390625,
+        "peak_cgroup_mib": 111.7890625,
+        "client_cores": 3.5832753277387503,
+        "server_cores": 0.6975963128264999,
+        "contended": 0,
+        "metrics": {
+          "GET": {
+            "mops": 7.993605,
+            "min_mops": 7.993605,
+            "max_mops": 7.993605,
+            "p99_ms": 0.495
+          },
+          "SET": {
+            "mops": 7.993605,
+            "min_mops": 6.662225,
+            "max_mops": 7.993605,
+            "p99_ms": 0.583
+          }
+        }
+      }
+    }
+  },
+  {
+    "size": 23,
+    "core": "multi",
+    "pipeline": 64,
+    "engines": {
+      "dragonfly": {
+        "loaded_rss_mib": 135.21875,
+        "peak_rss_mib": 135.94921875,
+        "min_peak_rss_mib": 135.82421875,
+        "max_peak_rss_mib": 136.03515625,
+        "peak_cgroup_mib": 168.65234375,
+        "client_cores": 0.9260804777698388,
+        "server_cores": 5.673478602553571,
+        "contended": 0,
+        "metrics": {
+          "GET": {
+            "mops": 3.0740855,
+            "min_mops": 2.855511,
+            "max_mops": 3.33000325,
+            "p99_ms": 2.511
+          },
+          "SET": {
+            "mops": 2.4981265,
+            "min_mops": 2.4981265,
+            "max_mops": 2.66524525,
+            "p99_ms": 2.919
+          }
+        }
+      },
+      "fyrodb": {
+        "loaded_rss_mib": 112.2578125,
+        "peak_rss_mib": 112.44140625,
+        "min_peak_rss_mib": 112.3203125,
+        "max_peak_rss_mib": 114.30078125,
+        "peak_cgroup_mib": 112.8046875,
+        "client_cores": 3.51190068759146,
+        "server_cores": 0.7716803024731849,
+        "contended": 0,
+        "metrics": {
+          "GET": {
+            "mops": 6.662225,
+            "min_mops": 6.662225,
+            "max_mops": 6.662225,
+            "p99_ms": 0.599
+          },
+          "SET": {
+            "mops": 6.662225,
+            "min_mops": 6.6577895,
+            "max_mops": 6.662225,
+            "p99_ms": 0.799
+          }
+        }
+      }
+    }
+  },
+  {
+    "size": 24,
+    "core": "single",
+    "pipeline": 64,
+    "engines": {
+      "dragonfly": {
+        "loaded_rss_mib": 130.59375,
+        "peak_rss_mib": 134.9140625,
+        "min_peak_rss_mib": 134.64453125,
+        "max_peak_rss_mib": 135.10546875,
+        "peak_cgroup_mib": 172.875,
+        "client_cores": 0.25013423368183246,
+        "server_cores": 0.9631788027699709,
+        "contended": 0,
+        "metrics": {
+          "GET": {
+            "mops": 0.84925694,
+            "min_mops": 0.8144648800000001,
+            "max_mops": 0.84947331,
+            "p99_ms": 6.983
+          },
+          "SET": {
+            "mops": 0.71286,
+            "min_mops": 0.70028012,
+            "max_mops": 0.7392621899999999,
+            "p99_ms": 8.687
+          }
+        }
+      },
+      "fyrodb": {
+        "loaded_rss_mib": 142.609375,
+        "peak_rss_mib": 143.1875,
+        "min_peak_rss_mib": 143.01171875,
+        "max_peak_rss_mib": 143.359375,
+        "peak_cgroup_mib": 142.93359375,
+        "client_cores": 1.4019636573751384,
+        "server_cores": 0.8157382835340896,
+        "contended": 0,
+        "metrics": {
+          "GET": {
+            "mops": 5.711022,
+            "min_mops": 5.711022,
+            "max_mops": 5.7142855,
+            "p99_ms": 0.999
+          },
+          "SET": {
+            "mops": 6.662225,
+            "min_mops": 6.662225,
+            "max_mops": 6.662225,
+            "p99_ms": 0.775
+          }
+        }
+      }
+    }
+  },
+  {
+    "size": 24,
+    "core": "multi",
+    "pipeline": 64,
+    "engines": {
+      "dragonfly": {
+        "loaded_rss_mib": 135.33984375,
+        "peak_rss_mib": 136.1171875,
+        "min_peak_rss_mib": 135.99609375,
+        "max_peak_rss_mib": 136.43359375,
+        "peak_cgroup_mib": 166.75,
+        "client_cores": 0.9527017610500844,
+        "server_cores": 5.445398074702676,
+        "contended": 0,
+        "metrics": {
+          "GET": {
+            "mops": 3.07314075,
+            "min_mops": 2.66524525,
+            "max_mops": 3.33222275,
+            "p99_ms": 2.903
+          },
+          "SET": {
+            "mops": 2.4981265,
+            "min_mops": 2.2202485,
+            "max_mops": 2.66524525,
+            "p99_ms": 3.831
+          }
+        }
+      },
+      "fyrodb": {
+        "loaded_rss_mib": 142.5546875,
+        "peak_rss_mib": 142.7734375,
+        "min_peak_rss_mib": 142.765625,
+        "max_peak_rss_mib": 143.01171875,
+        "peak_cgroup_mib": 143.69921875,
+        "client_cores": 3.525334253725481,
+        "server_cores": 1.1809949786608616,
+        "contended": 0,
+        "metrics": {
+          "GET": {
+            "mops": 6.662225,
+            "min_mops": 6.6577895,
+            "max_mops": 7.993605,
+            "p99_ms": 0.855
+          },
+          "SET": {
+            "mops": 6.662225,
+            "min_mops": 6.662225,
+            "max_mops": 7.993605,
+            "p99_ms": 0.807
+          }
+        }
+      }
+    }
+  },
+  {
+    "size": 32,
+    "core": "single",
+    "pipeline": 64,
+    "engines": {
+      "dragonfly": {
+        "loaded_rss_mib": 146.2578125,
+        "peak_rss_mib": 150.48046875,
+        "min_peak_rss_mib": 150.140625,
+        "max_peak_rss_mib": 150.5546875,
+        "peak_cgroup_mib": 194.0703125,
+        "client_cores": 0.22856233126737666,
+        "server_cores": 0.9623522386585073,
+        "contended": 1,
+        "metrics": {
+          "GET": {
+            "mops": 0.7983394399999999,
+            "min_mops": 0.7983394399999999,
+            "max_mops": 0.83160088,
+            "p99_ms": 8.063
+          },
+          "SET": {
+            "mops": 0.67659,
+            "min_mops": 0.65440744,
+            "max_mops": 0.72584738,
+            "p99_ms": 9.911
+          }
+        }
+      },
+      "fyrodb": {
+        "loaded_rss_mib": 142.484375,
+        "peak_rss_mib": 143.0625,
+        "min_peak_rss_mib": 143.015625,
+        "max_peak_rss_mib": 143.27734375,
+        "peak_cgroup_mib": 142.43359375,
+        "client_cores": 2.2181834940903573,
+        "server_cores": 0.7562551984891684,
+        "contended": 0,
+        "metrics": {
+          "GET": {
+            "mops": 5.7077625,
+            "min_mops": 4.9975015,
+            "max_mops": 5.711022,
+            "p99_ms": 1.063
+          },
+          "SET": {
+            "mops": 6.662225,
+            "min_mops": 6.662225,
+            "max_mops": 6.662225,
+            "p99_ms": 0.663
+          }
+        }
+      }
+    }
+  },
+  {
+    "size": 32,
+    "core": "multi",
+    "pipeline": 64,
+    "engines": {
+      "dragonfly": {
+        "loaded_rss_mib": 150.671875,
+        "peak_rss_mib": 151.28515625,
+        "min_peak_rss_mib": 151.23046875,
+        "max_peak_rss_mib": 151.3359375,
+        "peak_cgroup_mib": 187.2109375,
+        "client_cores": 0.9762145770572138,
+        "server_cores": 5.6152569810017035,
+        "contended": 0,
+        "metrics": {
+          "GET": {
+            "mops": 3.07597675,
+            "min_mops": 3.07597675,
+            "max_mops": 3.3311125,
+            "p99_ms": 1.999
+          },
+          "SET": {
+            "mops": 2.49937525,
+            "min_mops": 2.49875075,
+            "max_mops": 2.66524525,
+            "p99_ms": 2.519
+          }
+        }
+      },
+      "fyrodb": {
+        "loaded_rss_mib": 142.61328125,
+        "peak_rss_mib": 142.89453125,
+        "min_peak_rss_mib": 142.76953125,
+        "max_peak_rss_mib": 142.98828125,
+        "peak_cgroup_mib": 143.875,
+        "client_cores": 3.554383644189383,
+        "server_cores": 1.1389828969204405,
+        "contended": 0,
+        "metrics": {
+          "GET": {
+            "mops": 7.993605,
+            "min_mops": 6.662225,
+            "max_mops": 7.993605,
+            "p99_ms": 0.679
+          },
+          "SET": {
+            "mops": 6.662225,
+            "min_mops": 6.662225,
+            "max_mops": 7.993605,
+            "p99_ms": 0.519
+          }
+        }
+      }
+    }
+  },
+  {
+    "size": 64,
+    "core": "single",
+    "pipeline": 1,
+    "engines": {
+      "dragonfly": {
+        "loaded_rss_mib": 161.6796875,
+        "peak_rss_mib": 164.9375,
+        "min_peak_rss_mib": 164.84765625,
+        "max_peak_rss_mib": 164.98828125,
+        "peak_cgroup_mib": 219.23046875,
+        "client_cores": 1.168027879131404,
+        "server_cores": 0.745073639922389,
+        "contended": 0,
+        "metrics": {
+          "GET": {
+            "mops": 0.19040366,
+            "min_mops": 0.18178512,
+            "max_mops": 0.19040366,
+            "p99_ms": 0.535
+          },
+          "SET": {
+            "mops": 0.17388281,
+            "min_mops": 0.17388281,
+            "max_mops": 0.18178512,
+            "p99_ms": 0.527
+          }
+        }
+      },
+      "fyrodb": {
+        "loaded_rss_mib": 173.140625,
+        "peak_rss_mib": 173.4921875,
+        "min_peak_rss_mib": 173.4609375,
+        "max_peak_rss_mib": 173.515625,
+        "peak_cgroup_mib": 172.796875,
+        "client_cores": 1.84060834935387,
+        "server_cores": 0.6490154336170648,
+        "contended": 0,
+        "metrics": {
+          "GET": {
+            "mops": 0.28563269,
+            "min_mops": 0.26659559000000005,
+            "max_mops": 0.28571428000000004,
+            "p99_ms": 0.311
+          },
+          "SET": {
+            "mops": 0.26666666,
+            "min_mops": 0.26666666,
+            "max_mops": 0.28571428000000004,
+            "p99_ms": 0.335
+          }
+        }
+      }
+    }
+  },
+  {
+    "size": 64,
+    "core": "single",
+    "pipeline": 64,
+    "engines": {
+      "dragonfly": {
+        "loaded_rss_mib": 161.6796875,
+        "peak_rss_mib": 166.53125,
+        "min_peak_rss_mib": 165.8046875,
+        "max_peak_rss_mib": 166.5625,
+        "peak_cgroup_mib": 222.09375,
+        "client_cores": 0.22201611834422438,
+        "server_cores": 0.9638218661978482,
+        "contended": 0,
+        "metrics": {
+          "GET": {
+            "mops": 0.78265631,
+            "min_mops": 0.76751862,
+            "max_mops": 0.78271762,
+            "p99_ms": 7.919
+          },
+          "SET": {
+            "mops": 0.68827862,
+            "min_mops": 0.67668156,
+            "max_mops": 0.71286,
+            "p99_ms": 8.359
+          }
+        }
+      },
+      "fyrodb": {
+        "loaded_rss_mib": 173.140625,
+        "peak_rss_mib": 174.046875,
+        "min_peak_rss_mib": 174.01171875,
+        "max_peak_rss_mib": 174.0703125,
+        "peak_cgroup_mib": 174.24609375,
+        "client_cores": 2.1835698792908493,
+        "server_cores": 0.8126098991492335,
+        "contended": 0,
+        "metrics": {
+          "GET": {
+            "mops": 5.711022,
+            "min_mops": 5.711022,
+            "max_mops": 5.711022,
+            "p99_ms": 1.015
+          },
+          "SET": {
+            "mops": 7.993605,
+            "min_mops": 7.9872205,
+            "max_mops": 7.993605,
+            "p99_ms": 0.663
+          }
+        }
+      }
+    }
+  },
+  {
+    "size": 64,
+    "core": "single",
+    "pipeline": 256,
+    "engines": {
+      "dragonfly": {
+        "loaded_rss_mib": 161.6796875,
+        "peak_rss_mib": 169.796875,
+        "min_peak_rss_mib": 168.6171875,
+        "max_peak_rss_mib": 170.51953125,
+        "peak_cgroup_mib": 227.265625,
+        "client_cores": 0.13959866431425041,
+        "server_cores": 0.9790618998130156,
+        "contended": 0,
+        "metrics": {
+          "GET": {
+            "mops": 0.72554075,
+            "min_mops": 0.70024006,
+            "max_mops": 0.72622875,
+            "p99_ms": 30.639
+          },
+          "SET": {
+            "mops": 0.66623781,
+            "min_mops": 0.66530025,
+            "max_mops": 0.69999494,
+            "p99_ms": 31.663
+          }
+        }
+      },
+      "fyrodb": {
+        "loaded_rss_mib": 173.140625,
+        "peak_rss_mib": 175.33203125,
+        "min_peak_rss_mib": 175.25390625,
+        "max_peak_rss_mib": 175.359375,
+        "peak_cgroup_mib": 176.3515625,
+        "client_cores": 3.187463244956768,
+        "server_cores": 0.6926208617135716,
+        "contended": 0,
+        "metrics": {
+          "GET": {
+            "mops": 7.980948,
+            "min_mops": 6.794391,
+            "max_mops": 7.980948,
+            "p99_ms": 2.647
+          },
+          "SET": {
+            "mops": 7.9682295,
+            "min_mops": 6.664522,
+            "max_mops": 7.974584,
+            "p99_ms": 1.623
+          }
+        }
+      }
+    }
+  },
+  {
+    "size": 64,
+    "core": "multi",
+    "pipeline": 1,
+    "engines": {
+      "dragonfly": {
+        "loaded_rss_mib": 166.140625,
+        "peak_rss_mib": 166.265625,
+        "min_peak_rss_mib": 166.06640625,
+        "max_peak_rss_mib": 166.28515625,
+        "peak_cgroup_mib": 211.08203125,
+        "client_cores": 3.0134632881031993,
+        "server_cores": 4.282910520377044,
+        "contended": 0,
+        "metrics": {
+          "GET": {
+            "mops": 0.44424703000000004,
+            "min_mops": 0.36350419,
+            "max_mops": 0.5,
+            "p99_ms": 0.247
+          },
+          "SET": {
+            "mops": 0.44444444,
+            "min_mops": 0.44424703000000004,
+            "max_mops": 0.49975016,
+            "p99_ms": 0.215
+          }
+        }
+      },
+      "fyrodb": {
+        "loaded_rss_mib": 173.77734375,
+        "peak_rss_mib": 173.9375,
+        "min_peak_rss_mib": 173.80078125,
+        "max_peak_rss_mib": 174.01171875,
+        "peak_cgroup_mib": 174.15625,
+        "client_cores": 3.0350757486378344,
+        "server_cores": 2.0032084244123602,
+        "contended": 0,
+        "metrics": {
+          "GET": {
+            "mops": 0.49975016,
+            "min_mops": 0.44444444,
+            "max_mops": 0.5,
+            "p99_ms": 0.223
+          },
+          "SET": {
+            "mops": 0.44444444,
+            "min_mops": 0.44444444,
+            "max_mops": 0.49975016,
+            "p99_ms": 0.191
+          }
+        }
+      }
+    }
+  },
+  {
+    "size": 64,
+    "core": "multi",
+    "pipeline": 64,
+    "engines": {
+      "dragonfly": {
+        "loaded_rss_mib": 166.140625,
+        "peak_rss_mib": 166.59375,
+        "min_peak_rss_mib": 166.50390625,
+        "max_peak_rss_mib": 166.625,
+        "peak_cgroup_mib": 213.00390625,
+        "client_cores": 0.8988048466518339,
+        "server_cores": 5.685596529443169,
+        "contended": 0,
+        "metrics": {
+          "GET": {
+            "mops": 3.07503075,
+            "min_mops": 2.855511,
+            "max_mops": 3.07503075,
+            "p99_ms": 2.031
+          },
+          "SET": {
+            "mops": 2.664535,
+            "min_mops": 2.3507285,
+            "max_mops": 2.66524525,
+            "p99_ms": 2.423
+          }
+        }
+      },
+      "fyrodb": {
+        "loaded_rss_mib": 173.77734375,
+        "peak_rss_mib": 174.27734375,
+        "min_peak_rss_mib": 173.90234375,
+        "max_peak_rss_mib": 174.37890625,
+        "peak_cgroup_mib": 175.5546875,
+        "client_cores": 3.51201689209375,
+        "server_cores": 1.1215550873115543,
+        "contended": 1,
+        "metrics": {
+          "GET": {
+            "mops": 6.662225,
+            "min_mops": 6.662225,
+            "max_mops": 6.662225,
+            "p99_ms": 1.375
+          },
+          "SET": {
+            "mops": 6.662225,
+            "min_mops": 6.6489365,
+            "max_mops": 6.662225,
+            "p99_ms": 1.383
+          }
+        }
+      }
+    }
+  },
+  {
+    "size": 64,
+    "core": "multi",
+    "pipeline": 256,
+    "engines": {
+      "dragonfly": {
+        "loaded_rss_mib": 166.140625,
+        "peak_rss_mib": 173.73046875,
+        "min_peak_rss_mib": 173.15234375,
+        "max_peak_rss_mib": 174.859375,
+        "peak_cgroup_mib": 228.44921875,
+        "client_cores": 0.7914195425343273,
+        "server_cores": 5.6788288557049915,
+        "contended": 0,
+        "metrics": {
+          "GET": {
+            "mops": 2.8640915,
+            "min_mops": 2.66172525,
+            "max_mops": 3.0703495,
+            "p99_ms": 7.415
+          },
+          "SET": {
+            "mops": 2.4956645,
+            "min_mops": 2.495042,
+            "max_mops": 2.4962875,
+            "p99_ms": 8.791
+          }
+        }
+      },
+      "fyrodb": {
+        "loaded_rss_mib": 173.77734375,
+        "peak_rss_mib": 175.625,
+        "min_peak_rss_mib": 175.53515625,
+        "max_peak_rss_mib": 175.8515625,
+        "peak_cgroup_mib": 177.8515625,
+        "client_cores": 3.56870514398613,
+        "server_cores": 0.8225786344248853,
+        "contended": 1,
+        "metrics": {
+          "GET": {
+            "mops": 6.6490215,
+            "min_mops": 6.6490215,
+            "max_mops": 6.6490215,
+            "p99_ms": 1.767
+          },
+          "SET": {
+            "mops": 6.6490215,
+            "min_mops": 6.640191,
+            "max_mops": 6.6490215,
+            "p99_ms": 2.343
+          }
+        }
+      }
+    }
+  },
+  {
+    "size": 128,
+    "core": "single",
+    "pipeline": 64,
+    "engines": {
+      "dragonfly": {
+        "loaded_rss_mib": 227.76953125,
+        "peak_rss_mib": 231.21484375,
+        "min_peak_rss_mib": 231.06640625,
+        "max_peak_rss_mib": 231.57421875,
+        "peak_cgroup_mib": 301.73828125,
+        "client_cores": 0.21811733019698026,
+        "server_cores": 0.9685038239368347,
+        "contended": 0,
+        "metrics": {
+          "GET": {
+            "mops": 0.7532389399999999,
+            "min_mops": 0.7530120600000001,
+            "max_mops": 0.76763644,
+            "p99_ms": 7.415
+          },
+          "SET": {
+            "mops": 0.70032912,
+            "min_mops": 0.70028012,
+            "max_mops": 0.712606,
+            "p99_ms": 7.359
+          }
+        }
+      },
+      "fyrodb": {
+        "loaded_rss_mib": 236.3984375,
+        "peak_rss_mib": 237.4765625,
+        "min_peak_rss_mib": 235.625,
+        "max_peak_rss_mib": 237.61328125,
+        "peak_cgroup_mib": 238.2578125,
+        "client_cores": 2.132974531166424,
+        "server_cores": 0.8090547560002808,
+        "contended": 0,
+        "metrics": {
+          "GET": {
+            "mops": 4.9975015,
+            "min_mops": 4.9975015,
+            "max_mops": 4.9975015,
+            "p99_ms": 0.959
+          },
+          "SET": {
+            "mops": 7.993605,
+            "min_mops": 6.662225,
+            "max_mops": 7.993605,
+            "p99_ms": 0.679
+          }
+        }
+      }
+    }
+  },
+  {
+    "size": 128,
+    "core": "multi",
+    "pipeline": 64,
+    "engines": {
+      "dragonfly": {
+        "loaded_rss_mib": 231.3828125,
+        "peak_rss_mib": 232.4140625,
+        "min_peak_rss_mib": 232.24609375,
+        "max_peak_rss_mib": 232.5,
+        "peak_cgroup_mib": 319.48046875,
+        "client_cores": 0.9108258607238431,
+        "server_cores": 5.640014599684047,
+        "contended": 0,
+        "metrics": {
+          "GET": {
+            "mops": 3.07503075,
+            "min_mops": 2.854696,
+            "max_mops": 3.07597675,
+            "p99_ms": 2.055
+          },
+          "SET": {
+            "mops": 2.3512815,
+            "min_mops": 2.3512815,
+            "max_mops": 2.49875075,
+            "p99_ms": 3.327
+          }
+        }
+      },
+      "fyrodb": {
+        "loaded_rss_mib": 234.84765625,
+        "peak_rss_mib": 235.24609375,
+        "min_peak_rss_mib": 235.19140625,
+        "max_peak_rss_mib": 235.30078125,
+        "peak_cgroup_mib": 238.078125,
+        "client_cores": 3.5026357590130495,
+        "server_cores": 1.2221644265044498,
+        "contended": 0,
+        "metrics": {
+          "GET": {
+            "mops": 6.6577895,
+            "min_mops": 6.6577895,
+            "max_mops": 6.662225,
+            "p99_ms": 0.583
+          },
+          "SET": {
+            "mops": 6.662225,
+            "min_mops": 6.6577895,
+            "max_mops": 6.662225,
+            "p99_ms": 0.631
+          }
+        }
+      }
+    }
+  },
+  {
+    "size": 256,
+    "core": "single",
+    "pipeline": 64,
+    "engines": {
+      "dragonfly": {
+        "loaded_rss_mib": 338.16015625,
+        "peak_rss_mib": 341.9765625,
+        "min_peak_rss_mib": 341.578125,
+        "max_peak_rss_mib": 342.1328125,
+        "peak_cgroup_mib": 478.5,
+        "client_cores": 0.191505332103684,
+        "server_cores": 0.9667216882366715,
+        "contended": 1,
+        "metrics": {
+          "GET": {
+            "mops": 0.6048143100000001,
+            "min_mops": 0.57843588,
+            "max_mops": 0.6237135600000001,
+            "p99_ms": 11.943
+          },
+          "SET": {
+            "mops": 0.5958055,
+            "min_mops": 0.58692338,
+            "max_mops": 0.595841,
+            "p99_ms": 8.839
+          }
+        }
+      },
+      "fyrodb": {
+        "loaded_rss_mib": 357.3046875,
+        "peak_rss_mib": 358.8671875,
+        "min_peak_rss_mib": 358.75,
+        "max_peak_rss_mib": 361.046875,
+        "peak_cgroup_mib": 364.6640625,
+        "client_cores": 1.061743703657086,
+        "server_cores": 0.8647498119572726,
+        "contended": 0,
+        "metrics": {
+          "GET": {
+            "mops": 3.3311125,
+            "min_mops": 3.0740855,
+            "max_mops": 3.3311125,
+            "p99_ms": 1.655
+          },
+          "SET": {
+            "mops": 5.711022,
+            "min_mops": 5.711022,
+            "max_mops": 5.711022,
+            "p99_ms": 1.111
+          }
+        }
+      }
+    }
+  },
+  {
+    "size": 256,
+    "core": "multi",
+    "pipeline": 64,
+    "engines": {
+      "dragonfly": {
+        "loaded_rss_mib": 342.05078125,
+        "peak_rss_mib": 341.83984375,
+        "min_peak_rss_mib": 341.6953125,
+        "max_peak_rss_mib": 341.95703125,
+        "peak_cgroup_mib": 468.515625,
+        "client_cores": 0.8967770371574793,
+        "server_cores": 5.616931706898259,
+        "contended": 0,
+        "metrics": {
+          "GET": {
+            "mops": 2.22074175,
+            "min_mops": 2.10304925,
+            "max_mops": 2.49875075,
+            "p99_ms": 3.167
+          },
+          "SET": {
+            "mops": 2.22074175,
+            "min_mops": 1.9976028799999999,
+            "max_mops": 2.3507285,
+            "p99_ms": 3.255
+          }
+        }
+      },
+      "fyrodb": {
+        "loaded_rss_mib": 357.41796875,
+        "peak_rss_mib": 358.5703125,
+        "min_peak_rss_mib": 358.49609375,
+        "max_peak_rss_mib": 360.36328125,
+        "peak_cgroup_mib": 368.0234375,
+        "client_cores": 3.5165968386700004,
+        "server_cores": 1.85077909633875,
+        "contended": 0,
+        "metrics": {
+          "GET": {
+            "mops": 6.662225,
+            "min_mops": 5.7077625,
+            "max_mops": 6.662225,
+            "p99_ms": 0.615
+          },
+          "SET": {
+            "mops": 6.662225,
+            "min_mops": 6.6577895,
+            "max_mops": 6.662225,
+            "p99_ms": 1.223
+          }
+        }
+      }
+    }
+  },
+  {
+    "size": 512,
+    "core": "single",
+    "pipeline": 64,
+    "engines": {
+      "dragonfly": {
+        "loaded_rss_mib": 562.375,
+        "peak_rss_mib": 566.16015625,
+        "min_peak_rss_mib": 565.41015625,
+        "max_peak_rss_mib": 566.33203125,
+        "peak_cgroup_mib": 729.05859375,
+        "client_cores": 0.2084146452885997,
+        "server_cores": 0.9646982938672901,
+        "contended": 0,
+        "metrics": {
+          "GET": {
+            "mops": 0.56224,
+            "min_mops": 0.53951981,
+            "max_mops": 0.5702555,
+            "p99_ms": 9.879
+          },
+          "SET": {
+            "mops": 0.50525466,
+            "min_mops": 0.48097734000000003,
+            "max_mops": 0.53216962,
+            "p99_ms": 11.511
+          }
+        }
+      },
+      "fyrodb": {
+        "loaded_rss_mib": 604.40625,
+        "peak_rss_mib": 608.671875,
+        "min_peak_rss_mib": 608.4765625,
+        "max_peak_rss_mib": 608.8203125,
+        "peak_cgroup_mib": 616.19921875,
+        "client_cores": 0.8312683202042008,
+        "server_cores": 0.881889051104025,
+        "contended": 0,
+        "metrics": {
+          "GET": {
+            "mops": 2.49875075,
+            "min_mops": 2.35017625,
+            "max_mops": 2.664535,
+            "p99_ms": 2.063
+          },
+          "SET": {
+            "mops": 3.07314075,
+            "min_mops": 2.66382525,
+            "max_mops": 3.07503075,
+            "p99_ms": 1.695
+          }
+        }
+      }
+    }
+  },
+  {
+    "size": 512,
+    "core": "multi",
+    "pipeline": 64,
+    "engines": {
+      "dragonfly": {
+        "loaded_rss_mib": 566.3359375,
+        "peak_rss_mib": 565.09765625,
+        "min_peak_rss_mib": 564.8515625,
+        "max_peak_rss_mib": 566.92578125,
+        "peak_cgroup_mib": 729.4921875,
+        "client_cores": 0.8786303449508267,
+        "server_cores": 5.588133406605745,
+        "contended": 0,
+        "metrics": {
+          "GET": {
+            "mops": 1.998002,
+            "min_mops": 1.998002,
+            "max_mops": 1.99880075,
+            "p99_ms": 3.191
+          },
+          "SET": {
+            "mops": 1.8168603799999998,
+            "min_mops": 1.8168603799999998,
+            "max_mops": 1.81719075,
+            "p99_ms": 4.055
+          }
+        }
+      },
+      "fyrodb": {
+        "loaded_rss_mib": 606.23828125,
+        "peak_rss_mib": 608.25390625,
+        "min_peak_rss_mib": 608.10546875,
+        "max_peak_rss_mib": 608.35546875,
+        "peak_cgroup_mib": 627.23046875,
+        "client_cores": 3.2023044866467254,
+        "server_cores": 4.3895473794975075,
+        "contended": 0,
+        "metrics": {
+          "GET": {
+            "mops": 5.711022,
+            "min_mops": 5.711022,
+            "max_mops": 5.7142855,
+            "p99_ms": 1.391
+          },
+          "SET": {
+            "mops": 4.995005,
+            "min_mops": 4.995005,
+            "max_mops": 6.662225,
+            "p99_ms": 2.671
+          }
+        }
+      }
+    }
+  },
+  {
+    "size": 1024,
+    "core": "single",
+    "pipeline": 64,
+    "engines": {
+      "dragonfly": {
+        "loaded_rss_mib": 1003.40625,
+        "peak_rss_mib": 1009.4921875,
+        "min_peak_rss_mib": 1007.8359375,
+        "max_peak_rss_mib": 1010.72265625,
+        "peak_cgroup_mib": 1194.95703125,
+        "client_cores": 0.21115233208954048,
+        "server_cores": 0.9652742654518367,
+        "contended": 1,
+        "metrics": {
+          "GET": {
+            "mops": 0.46972615999999995,
+            "min_mops": 0.46410172,
+            "max_mops": 0.48090794,
+            "p99_ms": 14.119
+          },
+          "SET": {
+            "mops": 0.38750678000000005,
+            "min_mops": 0.38741669,
+            "max_mops": 0.42922138,
+            "p99_ms": 17.007
+          }
+        }
+      },
+      "fyrodb": {
+        "loaded_rss_mib": 1106.80078125,
+        "peak_rss_mib": 1116.7421875,
+        "min_peak_rss_mib": 1116.39453125,
+        "max_peak_rss_mib": 1117.1484375,
+        "peak_cgroup_mib": 1124.125,
+        "client_cores": 0.7295231345197678,
+        "server_cores": 0.9020694270848473,
+        "contended": 0,
+        "metrics": {
+          "GET": {
+            "mops": 1.73761938,
+            "min_mops": 1.6647245,
+            "max_mops": 1.81719075,
+            "p99_ms": 3.951
+          },
+          "SET": {
+            "mops": 1.6647245,
+            "min_mops": 1.6630633799999999,
+            "max_mops": 1.8162005,
+            "p99_ms": 4.111
+          }
+        }
+      }
+    }
+  },
+  {
+    "size": 1024,
+    "core": "multi",
+    "pipeline": 64,
+    "engines": {
+      "dragonfly": {
+        "loaded_rss_mib": 1007.4609375,
+        "peak_rss_mib": 1008.53125,
+        "min_peak_rss_mib": 1008.453125,
+        "max_peak_rss_mib": 1008.63671875,
+        "peak_cgroup_mib": 1289.6640625,
+        "client_cores": 0.8113045771840995,
+        "server_cores": 5.589929452693293,
+        "contended": 0,
+        "metrics": {
+          "GET": {
+            "mops": 1.48038488,
+            "min_mops": 1.3319126200000002,
+            "max_mops": 1.5368065,
+            "p99_ms": 6.391
+          },
+          "SET": {
+            "mops": 1.10975475,
+            "min_mops": 1.0795638799999998,
+            "max_mops": 1.1415525,
+            "p99_ms": 8.647
+          }
+        }
+      },
+      "fyrodb": {
+        "loaded_rss_mib": 1119.55078125,
+        "peak_rss_mib": 1122.18359375,
+        "min_peak_rss_mib": 1121.609375,
+        "max_peak_rss_mib": 1123.89453125,
+        "peak_cgroup_mib": 1136.75390625,
+        "client_cores": 2.5889765794449784,
+        "server_cores": 5.21611293339494,
+        "contended": 1,
+        "metrics": {
+          "GET": {
+            "mops": 4.44247,
+            "min_mops": 3.99840075,
+            "max_mops": 5.0,
+            "p99_ms": 1.767
+          },
+          "SET": {
+            "mops": 2.853067,
+            "min_mops": 2.49687875,
+            "max_mops": 3.0740855,
+            "p99_ms": 3.927
+          }
+        }
+      }
+    }
+  }
+]

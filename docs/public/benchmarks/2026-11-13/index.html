@@ -1,0 +1,40 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>FyroDB benchmark evidence</title>
+<style>body{margin:0;background:#f5f8f8;color:#203943;font:16px system-ui,sans-serif}main{max-width:1120px;margin:auto;padding:30px 18px}h1{font-size:32px;letter-spacing:-.03em}p{line-height:1.65;max-width:900px}a{color:#216c69}nav{display:flex;flex-wrap:wrap;gap:12px;margin:24px 0}figure{margin:40px 0}img{display:block;width:100%;height:auto;border:1px solid #d7e1e2;border-radius:10px}figcaption{padding:10px 0;font-size:14px}.notice{border-left:3px solid #7b999a;padding:12px 18px;background:#e8efef}.downloads{display:flex;flex-wrap:wrap;gap:20px}details{margin:30px 0}li{margin:10px 0}@media(max-width:650px){figure{overflow:auto}img{min-width:760px}h1{font-size:26px}}</style><main>
+<h1>FyroDB benchmark evidence</h1><p>Current retained runtime: checkpoint d5a178b. Normal Go TCP results appear first. Other clients, payloads and CPU budgets are separate experiments.</p>
+<p class="notice">The latest SET admission experiment was reverted: correctness passed but a reliable throughput gain was not established. Historical best-of-three rates remain historical. No measurements were rerun for this documentation update.</p>
+<div class="downloads"><a href="results.json">All selected results (JSON)</a><a href="numbers.csv">Complete numeric CSV</a><a href="manifest.json">Evidence hashes and source list</a></div><nav><a href="#f0">Current normal TCP worker sweep</a><a href="#f1">All 20 normal TCP workloads</a><a href="#f2">Official client, single worker</a><a href="#f3">Official client, six workers</a><a href="#f4">Retained large-payload before/after</a><a href="#f5">Separate multi-process capacity</a><a href="#f6">Large hot-key guards</a><a href="#f7">Earlier standalone Redis comparison</a><a href="#f8">Earlier independent memtier probe</a><a href="#f9">Rejected admission experiment</a></nav>
+<figure id="f0"><h2>Current normal TCP worker sweep</h2><img src="normal-scaling.svg" alt="Current normal TCP worker sweep"><figcaption>SVG: <a href="normal-scaling.svg">normal-scaling.svg</a>. Full ranges and provenance are in the downloads.</figcaption></figure>
+<figure id="f1"><h2>All 20 normal TCP workloads</h2><img src="normal-all.svg" alt="All 20 normal TCP workloads"><figcaption>SVG: <a href="normal-all.svg">normal-all.svg</a>. Full ranges and provenance are in the downloads.</figcaption></figure>
+<figure id="f2"><h2>Official client, single worker</h2><img src="stock-single.svg" alt="Official client, single worker"><figcaption>SVG: <a href="stock-single.svg">stock-single.svg</a>. Full ranges and provenance are in the downloads.</figcaption></figure>
+<figure id="f3"><h2>Official client, six workers</h2><img src="stock-multi.svg" alt="Official client, six workers"><figcaption>SVG: <a href="stock-multi.svg">stock-multi.svg</a>. Full ranges and provenance are in the downloads.</figcaption></figure>
+<figure id="f4"><h2>Retained large-payload before/after</h2><img src="large-payload.svg" alt="Retained large-payload before/after"><figcaption>SVG: <a href="large-payload.svg">large-payload.svg</a>. Full ranges and provenance are in the downloads.</figcaption></figure>
+<figure id="f5"><h2>Separate multi-process capacity</h2><img src="capacity.svg" alt="Separate multi-process capacity"><figcaption>SVG: <a href="capacity.svg">capacity.svg</a>. Full ranges and provenance are in the downloads.</figcaption></figure>
+<figure id="f6"><h2>Large hot-key guards</h2><img src="hot-key.svg" alt="Large hot-key guards"><figcaption>SVG: <a href="hot-key.svg">hot-key.svg</a>. Full ranges and provenance are in the downloads.</figcaption></figure>
+<figure id="f7"><h2>Earlier standalone Redis comparison</h2><img src="redis-history.svg" alt="Earlier standalone Redis comparison"><figcaption>SVG: <a href="redis-history.svg">redis-history.svg</a>. Full ranges and provenance are in the downloads.</figcaption></figure>
+<figure id="f8"><h2>Earlier independent memtier probe</h2><img src="memtier-history.svg" alt="Earlier independent memtier probe"><figcaption>SVG: <a href="memtier-history.svg">memtier-history.svg</a>. Full ranges and provenance are in the downloads.</figcaption></figure>
+<figure id="f9"><h2>Rejected admission experiment</h2><img src="rejected-admission.svg" alt="Rejected admission experiment"><figcaption>SVG: <a href="rejected-admission.svg">rejected-admission.svg</a>. Full ranges and provenance are in the downloads.</figcaption></figure>
+<details><summary>All archived measurement campaigns</summary><ul>
+<li><a href="evidence/core-payload-optimization/summary.json">core-payload-optimization</a> — earlier measurement; not a current reference</li>
+<li><a href="evidence/deep-balanced-optimization/summary.json">deep-balanced-optimization</a> — earlier measurement; not a current reference</li>
+<li><a href="evidence/deep-optimization/summary.json">deep-optimization</a> — earlier measurement; not a current reference</li>
+<li><a href="evidence/dragonfly-stock-comparison/summary.json">dragonfly-stock-comparison</a> — earlier measurement; not a current reference</li>
+<li><a href="evidence/getset-lookahead/summary.json">getset-lookahead</a> — earlier measurement; not a current reference</li>
+<li><a href="evidence/hot-batch-optimization/summary.json">hot-batch-optimization</a> — earlier measurement; not a current reference</li>
+<li><a href="evidence/large-path-optimization/summary.json">large-path-optimization</a> — earlier measurement; not a current reference</li>
+<li><a href="evidence/large-path-verified/summary.json">large-path-verified</a> — current runtime reference</li>
+<li><a href="evidence/large-payload-optimization/summary.json">large-payload-optimization</a> — earlier measurement; not a current reference</li>
+<li><a href="evidence/multicore-optimization/summary.json">multicore-optimization</a> — earlier measurement; not a current reference</li>
+<li><a href="evidence/next-optimization/summary.json">next-optimization</a> — earlier measurement; not a current reference</li>
+<li><a href="evidence/normal-benchmark-current-20261113/summary.json">normal-benchmark-current-20261113</a> — earlier measurement; not a current reference</li>
+<li><a href="evidence/performance-confirmed/summary.json">performance-confirmed</a> — earlier measurement; not a current reference</li>
+<li><a href="evidence/performance-final/summary.json">performance-final</a> — earlier measurement; not a current reference</li>
+<li><a href="evidence/performance-final-efficiency/summary.json">performance-final-efficiency</a> — earlier measurement; not a current reference</li>
+<li><a href="evidence/performance-quiet/summary.json">performance-quiet</a> — earlier measurement; not a current reference</li>
+<li><a href="evidence/performance-runner-smoke/summary.json">performance-runner-smoke</a> — earlier measurement; not a current reference</li>
+<li><a href="evidence/performance-stable/summary.json">performance-stable</a> — earlier measurement; not a current reference</li>
+<li><a href="evidence/performance-sustained/summary.json">performance-sustained</a> — earlier measurement; not a current reference</li>
+<li><a href="evidence/scaling-verified-20261113/summary.json">scaling-verified-20261113</a> — current runtime reference</li>
+<li><a href="evidence/set-admission-isolated/summary.json">set-admission-isolated</a> — rejected experiment</li>
+<li><a href="evidence/standard-benchmark/summary.json">standard-benchmark</a> — earlier measurement; not a current reference</li>
+<li><a href="evidence/stock-optimization/summary.json">stock-optimization</a> — earlier measurement; not a current reference</li>
+</ul></details><p>84 timed samples plus 8 full Go warmup suites in the latest rejected experiment; 789 retained-source tests passed, zero failures, three existing performance probes ignored. RSS and container memory are distinct metrics; no fixed RAM ceiling is claimed.</p></main></html>

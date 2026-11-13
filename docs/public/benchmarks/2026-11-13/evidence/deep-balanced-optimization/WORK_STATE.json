@@ -1,0 +1,36 @@
+{
+  "objective": "Finish the existing deeper FyroDB optimization task: benchmark the frozen final image fairly against previous FyroDB and Dragonfly, run state/isolation/regression tests, build and visually verify the nice column/SVG HTML report. Do not stop at partial results.",
+  "workspace": "/run/media/rana/DEV/code/Experment/og-m",
+  "report_root": "temp/deep-balanced-optimization",
+  "runner": "python3 -u temp/deep-balanced-optimization/finish.py",
+  "runner_pid_at_recovery": 358673,
+  "code_frozen": true,
+  "source_manifest": "candidate-source.json",
+  "final_image": "fyrodb:deep-balanced-final",
+  "final_image_id": "sha256:3bcece4c0ddac112a009fa4f4166adbbb62847d443787742b765f0524d03b992",
+  "baseline_image": "fyrodb:multicore-tiled-final",
+  "protected_container": "fyro-a4085354-a4a6-4087-846a-d24e2e5cd3ca (port10000); never stop, pause, redeploy or retag it. Never kill other user jobs or change host security/governors/sysctls.",
+  "git": "HEAD c0783d8 protected checkpoint; all source changes uncommitted. Do not commit unless user asks again. scripts/__pycache__/ was pre-existing; leave untouched.",
+  "benchmark_status": "All450 final benchmark samples passed.18.36M subscriber messages verified;772 workspace tests0fail3perfignored;all Docker/isolation/restart/affinity/io checks passed. Cluster test-only follow-up fixed fixture and enabled it; rebuilt runtime binary SHA identical. Final report generated and all screenshots/controls/links checked.",
+  "check_progress": "Read finish.log and each stage log/records.json; check /proc for the exact owned runner. Source hashes must still match. All benchmarks must run sequentially on the fixed CPU budget.",
+  "rejected_trials": [
+    "temp/deep-optimization: earlier completed180 standard +27 capacity and108-ish pubsub before confirmed wake race; retained as superseded.",
+    "temp/deep-wakeup-optimization:4096-slot candidate failed1M-key throughput guard (1KiB GET -8.7%). Retained. Final8192-slot policy restores old grown table geometry."
+  ],
+  "accepted_scale_guard": "1M keys: three paired5B rounds; six paired1KiB rounds. GET about-0.4% and SET-1.3% medians within observed ranges; all18 samples retained. Gate reviewed and continue-after-scale file already released.",
+  "completed_p1024": "5B, six official stock clients,64 total connections,3 physical/6 logical server CPUs. Current GET43.942M SET41.157M peakRSS26MiB; previous43.408M/40.295M/61.5MiB; Dragonfly3.378M/2.653M/111.5MiB. This is distinct from standard one-process4-thread results; do not claim this as standard or universal speedup.",
+  "finalization": [
+    "Handle test-only cluster fixture follow-up: compare sha256 of measured vs rebuilt binary; preserve measured-source.json, annotate candidate-source.json with test-only change/equivalence and update only server.rs source hash when proven. Workspace now expects772passed/3perfignored. Original finish.log stopped at cluster-loopback exit101; final-workspace/clippy/io logs are being replaced by the successful follow-up. Do not rerun expensive benchmarks for a cfg(test)-only change with identical binary.",
+    "After finish.log says FINISHED, run python3 temp/deep-balanced-optimization/summarize_checks.py",
+    "Run build_report.py (without PARTIAL) and check_report.py. Expected48 comparison states,96 toggled states; all valid SVGs and local links.",
+    "Only after timed benchmarks stop, render report.html in headless Firefox with a NEW temporary profile and inspect desktop/mobile screenshots using view_image. Do not use rm -rf profiles (an earlier automatic review rejected that; leave owned profiles under /tmp).",
+    "Resolve any actual failures; do not hide samples or weaken checks. Source changes require new image and appropriate comparisons.",
+    "Verify git diff --check and only protected live container remains. Final concise, factual, link to absolute report.html, measured scope and regression count. No universal50M/16x/hardware ceiling claim."
+  ],
+  "validation_counts_expected": "771 workspace passed,0 failed,4 existing ignored; one ignored cluster loopback run separately,3 perf probes intentionally excluded.6 Docker isolation cases15s each12 writers4 readers expected64000,3 large replies,2 SAVE/restart13 types,2 affinity cases;8 io_uring wire tests and1 host completion test. Pubsub verifies18.36M recipient messages if all216 cases pass.",
+  "important_fixes": "Crossbeam epoch reclamation correct pin barriers/panic/reentrancy; ArcSwap snapshots, shared inline memberships, lazy pattern index, unique NUMPAT; single final frame allocation and zero-audience skip, bounded8MiB cache/32MiB subscriber/64MiB worker handoff; direct-pattern FIFO, no old publication to recycled subscriptions; modeled arm/disarm signal helpers prevent lost wake (Loom2 tests failed before/pass after); scalar/logged binary SET and replay tests failed before/pass after; checked SmallStr text views and byte-safe numeric/range/LCS paths; optional io_uring borrowed sends completed before buffer reuse. Earlier accepted GET/SET tiling/alias/affinity/binary collision fixes preserved.",
+  "constraints": "No agents unless user explicitly requests. Code comments max2 lines per block. Use normal unmodified benchmark clients. HTML requested explicitly, so Canvas skill exception applies; skill already read. No CUA used. Send concise progress updates roughly every60sec, do not repeatedly ask permission.",
+  "status": "complete",
+  "report": "/run/media/rana/DEV/code/Experment/og-m/temp/deep-balanced-optimization/report.html",
+  "remaining_work": []
+}

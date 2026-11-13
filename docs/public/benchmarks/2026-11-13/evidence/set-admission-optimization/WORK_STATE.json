@@ -1,0 +1,34 @@
+{
+  "status": "active",
+  "objective": "Useraskedfirstone-linecommitofcurrentchanges,thenmoresafeoptimizationandlockreduction.",
+  "checkpoint": "COMMITTEDd5a178b: Optimize large payload paths and add safe multicore benchmark validation.9files,excludedpre-existing scripts/__pycache__. Subsequentoptimizationuncommitted.",
+  "protected": "fyro-a4085354-a4a6-4087-846a-d24e2e5cd3ca port10000 neverstop/pause/redeploy/reprioritize. No userjobs/hostsecurity/sysctl/governorchanges. No subagentsunlessuserasks. Commentsmax2lines.",
+  "baseline_image": "sha256:3d5ef33d50f9dc4d5e321dbd196cbed3c5e644bfbdb2be32c6108fd6be4f3980",
+  "baseline_tag": "fyrodb:baseline-d5a178b",
+  "candidate_image": "sha256:4579319b5c3b54a4fbb76d4bd896ec5efbfc18b012404476129200606661c8d5",
+  "candidate_tag": "fyrodb:set-admission-candidate",
+  "changes": [
+    "crates/customhash/src/access.rs one semanticchange: top-levelWRITINGcurrentid0 skipsOTHER_WRITESRefCellscan (invariantOTHERemptywhencurrent0). No fields/layout/memoryorders changed. Existingcommitted4epochtestscovernested3map/out-of-order/unwind.",
+    "src/handler/conn/sock.rs: stackOptionwrite_run holdsoneWriteEpochGuard acrossadjacentdeepplainSETbatches. Startswhenremaininginput>=32KiB,payload<=256,no replication/AOF,nullstorefalse,existingfastpathauth/nonTxn/nonCluster/underkeycapacity. DropsbeforeanynonSET,SET+EXPIREpair,largevalue/durablemode,slowfallback,parseend/error/incomplete. Scalar/shallow/large/durableuseoriginalroute. Sameentrylocks, snapshots,watchtouches,Lua/MULTI/WATCHisolation.",
+    "src/handler/conn/fast_path.rs:dispatch_set_run/batchacceptOption<&WriteEpochGuard>;reuseborrowedguardorcreateownedone. Borrowedguardneverdroppedbybatch. dispatch_rawcallerpassesNone. No perkey/connfieldsorheapalloc; smallstackscopeonly.",
+    "tests/read_runs.rs2deep2048SETtests(binaryvalues,GET,EVAL,WATCH,MULTI/EXEC,NXfallback,PING,partial/error). tests/large_replies.rs1new512SETbatchconcurrent4writers2readers+SAVE with64Bvalues;helpergeneralizedkeepingoldtests64commands. Sockprivateunit2testsexactwrite-admissionreleaseonpartial/errorandpreservingexternalwriterScope."
+  ],
+  "preflight": "4customhashaccess_epochs pass;2sockScopeunitpass;22read_runs+14large_replies pass;clippyworkspacealltargetsio-Dwarningsclean. Sourcefrozenafterthese. Newworkspacetotalexpected788,3existingignored. Featurelarge_replies14.",
+  "active_runner": "finish.py session71714 ACTIVE, normalbefore/after24suitescurrentlyrunning; source/imagefrozen candidate-source.json. Build34906finished. Do notduplicate timing or editproduction.",
+  "stages": [
+    "normal: repositorytrackedrunner scripts/bench_docker_normal.py baseline/candidate,workers1/3/6,serverCPUs0,1,2,6,7,8;client3,4,5,9,10,11. FullGo-mbench20phases100clientsdefaultcounts10MKV2Mmixed10Mhot10Mdeliveries. Bothserver/clientDockerNI0guard;capserver4gclient1g/noSwap;clientownserverPIDnamespaceonly.32?normal=3workers\u00d72images\u00d74rounds=24suites.",
+    "shared:workers12allCPUserver/clientexplicitsharedflag,2images\u00d74rounds=8suites. Theninternalcontinue-after-reviewgate(no userapprovalneeded). Reviewbefore/afterall20medians/ranges/RAMfirst.",
+    "stock-p25636cases64/1024/10240Bsingle/multi6workersbothimages3rounds;unmodifiedofficialredis-benchmark8.8.3client4threads64connsP256100kkeys,10Mrequests<=1KiB2Mlarge.",
+    "scalar-guard24cases64/1024Bsingle/multibothimages3rounds,P1no clientthreads1Mrequests. Bothclient/serverDockerNI0,3GiBservercap.",
+    "release6isolation15sec+3largequeued;state2restart13types;affinity2;workspace788expected;featurelarge_replies14;FINISHED. Clippypreflightalreadyclean,nofinalduplicate."
+  ],
+  "next": [
+    "Monitorlogs\u226450swaitsandfrequentconcisecommentary. Atsharedreviewgatecompareall20normal/sharedmedians/fullranges/RAM; acceptonlyrealbenefit/acceptableguards. Touchcontinue-after-reviewtoadvance. No fake10x/lockfreeguarantees.",
+    "AfterFINISHED summarizechecks/image/sourcehashes,currenttests788zeroFail3ignored,feature14,bank6zeroerrors/inconsistent/final64000,state2,affinity2,large3. BuildniceHTMLbefore/candidatecolumns+workload/layoutselectors:normal4layouts,stock6states,scalar4states=14states. Keepallattempts includingcontention; no scorebasedreruns.",
+    "HTMLcanreuseprior temp/scaling-writers-20261113 templatesbutrewriteallwriter-stripingtexttoactualpacketEpochreuse! Normaldatafromtrackedrunnerrecordworkers/server keys. CurrenttaskactivecodeHTMLreportexemptCanvas(skillpreviouslyread). Renderdesktop/mobileaftertiming;Firefoxprofilesleave/tmp(no rm-rf). view_imageQA.",
+    "Auditgitfmt/diff/hashfrozenimageproof;leaveusercontainerhealthyonlyowncontainerscleaned;removeonlyownknownE2Epycsandnewscriptpolicycacheentries;preservepreexisting4scriptscache. FinalcheckpointIDd5a178b+actualnewperf/test/report; subsequentworknotcommittedunlessasked."
+  ],
+  "history": "Previousgoal triedsymmetric/asymmetric/writer-stripedcounterlayoutsbutrejectedrealworkloadregressions; donotrepeatthese. DiscoveredownnativeNI16clientvsDockerNI0serverbiasandCPUsharingconfound. FixedtrackedDockerbenchmarkrunner. Correctedreporttemp/scaling-verified-20261113/report.html runtime3d5;currentgoalstartcommittedthatstate. Earlier3GiBbaselineOOMunder10Mkeyfullsuite; matchednormal4GiBcaps now,allrawtrialspreserved.",
+  "provenance": "source-pending/candidate-source.json hashesallprod/crateRust+tests;candidate.patchdiffagainstcheckpointd5a. sourcefrozen. ClientstaticCGO0copiedfromcorrectedpreviousbenchmark;Go source unchanged. Baselineimage3d5matchesd5aruntime.",
+  "optional_diagnostic": "IntelofficialperfmonTigerLakeMEM_INST_RETIRED.LOCK_LOADS rawEvent0xd0UMask0x21 verifiedweb43/44. CanmeasureLOCKinstructioncountsseparatelyownUID1000useronlyifneeded;notimplementedyet. Do notconfusehardware/guarddiagnosticwithserverRPS. PMUhelpertemp/core-payload-optimization/pmu.py,ownUIDcounterswork;no hostperfsecuritychanges."
+}

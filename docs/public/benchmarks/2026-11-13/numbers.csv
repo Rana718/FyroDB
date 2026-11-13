@@ -1,0 +1,723 @@
+scope,workers_or_layout,value_bytes,build,metric,median,minimum,maximum,unit,range_source
+normal/fixed_client,1,5,retained,Pipeline-64 SET,4920906.152389982,4244098.359688918,5059787.527155614,ops/s,sample min/max
+normal/fixed_client,1,5,retained,Pipelined SET,17382377.484275486,16261051.512667974,17424096.04203556,ops/s,sample min/max
+normal/fixed_client,1,5,retained,Pipelined GET,20130240.481851608,19263632.506234054,20265182.35392305,ops/s,sample min/max
+normal/fixed_client,1,5,retained,Pub/Sub publish,1522040.060916305,1183139.4021932613,1585715.4691110873,ops/s,sample min/max
+normal/fixed_client,1,5,retained,Pub/Sub delivery,73599531.01201245,58151727.47527872,75351739.2816559,messages/s,sample min/max
+normal/fixed_client,1,5,retained,Mixed SET/GET (50/50),17033423.96392389,16779362.458055787,17230576.778480906,ops/s,sample min/max
+normal/fixed_client,1,5,retained,INCR (atomic counters),13960271.538170429,12597657.037353566,14213186.627853109,ops/s,sample min/max
+normal/fixed_client,1,5,retained,HSET/HGET (sessions),17075003.420976937,16919388.040962007,17104999.81967054,ops/s,sample min/max
+normal/fixed_client,1,5,retained,LPUSH/RPOP (queue),9922929.450407688,9549752.016337028,10033341.848463338,ops/s,sample min/max
+normal/fixed_client,1,5,retained,SADD (per-client sets),15789203.896576576,15064306.511636876,16040008.143191334,ops/s,sample min/max
+normal/fixed_client,1,5,retained,ZADD (per-client zsets),4975178.374883706,4740735.874989904,5138841.343900538,ops/s,sample min/max
+normal/fixed_client,1,5,retained,JSON.SET (documents),4426768.838498261,4395579.712733701,4637325.80853642,ops/s,sample min/max
+normal/fixed_client,1,5,retained,JSON.GET (documents),11826135.071409367,11788039.33543773,11892088.124202253,ops/s,sample min/max
+normal/fixed_client,1,5,retained,SET+EXPIRE (cache TTL),3292031.489802119,3017502.1643336024,3299563.331004408,ops/s,sample min/max
+normal/fixed_client,1,5,retained,"Hot Key (1 key, contention)",39328420.188490964,35420297.62351374,39370280.24159178,ops/s,sample min/max
+normal/fixed_client,1,5,retained,Producer/Consumer (50+50),8961862.306533054,8843196.09466774,9463467.883926043,ops/s,sample min/max
+normal/fixed_client,1,5,retained,XADD (streams),4594868.291649955,4575125.586625462,4647797.374662837,ops/s,sample min/max
+normal/fixed_client,1,5,retained,SETBIT/BITCOUNT (bitmap),4540428.641799378,4508610.650572814,4830085.827944465,ops/s,sample min/max
+normal/fixed_client,1,5,retained,PFADD/PFCOUNT (HyperLogLog),17717160.36405115,15819362.746553963,18383639.12004579,ops/s,sample min/max
+normal/fixed_client,1,5,retained,GEOADD/GEODIST (geospatial),1694243.881383292,1601575.6442126422,1717528.608513351,ops/s,sample min/max
+normal/fixed_client,1,5,retained,Peak RSS,782.33203125,781.578125,784.484375,MiB,sample min/max
+normal/fixed_client,1,5,retained,Container peak,805.6953125,802.3984375,807.58203125,MiB,sample min/max
+normal/fixed_client,2,5,retained,Pipeline-64 SET,7159046.923499848,6842097.269787732,7462709.066675097,ops/s,sample min/max
+normal/fixed_client,2,5,retained,Pipelined SET,27605481.843581975,26620168.47303011,30199682.322897717,ops/s,sample min/max
+normal/fixed_client,2,5,retained,Pipelined GET,32962099.44629804,31612984.43650415,35951066.75856766,ops/s,sample min/max
+normal/fixed_client,2,5,retained,Pub/Sub publish,2373285.5666893898,2341354.529085178,2682605.816224735,ops/s,sample min/max
+normal/fixed_client,2,5,retained,Pub/Sub delivery,116456721.78823395,114944737.78852394,131451071.4202196,messages/s,sample min/max
+normal/fixed_client,2,5,retained,Mixed SET/GET (50/50),27565519.069543544,26833449.794977684,27994349.06069861,ops/s,sample min/max
+normal/fixed_client,2,5,retained,INCR (atomic counters),27312973.93301662,17751997.301625405,28973500.04009208,ops/s,sample min/max
+normal/fixed_client,2,5,retained,HSET/HGET (sessions),26454486.167636998,20172065.49978597,30324530.854868993,ops/s,sample min/max
+normal/fixed_client,2,5,retained,LPUSH/RPOP (queue),11811475.922521891,8499704.928493556,17833087.61419128,ops/s,sample min/max
+normal/fixed_client,2,5,retained,SADD (per-client sets),29492676.997794125,17914526.444317713,31287494.15080297,ops/s,sample min/max
+normal/fixed_client,2,5,retained,ZADD (per-client zsets),8770179.558288328,4305400.87266773,8852071.275355352,ops/s,sample min/max
+normal/fixed_client,2,5,retained,JSON.SET (documents),6875922.793962193,6748248.856414756,7464229.963818824,ops/s,sample min/max
+normal/fixed_client,2,5,retained,JSON.GET (documents),18386636.95999022,17782406.103405457,19403717.173979763,ops/s,sample min/max
+normal/fixed_client,2,5,retained,SET+EXPIRE (cache TTL),5376621.213266514,3454226.261115426,5456679.284018853,ops/s,sample min/max
+normal/fixed_client,2,5,retained,"Hot Key (1 key, contention)",67386670.32764968,60272993.14183144,70018844.52172035,ops/s,sample min/max
+normal/fixed_client,2,5,retained,Producer/Consumer (50+50),15406572.832215859,13747412.736922912,15986742.386379883,ops/s,sample min/max
+normal/fixed_client,2,5,retained,XADD (streams),7901934.246132379,7695718.760450425,8449912.694657046,ops/s,sample min/max
+normal/fixed_client,2,5,retained,SETBIT/BITCOUNT (bitmap),8126193.709922196,7934248.155583846,8250660.988297754,ops/s,sample min/max
+normal/fixed_client,2,5,retained,PFADD/PFCOUNT (HyperLogLog),35047445.47931763,26228855.65719106,37170036.24505989,ops/s,sample min/max
+normal/fixed_client,2,5,retained,GEOADD/GEODIST (geospatial),3121860.038051634,2754365.83648997,3169537.5241428623,ops/s,sample min/max
+normal/fixed_client,2,5,retained,Peak RSS,794.62890625,793.6875,794.80859375,MiB,sample min/max
+normal/fixed_client,2,5,retained,Container peak,817.99609375,815.41015625,820.3359375,MiB,sample min/max
+normal/fixed_client,3,5,retained,Pipeline-64 SET,9104709.570995344,8693314.12597737,10427479.158769459,ops/s,sample min/max
+normal/fixed_client,3,5,retained,Pipelined SET,32250888.06932287,30616296.902371973,39780536.03373265,ops/s,sample min/max
+normal/fixed_client,3,5,retained,Pipelined GET,44616481.034517705,44457685.32626259,44779977.63249073,ops/s,sample min/max
+normal/fixed_client,3,5,retained,Pub/Sub publish,2845381.3513820046,2798157.458084371,3698150.930082185,ops/s,sample min/max
+normal/fixed_client,3,5,retained,Pub/Sub delivery,141006564.645221,139312862.43198937,181716248.91433626,messages/s,sample min/max
+normal/fixed_client,3,5,retained,Mixed SET/GET (50/50),33514869.978056476,31222440.34219045,40908441.487582296,ops/s,sample min/max
+normal/fixed_client,3,5,retained,INCR (atomic counters),30385816.921624433,27041380.518721554,40394721.05627348,ops/s,sample min/max
+normal/fixed_client,3,5,retained,HSET/HGET (sessions),35958621.335670404,28468517.321470086,41150832.40932568,ops/s,sample min/max
+normal/fixed_client,3,5,retained,LPUSH/RPOP (queue),21438579.263637114,7834168.882698433,25759853.20180936,ops/s,sample min/max
+normal/fixed_client,3,5,retained,SADD (per-client sets),37847363.81472966,33650708.87237282,38744842.2381702,ops/s,sample min/max
+normal/fixed_client,3,5,retained,ZADD (per-client zsets),11491321.001697993,10470230.566674896,11899292.833951348,ops/s,sample min/max
+normal/fixed_client,3,5,retained,JSON.SET (documents),8851780.023918925,8851606.708243253,8944390.101560107,ops/s,sample min/max
+normal/fixed_client,3,5,retained,JSON.GET (documents),22298420.384359654,20635278.08379322,23122291.8593717,ops/s,sample min/max
+normal/fixed_client,3,5,retained,SET+EXPIRE (cache TTL),7996290.105213106,7444958.759153489,8694068.3036696,ops/s,sample min/max
+normal/fixed_client,3,5,retained,"Hot Key (1 key, contention)",107014333.69248058,93210571.77900058,109928085.81575593,ops/s,sample min/max
+normal/fixed_client,3,5,retained,Producer/Consumer (50+50),16371552.917348927,15978992.354835127,16928675.444399316,ops/s,sample min/max
+normal/fixed_client,3,5,retained,XADD (streams),10440671.456077602,10226416.491499657,12370997.557037259,ops/s,sample min/max
+normal/fixed_client,3,5,retained,SETBIT/BITCOUNT (bitmap),12901529.87954003,11818608.469947584,12935600.108392568,ops/s,sample min/max
+normal/fixed_client,3,5,retained,PFADD/PFCOUNT (HyperLogLog),34332903.7829298,31381516.010912232,41602141.74482045,ops/s,sample min/max
+normal/fixed_client,3,5,retained,GEOADD/GEODIST (geospatial),4064338.3955142223,4008822.5605677813,4324981.684135066,ops/s,sample min/max
+normal/fixed_client,3,5,retained,Peak RSS,797.1328125,796.5,797.515625,MiB,sample min/max
+normal/fixed_client,3,5,retained,Container peak,821.80078125,820.7265625,824.5625,MiB,sample min/max
+normal/fixed_client,6,5,retained,Pipeline-64 SET,13239803.057188096,12720866.716205621,13384132.988546468,ops/s,sample min/max
+normal/fixed_client,6,5,retained,Pipelined SET,37703658.10015173,34751072.24867812,40335529.163239,ops/s,sample min/max
+normal/fixed_client,6,5,retained,Pipelined GET,47418887.30224765,39376831.40166218,49284428.539461285,ops/s,sample min/max
+normal/fixed_client,6,5,retained,Pub/Sub publish,2359909.21098878,2092012.001538131,2544373.2007226376,ops/s,sample min/max
+normal/fixed_client,6,5,retained,Pub/Sub delivery,116361467.2166344,104326455.67433888,126893479.11668332,messages/s,sample min/max
+normal/fixed_client,6,5,retained,Mixed SET/GET (50/50),37984499.89303565,35418879.60874889,39158162.16648014,ops/s,sample min/max
+normal/fixed_client,6,5,retained,INCR (atomic counters),45857885.35854252,40687715.15409475,48812043.00487425,ops/s,sample min/max
+normal/fixed_client,6,5,retained,HSET/HGET (sessions),39977446.323881924,39701977.89695606,42694337.15120328,ops/s,sample min/max
+normal/fixed_client,6,5,retained,LPUSH/RPOP (queue),30177440.483184274,23720984.669459704,30873221.277947597,ops/s,sample min/max
+normal/fixed_client,6,5,retained,SADD (per-client sets),39431507.28454708,36997380.64094669,43967984.88767598,ops/s,sample min/max
+normal/fixed_client,6,5,retained,ZADD (per-client zsets),8443521.250470636,8384262.066007433,9235052.86031128,ops/s,sample min/max
+normal/fixed_client,6,5,retained,JSON.SET (documents),7321738.0286087105,7256128.1539622685,7614469.27798266,ops/s,sample min/max
+normal/fixed_client,6,5,retained,JSON.GET (documents),25001206.30820437,23753200.164737944,26452535.50793279,ops/s,sample min/max
+normal/fixed_client,6,5,retained,SET+EXPIRE (cache TTL),7807718.443429204,7708956.429009099,9555063.773409918,ops/s,sample min/max
+normal/fixed_client,6,5,retained,"Hot Key (1 key, contention)",118611761.77240416,26236355.455390982,122218460.60960124,ops/s,sample min/max
+normal/fixed_client,6,5,retained,Producer/Consumer (50+50),3269730.262343162,2934744.085554118,11462699.093328012,ops/s,sample min/max
+normal/fixed_client,6,5,retained,XADD (streams),15041281.36074261,12851271.267351955,15517753.291263102,ops/s,sample min/max
+normal/fixed_client,6,5,retained,SETBIT/BITCOUNT (bitmap),14912239.680014353,13966830.20288483,15276834.030137742,ops/s,sample min/max
+normal/fixed_client,6,5,retained,PFADD/PFCOUNT (HyperLogLog),53094662.207776934,46786288.44537515,55385301.13985165,ops/s,sample min/max
+normal/fixed_client,6,5,retained,GEOADD/GEODIST (geospatial),5177547.072148129,5031081.36664254,5443030.471224893,ops/s,sample min/max
+normal/fixed_client,6,5,retained,Peak RSS,1296.5390625,1289.65625,1303.26953125,MiB,sample min/max
+normal/fixed_client,6,5,retained,Container peak,1308.15625,1299.93359375,1313.89453125,MiB,sample min/max
+normal/shared_client,12,5,retained,Pipeline-64 SET,14560863.815208241,13697871.931628574,15526940.697761307,ops/s,sample min/max
+normal/shared_client,12,5,retained,Pipelined SET,43347133.71694767,42798497.54333628,44188421.834552675,ops/s,sample min/max
+normal/shared_client,12,5,retained,Pipelined GET,55897014.580138154,51758246.258365326,55953417.3029251,ops/s,sample min/max
+normal/shared_client,12,5,retained,Pub/Sub publish,2141753.7495709667,1781535.4239657472,2211102.049523556,ops/s,sample min/max
+normal/shared_client,12,5,retained,Pub/Sub delivery,104293907.40649232,87020034.25700285,106271222.0973748,messages/s,sample min/max
+normal/shared_client,12,5,retained,Mixed SET/GET (50/50),46372415.758014634,40656995.085809335,49952702.28384254,ops/s,sample min/max
+normal/shared_client,12,5,retained,INCR (atomic counters),73886670.11323354,65229567.96304563,73992036.08917165,ops/s,sample min/max
+normal/shared_client,12,5,retained,HSET/HGET (sessions),59965473.07991005,53552409.81559978,68549732.38527226,ops/s,sample min/max
+normal/shared_client,12,5,retained,LPUSH/RPOP (queue),38504734.85023507,37396206.128710896,39453533.05895374,ops/s,sample min/max
+normal/shared_client,12,5,retained,SADD (per-client sets),48797839.60252598,43666819.89353767,54888989.76265452,ops/s,sample min/max
+normal/shared_client,12,5,retained,ZADD (per-client zsets),10610249.001854088,10009236.072632201,13489636.12839673,ops/s,sample min/max
+normal/shared_client,12,5,retained,JSON.SET (documents),10309952.802118618,7963457.667700424,11099864.235340565,ops/s,sample min/max
+normal/shared_client,12,5,retained,JSON.GET (documents),28341382.38040064,28038097.887027916,29031668.440695155,ops/s,sample min/max
+normal/shared_client,12,5,retained,SET+EXPIRE (cache TTL),9769416.134508252,6633409.845293625,9943661.649292214,ops/s,sample min/max
+normal/shared_client,12,5,retained,"Hot Key (1 key, contention)",160607842.866426,153924098.64164293,186676425.6123939,ops/s,sample min/max
+normal/shared_client,12,5,retained,Producer/Consumer (50+50),13421287.68424123,13176149.772240369,15398477.449364781,ops/s,sample min/max
+normal/shared_client,12,5,retained,XADD (streams),15791967.235837067,13559333.708714448,17099133.096180897,ops/s,sample min/max
+normal/shared_client,12,5,retained,SETBIT/BITCOUNT (bitmap),23238401.09529091,22882488.547514707,25642798.281645313,ops/s,sample min/max
+normal/shared_client,12,5,retained,PFADD/PFCOUNT (HyperLogLog),59768590.36257779,54966448.06785102,60638603.32317738,ops/s,sample min/max
+normal/shared_client,12,5,retained,GEOADD/GEODIST (geospatial),5666762.672015396,5604224.179491913,6910187.048190809,ops/s,sample min/max
+normal/shared_client,12,5,retained,Peak RSS,1596.83984375,1380.34375,1601.53515625,MiB,sample min/max
+normal/shared_client,12,5,retained,Container peak,1609.16796875,1393.421875,1614.17578125,MiB,sample min/max
+standard,multi,5,dragonfly,GET,3328937.5,3326722.5,3629810.5,ops/s,sample min/max
+standard,multi,5,dragonfly,SET,2852289.75,2850663.75,2852289.75,ops/s,sample min/max
+standard,multi,5,dragonfly,RAM,84.76171875,84.7421875,84.99609375,MiB,sample min/max
+standard,multi,5,dragonfly,container_RAM,101.046875,100.84765625,101.06640625,MiB,sample min/max
+standard,multi,5,candidate,GET,6649021.5,6640191.0,7974584.0,ops/s,sample min/max
+standard,multi,5,candidate,SET,6644603.5,6644603.5,6653445.0,ops/s,sample min/max
+standard,multi,5,candidate,RAM,21.33203125,21.1640625,21.359375,MiB,sample min/max
+standard,multi,5,candidate,container_RAM,21.6015625,21.58203125,21.66015625,MiB,sample min/max
+standard,multi,5,baseline,GET,6666915.0,6640191.0,7974584.0,ops/s,sample min/max
+standard,multi,5,baseline,SET,7961885.0,6644603.5,7968229.5,ops/s,sample min/max
+standard,multi,5,baseline,RAM,21.10546875,21.0859375,21.1171875,MiB,sample min/max
+standard,multi,5,baseline,container_RAM,21.5859375,21.48828125,21.609375,MiB,sample min/max
+standard,multi,64,dragonfly,GET,3070349.5,3069407.0,3072235.75,ops/s,sample min/max
+standard,multi,64,dragonfly,SET,2661024.0,2660316.0,2661024.0,ops/s,sample min/max
+standard,multi,64,dragonfly,RAM,93.1796875,90.8984375,93.5546875,MiB,sample min/max
+standard,multi,64,dragonfly,container_RAM,102.796875,102.59375,107.17578125,MiB,sample min/max
+standard,multi,64,candidate,GET,7974584.0,7974584.0,7980948.0,ops/s,sample min/max
+standard,multi,64,candidate,SET,7974584.0,7968229.5,7974584.0,ops/s,sample min/max
+standard,multi,64,candidate,RAM,29.078125,28.95703125,29.15234375,MiB,sample min/max
+standard,multi,64,candidate,container_RAM,30.31640625,30.296875,30.47265625,MiB,sample min/max
+standard,multi,64,baseline,GET,6768177.5,6649021.5,7980948.0,ops/s,sample min/max
+standard,multi,64,baseline,SET,7968229.5,6640191.0,7974584.0,ops/s,sample min/max
+standard,multi,64,baseline,RAM,28.75390625,28.71484375,28.8046875,MiB,sample min/max
+standard,multi,64,baseline,container_RAM,30.2578125,29.99609375,30.328125,MiB,sample min/max
+standard,multi,1024,dragonfly,GET,1426144.88,1425738.25,1426348.25,ops/s,sample min/max
+standard,multi,1024,dragonfly,SET,1024891.94,1023554.5,1050102.75,ops/s,sample min/max
+standard,multi,1024,dragonfly,RAM,192.77734375,191.12109375,193.5546875,MiB,sample min/max
+standard,multi,1024,dragonfly,container_RAM,273.17578125,270.77734375,278.28125,MiB,sample min/max
+standard,multi,1024,candidate,GET,4990084.0,4440554.0,4995068.5,ops/s,sample min/max
+standard,multi,1024,candidate,SET,2488213.0,2484503.75,2490071.75,ops/s,sample min/max
+standard,multi,1024,candidate,RAM,126.0546875,125.73046875,130.34765625,MiB,sample min/max
+standard,multi,1024,candidate,container_RAM,140.9609375,140.65625,145.51171875,MiB,sample min/max
+standard,multi,1024,baseline,GET,4992575.0,4438583.0,4995068.5,ops/s,sample min/max
+standard,multi,1024,baseline,SET,2490071.75,2489451.75,2491028.0,ops/s,sample min/max
+standard,multi,1024,baseline,RAM,132.84375,131.05078125,133.0859375,MiB,sample min/max
+standard,multi,1024,baseline,container_RAM,152.9296875,151.44140625,153.51171875,MiB,sample min/max
+standard,multi,4096,dragonfly,GET,614289.94,613912.88,665157.31,ops/s,sample min/max
+standard,multi,4096,dragonfly,SET,417824.94,399990.44,418261.81,ops/s,sample min/max
+standard,multi,4096,dragonfly,RAM,529.5390625,529.05859375,539.9140625,MiB,sample min/max
+standard,multi,4096,dragonfly,container_RAM,700.20703125,673.65625,702.55859375,MiB,sample min/max
+standard,multi,4096,candidate,GET,1141599.38,1141585.0,1331643.12,ops/s,sample min/max
+standard,multi,4096,candidate,SET,644371.12,604450.88,647290.62,ops/s,sample min/max
+standard,multi,4096,candidate,RAM,453.40234375,452.87109375,456.11328125,MiB,sample min/max
+standard,multi,4096,candidate,container_RAM,506.09375,501.9609375,507.41015625,MiB,sample min/max
+standard,multi,4096,baseline,GET,1331575.25,1141606.12,1331599.25,ops/s,sample min/max
+standard,multi,4096,baseline,SET,646871.94,643334.81,648549.94,ops/s,sample min/max
+standard,multi,4096,baseline,RAM,453.06640625,452.66015625,454.078125,MiB,sample min/max
+standard,multi,4096,baseline,container_RAM,488.91015625,488.1015625,500.6796875,MiB,sample min/max
+standard,multi,8192,dragonfly,GET,420458.28,382212.94,420636.78,ops/s,sample min/max
+standard,multi,8192,dragonfly,SET,214353.02,213986.09,219890.95,ops/s,sample min/max
+standard,multi,8192,dragonfly,RAM,998.18359375,992.296875,998.44921875,MiB,sample min/max
+standard,multi,8192,dragonfly,container_RAM,1238.7421875,1224.3203125,1238.765625,MiB,sample min/max
+standard,multi,8192,candidate,GET,614832.44,570784.56,614838.31,ops/s,sample min/max
+standard,multi,8192,candidate,SET,509846.53,506105.28,539408.88,ops/s,sample min/max
+standard,multi,8192,candidate,RAM,906.90625,902.73046875,909.61328125,MiB,sample min/max
+standard,multi,8192,candidate,container_RAM,964.80078125,942.87109375,972.9765625,MiB,sample min/max
+standard,multi,8192,baseline,GET,614821.06,614289.94,614854.88,ops/s,sample min/max
+standard,multi,8192,baseline,SET,313205.12,312129.84,325435.75,ops/s,sample min/max
+standard,multi,8192,baseline,RAM,874.7109375,874.234375,909.30859375,MiB,sample min/max
+standard,multi,8192,baseline,container_RAM,935.1796875,926.484375,954.84375,MiB,sample min/max
+standard,multi,10240,dragonfly,GET,319662.31,307380.97,319710.19,ops/s,sample min/max
+standard,multi,10240,dragonfly,SET,179576.95,176253.8,179851.45,ops/s,sample min/max
+standard,multi,10240,dragonfly,RAM,1279.23046875,1276.8203125,1289.89453125,MiB,sample min/max
+standard,multi,10240,dragonfly,container_RAM,1487.71875,1479.984375,1509.88671875,MiB,sample min/max
+standard,multi,10240,candidate,GET,470271.12,470150.66,499636.56,ops/s,sample min/max
+standard,multi,10240,candidate,SET,256821.78,254988.28,260908.95,ops/s,sample min/max
+standard,multi,10240,candidate,RAM,1113.6328125,1110.55859375,1114.03515625,MiB,sample min/max
+standard,multi,10240,candidate,container_RAM,1183.4609375,1179.51171875,1191.59375,MiB,sample min/max
+standard,multi,10240,baseline,GET,499636.06,443953.16,499755.38,ops/s,sample min/max
+standard,multi,10240,baseline,SET,244484.55,240082.58,250109.78,ops/s,sample min/max
+standard,multi,10240,baseline,RAM,1109.6953125,1078.453125,1111.69921875,MiB,sample min/max
+standard,multi,10240,baseline,container_RAM,1185.65625,1153.5078125,1211.08984375,MiB,sample min/max
+standard,single,5,dragonfly,GET,867614.81,849195.62,907041.12,ops/s,sample min/max
+standard,single,5,dragonfly,SET,738998.56,725804.06,814475.31,ops/s,sample min/max
+standard,single,5,dragonfly,RAM,62.80078125,61.30078125,62.81640625,MiB,sample min/max
+standard,single,5,dragonfly,container_RAM,97.8125,95.19140625,99.71875,MiB,sample min/max
+standard,single,5,candidate,GET,7968229.5,6640191.0,7974584.0,ops/s,sample min/max
+standard,single,5,candidate,SET,6644603.5,6640191.0,6763243.0,ops/s,sample min/max
+standard,single,5,candidate,RAM,24.0859375,24.04296875,24.109375,MiB,sample min/max
+standard,single,5,candidate,container_RAM,22.9609375,22.80078125,23.01171875,MiB,sample min/max
+standard,single,5,baseline,GET,6672213.5,6644603.5,6758677.0,ops/s,sample min/max
+standard,single,5,baseline,SET,6678372.5,6649021.5,6746221.0,ops/s,sample min/max
+standard,single,5,baseline,RAM,22.19140625,16.76171875,22.21484375,MiB,sample min/max
+standard,single,5,baseline,container_RAM,20.90625,15.34375,20.94140625,MiB,sample min/max
+standard,single,64,dragonfly,GET,712818.31,700784.56,739162.38,ops/s,sample min/max
+standard,single,64,dragonfly,SET,676644.44,676415.56,739053.12,ops/s,sample min/max
+standard,single,64,dragonfly,RAM,67.82421875,67.09375,68.14453125,MiB,sample min/max
+standard,single,64,dragonfly,container_RAM,76.6484375,75.87109375,80.74609375,MiB,sample min/max
+standard,single,64,candidate,GET,7980948.0,6653445.0,7980948.0,ops/s,sample min/max
+standard,single,64,candidate,SET,6649021.5,6640191.0,7980948.0,ops/s,sample min/max
+standard,single,64,candidate,RAM,29.5,29.47265625,29.6640625,MiB,sample min/max
+standard,single,64,candidate,container_RAM,29.47265625,29.44921875,29.64453125,MiB,sample min/max
+standard,single,64,baseline,GET,7980948.0,6649021.5,7980948.0,ops/s,sample min/max
+standard,single,64,baseline,SET,6763935.0,6644603.5,7968229.5,ops/s,sample min/max
+standard,single,64,baseline,RAM,29.0546875,23.59375,29.08203125,MiB,sample min/max
+standard,single,64,baseline,container_RAM,31.3515625,25.765625,31.37890625,MiB,sample min/max
+standard,single,1024,dragonfly,GET,443484.31,443484.31,443582.66,ops/s,sample min/max
+standard,single,1024,dragonfly,SET,403165.94,403133.44,411510.97,ops/s,sample min/max
+standard,single,1024,dragonfly,RAM,164.13671875,162.8984375,168.73046875,MiB,sample min/max
+standard,single,1024,dragonfly,container_RAM,235.0234375,234.34375,236.625,MiB,sample min/max
+standard,single,1024,candidate,GET,1901164.88,1819429.12,1901888.25,ops/s,sample min/max
+standard,single,1024,candidate,SET,1901526.62,1900081.38,1902841.5,ops/s,sample min/max
+standard,single,1024,candidate,RAM,132.4609375,130.5390625,132.50390625,MiB,sample min/max
+standard,single,1024,candidate,container_RAM,139.22265625,139.21484375,139.75,MiB,sample min/max
+standard,single,1024,baseline,GET,1814905.25,1814905.25,1815564.25,ops/s,sample min/max
+standard,single,1024,baseline,SET,1901164.88,1900442.38,1901164.88,ops/s,sample min/max
+standard,single,1024,baseline,RAM,124.90625,124.734375,132.12890625,MiB,sample min/max
+standard,single,1024,baseline,container_RAM,139.9609375,139.44140625,139.9765625,MiB,sample min/max
+standard,single,4096,dragonfly,GET,241884.39,241824.2,241941.2,ops/s,sample min/max
+standard,single,4096,dragonfly,SET,215507.81,215368.59,221375.55,ops/s,sample min/max
+standard,single,4096,dragonfly,RAM,502.28125,500.875,503.97265625,MiB,sample min/max
+standard,single,4096,dragonfly,container_RAM,636.62109375,611.71484375,642.47265625,MiB,sample min/max
+standard,single,4096,candidate,GET,886974.69,886974.69,887368.25,ops/s,sample min/max
+standard,single,4096,candidate,SET,611472.94,611086.19,612221.62,ops/s,sample min/max
+standard,single,4096,candidate,RAM,448.8125,447.296875,448.86328125,MiB,sample min/max
+standard,single,4096,candidate,container_RAM,480.2265625,478.59765625,481.84765625,MiB,sample min/max
+standard,single,4096,baseline,GET,335495.62,332633.97,347003.47,ops/s,sample min/max
+standard,single,4096,baseline,SET,611286.06,611099.31,662294.06,ops/s,sample min/max
+standard,single,4096,baseline,RAM,482.90625,467.8046875,493.84765625,MiB,sample min/max
+standard,single,4096,baseline,container_RAM,508.5625,486.91796875,518.703125,MiB,sample min/max
+standard,single,8192,dragonfly,GET,128841.02,128774.66,130924.13,ops/s,sample min/max
+standard,single,8192,dragonfly,SET,144716.59,142163.59,144758.48,ops/s,sample min/max
+standard,single,8192,dragonfly,RAM,960.48046875,956.67578125,962.32421875,MiB,sample min/max
+standard,single,8192,dragonfly,container_RAM,1186.41796875,1175.26953125,1186.75390625,MiB,sample min/max
+standard,single,8192,candidate,GET,570487.19,569837.06,570487.19,ops/s,sample min/max
+standard,single,8192,candidate,SET,396206.03,379968.12,396536.06,ops/s,sample min/max
+standard,single,8192,candidate,RAM,869.921875,868.78515625,870.3046875,MiB,sample min/max
+standard,single,8192,candidate,container_RAM,907.8203125,903.00390625,907.85546875,MiB,sample min/max
+standard,single,8192,baseline,GET,186181.83,181717.92,190072.03,ops/s,sample min/max
+standard,single,8192,baseline,SET,317663.28,305502.97,317783.28,ops/s,sample min/max
+standard,single,8192,baseline,RAM,926.76953125,904.28515625,955.046875,MiB,sample min/max
+standard,single,8192,baseline,container_RAM,945.82421875,923.453125,974.5546875,MiB,sample min/max
+standard,single,10240,dragonfly,GET,106452.08,106446.41,107899.23,ops/s,sample min/max
+standard,single,10240,dragonfly,SET,120613.16,120563.17,120649.54,ops/s,sample min/max
+standard,single,10240,dragonfly,RAM,1244.69140625,1218.75390625,1267.2890625,MiB,sample min/max
+standard,single,10240,dragonfly,container_RAM,1405.37109375,1401.1171875,1435.69140625,MiB,sample min/max
+standard,single,10240,candidate,GET,499033.94,469844.5,499158.47,ops/s,sample min/max
+standard,single,10240,candidate,SET,227116.45,227002.16,227403.62,ops/s,sample min/max
+standard,single,10240,candidate,RAM,1072.6640625,1072.625,1074.703125,MiB,sample min/max
+standard,single,10240,candidate,container_RAM,1114.0390625,1113.01953125,1117.48046875,MiB,sample min/max
+standard,single,10240,baseline,GET,159879.81,159841.52,162929.94,ops/s,sample min/max
+standard,single,10240,baseline,SET,227029.28,227029.28,227055.06,ops/s,sample min/max
+standard,single,10240,baseline,RAM,1130.0625,1107.29296875,1158.1171875,MiB,sample min/max
+standard,single,10240,baseline,container_RAM,1147.734375,1118.98046875,1169.76953125,MiB,sample min/max
+capacity,multi,64,dragonfly,GET,3138820.32,3113800.32,3145336.14,ops/s,sample min/max
+capacity,multi,64,dragonfly,SET,2642222.04,2635536.96,2642920.14,ops/s,sample min/max
+capacity,multi,64,dragonfly,RAM,90.03125,89.78125,90.46484375,MiB,sample min/max
+capacity,multi,64,dragonfly,container_RAM,106.625,106.26953125,107.515625,MiB,sample min/max
+capacity,multi,64,candidate,GET,26810406.0,24876322.5,26940414.0,ops/s,sample min/max
+capacity,multi,64,candidate,SET,24716464.5,24402833.999999996,28027695.0,ops/s,sample min/max
+capacity,multi,64,candidate,RAM,28.421875,28.35546875,28.5390625,MiB,sample min/max
+capacity,multi,64,candidate,container_RAM,29.67578125,29.546875,30.28125,MiB,sample min/max
+capacity,multi,64,baseline,GET,25853883.0,25446009.0,26610648.0,ops/s,sample min/max
+capacity,multi,64,baseline,SET,25961271.0,25446009.0,26124036.0,ops/s,sample min/max
+capacity,multi,64,baseline,RAM,28.47265625,28.27734375,28.53125,MiB,sample min/max
+capacity,multi,64,baseline,container_RAM,29.71875,29.45703125,29.8671875,MiB,sample min/max
+capacity,multi,1024,dragonfly,GET,1424223.3599999999,1407189.5399999998,1439392.02,ops/s,sample min/max
+capacity,multi,1024,dragonfly,SET,1025943.3600000001,1019043.84,1027207.86,ops/s,sample min/max
+capacity,multi,1024,dragonfly,RAM,193.54296875,192.06640625,193.59765625,MiB,sample min/max
+capacity,multi,1024,dragonfly,container_RAM,253.95703125,251.76171875,256.82421875,MiB,sample min/max
+capacity,multi,1024,candidate,GET,5757568.14,5084339.64,6109282.86,ops/s,sample min/max
+capacity,multi,1024,candidate,SET,2541523.86,2489642.8200000003,2550598.32,ops/s,sample min/max
+capacity,multi,1024,candidate,RAM,161.88671875,127.11328125,161.89453125,MiB,sample min/max
+capacity,multi,1024,candidate,container_RAM,176.80078125,142.13671875,177.0625,MiB,sample min/max
+capacity,multi,1024,baseline,GET,6169584.0,5977822.14,6305735.279999999,ops/s,sample min/max
+capacity,multi,1024,baseline,SET,2469967.14,2464488.96,2503353.18,ops/s,sample min/max
+capacity,multi,1024,baseline,RAM,127.296875,127.1328125,161.8359375,MiB,sample min/max
+capacity,multi,1024,baseline,container_RAM,143.48046875,142.16015625,177.23046875,MiB,sample min/max
+capacity,multi,8192,dragonfly,GET,408700.80000000005,406955.69999999995,413685.0,ops/s,sample min/max
+capacity,multi,8192,dragonfly,SET,218685.30000000002,216415.19999999998,219983.28,ops/s,sample min/max
+capacity,multi,8192,dragonfly,RAM,998.8203125,978.90234375,999.44921875,MiB,sample min/max
+capacity,multi,8192,dragonfly,container_RAM,1238.0390625,1187.19921875,1273.28125,MiB,sample min/max
+capacity,multi,8192,candidate,GET,808649.7000000001,806369.0399999999,854207.4600000001,ops/s,sample min/max
+capacity,multi,8192,candidate,SET,441324.83999999997,437561.88,452704.80000000005,ops/s,sample min/max
+capacity,multi,8192,candidate,RAM,895.08984375,874.07421875,901.5078125,MiB,sample min/max
+capacity,multi,8192,candidate,container_RAM,934.9375,930.8203125,940.1953125,MiB,sample min/max
+capacity,multi,8192,baseline,GET,905614.5,883233.8400000001,999704.2799999999,ops/s,sample min/max
+capacity,multi,8192,baseline,SET,330538.08,327134.34,330592.68,ops/s,sample min/max
+capacity,multi,8192,baseline,RAM,899.29296875,874.36328125,900.8984375,MiB,sample min/max
+capacity,multi,8192,baseline,container_RAM,979.0078125,976.54296875,992.91796875,MiB,sample min/max
+capacity,multi,10240,dragonfly,GET,346564.14,345070.32,348131.52,ops/s,sample min/max
+capacity,multi,10240,dragonfly,SET,178601.46,176428.74,179257.32,ops/s,sample min/max
+capacity,multi,10240,dragonfly,RAM,1284.30859375,1274.1796875,1287.53125,MiB,sample min/max
+capacity,multi,10240,dragonfly,container_RAM,1491.28125,1475.82421875,1491.640625,MiB,sample min/max
+capacity,multi,10240,candidate,GET,683541.0,668919.72,703977.54,ops/s,sample min/max
+capacity,multi,10240,candidate,SET,266144.69999999995,262962.54,267246.36,ops/s,sample min/max
+capacity,multi,10240,candidate,RAM,1109.50390625,1080.953125,1109.8828125,MiB,sample min/max
+capacity,multi,10240,candidate,container_RAM,1195.59765625,1184.484375,1214.25390625,MiB,sample min/max
+capacity,multi,10240,baseline,GET,672064.5,666247.6799999999,706462.3799999999,ops/s,sample min/max
+capacity,multi,10240,baseline,SET,263343.18,263239.26,267032.39999999997,ops/s,sample min/max
+capacity,multi,10240,baseline,RAM,1078.32421875,1078.30859375,1101.6015625,MiB,sample min/max
+capacity,multi,10240,baseline,container_RAM,1199.421875,1192.26171875,1204.16015625,MiB,sample min/max
+hot1,multi,8192,candidate,GET,161030.59,160642.56,163265.3,ops/s,sample min/max
+hot1,multi,8192,candidate,SET,157109.19,154798.75,161943.31,ops/s,sample min/max
+hot1,multi,8192,candidate,RAM,12.78515625,9.55859375,18.5390625,MiB,sample min/max
+hot1,multi,8192,candidate,container_RAM,12.50390625,9.53515625,17.95703125,MiB,sample min/max
+hot1,multi,8192,baseline,GET,162337.66,159489.64,162601.62,ops/s,sample min/max
+hot1,multi,8192,baseline,SET,159362.55,158730.16,159872.09,ops/s,sample min/max
+hot1,multi,8192,baseline,RAM,18.1171875,7.80859375,21.96484375,MiB,sample min/max
+hot1,multi,8192,baseline,container_RAM,17.734375,7.703125,21.91796875,MiB,sample min/max
+hot1,multi,10240,candidate,GET,155521.0,155159.03,156739.81,ops/s,sample min/max
+hot1,multi,10240,candidate,SET,156617.08,153964.58,157728.7,ops/s,sample min/max
+hot1,multi,10240,candidate,RAM,22.83203125,8.046875,23.30859375,MiB,sample min/max
+hot1,multi,10240,candidate,container_RAM,22.87109375,7.71875,23.17578125,MiB,sample min/max
+hot1,multi,10240,baseline,GET,157604.41,157109.19,157853.2,ops/s,sample min/max
+hot1,multi,10240,baseline,SET,156372.16,152671.77,156739.81,ops/s,sample min/max
+hot1,multi,10240,baseline,RAM,20.2421875,9.94140625,22.0,MiB,sample min/max
+hot1,multi,10240,baseline,container_RAM,20.16015625,9.90234375,21.87109375,MiB,sample min/max
+hot1,single,8192,candidate,GET,171526.58,170357.75,171821.3,ops/s,sample min/max
+hot1,single,8192,candidate,SET,169635.28,169204.73,170794.19,ops/s,sample min/max
+hot1,single,8192,candidate,RAM,9.47265625,8.5234375,10.32421875,MiB,sample min/max
+hot1,single,8192,candidate,container_RAM,7.7734375,7.2265625,8.578125,MiB,sample min/max
+hot1,single,8192,baseline,GET,169348.02,168067.22,169348.02,ops/s,sample min/max
+hot1,single,8192,baseline,SET,170357.75,169204.73,172711.58,ops/s,sample min/max
+hot1,single,8192,baseline,RAM,11.296875,10.29296875,12.09765625,MiB,sample min/max
+hot1,single,8192,baseline,container_RAM,10.02734375,9.12109375,10.71875,MiB,sample min/max
+hot1,single,10240,candidate,GET,161681.48,159235.66,162601.62,ops/s,sample min/max
+hot1,single,10240,candidate,SET,162337.66,158478.61,166805.67,ops/s,sample min/max
+hot1,single,10240,candidate,RAM,11.59375,10.640625,12.39453125,MiB,sample min/max
+hot1,single,10240,candidate,container_RAM,10.0703125,9.203125,10.64453125,MiB,sample min/max
+hot1,single,10240,baseline,GET,162866.44,161290.33,165700.08,ops/s,sample min/max
+hot1,single,10240,baseline,SET,165016.5,159872.09,167364.02,ops/s,sample min/max
+hot1,single,10240,baseline,RAM,9.4453125,8.546875,10.25,MiB,sample min/max
+hot1,single,10240,baseline,container_RAM,8.43359375,6.97265625,9.01953125,MiB,sample min/max
+hot256,multi,8192,candidate,GET,380290.84,367055.03,381043.81,ops/s,sample min/max
+hot256,multi,8192,candidate,SET,544000.0,521333.34,556088.88,ops/s,sample min/max
+hot256,multi,8192,candidate,RAM,23.30078125,23.2734375,23.34375,MiB,sample min/max
+hot256,multi,8192,candidate,container_RAM,122.84375,121.03515625,124.4609375,MiB,sample min/max
+hot256,multi,8192,baseline,GET,304080.56,301338.88,313615.97,ops/s,sample min/max
+hot256,multi,8192,baseline,SET,571977.12,562337.06,583650.12,ops/s,sample min/max
+hot256,multi,8192,baseline,RAM,33.58203125,30.6640625,34.1953125,MiB,sample min/max
+hot256,multi,8192,baseline,container_RAM,114.484375,114.20703125,115.6796875,MiB,sample min/max
+hot256,multi,10240,candidate,GET,302689.84,283463.19,309808.03,ops/s,sample min/max
+hot256,multi,10240,candidate,SET,456018.22,454981.81,465562.78,ops/s,sample min/max
+hot256,multi,10240,candidate,RAM,23.85546875,22.8359375,23.92578125,MiB,sample min/max
+hot256,multi,10240,candidate,container_RAM,160.3515625,159.703125,165.421875,MiB,sample min/max
+hot256,multi,10240,baseline,GET,235904.48,231043.88,243380.77,ops/s,sample min/max
+hot256,multi,10240,baseline,SET,452923.06,448860.97,465562.78,ops/s,sample min/max
+hot256,multi,10240,baseline,RAM,34.7109375,34.62890625,36.9375,MiB,sample min/max
+hot256,multi,10240,baseline,container_RAM,140.7890625,135.51953125,143.23828125,MiB,sample min/max
+hot256,single,8192,candidate,GET,385391.16,336952.88,401654.62,ops/s,sample min/max
+hot256,single,8192,candidate,SET,571977.12,495524.75,590536.88,ops/s,sample min/max
+hot256,single,8192,candidate,RAM,19.328125,18.234375,20.02734375,MiB,sample min/max
+hot256,single,8192,candidate,container_RAM,81.8671875,81.34765625,84.453125,MiB,sample min/max
+hot256,single,8192,baseline,GET,390710.91,386158.28,392211.78,ops/s,sample min/max
+hot256,single,8192,baseline,SET,563921.12,519979.22,581953.44,ops/s,sample min/max
+hot256,single,8192,baseline,RAM,20.96875,20.16796875,21.80859375,MiB,sample min/max
+hot256,single,8192,baseline,container_RAM,82.4375,74.80859375,85.61328125,MiB,sample min/max
+hot256,single,10240,candidate,GET,460032.19,315011.03,466400.94,ops/s,sample min/max
+hot256,single,10240,candidate,SET,398788.88,358125.22,405920.91,ops/s,sample min/max
+hot256,single,10240,candidate,RAM,19.265625,18.3359375,20.3515625,MiB,sample min/max
+hot256,single,10240,candidate,container_RAM,38.1875,26.02734375,94.64453125,MiB,sample min/max
+hot256,single,10240,baseline,GET,415948.03,409920.06,467439.25,ops/s,sample min/max
+hot256,single,10240,baseline,SET,402492.94,387844.97,402746.47,ops/s,sample min/max
+hot256,single,10240,baseline,RAM,17.08984375,16.22265625,17.984375,MiB,sample min/max
+hot256,single,10240,baseline,container_RAM,40.0,34.73828125,83.8203125,MiB,sample min/max
+rejected/normal,1,5,baseline,Pipeline-64 SET,4404833.326879445,3966055.9469976756,4876899.06223927,ops/s,sample min/max
+rejected/normal,1,5,baseline,Pipelined SET,17313171.690140855,13918110.154465275,17622292.329496883,ops/s,sample min/max
+rejected/normal,1,5,baseline,Pipelined GET,21321785.499793123,13354410.45691043,21924342.706451714,ops/s,sample min/max
+rejected/normal,1,5,baseline,Pub/Sub publish,1311868.13584266,1131961.9893050194,1594339.6097063012,ops/s,sample min/max
+rejected/normal,1,5,baseline,Pub/Sub delivery,63794196.04487213,54949086.15493594,77608373.788315,messages/s,sample min/max
+rejected/normal,1,5,baseline,Mixed SET/GET (50/50),14990333.74561498,11029268.181475623,16658289.35177074,ops/s,sample min/max
+rejected/normal,1,5,baseline,INCR (atomic counters),7400690.020355634,6325553.298123722,15767258.612652158,ops/s,sample min/max
+rejected/normal,1,5,baseline,HSET/HGET (sessions),16500842.685660325,13666163.171050038,17854165.196859714,ops/s,sample min/max
+rejected/normal,1,5,baseline,LPUSH/RPOP (queue),9819362.8054438,7567220.4898416195,10036205.813195217,ops/s,sample min/max
+rejected/normal,1,5,baseline,SADD (per-client sets),15238651.26019722,12132423.141963832,15725147.815210076,ops/s,sample min/max
+rejected/normal,1,5,baseline,ZADD (per-client zsets),4214050.0778495185,4038803.564541402,4841316.238177703,ops/s,sample min/max
+rejected/normal,1,5,baseline,JSON.SET (documents),4651899.7489832565,3627928.8929782584,4658977.532078522,ops/s,sample min/max
+rejected/normal,1,5,baseline,JSON.GET (documents),11577742.704292672,6664208.95083366,11797888.484706338,ops/s,sample min/max
+rejected/normal,1,5,baseline,SET+EXPIRE (cache TTL),3305709.6936821137,2229314.300173109,3318853.1714150277,ops/s,sample min/max
+rejected/normal,1,5,baseline,"Hot Key (1 key, contention)",40625394.47258033,23630110.786820658,41588888.167737566,ops/s,sample min/max
+rejected/normal,1,5,baseline,Producer/Consumer (50+50),9628507.020599416,8295297.940598549,9823405.37827024,ops/s,sample min/max
+rejected/normal,1,5,baseline,XADD (streams),4631103.274563977,3637623.265934304,4707667.156944308,ops/s,sample min/max
+rejected/normal,1,5,baseline,SETBIT/BITCOUNT (bitmap),4798955.371073153,3735000.873775442,4804596.680642045,ops/s,sample min/max
+rejected/normal,1,5,baseline,PFADD/PFCOUNT (HyperLogLog),15802169.230139332,11541367.654837027,19018429.923628073,ops/s,sample min/max
+rejected/normal,1,5,baseline,GEOADD/GEODIST (geospatial),1544997.8431791484,1196895.831033124,1734179.7241418287,ops/s,sample min/max
+rejected/normal,1,5,baseline,RSS,781.171875,779.51171875,781.83984375,MiB,sample min/max
+rejected/normal,1,5,baseline,container,807.375,804.96875,808.5078125,MiB,sample min/max
+rejected/normal,1,5,candidate,Pipeline-64 SET,3986267.7143234625,2401160.3803472714,4645133.3276988175,ops/s,sample min/max
+rejected/normal,1,5,candidate,Pipelined SET,13446716.31422924,9458598.263034932,17575065.93619912,ops/s,sample min/max
+rejected/normal,1,5,candidate,Pipelined GET,17891608.58097793,13278123.092261516,21764296.775025703,ops/s,sample min/max
+rejected/normal,1,5,candidate,Pub/Sub publish,1435096.0929580624,918045.7948416623,1601102.9293595068,ops/s,sample min/max
+rejected/normal,1,5,candidate,Pub/Sub delivery,68336013.89320365,44096896.22673001,76987292.61605792,messages/s,sample min/max
+rejected/normal,1,5,candidate,Mixed SET/GET (50/50),16623406.744126089,10395374.44923617,17626096.2109886,ops/s,sample min/max
+rejected/normal,1,5,candidate,INCR (atomic counters),14684993.92088978,5328188.491360087,15058687.809887558,ops/s,sample min/max
+rejected/normal,1,5,candidate,HSET/HGET (sessions),16333038.894919,10917629.48786219,16687208.48124701,ops/s,sample min/max
+rejected/normal,1,5,candidate,LPUSH/RPOP (queue),9179601.39820751,6789623.465984301,9698952.139274353,ops/s,sample min/max
+rejected/normal,1,5,candidate,SADD (per-client sets),11834947.058938432,9428901.523637883,14761089.478816485,ops/s,sample min/max
+rejected/normal,1,5,candidate,ZADD (per-client zsets),4761738.169093674,3549320.4753188933,4842240.822964007,ops/s,sample min/max
+rejected/normal,1,5,candidate,JSON.SET (documents),4180900.5600437545,2885840.9249479165,4446444.563900154,ops/s,sample min/max
+rejected/normal,1,5,candidate,JSON.GET (documents),10916542.779371222,4643350.946646922,11920254.759207902,ops/s,sample min/max
+rejected/normal,1,5,candidate,SET+EXPIRE (cache TTL),2936815.334367468,1950248.6365648448,3087111.423259238,ops/s,sample min/max
+rejected/normal,1,5,candidate,"Hot Key (1 key, contention)",34643432.35127251,29139302.287846677,36502186.718248636,ops/s,sample min/max
+rejected/normal,1,5,candidate,Producer/Consumer (50+50),8566174.630592821,6937967.947725908,9397372.221263403,ops/s,sample min/max
+rejected/normal,1,5,candidate,XADD (streams),4407841.522740337,3326119.5786687247,4436117.083751283,ops/s,sample min/max
+rejected/normal,1,5,candidate,SETBIT/BITCOUNT (bitmap),4158912.2448201915,3525973.8510147454,4660659.54568534,ops/s,sample min/max
+rejected/normal,1,5,candidate,PFADD/PFCOUNT (HyperLogLog),14432464.929272586,11392107.44087915,18863540.178873707,ops/s,sample min/max
+rejected/normal,1,5,candidate,GEOADD/GEODIST (geospatial),1576208.4399603535,1228267.2254876394,1585935.8498337483,ops/s,sample min/max
+rejected/normal,1,5,candidate,RSS,781.0390625,780.8359375,784.671875,MiB,sample min/max
+rejected/normal,1,5,candidate,container,807.796875,803.8828125,809.515625,MiB,sample min/max
+rejected/normal,3,5,baseline,Pipeline-64 SET,8790737.994058374,5902436.435984717,10886446.877897236,ops/s,sample min/max
+rejected/normal,3,5,baseline,Pipelined SET,26939338.31586453,20932736.707355287,33706852.33443598,ops/s,sample min/max
+rejected/normal,3,5,baseline,Pipelined GET,35104848.863217056,25048881.953799766,43010539.39289497,ops/s,sample min/max
+rejected/normal,3,5,baseline,Pub/Sub publish,1392680.9269394572,1283732.8074479096,2567552.5976950233,ops/s,sample min/max
+rejected/normal,3,5,baseline,Pub/Sub delivery,69047438.45568775,63965213.1584759,127166225.7898396,messages/s,sample min/max
+rejected/normal,3,5,baseline,Mixed SET/GET (50/50),26606984.36266288,15376613.276784504,31281960.877184346,ops/s,sample min/max
+rejected/normal,3,5,baseline,INCR (atomic counters),29976812.18635355,21725337.443100937,32295356.27655728,ops/s,sample min/max
+rejected/normal,3,5,baseline,HSET/HGET (sessions),27948647.267305642,22130977.676659863,29373574.307674766,ops/s,sample min/max
+rejected/normal,3,5,baseline,LPUSH/RPOP (queue),17053195.24269741,10721630.433193592,18792201.706097014,ops/s,sample min/max
+rejected/normal,3,5,baseline,SADD (per-client sets),29663795.29038601,18842774.401812103,35134451.81752627,ops/s,sample min/max
+rejected/normal,3,5,baseline,ZADD (per-client zsets),5724830.230016408,5181420.61636019,10944378.730138402,ops/s,sample min/max
+rejected/normal,3,5,baseline,JSON.SET (documents),5312108.202969439,4341700.070856762,8778417.228900881,ops/s,sample min/max
+rejected/normal,3,5,baseline,JSON.GET (documents),18185616.991883997,12209298.062974716,24198431.786750257,ops/s,sample min/max
+rejected/normal,3,5,baseline,SET+EXPIRE (cache TTL),6292106.956719878,3764555.307226874,7647308.80955598,ops/s,sample min/max
+rejected/normal,3,5,baseline,"Hot Key (1 key, contention)",81700120.68741828,61363814.45816151,102563424.06760488,ops/s,sample min/max
+rejected/normal,3,5,baseline,Producer/Consumer (50+50),13250874.905579234,9125243.899518946,15632263.01807772,ops/s,sample min/max
+rejected/normal,3,5,baseline,XADD (streams),10339946.258025924,8498110.816852221,10794973.12645415,ops/s,sample min/max
+rejected/normal,3,5,baseline,SETBIT/BITCOUNT (bitmap),11857106.359275611,9508053.411566103,12556390.908525072,ops/s,sample min/max
+rejected/normal,3,5,baseline,PFADD/PFCOUNT (HyperLogLog),40032751.59473468,26219775.759825174,40578852.460892335,ops/s,sample min/max
+rejected/normal,3,5,baseline,GEOADD/GEODIST (geospatial),3772339.3574983673,2897288.653103482,3976492.0526376604,ops/s,sample min/max
+rejected/normal,3,5,baseline,RSS,1199.375,795.62890625,1214.39453125,MiB,sample min/max
+rejected/normal,3,5,baseline,container,1212.6875,828.9453125,1227.5625,MiB,sample min/max
+rejected/normal,3,5,candidate,Pipeline-64 SET,8248239.415977337,6505314.941187737,9222075.883453013,ops/s,sample min/max
+rejected/normal,3,5,candidate,Pipelined SET,29709580.97295045,19139682.41475206,37295469.36167309,ops/s,sample min/max
+rejected/normal,3,5,candidate,Pipelined GET,31640305.714708757,28522215.525839843,47401270.60717506,ops/s,sample min/max
+rejected/normal,3,5,candidate,Pub/Sub publish,2332211.8193136617,1666902.8945885447,2847095.173565826,ops/s,sample min/max
+rejected/normal,3,5,candidate,Pub/Sub delivery,115632323.39252657,82368983.35966972,140930402.78895628,messages/s,sample min/max
+rejected/normal,3,5,candidate,Mixed SET/GET (50/50),31066722.83944379,21161016.747495227,32583415.172011107,ops/s,sample min/max
+rejected/normal,3,5,candidate,INCR (atomic counters),26963522.102524854,21701861.968757544,39361583.456672855,ops/s,sample min/max
+rejected/normal,3,5,candidate,HSET/HGET (sessions),31055120.86753971,28683168.3611344,41357904.91937597,ops/s,sample min/max
+rejected/normal,3,5,candidate,LPUSH/RPOP (queue),12177446.31364254,11116701.515024658,17559204.391395476,ops/s,sample min/max
+rejected/normal,3,5,candidate,SADD (per-client sets),22158344.63870542,17884842.166133747,35093366.2518467,ops/s,sample min/max
+rejected/normal,3,5,candidate,ZADD (per-client zsets),7551719.993338779,6200532.961850309,12254410.35769233,ops/s,sample min/max
+rejected/normal,3,5,candidate,JSON.SET (documents),6858931.101982209,4910644.295879558,9667088.480405422,ops/s,sample min/max
+rejected/normal,3,5,candidate,JSON.GET (documents),19324675.073705517,10287724.454164332,23398433.116906796,ops/s,sample min/max
+rejected/normal,3,5,candidate,SET+EXPIRE (cache TTL),6926683.921798251,5257423.208183949,7971644.954556383,ops/s,sample min/max
+rejected/normal,3,5,candidate,"Hot Key (1 key, contention)",101762034.04233114,70905869.0624285,107993570.71076131,ops/s,sample min/max
+rejected/normal,3,5,candidate,Producer/Consumer (50+50),15938479.001149546,14880173.496870903,16576053.806666307,ops/s,sample min/max
+rejected/normal,3,5,candidate,XADD (streams),10959377.314483495,9449375.309594017,12021603.157478876,ops/s,sample min/max
+rejected/normal,3,5,candidate,SETBIT/BITCOUNT (bitmap),11892012.322622089,9517692.41225148,13054447.089761341,ops/s,sample min/max
+rejected/normal,3,5,candidate,PFADD/PFCOUNT (HyperLogLog),31791275.777697664,23644965.82539888,43660240.54871492,ops/s,sample min/max
+rejected/normal,3,5,candidate,GEOADD/GEODIST (geospatial),3974747.767624154,3113625.6336578447,4176678.050836157,ops/s,sample min/max
+rejected/normal,3,5,candidate,RSS,800.0703125,796.3046875,1075.20703125,MiB,sample min/max
+rejected/normal,3,5,candidate,container,822.3203125,820.8984375,1088.4609375,MiB,sample min/max
+rejected/normal,6,5,baseline,Pipeline-64 SET,9477555.613417298,2354480.5103444625,12006070.442102943,ops/s,sample min/max
+rejected/normal,6,5,baseline,Pipelined SET,28688756.98085317,28600467.852173217,37652281.45188823,ops/s,sample min/max
+rejected/normal,6,5,baseline,Pipelined GET,35571143.11503771,34381965.75402867,36490465.145455316,ops/s,sample min/max
+rejected/normal,6,5,baseline,Pub/Sub publish,1416843.877824334,1262673.7244908814,1598702.5697321286,ops/s,sample min/max
+rejected/normal,6,5,baseline,Pub/Sub delivery,67829790.20354417,62794004.275254436,79491921.34334797,messages/s,sample min/max
+rejected/normal,6,5,baseline,Mixed SET/GET (50/50),26817148.053693186,25022552.826862853,38656070.676904134,ops/s,sample min/max
+rejected/normal,6,5,baseline,INCR (atomic counters),41977148.018413104,34234947.18471993,46534499.07217189,ops/s,sample min/max
+rejected/normal,6,5,baseline,HSET/HGET (sessions),43611083.163675316,36112800.13686751,51068748.90297944,ops/s,sample min/max
+rejected/normal,6,5,baseline,LPUSH/RPOP (queue),23400777.68974535,15413879.227169676,26778520.188446876,ops/s,sample min/max
+rejected/normal,6,5,baseline,SADD (per-client sets),29586471.514892284,18035798.22786198,30201127.580238998,ops/s,sample min/max
+rejected/normal,6,5,baseline,ZADD (per-client zsets),8043502.996389866,6133644.796544825,10245920.115593651,ops/s,sample min/max
+rejected/normal,6,5,baseline,JSON.SET (documents),6731184.826417771,5562327.674047798,9165129.853873964,ops/s,sample min/max
+rejected/normal,6,5,baseline,JSON.GET (documents),20701160.520514537,16463500.214231296,24316295.3793288,ops/s,sample min/max
+rejected/normal,6,5,baseline,SET+EXPIRE (cache TTL),8142457.107429079,5950507.959161426,8526451.999993145,ops/s,sample min/max
+rejected/normal,6,5,baseline,"Hot Key (1 key, contention)",108206843.05052966,75618233.69462742,112302787.18110852,ops/s,sample min/max
+rejected/normal,6,5,baseline,Producer/Consumer (50+50),12469095.813617043,10034490.450230628,15444252.057112597,ops/s,sample min/max
+rejected/normal,6,5,baseline,XADD (streams),14239443.620510682,8931232.257967569,14606985.009106906,ops/s,sample min/max
+rejected/normal,6,5,baseline,SETBIT/BITCOUNT (bitmap),15993556.515950853,10012560.757470246,17879778.337236043,ops/s,sample min/max
+rejected/normal,6,5,baseline,PFADD/PFCOUNT (HyperLogLog),38159819.046138085,25528282.92505823,42092257.9794083,ops/s,sample min/max
+rejected/normal,6,5,baseline,GEOADD/GEODIST (geospatial),4021216.016125398,3069655.2007033117,4968533.025793063,ops/s,sample min/max
+rejected/normal,6,5,baseline,RSS,1326.73828125,817.2421875,1655.23046875,MiB,sample min/max
+rejected/normal,6,5,baseline,container,1338.12890625,846.1328125,1660.2109375,MiB,sample min/max
+rejected/normal,6,5,candidate,Pipeline-64 SET,8777937.175266085,8455957.857183702,12177198.15505219,ops/s,sample min/max
+rejected/normal,6,5,candidate,Pipelined SET,26848530.666234665,26207848.724439368,35284201.541101016,ops/s,sample min/max
+rejected/normal,6,5,candidate,Pipelined GET,31127211.0315558,28990873.415030178,37724016.10041391,ops/s,sample min/max
+rejected/normal,6,5,candidate,Pub/Sub publish,1630568.9678006002,1353694.3584747,2303511.7970267953,ops/s,sample min/max
+rejected/normal,6,5,candidate,Pub/Sub delivery,81152258.19142778,66652018.77467395,110007288.20285802,messages/s,sample min/max
+rejected/normal,6,5,candidate,Mixed SET/GET (50/50),24616068.411894225,22496389.21704872,34725661.6302014,ops/s,sample min/max
+rejected/normal,6,5,candidate,INCR (atomic counters),40274507.82336342,39296981.71279589,50998474.91610687,ops/s,sample min/max
+rejected/normal,6,5,candidate,HSET/HGET (sessions),40089286.056118466,36775094.170443326,49533899.62633856,ops/s,sample min/max
+rejected/normal,6,5,candidate,LPUSH/RPOP (queue),20764201.519898023,17406649.899014886,25658473.073761016,ops/s,sample min/max
+rejected/normal,6,5,candidate,SADD (per-client sets),28822397.539258987,17408192.413725607,42803625.48419996,ops/s,sample min/max
+rejected/normal,6,5,candidate,ZADD (per-client zsets),5482286.727471824,4089984.4932123427,8297006.239775988,ops/s,sample min/max
+rejected/normal,6,5,candidate,JSON.SET (documents),5772068.423519022,5638709.844579817,8457440.06415205,ops/s,sample min/max
+rejected/normal,6,5,candidate,JSON.GET (documents),17117025.15551395,15443975.13464405,20412159.25791187,ops/s,sample min/max
+rejected/normal,6,5,candidate,SET+EXPIRE (cache TTL),5799886.0838574385,5242231.087574729,9258866.486140683,ops/s,sample min/max
+rejected/normal,6,5,candidate,"Hot Key (1 key, contention)",87008169.78871702,80433791.66438235,129134060.69298269,ops/s,sample min/max
+rejected/normal,6,5,candidate,Producer/Consumer (50+50),11292509.274890758,5814469.235173758,13751731.128078226,ops/s,sample min/max
+rejected/normal,6,5,candidate,XADD (streams),11137195.660814924,9495702.65092148,16836325.33494796,ops/s,sample min/max
+rejected/normal,6,5,candidate,SETBIT/BITCOUNT (bitmap),14516051.781108305,13827916.993558625,14888089.02630595,ops/s,sample min/max
+rejected/normal,6,5,candidate,PFADD/PFCOUNT (HyperLogLog),37832108.93180719,28105387.445834946,56628992.71915378,ops/s,sample min/max
+rejected/normal,6,5,candidate,GEOADD/GEODIST (geospatial),4073747.6069584433,3547861.0050662355,5308779.872504342,ops/s,sample min/max
+rejected/normal,6,5,candidate,RSS,1286.19921875,935.65625,1299.11328125,MiB,sample min/max
+rejected/normal,6,5,candidate,container,1304.0625,956.0,1309.19921875,MiB,sample min/max
+rejected/shared,all,5,baseline,Pipeline-64 SET,13716430.775948023,11129770.381384498,14281202.588594215,ops/s,sample min/max
+rejected/shared,all,5,baseline,Pipelined SET,36932614.310485415,35121530.857618965,42225548.00960147,ops/s,sample min/max
+rejected/shared,all,5,baseline,Pipelined GET,47265757.24072643,43663478.49773444,47810338.60515307,ops/s,sample min/max
+rejected/shared,all,5,baseline,Pub/Sub publish,1795796.9641423794,1320997.1398958822,1846141.8888348432,ops/s,sample min/max
+rejected/shared,all,5,baseline,Pub/Sub delivery,89300196.86406998,64298793.303260095,89302704.9226714,messages/s,sample min/max
+rejected/shared,all,5,baseline,Mixed SET/GET (50/50),40048683.179272726,25622776.96787027,43083461.8207825,ops/s,sample min/max
+rejected/shared,all,5,baseline,INCR (atomic counters),63347032.97384103,44327969.25748944,67500666.65345904,ops/s,sample min/max
+rejected/shared,all,5,baseline,HSET/HGET (sessions),52377221.37688297,32715448.65033889,58312198.32001974,ops/s,sample min/max
+rejected/shared,all,5,baseline,LPUSH/RPOP (queue),42632984.10808621,17424681.856238116,44568411.97756462,ops/s,sample min/max
+rejected/shared,all,5,baseline,SADD (per-client sets),43458606.242515884,30310279.511546817,52733921.61186927,ops/s,sample min/max
+rejected/shared,all,5,baseline,ZADD (per-client zsets),7825285.813967,7034920.335032031,9772447.246582938,ops/s,sample min/max
+rejected/shared,all,5,baseline,JSON.SET (documents),6182827.616110249,4933272.701438524,10167730.543427374,ops/s,sample min/max
+rejected/shared,all,5,baseline,JSON.GET (documents),22353462.13048009,21043980.287893225,30168449.762833748,ops/s,sample min/max
+rejected/shared,all,5,baseline,SET+EXPIRE (cache TTL),7731197.728091681,7319089.820971806,9620779.421191301,ops/s,sample min/max
+rejected/shared,all,5,baseline,"Hot Key (1 key, contention)",131549810.81624381,131213925.76543282,138018587.76372194,ops/s,sample min/max
+rejected/shared,all,5,baseline,Producer/Consumer (50+50),13276136.903311329,12265483.871713564,13746458.018894562,ops/s,sample min/max
+rejected/shared,all,5,baseline,XADD (streams),11426420.388609815,3745915.039848698,12638972.293818139,ops/s,sample min/max
+rejected/shared,all,5,baseline,SETBIT/BITCOUNT (bitmap),18785830.449238714,14084348.04781746,19146142.727620568,ops/s,sample min/max
+rejected/shared,all,5,baseline,PFADD/PFCOUNT (HyperLogLog),38752017.62379758,37717793.61996354,46389119.63610148,ops/s,sample min/max
+rejected/shared,all,5,baseline,GEOADD/GEODIST (geospatial),4551318.5884507755,4293911.666726964,5157440.622566623,ops/s,sample min/max
+rejected/shared,all,5,baseline,RSS,1285.2109375,854.375,1516.40234375,MiB,sample min/max
+rejected/shared,all,5,baseline,container,1308.58203125,877.55078125,1531.0234375,MiB,sample min/max
+rejected/shared,all,5,candidate,Pipeline-64 SET,9164293.277374033,5761630.915455874,11978299.666731002,ops/s,sample min/max
+rejected/shared,all,5,candidate,Pipelined SET,27413398.278671052,25697144.316696603,35244650.74313346,ops/s,sample min/max
+rejected/shared,all,5,candidate,Pipelined GET,36599475.12985512,34770633.56850985,37823270.76733961,ops/s,sample min/max
+rejected/shared,all,5,candidate,Pub/Sub publish,1273282.3821748411,1267423.3560104312,1436948.4273461632,ops/s,sample min/max
+rejected/shared,all,5,candidate,Pub/Sub delivery,62682510.70759886,62630067.77612993,64694380.415158205,messages/s,sample min/max
+rejected/shared,all,5,candidate,Mixed SET/GET (50/50),31389846.17892422,27956542.393545505,34799746.51168646,ops/s,sample min/max
+rejected/shared,all,5,candidate,INCR (atomic counters),52142150.76569184,46226943.04091741,52208527.75136461,ops/s,sample min/max
+rejected/shared,all,5,candidate,HSET/HGET (sessions),44753974.86903197,42461728.9252567,45026755.46092933,ops/s,sample min/max
+rejected/shared,all,5,candidate,LPUSH/RPOP (queue),30744741.40021544,29893724.07420071,34488478.35643639,ops/s,sample min/max
+rejected/shared,all,5,candidate,SADD (per-client sets),35274806.97272876,33646135.28461628,38039155.33827336,ops/s,sample min/max
+rejected/shared,all,5,candidate,ZADD (per-client zsets),8316660.439012718,5841947.2163477875,9332075.282485886,ops/s,sample min/max
+rejected/shared,all,5,candidate,JSON.SET (documents),8006763.72967417,6894600.243200819,8293706.865856072,ops/s,sample min/max
+rejected/shared,all,5,candidate,JSON.GET (documents),18798104.113450017,17197533.16176673,19469445.34850273,ops/s,sample min/max
+rejected/shared,all,5,candidate,SET+EXPIRE (cache TTL),6045480.72582102,5750063.992462172,6141395.843776585,ops/s,sample min/max
+rejected/shared,all,5,candidate,"Hot Key (1 key, contention)",101193465.61410621,95525927.5947285,108557586.98282501,ops/s,sample min/max
+rejected/shared,all,5,candidate,Producer/Consumer (50+50),12261616.548228646,2216940.0104003083,12376787.30323314,ops/s,sample min/max
+rejected/shared,all,5,candidate,XADD (streams),12675385.345974326,10821549.121746609,15004208.943182219,ops/s,sample min/max
+rejected/shared,all,5,candidate,SETBIT/BITCOUNT (bitmap),17951317.874908987,12921388.777427554,19330505.905339073,ops/s,sample min/max
+rejected/shared,all,5,candidate,PFADD/PFCOUNT (HyperLogLog),48798209.88646853,35226470.80467088,51263085.25494503,ops/s,sample min/max
+rejected/shared,all,5,candidate,GEOADD/GEODIST (geospatial),4682910.319839286,4345911.231229876,5885637.594342981,ops/s,sample min/max
+rejected/shared,all,5,candidate,RSS,853.109375,851.8984375,1293.765625,MiB,sample min/max
+rejected/shared,all,5,candidate,container,871.73828125,871.4375,1313.25,MiB,sample min/max
+rejected/stock,multi,64,baseline,GET,6644603.5,6644603.5,6649021.5,ops/s,sample min/max
+rejected/stock,multi,64,baseline,SET,6644603.5,6644603.5,6649021.5,ops/s,sample min/max
+rejected/stock,multi,64,baseline,RSS,31.8515625,31.8359375,31.890625,MiB,sample min/max
+rejected/stock,multi,64,baseline,container,30.1171875,30.0546875,30.1875,MiB,sample min/max
+rejected/stock,multi,64,candidate,GET,6649021.5,6649021.5,6649021.5,ops/s,sample min/max
+rejected/stock,multi,64,candidate,SET,6644603.5,6644603.5,6649021.5,ops/s,sample min/max
+rejected/stock,multi,64,candidate,RSS,29.10546875,28.9921875,29.11328125,MiB,sample min/max
+rejected/stock,multi,64,candidate,container,30.41015625,30.3984375,30.609375,MiB,sample min/max
+rejected/stock,multi,1024,baseline,GET,3070333.25,2850663.75,3628468.5,ops/s,sample min/max
+rejected/stock,multi,1024,baseline,SET,2334842.0,1989996.5,2339758.5,ops/s,sample min/max
+rejected/stock,multi,1024,baseline,RSS,154.66796875,153.52734375,156.1640625,MiB,sample min/max
+rejected/stock,multi,1024,baseline,container,157.58984375,154.7265625,162.5703125,MiB,sample min/max
+rejected/stock,multi,1024,candidate,GET,3629810.5,3628486.5,3631107.25,ops/s,sample min/max
+rejected/stock,multi,1024,candidate,SET,2335932.75,2087709.38,2336478.5,ops/s,sample min/max
+rejected/stock,multi,1024,candidate,RSS,147.359375,146.71484375,150.52734375,MiB,sample min/max
+rejected/stock,multi,1024,candidate,container,160.9453125,158.1171875,162.65234375,MiB,sample min/max
+rejected/stock,multi,10240,baseline,GET,443957.59,443379.28,470281.94,ops/s,sample min/max
+rejected/stock,multi,10240,baseline,SET,232735.41,227080.84,250894.12,ops/s,sample min/max
+rejected/stock,multi,10240,baseline,RSS,1081.25390625,1079.73046875,1081.3359375,MiB,sample min/max
+rejected/stock,multi,10240,baseline,container,1187.1953125,1182.85546875,1195.09765625,MiB,sample min/max
+rejected/stock,multi,10240,candidate,GET,470045.81,420618.91,470158.41,ops/s,sample min/max
+rejected/stock,multi,10240,candidate,SET,240718.25,227132.42,247418.12,ops/s,sample min/max
+rejected/stock,multi,10240,candidate,RSS,1084.81640625,1079.17578125,1085.09375,MiB,sample min/max
+rejected/stock,multi,10240,candidate,container,1191.4296875,1188.86328125,1193.25,MiB,sample min/max
+rejected/stock,single,64,baseline,GET,5704579.5,5701327.5,5707835.5,ops/s,sample min/max
+rejected/stock,single,64,baseline,SET,6644603.5,6644603.5,6649021.5,ops/s,sample min/max
+rejected/stock,single,64,baseline,RSS,29.984375,29.92578125,29.9921875,MiB,sample min/max
+rejected/stock,single,64,baseline,container,27.5625,27.44921875,27.69140625,MiB,sample min/max
+rejected/stock,single,64,candidate,GET,5704579.5,4982625.0,6653445.0,ops/s,sample min/max
+rejected/stock,single,64,candidate,SET,6649021.5,6640191.0,6653445.0,ops/s,sample min/max
+rejected/stock,single,64,candidate,RSS,29.03515625,28.9765625,29.17578125,MiB,sample min/max
+rejected/stock,single,64,candidate,container,36.703125,36.69140625,36.73046875,MiB,sample min/max
+rejected/stock,single,1024,baseline,GET,1597464.5,1478652.62,1663361.25,ops/s,sample min/max
+rejected/stock,single,1024,baseline,SET,1535410.38,1328920.62,1663361.25,ops/s,sample min/max
+rejected/stock,single,1024,baseline,RSS,135.69921875,135.6484375,135.75,MiB,sample min/max
+rejected/stock,single,1024,baseline,container,140.0625,138.57421875,142.06640625,MiB,sample min/max
+rejected/stock,single,1024,candidate,GET,1330689.0,1108661.62,1478434.12,ops/s,sample min/max
+rejected/stock,single,1024,candidate,SET,1330158.0,1287812.5,1478652.62,ops/s,sample min/max
+rejected/stock,single,1024,candidate,RSS,132.48828125,132.421875,132.5390625,MiB,sample min/max
+rejected/stock,single,1024,candidate,container,140.32421875,140.1875,142.3203125,MiB,sample min/max
+rejected/stock,single,10240,baseline,GET,379963.53,363733.16,420018.47,ops/s,sample min/max
+rejected/stock,single,10240,baseline,SET,165611.83,159055.91,184803.47,ops/s,sample min/max
+rejected/stock,single,10240,baseline,RSS,1074.9921875,1072.703125,1075.359375,MiB,sample min/max
+rejected/stock,single,10240,baseline,container,1147.03125,1135.17578125,1160.0390625,MiB,sample min/max
+rejected/stock,single,10240,candidate,GET,399306.88,380252.47,443585.75,ops/s,sample min/max
+rejected/stock,single,10240,candidate,SET,162176.92,141903.38,199306.47,ops/s,sample min/max
+rejected/stock,single,10240,candidate,RSS,1071.609375,1070.953125,1072.74609375,MiB,sample min/max
+rejected/stock,single,10240,candidate,container,1157.4921875,1132.9375,1159.93359375,MiB,sample min/max
+rejected/scalar,multi,64,baseline,GET,171703.3,169664.06,175192.7,ops/s,sample min/max
+rejected/scalar,multi,64,baseline,SET,161134.39,158755.36,165727.55,ops/s,sample min/max
+rejected/scalar,multi,64,baseline,RSS,30.97265625,30.66796875,31.015625,MiB,sample min/max
+rejected/scalar,multi,64,baseline,container,29.30078125,28.9765625,29.5625,MiB,sample min/max
+rejected/scalar,multi,64,candidate,GET,166030.22,158780.56,166112.95,ops/s,sample min/max
+rejected/scalar,multi,64,candidate,SET,165234.62,164284.55,175901.5,ops/s,sample min/max
+rejected/scalar,multi,64,candidate,RSS,27.0,26.97265625,27.56640625,MiB,sample min/max
+rejected/scalar,multi,64,candidate,container,27.84765625,27.8125,27.91015625,MiB,sample min/max
+rejected/scalar,multi,1024,baseline,GET,166972.78,155038.77,177430.8,ops/s,sample min/max
+rejected/scalar,multi,1024,baseline,SET,177999.28,160926.94,181554.11,ops/s,sample min/max
+rejected/scalar,multi,1024,baseline,RSS,122.5390625,121.90625,122.78515625,MiB,sample min/max
+rejected/scalar,multi,1024,baseline,container,121.82421875,121.453125,122.14453125,MiB,sample min/max
+rejected/scalar,multi,1024,candidate,GET,173641.27,149075.72,181818.19,ops/s,sample min/max
+rejected/scalar,multi,1024,candidate,SET,171350.23,159667.89,176429.06,ops/s,sample min/max
+rejected/scalar,multi,1024,candidate,RSS,119.7109375,117.34765625,119.87890625,MiB,sample min/max
+rejected/scalar,multi,1024,candidate,container,121.3984375,120.9375,121.7265625,MiB,sample min/max
+rejected/scalar,single,64,baseline,GET,174520.06,169319.33,180701.12,ops/s,sample min/max
+rejected/scalar,single,64,baseline,SET,175223.42,170473.91,177904.3,ops/s,sample min/max
+rejected/scalar,single,64,baseline,RSS,29.234375,29.21875,29.234375,MiB,sample min/max
+rejected/scalar,single,64,baseline,container,26.0546875,25.99609375,26.0625,MiB,sample min/max
+rejected/scalar,single,64,candidate,GET,162892.98,145857.64,172980.45,ops/s,sample min/max
+rejected/scalar,single,64,candidate,SET,170010.2,159007.8,173943.3,ops/s,sample min/max
+rejected/scalar,single,64,candidate,RSS,27.33984375,27.33984375,27.57421875,MiB,sample min/max
+rejected/scalar,single,64,candidate,container,29.015625,27.34765625,29.01953125,MiB,sample min/max
+rejected/scalar,single,1024,baseline,GET,160745.86,154059.47,162495.94,ops/s,sample min/max
+rejected/scalar,single,1024,baseline,SET,153988.3,151584.05,162443.14,ops/s,sample min/max
+rejected/scalar,single,1024,baseline,RSS,122.41015625,122.39453125,122.42578125,MiB,sample min/max
+rejected/scalar,single,1024,baseline,container,120.9765625,120.9453125,120.9765625,MiB,sample min/max
+rejected/scalar,single,1024,candidate,GET,158629.44,155738.98,177809.39,ops/s,sample min/max
+rejected/scalar,single,1024,candidate,SET,153988.3,146842.88,171880.38,ops/s,sample min/max
+rejected/scalar,single,1024,candidate,RSS,120.58203125,120.56640625,120.59765625,MiB,sample min/max
+rejected/scalar,single,1024,candidate,container,121.4140625,121.40234375,121.4296875,MiB,sample min/max
+historical/standard/P1,single,64,fyrodb,SET,249937.52,,,ops/s,range unavailable
+historical/standard/P1,single,64,fyrodb,SET p99,0.335,,,ms,range unavailable
+historical/standard/P16,single,64,fyrodb,SET,2500000.0,,,ops/s,range unavailable
+historical/standard/P16,single,64,fyrodb,SET p99,0.519,,,ms,range unavailable
+historical/standard/P64,single,64,fyrodb,SET,3996802.5,,,ops/s,range unavailable
+historical/standard/P64,single,64,fyrodb,SET p99,1.255,,,ms,range unavailable
+historical/standard/P256,single,64,fyrodb,SET,3993763.75,,,ops/s,range unavailable
+historical/standard/P256,single,64,fyrodb,SET p99,4.903,,,ms,range unavailable
+historical/standard/P1,single,64,fyrodb,GET,266666.66,,,ops/s,range unavailable
+historical/standard/P1,single,64,fyrodb,GET p99,0.327,,,ms,range unavailable
+historical/standard/P16,single,64,fyrodb,GET,2221235.0,,,ops/s,range unavailable
+historical/standard/P16,single,64,fyrodb,GET p99,0.559,,,ms,range unavailable
+historical/standard/P64,single,64,fyrodb,GET,3996802.5,,,ops/s,range unavailable
+historical/standard/P64,single,64,fyrodb,GET p99,1.183,,,ms,range unavailable
+historical/standard/P256,single,64,fyrodb,GET,4985236.0,,,ops/s,range unavailable
+historical/standard/P256,single,64,fyrodb,GET p99,4.159,,,ms,range unavailable
+historical/standard/P1,single,64,dragonfly,SET,181785.12,,,ops/s,range unavailable
+historical/standard/P1,single,64,dragonfly,SET p99,0.487,,,ms,range unavailable
+historical/standard/P16,single,64,dragonfly,SET,643915.0,,,ops/s,range unavailable
+historical/standard/P16,single,64,dragonfly,SET p99,2.135,,,ms,range unavailable
+historical/standard/P64,single,64,dragonfly,SET,712453.69,,,ops/s,range unavailable
+historical/standard/P64,single,64,dragonfly,SET p99,8.551,,,ms,range unavailable
+historical/standard/P256,single,64,dragonfly,SET,688163.0,,,ops/s,range unavailable
+historical/standard/P256,single,64,dragonfly,SET p99,29.583,,,ms,range unavailable
+historical/standard/P1,single,64,dragonfly,GET,190439.92,,,ops/s,range unavailable
+historical/standard/P1,single,64,dragonfly,GET p99,0.471,,,ms,range unavailable
+historical/standard/P16,single,64,dragonfly,GET,688610.38,,,ops/s,range unavailable
+historical/standard/P16,single,64,dragonfly,GET p99,2.391,,,ms,range unavailable
+historical/standard/P64,single,64,dragonfly,GET,798722.0,,,ops/s,range unavailable
+historical/standard/P64,single,64,dragonfly,GET p99,6.735,,,ms,range unavailable
+historical/standard/P256,single,64,dragonfly,GET,767253.62,,,ops/s,range unavailable
+historical/standard/P256,single,64,dragonfly,GET p99,26.751,,,ms,range unavailable
+historical/standard/P1,single,64,redis,SET,235238.77,,,ops/s,range unavailable
+historical/standard/P1,single,64,redis,SET p99,0.487,,,ms,range unavailable
+historical/standard/P16,single,64,redis,SET,1249063.25,,,ops/s,range unavailable
+historical/standard/P16,single,64,redis,SET p99,1.279,,,ms,range unavailable
+historical/standard/P64,single,64,redis,SET,1535626.5,,,ops/s,range unavailable
+historical/standard/P64,single,64,redis,SET p99,4.471,,,ms,range unavailable
+historical/standard/P256,single,64,redis,SET,1662254.75,,,ops/s,range unavailable
+historical/standard/P256,single,64,redis,SET p99,8.335,,,ms,range unavailable
+historical/standard/P1,single,64,redis,GET,249937.52,,,ops/s,range unavailable
+historical/standard/P1,single,64,redis,GET p99,0.471,,,ms,range unavailable
+historical/standard/P16,single,64,redis,GET,1249375.38,,,ops/s,range unavailable
+historical/standard/P16,single,64,redis,GET p99,1.303,,,ms,range unavailable
+historical/standard/P64,single,64,redis,GET,1663340.0,,,ops/s,range unavailable
+historical/standard/P64,single,64,redis,GET p99,3.255,,,ms,range unavailable
+historical/standard/P256,single,64,redis,GET,1666131.88,,,ops/s,range unavailable
+historical/standard/P256,single,64,redis,GET p99,9.991,,,ms,range unavailable
+historical/standard/P1,multi,64,fyrodb,SET,444444.44,,,ops/s,range unavailable
+historical/standard/P1,multi,64,fyrodb,SET p99,0.167,,,ms,range unavailable
+historical/standard/P16,multi,64,fyrodb,SET,4000000.0,,,ops/s,range unavailable
+historical/standard/P16,multi,64,fyrodb,SET p99,0.223,,,ms,range unavailable
+historical/standard/P64,multi,64,fyrodb,SET,6657789.5,,,ops/s,range unavailable
+historical/standard/P64,multi,64,fyrodb,SET p99,0.663,,,ms,range unavailable
+historical/standard/P256,multi,64,fyrodb,SET,6640361.0,,,ops/s,range unavailable
+historical/standard/P256,multi,64,fyrodb,SET p99,1.703,,,ms,range unavailable
+historical/standard/P1,multi,64,fyrodb,GET,444247.03,,,ops/s,range unavailable
+historical/standard/P1,multi,64,fyrodb,GET p99,0.167,,,ms,range unavailable
+historical/standard/P16,multi,64,fyrodb,GET,5000000.0,,,ops/s,range unavailable
+historical/standard/P16,multi,64,fyrodb,GET p99,0.223,,,ms,range unavailable
+historical/standard/P64,multi,64,fyrodb,GET,6657789.5,,,ops/s,range unavailable
+historical/standard/P64,multi,64,fyrodb,GET p99,0.711,,,ms,range unavailable
+historical/standard/P256,multi,64,fyrodb,GET,6640361.0,,,ops/s,range unavailable
+historical/standard/P256,multi,64,fyrodb,GET p99,1.711,,,ms,range unavailable
+historical/standard/P1,multi,64,dragonfly,SET,399840.06,,,ops/s,range unavailable
+historical/standard/P1,multi,64,dragonfly,SET p99,0.703,,,ms,range unavailable
+historical/standard/P16,multi,64,dragonfly,SET,2497502.5,,,ops/s,range unavailable
+historical/standard/P16,multi,64,dragonfly,SET p99,0.927,,,ms,range unavailable
+historical/standard/P64,multi,64,dragonfly,SET,3328894.75,,,ops/s,range unavailable
+historical/standard/P64,multi,64,dragonfly,SET p99,1.895,,,ms,range unavailable
+historical/standard/P256,multi,64,dragonfly,SET,3322386.75,,,ops/s,range unavailable
+historical/standard/P256,multi,64,dragonfly,SET p99,6.535,,,ms,range unavailable
+historical/standard/P1,multi,64,dragonfly,GET,399680.25,,,ops/s,range unavailable
+historical/standard/P1,multi,64,dragonfly,GET p99,0.895,,,ms,range unavailable
+historical/standard/P16,multi,64,dragonfly,GET,2498750.75,,,ops/s,range unavailable
+historical/standard/P16,multi,64,dragonfly,GET p99,0.975,,,ms,range unavailable
+historical/standard/P64,multi,64,dragonfly,GET,3996802.5,,,ops/s,range unavailable
+historical/standard/P64,multi,64,dragonfly,GET p99,1.535,,,ms,range unavailable
+historical/standard/P256,multi,64,dragonfly,GET,3326807.75,,,ops/s,range unavailable
+historical/standard/P256,multi,64,dragonfly,GET p99,6.015,,,ms,range unavailable
+historical/standard/P1,multi,64,redis,SET,400000.0,,,ops/s,range unavailable
+historical/standard/P1,multi,64,redis,SET p99,0.231,,,ms,range unavailable
+historical/standard/P16,multi,64,redis,SET,1817521.0,,,ops/s,range unavailable
+historical/standard/P16,multi,64,redis,SET p99,0.751,,,ms,range unavailable
+historical/standard/P64,multi,64,redis,SET,1665556.25,,,ops/s,range unavailable
+historical/standard/P64,multi,64,redis,SET p99,3.471,,,ms,range unavailable
+historical/standard/P256,multi,64,redis,SET,907311.19,,,ops/s,range unavailable
+historical/standard/P256,multi,64,redis,SET p99,11.335,,,ms,range unavailable
+historical/standard/P1,multi,64,redis,GET,400000.0,,,ops/s,range unavailable
+historical/standard/P1,multi,64,redis,GET p99,0.207,,,ms,range unavailable
+historical/standard/P16,multi,64,redis,GET,2221235.0,,,ops/s,range unavailable
+historical/standard/P16,multi,64,redis,GET p99,0.607,,,ms,range unavailable
+historical/standard/P64,multi,64,redis,GET,1998401.25,,,ops/s,range unavailable
+historical/standard/P64,multi,64,redis,GET p99,2.767,,,ms,range unavailable
+historical/standard/P256,multi,64,redis,GET,1996084.5,,,ops/s,range unavailable
+historical/standard/P256,multi,64,redis,GET p99,11.407,,,ms,range unavailable
+historical/memtier,8 workers,64,baseline,GET,3336881.17,,,ops/s,range unavailable
+historical/memtier,8 workers,64,baseline,SET,2800594.51,,,ops/s,range unavailable
+historical/memtier,8 workers,64,candidate,GET,3346545.85,,,ops/s,range unavailable
+historical/memtier,8 workers,64,candidate,SET,2760483.82,,,ops/s,range unavailable

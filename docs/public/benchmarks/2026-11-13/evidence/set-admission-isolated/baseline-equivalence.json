@@ -1,0 +1,15 @@
+{
+  "original": {
+    "image": "sha256:3d5ef33d50f9dc4d5e321dbd196cbed3c5e644bfbdb2be32c6108fd6be4f3980",
+    "sha256": "e3665c4a52b2d3f8c486e3a8c66c81261afd649c1f856b8b26601f4e3e6fb5cd",
+    "bytes": 14467472
+  },
+  "rebuilt": {
+    "image": "sha256:1f6c3538397aabf71077841b78a478ae287a0c8164eba2cd857199ef176fa1e3",
+    "sha256": "9d902c8a2e23dc357fa1134b7b75ad9e446b457ee487010d15917919b117e182",
+    "bytes": 14467472
+  },
+  "byte_identical": false,
+  "executable_code_identical": true,
+  "differences": "GNUbuildIDandfourbytesofmimalloc__TIME__stringonly; allothersectionsidentical"
+}

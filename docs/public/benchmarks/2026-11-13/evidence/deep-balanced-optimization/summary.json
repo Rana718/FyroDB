@@ -1,0 +1,4790 @@
+[
+  {
+    "mode": "standard",
+    "core": "multi",
+    "size": 5,
+    "cohort": "",
+    "versions": {
+      "dragonfly": {
+        "GET": {
+          "median": 3644828.0,
+          "low": 3629810.5,
+          "high": 3990474.0
+        },
+        "SET": {
+          "median": 3071292.25,
+          "low": 3071292.25,
+          "high": 3071292.25
+        },
+        "startup_RAM": {
+          "median": 67.6953125,
+          "low": 67.6953125,
+          "high": 67.6953125
+        },
+        "RAM": {
+          "median": 84.28125,
+          "low": 84.23046875,
+          "high": 84.453125
+        },
+        "container_RAM": {
+          "median": 94.546875,
+          "low": 91.76953125,
+          "high": 94.98828125
+        },
+        "p99": {
+          "GET": {
+            "median": 5.303,
+            "low": 5.279,
+            "high": 5.311
+          },
+          "SET": {
+            "median": 6.543,
+            "low": 6.487,
+            "high": 6.575
+          }
+        },
+        "contended": 0
+      },
+      "candidate": {
+        "GET": {
+          "median": 6644603.5,
+          "low": 6640191.0,
+          "high": 6649021.5
+        },
+        "SET": {
+          "median": 6649021.5,
+          "low": 6644603.5,
+          "high": 6657703.0
+        },
+        "startup_RAM": {
+          "median": 5.40234375,
+          "low": 5.40234375,
+          "high": 5.40234375
+        },
+        "RAM": {
+          "median": 21.34375,
+          "low": 21.25,
+          "high": 21.41015625
+        },
+        "container_RAM": {
+          "median": 21.53125,
+          "low": 21.48046875,
+          "high": 21.70703125
+        },
+        "p99": {
+          "GET": {
+            "median": 1.783,
+            "low": 1.703,
+            "high": 1.903
+          },
+          "SET": {
+            "median": 1.775,
+            "low": 1.695,
+            "high": 1.831
+          }
+        },
+        "contended": 0
+      },
+      "baseline": {
+        "GET": {
+          "median": 6644603.5,
+          "low": 6644603.5,
+          "high": 6727053.5
+        },
+        "SET": {
+          "median": 6686097.5,
+          "low": 6673237.5,
+          "high": 6829053.5
+        },
+        "startup_RAM": {
+          "median": 48.6171875,
+          "low": 48.6171875,
+          "high": 48.6171875
+        },
+        "RAM": {
+          "median": 57.15625,
+          "low": 57.1484375,
+          "high": 57.19921875
+        },
+        "container_RAM": {
+          "median": 57.51953125,
+          "low": 57.48046875,
+          "high": 57.55859375
+        },
+        "p99": {
+          "GET": {
+            "median": 1.791,
+            "low": 1.751,
+            "high": 1.903
+          },
+          "SET": {
+            "median": 1.839,
+            "low": 1.719,
+            "high": 1.855
+          }
+        },
+        "contended": 0
+      }
+    }
+  },
+  {
+    "mode": "standard",
+    "core": "multi",
+    "size": 64,
+    "cohort": "",
+    "versions": {
+      "dragonfly": {
+        "GET": {
+          "median": 3328937.5,
+          "low": 3325616.25,
+          "high": 3328937.5
+        },
+        "SET": {
+          "median": 2850663.75,
+          "low": 2850663.75,
+          "high": 2852289.75
+        },
+        "startup_RAM": {
+          "median": 67.66015625,
+          "low": 67.66015625,
+          "high": 67.66015625
+        },
+        "RAM": {
+          "median": 92.3046875,
+          "low": 89.36328125,
+          "high": 93.02734375
+        },
+        "container_RAM": {
+          "median": 102.31640625,
+          "low": 102.109375,
+          "high": 102.47265625
+        },
+        "p99": {
+          "GET": {
+            "median": 6.087,
+            "low": 5.999,
+            "high": 6.167
+          },
+          "SET": {
+            "median": 7.295,
+            "low": 7.255,
+            "high": 7.367
+          }
+        },
+        "contended": 0
+      },
+      "candidate": {
+        "GET": {
+          "median": 6774124.5,
+          "low": 6715148.0,
+          "high": 7980948.0
+        },
+        "SET": {
+          "median": 7968229.5,
+          "low": 6644603.5,
+          "high": 7974584.0
+        },
+        "startup_RAM": {
+          "median": 5.37109375,
+          "low": 5.37109375,
+          "high": 5.37109375
+        },
+        "RAM": {
+          "median": 29.09765625,
+          "low": 29.04296875,
+          "high": 29.14453125
+        },
+        "container_RAM": {
+          "median": 30.2421875,
+          "low": 30.2265625,
+          "high": 30.359375
+        },
+        "p99": {
+          "GET": {
+            "median": 1.775,
+            "low": 1.735,
+            "high": 1.903
+          },
+          "SET": {
+            "median": 1.671,
+            "low": 1.631,
+            "high": 1.687
+          }
+        },
+        "contended": 0
+      },
+      "baseline": {
+        "GET": {
+          "median": 6649021.5,
+          "low": 6640191.0,
+          "high": 6811079.0
+        },
+        "SET": {
+          "median": 6716649.5,
+          "low": 6640191.0,
+          "high": 6785475.0
+        },
+        "startup_RAM": {
+          "median": 48.7421875,
+          "low": 48.7421875,
+          "high": 48.7421875
+        },
+        "RAM": {
+          "median": 65.08984375,
+          "low": 65.046875,
+          "high": 65.23046875
+        },
+        "container_RAM": {
+          "median": 66.34765625,
+          "low": 66.109375,
+          "high": 66.37109375
+        },
+        "p99": {
+          "GET": {
+            "median": 1.847,
+            "low": 1.839,
+            "high": 1.871
+          },
+          "SET": {
+            "median": 1.775,
+            "low": 1.711,
+            "high": 1.775
+          }
+        },
+        "contended": 0
+      }
+    }
+  },
+  {
+    "mode": "standard",
+    "core": "multi",
+    "size": 128,
+    "cohort": "",
+    "versions": {
+      "dragonfly": {
+        "GET": {
+          "median": 2876374.0,
+          "low": 2853103.5,
+          "high": 3070349.5
+        },
+        "SET": {
+          "median": 2512156.75,
+          "low": 2496287.5,
+          "high": 2661024.0
+        },
+        "startup_RAM": {
+          "median": 67.546875,
+          "low": 67.546875,
+          "high": 67.546875
+        },
+        "RAM": {
+          "median": 101.875,
+          "low": 100.7578125,
+          "high": 103.14453125
+        },
+        "container_RAM": {
+          "median": 125.27734375,
+          "low": 125.0,
+          "high": 129.09765625
+        },
+        "p99": {
+          "GET": {
+            "median": 6.951,
+            "low": 6.919,
+            "high": 7.399
+          },
+          "SET": {
+            "median": 8.135,
+            "low": 7.903,
+            "high": 8.215
+          }
+        },
+        "contended": 0
+      },
+      "candidate": {
+        "GET": {
+          "median": 6806417.5,
+          "low": 6649021.5,
+          "high": 6815640.5
+        },
+        "SET": {
+          "median": 6726537.5,
+          "low": 6649021.5,
+          "high": 6731577.5
+        },
+        "startup_RAM": {
+          "median": 5.20703125,
+          "low": 5.20703125,
+          "high": 5.20703125
+        },
+        "RAM": {
+          "median": 37.79296875,
+          "low": 37.30859375,
+          "high": 37.796875
+        },
+        "container_RAM": {
+          "median": 40.03125,
+          "low": 39.63671875,
+          "high": 40.0703125
+        },
+        "p99": {
+          "GET": {
+            "median": 1.919,
+            "low": 1.823,
+            "high": 1.975
+          },
+          "SET": {
+            "median": 1.807,
+            "low": 1.703,
+            "high": 1.831
+          }
+        },
+        "contended": 0
+      },
+      "baseline": {
+        "GET": {
+          "median": 6653445.0,
+          "low": 6649021.5,
+          "high": 6678975.5
+        },
+        "SET": {
+          "median": 6644603.5,
+          "low": 6640191.0,
+          "high": 6649021.5
+        },
+        "startup_RAM": {
+          "median": 48.63671875,
+          "low": 48.63671875,
+          "high": 48.63671875
+        },
+        "RAM": {
+          "median": 73.578125,
+          "low": 73.50390625,
+          "high": 73.86328125
+        },
+        "container_RAM": {
+          "median": 75.62890625,
+          "low": 75.48828125,
+          "high": 75.94921875
+        },
+        "p99": {
+          "GET": {
+            "median": 1.863,
+            "low": 1.831,
+            "high": 1.903
+          },
+          "SET": {
+            "median": 1.791,
+            "low": 1.679,
+            "high": 1.871
+          }
+        },
+        "contended": 0
+      }
+    }
+  },
+  {
+    "mode": "standard",
+    "core": "multi",
+    "size": 256,
+    "cohort": "",
+    "versions": {
+      "dragonfly": {
+        "GET": {
+          "median": 2347999.25,
+          "low": 2217813.25,
+          "high": 2347999.25
+        },
+        "SET": {
+          "median": 2217323.25,
+          "low": 2217323.25,
+          "high": 2348550.5
+        },
+        "startup_RAM": {
+          "median": 67.64453125,
+          "low": 67.64453125,
+          "high": 67.64453125
+        },
+        "RAM": {
+          "median": 116.1015625,
+          "low": 115.38671875,
+          "high": 116.36328125
+        },
+        "container_RAM": {
+          "median": 144.0234375,
+          "low": 142.515625,
+          "high": 150.56640625
+        },
+        "p99": {
+          "GET": {
+            "median": 8.783,
+            "low": 8.615,
+            "high": 8.967
+          },
+          "SET": {
+            "median": 9.199,
+            "low": 8.903,
+            "high": 9.471
+          }
+        },
+        "contended": 0
+      },
+      "candidate": {
+        "GET": {
+          "median": 6653445.0,
+          "low": 6653445.0,
+          "high": 6764693.0
+        },
+        "SET": {
+          "median": 6644603.5,
+          "low": 6640191.0,
+          "high": 6649021.5
+        },
+        "startup_RAM": {
+          "median": 5.36328125,
+          "low": 5.36328125,
+          "high": 5.36328125
+        },
+        "RAM": {
+          "median": 63.93359375,
+          "low": 62.8515625,
+          "high": 65.02734375
+        },
+        "container_RAM": {
+          "median": 65.953125,
+          "low": 63.09765625,
+          "high": 72.6015625
+        },
+        "p99": {
+          "GET": {
+            "median": 1.719,
+            "low": 1.463,
+            "high": 1.815
+          },
+          "SET": {
+            "median": 1.887,
+            "low": 1.759,
+            "high": 2.047
+          }
+        },
+        "contended": 0
+      },
+      "baseline": {
+        "GET": {
+          "median": 6737688.0,
+          "low": 6653445.0,
+          "high": 7987323.0
+        },
+        "SET": {
+          "median": 6644603.5,
+          "low": 6644603.5,
+          "high": 6657362.5
+        },
+        "startup_RAM": {
+          "median": 48.73828125,
+          "low": 48.73828125,
+          "high": 48.73828125
+        },
+        "RAM": {
+          "median": 101.2578125,
+          "low": 100.4140625,
+          "high": 102.375
+        },
+        "container_RAM": {
+          "median": 101.2890625,
+          "low": 100.58203125,
+          "high": 104.26953125
+        },
+        "p99": {
+          "GET": {
+            "median": 1.519,
+            "low": 1.471,
+            "high": 1.975
+          },
+          "SET": {
+            "median": 1.871,
+            "low": 1.703,
+            "high": 1.919
+          }
+        },
+        "contended": 0
+      }
+    }
+  },
+  {
+    "mode": "standard",
+    "core": "multi",
+    "size": 512,
+    "cohort": "",
+    "versions": {
+      "dragonfly": {
+        "GET": {
+          "median": 1901164.88,
+          "low": 1900442.38,
+          "high": 1901164.88
+        },
+        "SET": {
+          "median": 1735530.75,
+          "low": 1735530.75,
+          "high": 1814905.25
+        },
+        "startup_RAM": {
+          "median": 67.6171875,
+          "low": 67.6171875,
+          "high": 67.6171875
+        },
+        "RAM": {
+          "median": 149.40625,
+          "low": 140.80859375,
+          "high": 153.81640625
+        },
+        "container_RAM": {
+          "median": 198.3359375,
+          "low": 198.16015625,
+          "high": 204.6171875
+        },
+        "p99": {
+          "GET": {
+            "median": 11.199,
+            "low": 11.191,
+            "high": 11.943
+          },
+          "SET": {
+            "median": 13.711,
+            "low": 12.487,
+            "high": 14.119
+          }
+        },
+        "contended": 0
+      },
+      "candidate": {
+        "GET": {
+          "median": 5704579.5,
+          "low": 5701327.5,
+          "high": 5704579.5
+        },
+        "SET": {
+          "median": 5691592.5,
+          "low": 5688355.0,
+          "high": 5691592.5
+        },
+        "startup_RAM": {
+          "median": 5.3046875,
+          "low": 5.3046875,
+          "high": 5.3046875
+        },
+        "RAM": {
+          "median": 91.15234375,
+          "low": 77.6328125,
+          "high": 98.796875
+        },
+        "container_RAM": {
+          "median": 92.96875,
+          "low": 83.015625,
+          "high": 116.96875
+        },
+        "p99": {
+          "GET": {
+            "median": 4.663,
+            "low": 4.231,
+            "high": 4.863
+          },
+          "SET": {
+            "median": 4.567,
+            "low": 3.079,
+            "high": 5.095
+          }
+        },
+        "contended": 0
+      },
+      "baseline": {
+        "GET": {
+          "median": 5707833.5,
+          "low": 5704579.5,
+          "high": 5707835.5
+        },
+        "SET": {
+          "median": 5691592.5,
+          "low": 5685121.5,
+          "high": 5694833.5
+        },
+        "startup_RAM": {
+          "median": 48.74609375,
+          "low": 48.74609375,
+          "high": 48.74609375
+        },
+        "RAM": {
+          "median": 134.51171875,
+          "low": 125.01171875,
+          "high": 134.64453125
+        },
+        "container_RAM": {
+          "median": 151.84765625,
+          "low": 128.92578125,
+          "high": 154.69140625
+        },
+        "p99": {
+          "GET": {
+            "median": 4.983,
+            "low": 4.039,
+            "high": 5.455
+          },
+          "SET": {
+            "median": 3.535,
+            "low": 3.503,
+            "high": 4.447
+          }
+        },
+        "contended": 0
+      }
+    }
+  },
+  {
+    "mode": "standard",
+    "core": "multi",
+    "size": 1024,
+    "cohort": "",
+    "versions": {
+      "dragonfly": {
+        "GET": {
+          "median": 1535646.12,
+          "low": 1535646.12,
+          "high": 1535882.0
+        },
+        "SET": {
+          "median": 1173723.88,
+          "low": 1140265.38,
+          "high": 1173999.62
+        },
+        "startup_RAM": {
+          "median": 67.4609375,
+          "low": 67.4609375,
+          "high": 67.4609375
+        },
+        "RAM": {
+          "median": 190.98828125,
+          "low": 190.43359375,
+          "high": 191.27734375
+        },
+        "container_RAM": {
+          "median": 273.49609375,
+          "low": 268.67578125,
+          "high": 274.98828125
+        },
+        "p99": {
+          "GET": {
+            "median": 13.567,
+            "low": 13.519,
+            "high": 13.887
+          },
+          "SET": {
+            "median": 19.951,
+            "low": 19.647,
+            "high": 20.095
+          }
+        },
+        "contended": 0
+      },
+      "candidate": {
+        "GET": {
+          "median": 4995068.5,
+          "low": 4440516.0,
+          "high": 4997547.0
+        },
+        "SET": {
+          "median": 2845796.25,
+          "low": 2844986.5,
+          "high": 2847416.75
+        },
+        "startup_RAM": {
+          "median": 7.43359375,
+          "low": 7.43359375,
+          "high": 7.43359375
+        },
+        "RAM": {
+          "median": 147.56640625,
+          "low": 143.16015625,
+          "high": 157.015625
+        },
+        "container_RAM": {
+          "median": 163.3515625,
+          "low": 157.49609375,
+          "high": 176.80859375
+        },
+        "p99": {
+          "GET": {
+            "median": 3.567,
+            "low": 3.119,
+            "high": 3.751
+          },
+          "SET": {
+            "median": 9.119,
+            "low": 8.223,
+            "high": 11.383
+          }
+        },
+        "contended": 0
+      },
+      "baseline": {
+        "GET": {
+          "median": 4995068.5,
+          "low": 4995067.0,
+          "high": 4995068.5
+        },
+        "SET": {
+          "median": 2847416.75,
+          "low": 2847416.75,
+          "high": 2849039.25
+        },
+        "startup_RAM": {
+          "median": 48.734375,
+          "low": 48.734375,
+          "high": 48.734375
+        },
+        "RAM": {
+          "median": 160.69921875,
+          "low": 160.14453125,
+          "high": 161.19921875
+        },
+        "container_RAM": {
+          "median": 189.0390625,
+          "low": 178.27734375,
+          "high": 189.56640625
+        },
+        "p99": {
+          "GET": {
+            "median": 3.167,
+            "low": 2.927,
+            "high": 3.911
+          },
+          "SET": {
+            "median": 9.615,
+            "low": 7.879,
+            "high": 11.679
+          }
+        },
+        "contended": 0
+      }
+    }
+  },
+  {
+    "mode": "standard",
+    "core": "multi",
+    "size": 2048,
+    "cohort": "",
+    "versions": {
+      "dragonfly": {
+        "GET": {
+          "median": 1139627.88,
+          "low": 998566.12,
+          "high": 1140318.12
+        },
+        "SET": {
+          "median": 795912.44,
+          "low": 795595.88,
+          "high": 795912.44
+        },
+        "startup_RAM": {
+          "median": 67.6875,
+          "low": 67.6875,
+          "high": 67.6875
+        },
+        "RAM": {
+          "median": 304.30859375,
+          "low": 300.6640625,
+          "high": 304.53125
+        },
+        "container_RAM": {
+          "median": 413.18359375,
+          "low": 391.91015625,
+          "high": 413.27734375
+        },
+        "p99": {
+          "GET": {
+            "median": 18.799,
+            "low": 18.287,
+            "high": 19.007
+          },
+          "SET": {
+            "median": 27.263,
+            "low": 26.895,
+            "high": 27.999
+          }
+        },
+        "contended": 0
+      },
+      "candidate": {
+        "GET": {
+          "median": 2659633.0,
+          "low": 1996044.0,
+          "high": 2659744.75
+        },
+        "SET": {
+          "median": 1573664.75,
+          "low": 1321961.62,
+          "high": 1579879.88
+        },
+        "startup_RAM": {
+          "median": 7.40234375,
+          "low": 7.40234375,
+          "high": 7.40234375
+        },
+        "RAM": {
+          "median": 265.1484375,
+          "low": 264.1015625,
+          "high": 266.52734375
+        },
+        "container_RAM": {
+          "median": 287.53125,
+          "low": 269.015625,
+          "high": 294.20703125
+        },
+        "p99": {
+          "GET": {
+            "median": 6.103,
+            "low": 3.503,
+            "high": 6.447
+          },
+          "SET": {
+            "median": 14.415,
+            "low": 14.103,
+            "high": 15.375
+          }
+        },
+        "contended": 0
+      },
+      "baseline": {
+        "GET": {
+          "median": 2057387.62,
+          "low": 1996041.0,
+          "high": 2659710.25
+        },
+        "SET": {
+          "median": 1577388.0,
+          "low": 1576144.88,
+          "high": 1579879.88
+        },
+        "startup_RAM": {
+          "median": 48.4375,
+          "low": 48.4375,
+          "high": 48.4375
+        },
+        "RAM": {
+          "median": 298.69140625,
+          "low": 297.48046875,
+          "high": 300.30078125
+        },
+        "container_RAM": {
+          "median": 308.06640625,
+          "low": 300.9453125,
+          "high": 313.04296875
+        },
+        "p99": {
+          "GET": {
+            "median": 4.903,
+            "low": 2.439,
+            "high": 6.175
+          },
+          "SET": {
+            "median": 12.383,
+            "low": 10.471,
+            "high": 12.871
+          }
+        },
+        "contended": 0
+      }
+    }
+  },
+  {
+    "mode": "standard",
+    "core": "multi",
+    "size": 4096,
+    "cohort": "",
+    "versions": {
+      "dragonfly": {
+        "GET": {
+          "median": 725735.81,
+          "low": 725731.12,
+          "high": 725735.81
+        },
+        "SET": {
+          "median": 466992.28,
+          "low": 466883.28,
+          "high": 467101.34
+        },
+        "startup_RAM": {
+          "median": 67.73046875,
+          "low": 67.73046875,
+          "high": 67.73046875
+        },
+        "RAM": {
+          "median": 532.203125,
+          "low": 530.45703125,
+          "high": 532.890625
+        },
+        "container_RAM": {
+          "median": 695.12890625,
+          "low": 672.31640625,
+          "high": 705.78515625
+        },
+        "p99": {
+          "GET": {
+            "median": 30.863,
+            "low": 28.623,
+            "high": 31.999
+          },
+          "SET": {
+            "median": 45.087,
+            "low": 44.511,
+            "high": 46.719
+          }
+        },
+        "contended": 0
+      },
+      "candidate": {
+        "GET": {
+          "median": 1597469.62,
+          "low": 1331587.25,
+          "high": 1597523.25
+        },
+        "SET": {
+          "median": 773444.69,
+          "low": 718178.81,
+          "high": 781910.81
+        },
+        "startup_RAM": {
+          "median": 5.3515625,
+          "low": 5.3515625,
+          "high": 5.3515625
+        },
+        "RAM": {
+          "median": 481.02734375,
+          "low": 480.40234375,
+          "high": 481.640625
+        },
+        "container_RAM": {
+          "median": 509.6640625,
+          "low": 487.20703125,
+          "high": 521.39453125
+        },
+        "p99": {
+          "GET": {
+            "median": 9.039,
+            "low": 7.511,
+            "high": 9.167
+          },
+          "SET": {
+            "median": 28.511,
+            "low": 26.719,
+            "high": 31.727
+          }
+        },
+        "contended": 0
+      },
+      "baseline": {
+        "GET": {
+          "median": 1331583.25,
+          "low": 1331569.88,
+          "high": 1331587.88
+        },
+        "SET": {
+          "median": 769280.0,
+          "low": 710020.62,
+          "high": 773444.69
+        },
+        "startup_RAM": {
+          "median": 48.7109375,
+          "low": 48.7109375,
+          "high": 48.7109375
+        },
+        "RAM": {
+          "median": 491.83984375,
+          "low": 489.61328125,
+          "high": 494.0078125
+        },
+        "container_RAM": {
+          "median": 520.078125,
+          "low": 516.9296875,
+          "high": 531.10546875
+        },
+        "p99": {
+          "GET": {
+            "median": 7.807,
+            "low": 4.303,
+            "high": 10.103
+          },
+          "SET": {
+            "median": 30.847,
+            "low": 26.879,
+            "high": 34.975
+          }
+        },
+        "contended": 2
+      }
+    }
+  },
+  {
+    "mode": "standard",
+    "core": "multi",
+    "size": 8192,
+    "cohort": "",
+    "versions": {
+      "dragonfly": {
+        "GET": {
+          "median": 420548.34,
+          "low": 420459.97,
+          "high": 420548.34
+        },
+        "SET": {
+          "median": 255346.34,
+          "low": 254955.78,
+          "high": 255509.45
+        },
+        "startup_RAM": {
+          "median": 67.625,
+          "low": 67.625,
+          "high": 67.625
+        },
+        "RAM": {
+          "median": 1012.0234375,
+          "low": 1005.3125,
+          "high": 1013.25390625
+        },
+        "container_RAM": {
+          "median": 1284.05859375,
+          "low": 1271.40625,
+          "high": 1287.265625
+        },
+        "p99": {
+          "GET": {
+            "median": 54.655,
+            "low": 54.655,
+            "high": 54.687
+          },
+          "SET": {
+            "median": 87.039,
+            "low": 80.127,
+            "high": 91.391
+          }
+        },
+        "contended": 0
+      },
+      "candidate": {
+        "GET": {
+          "median": 729345.75,
+          "low": 726776.12,
+          "high": 799372.88
+        },
+        "SET": {
+          "median": 370599.97,
+          "low": 369163.5,
+          "high": 404556.66
+        },
+        "startup_RAM": {
+          "median": 5.25,
+          "low": 5.25,
+          "high": 5.25
+        },
+        "RAM": {
+          "median": 905.08984375,
+          "low": 902.22265625,
+          "high": 905.32421875
+        },
+        "container_RAM": {
+          "median": 945.625,
+          "low": 943.59375,
+          "high": 950.234375
+        },
+        "p99": {
+          "GET": {
+            "median": 12.087,
+            "low": 7.823,
+            "high": 28.031
+          },
+          "SET": {
+            "median": 53.919,
+            "low": 50.527,
+            "high": 58.879
+          }
+        },
+        "contended": 2
+      },
+      "baseline": {
+        "GET": {
+          "median": 726751.44,
+          "low": 726489.62,
+          "high": 726756.88
+        },
+        "SET": {
+          "median": 371840.09,
+          "low": 369231.69,
+          "high": 383975.41
+        },
+        "startup_RAM": {
+          "median": 48.3984375,
+          "low": 48.3984375,
+          "high": 48.3984375
+        },
+        "RAM": {
+          "median": 909.98046875,
+          "low": 906.828125,
+          "high": 910.69921875
+        },
+        "container_RAM": {
+          "median": 962.66796875,
+          "low": 942.4296875,
+          "high": 966.890625
+        },
+        "p99": {
+          "GET": {
+            "median": 8.887,
+            "low": 6.839,
+            "high": 21.599
+          },
+          "SET": {
+            "median": 54.847,
+            "low": 49.855,
+            "high": 55.615
+          }
+        },
+        "contended": 1
+      }
+    }
+  },
+  {
+    "mode": "standard",
+    "core": "multi",
+    "size": 10240,
+    "cohort": "",
+    "versions": {
+      "dragonfly": {
+        "GET": {
+          "median": 347485.75,
+          "low": 347425.41,
+          "high": 351027.0
+        },
+        "SET": {
+          "median": 207697.61,
+          "low": 202544.61,
+          "high": 208021.64
+        },
+        "startup_RAM": {
+          "median": 67.63671875,
+          "low": 67.63671875,
+          "high": 67.63671875
+        },
+        "RAM": {
+          "median": 1293.703125,
+          "low": 1292.71875,
+          "high": 1295.79296875
+        },
+        "container_RAM": {
+          "median": 1540.9375,
+          "low": 1520.1640625,
+          "high": 1543.3828125
+        },
+        "p99": {
+          "GET": {
+            "median": 65.919,
+            "low": 65.055,
+            "high": 66.303
+          },
+          "SET": {
+            "median": 109.759,
+            "low": 109.631,
+            "high": 119.423
+          }
+        },
+        "contended": 0
+      },
+      "candidate": {
+        "GET": {
+          "median": 570963.19,
+          "low": 570784.0,
+          "high": 571117.62
+        },
+        "SET": {
+          "median": 282983.59,
+          "low": 277949.97,
+          "high": 291266.62
+        },
+        "startup_RAM": {
+          "median": 5.32421875,
+          "low": 5.32421875,
+          "high": 5.32421875
+        },
+        "RAM": {
+          "median": 1107.63671875,
+          "low": 1103.8046875,
+          "high": 1107.97265625
+        },
+        "container_RAM": {
+          "median": 1185.51953125,
+          "low": 1170.640625,
+          "high": 1193.0234375
+        },
+        "p99": {
+          "GET": {
+            "median": 10.431,
+            "low": 8.559,
+            "high": 23.615
+          },
+          "SET": {
+            "median": 94.975,
+            "low": 90.303,
+            "high": 104.063
+          }
+        },
+        "contended": 3
+      },
+      "baseline": {
+        "GET": {
+          "median": 570975.75,
+          "low": 532921.69,
+          "high": 575149.12
+        },
+        "SET": {
+          "median": 287912.47,
+          "low": 284230.22,
+          "high": 290378.62
+        },
+        "startup_RAM": {
+          "median": 48.49609375,
+          "low": 48.49609375,
+          "high": 48.49609375
+        },
+        "RAM": {
+          "median": 1114.40234375,
+          "low": 1112.48046875,
+          "high": 1116.87890625
+        },
+        "container_RAM": {
+          "median": 1195.83984375,
+          "low": 1188.890625,
+          "high": 1201.28125
+        },
+        "p99": {
+          "GET": {
+            "median": 16.591,
+            "low": 8.391,
+            "high": 38.495
+          },
+          "SET": {
+            "median": 80.895,
+            "low": 80.767,
+            "high": 100.095
+          }
+        },
+        "contended": 2
+      }
+    }
+  },
+  {
+    "mode": "standard",
+    "core": "single",
+    "size": 5,
+    "cohort": "",
+    "versions": {
+      "dragonfly": {
+        "GET": {
+          "median": 1023135.62,
+          "low": 973722.25,
+          "high": 1078762.38
+        },
+        "SET": {
+          "median": 906958.81,
+          "low": 849051.44,
+          "high": 928086.19
+        },
+        "startup_RAM": {
+          "median": 47.390625,
+          "low": 47.390625,
+          "high": 47.390625
+        },
+        "RAM": {
+          "median": 63.73828125,
+          "low": 63.734375,
+          "high": 66.17578125
+        },
+        "container_RAM": {
+          "median": 67.2109375,
+          "low": 66.75,
+          "high": 68.40234375
+        },
+        "p99": {
+          "GET": {
+            "median": 21.263,
+            "low": 18.223,
+            "high": 21.679
+          },
+          "SET": {
+            "median": 22.959,
+            "low": 21.439,
+            "high": 23.919
+          }
+        },
+        "contended": 0
+      },
+      "candidate": {
+        "GET": {
+          "median": 7968229.5,
+          "low": 6725505.0,
+          "high": 7974584.0
+        },
+        "SET": {
+          "median": 7980948.0,
+          "low": 7974584.0,
+          "high": 7980948.0
+        },
+        "startup_RAM": {
+          "median": 4.875,
+          "low": 4.875,
+          "high": 4.875
+        },
+        "RAM": {
+          "median": 22.06640625,
+          "low": 22.04296875,
+          "high": 22.0859375
+        },
+        "container_RAM": {
+          "median": 20.921875,
+          "low": 20.7421875,
+          "high": 21.0390625
+        },
+        "p99": {
+          "GET": {
+            "median": 1.799,
+            "low": 1.727,
+            "high": 1.855
+          },
+          "SET": {
+            "median": 1.727,
+            "low": 1.399,
+            "high": 1.863
+          }
+        },
+        "contended": 0
+      },
+      "baseline": {
+        "GET": {
+          "median": 7968229.5,
+          "low": 6753252.5,
+          "high": 7968229.5
+        },
+        "SET": {
+          "median": 7968229.5,
+          "low": 6640191.0,
+          "high": 7968229.5
+        },
+        "startup_RAM": {
+          "median": 48.30078125,
+          "low": 48.30078125,
+          "high": 48.30078125
+        },
+        "RAM": {
+          "median": 58.0625,
+          "low": 58.03515625,
+          "high": 58.08203125
+        },
+        "container_RAM": {
+          "median": 56.77734375,
+          "low": 56.71875,
+          "high": 56.8671875
+        },
+        "p99": {
+          "GET": {
+            "median": 1.671,
+            "low": 1.623,
+            "high": 1.727
+          },
+          "SET": {
+            "median": 1.727,
+            "low": 1.575,
+            "high": 2.151
+          }
+        },
+        "contended": 0
+      }
+    }
+  },
+  {
+    "mode": "standard",
+    "core": "single",
+    "size": 64,
+    "cohort": "",
+    "versions": {
+      "dragonfly": {
+        "GET": {
+          "median": 833010.69,
+          "low": 831542.31,
+          "high": 890393.12
+        },
+        "SET": {
+          "median": 814210.06,
+          "low": 798349.69,
+          "high": 867464.25
+        },
+        "startup_RAM": {
+          "median": 47.48046875,
+          "low": 47.48046875,
+          "high": 47.48046875
+        },
+        "RAM": {
+          "median": 67.92578125,
+          "low": 67.73828125,
+          "high": 68.09375
+        },
+        "container_RAM": {
+          "median": 74.1875,
+          "low": 73.4375,
+          "high": 74.69921875
+        },
+        "p99": {
+          "GET": {
+            "median": 23.359,
+            "low": 21.311,
+            "high": 26.159
+          },
+          "SET": {
+            "median": 23.999,
+            "low": 22.847,
+            "high": 24.543
+          }
+        },
+        "contended": 0
+      },
+      "candidate": {
+        "GET": {
+          "median": 7980948.0,
+          "low": 6695536.0,
+          "high": 7987323.0
+        },
+        "SET": {
+          "median": 7968229.5,
+          "low": 6644603.5,
+          "high": 7974584.0
+        },
+        "startup_RAM": {
+          "median": 4.890625,
+          "low": 4.890625,
+          "high": 4.890625
+        },
+        "RAM": {
+          "median": 29.34375,
+          "low": 23.92578125,
+          "high": 29.453125
+        },
+        "container_RAM": {
+          "median": 29.4140625,
+          "low": 23.9296875,
+          "high": 29.6015625
+        },
+        "p99": {
+          "GET": {
+            "median": 1.639,
+            "low": 1.583,
+            "high": 2.679
+          },
+          "SET": {
+            "median": 1.583,
+            "low": 1.535,
+            "high": 1.671
+          }
+        },
+        "contended": 0
+      },
+      "baseline": {
+        "GET": {
+          "median": 7980948.0,
+          "low": 7974584.0,
+          "high": 7980948.0
+        },
+        "SET": {
+          "median": 7961885.0,
+          "low": 7961885.0,
+          "high": 7974584.0
+        },
+        "startup_RAM": {
+          "median": 50.328125,
+          "low": 50.328125,
+          "high": 50.328125
+        },
+        "RAM": {
+          "median": 67.26171875,
+          "low": 67.046875,
+          "high": 67.2890625
+        },
+        "container_RAM": {
+          "median": 67.27734375,
+          "low": 65.60546875,
+          "high": 67.328125
+        },
+        "p99": {
+          "GET": {
+            "median": 1.575,
+            "low": 1.487,
+            "high": 1.607
+          },
+          "SET": {
+            "median": 1.591,
+            "low": 1.423,
+            "high": 1.631
+          }
+        },
+        "contended": 0
+      }
+    }
+  },
+  {
+    "mode": "standard",
+    "core": "single",
+    "size": 128,
+    "cohort": "",
+    "versions": {
+      "dragonfly": {
+        "GET": {
+          "median": 831473.12,
+          "low": 738943.94,
+          "high": 831473.12
+        },
+        "SET": {
+          "median": 768295.0,
+          "low": 752965.0,
+          "high": 831542.31
+        },
+        "startup_RAM": {
+          "median": 47.39453125,
+          "low": 47.39453125,
+          "high": 47.39453125
+        },
+        "RAM": {
+          "median": 81.69921875,
+          "low": 78.0234375,
+          "high": 83.63671875
+        },
+        "container_RAM": {
+          "median": 97.1171875,
+          "low": 96.8359375,
+          "high": 107.99609375
+        },
+        "p99": {
+          "GET": {
+            "median": 25.487,
+            "low": 22.559,
+            "high": 26.655
+          },
+          "SET": {
+            "median": 26.479,
+            "low": 25.103,
+            "high": 28.031
+          }
+        },
+        "contended": 0
+      },
+      "candidate": {
+        "GET": {
+          "median": 7980948.0,
+          "low": 7980948.0,
+          "high": 7987323.0
+        },
+        "SET": {
+          "median": 7961885.0,
+          "low": 6644603.5,
+          "high": 7968229.5
+        },
+        "startup_RAM": {
+          "median": 4.83984375,
+          "low": 4.83984375,
+          "high": 4.83984375
+        },
+        "RAM": {
+          "median": 37.7578125,
+          "low": 32.3515625,
+          "high": 37.80859375
+        },
+        "container_RAM": {
+          "median": 43.01953125,
+          "low": 37.43359375,
+          "high": 43.125
+        },
+        "p99": {
+          "GET": {
+            "median": 2.391,
+            "low": 2.375,
+            "high": 2.415
+          },
+          "SET": {
+            "median": 1.527,
+            "low": 1.463,
+            "high": 1.983
+          }
+        },
+        "contended": 0
+      },
+      "baseline": {
+        "GET": {
+          "median": 7980948.0,
+          "low": 7980948.0,
+          "high": 7987323.0
+        },
+        "SET": {
+          "median": 7968229.5,
+          "low": 6705211.0,
+          "high": 7974584.0
+        },
+        "startup_RAM": {
+          "median": 48.0390625,
+          "low": 48.0390625,
+          "high": 48.0390625
+        },
+        "RAM": {
+          "median": 73.4453125,
+          "low": 35.6796875,
+          "high": 73.4921875
+        },
+        "container_RAM": {
+          "median": 76.59765625,
+          "low": 41.07421875,
+          "high": 76.62890625
+        },
+        "p99": {
+          "GET": {
+            "median": 2.375,
+            "low": 2.303,
+            "high": 2.415
+          },
+          "SET": {
+            "median": 1.527,
+            "low": 1.455,
+            "high": 1.535
+          }
+        },
+        "contended": 0
+      }
+    }
+  },
+  {
+    "mode": "standard",
+    "core": "single",
+    "size": 256,
+    "cohort": "",
+    "versions": {
+      "dragonfly": {
+        "GET": {
+          "median": 665300.25,
+          "low": 654159.0,
+          "high": 700092.94
+        },
+        "SET": {
+          "median": 701423.44,
+          "low": 688003.31,
+          "high": 767234.0
+        },
+        "startup_RAM": {
+          "median": 47.3203125,
+          "low": 47.3203125,
+          "high": 47.3203125
+        },
+        "RAM": {
+          "median": 94.6875,
+          "low": 94.5703125,
+          "high": 94.71484375
+        },
+        "container_RAM": {
+          "median": 117.4140625,
+          "low": 116.828125,
+          "high": 120.58984375
+        },
+        "p99": {
+          "GET": {
+            "median": 28.095,
+            "low": 26.639,
+            "high": 29.215
+          },
+          "SET": {
+            "median": 25.887,
+            "low": 23.727,
+            "high": 28.415
+          }
+        },
+        "contended": 0
+      },
+      "candidate": {
+        "GET": {
+          "median": 4992575.0,
+          "low": 4992575.0,
+          "high": 4995068.5
+        },
+        "SET": {
+          "median": 6653445.0,
+          "low": 6653445.0,
+          "high": 6653445.0
+        },
+        "startup_RAM": {
+          "median": 4.75,
+          "low": 4.75,
+          "high": 4.75
+        },
+        "RAM": {
+          "median": 57.703125,
+          "low": 52.65625,
+          "high": 58.046875
+        },
+        "container_RAM": {
+          "median": 59.578125,
+          "low": 54.390625,
+          "high": 59.92578125
+        },
+        "p99": {
+          "GET": {
+            "median": 3.887,
+            "low": 3.879,
+            "high": 4.119
+          },
+          "SET": {
+            "median": 3.215,
+            "low": 3.039,
+            "high": 3.239
+          }
+        },
+        "contended": 0
+      },
+      "baseline": {
+        "GET": {
+          "median": 4990084.0,
+          "low": 4464448.0,
+          "high": 4992575.0
+        },
+        "SET": {
+          "median": 6653445.0,
+          "low": 6653445.0,
+          "high": 6653445.0
+        },
+        "startup_RAM": {
+          "median": 48.328125,
+          "low": 48.328125,
+          "high": 48.328125
+        },
+        "RAM": {
+          "median": 93.7265625,
+          "low": 56.27734375,
+          "high": 94.13671875
+        },
+        "container_RAM": {
+          "median": 95.375,
+          "low": 60.3046875,
+          "high": 95.40234375
+        },
+        "p99": {
+          "GET": {
+            "median": 3.919,
+            "low": 3.863,
+            "high": 5.999
+          },
+          "SET": {
+            "median": 3.191,
+            "low": 3.087,
+            "high": 3.359
+          }
+        },
+        "contended": 0
+      }
+    }
+  },
+  {
+    "mode": "standard",
+    "core": "single",
+    "size": 512,
+    "cohort": "",
+    "versions": {
+      "dragonfly": {
+        "GET": {
+          "median": 570469.25,
+          "low": 562215.5,
+          "high": 633360.44
+        },
+        "SET": {
+          "median": 604675.75,
+          "low": 578443.31,
+          "high": 664990.56
+        },
+        "startup_RAM": {
+          "median": 47.3359375,
+          "low": 47.3359375,
+          "high": 47.3359375
+        },
+        "RAM": {
+          "median": 126.53515625,
+          "low": 125.98828125,
+          "high": 126.59375
+        },
+        "container_RAM": {
+          "median": 172.26171875,
+          "low": 171.55078125,
+          "high": 172.52734375
+        },
+        "p99": {
+          "GET": {
+            "median": 33.407,
+            "low": 29.407,
+            "high": 35.775
+          },
+          "SET": {
+            "median": 30.495,
+            "low": 28.255,
+            "high": 34.111
+          }
+        },
+        "contended": 0
+      },
+      "candidate": {
+        "GET": {
+          "median": 3362193.75,
+          "low": 3345420.0,
+          "high": 3372983.75
+        },
+        "SET": {
+          "median": 3629810.5,
+          "low": 3629810.5,
+          "high": 3631872.25
+        },
+        "startup_RAM": {
+          "median": 4.8828125,
+          "low": 4.8828125,
+          "high": 4.8828125
+        },
+        "RAM": {
+          "median": 80.48828125,
+          "low": 75.07421875,
+          "high": 80.53515625
+        },
+        "container_RAM": {
+          "median": 87.671875,
+          "low": 81.97265625,
+          "high": 87.72265625
+        },
+        "p99": {
+          "GET": {
+            "median": 5.447,
+            "low": 5.327,
+            "high": 5.527
+          },
+          "SET": {
+            "median": 5.783,
+            "low": 5.423,
+            "high": 5.999
+          }
+        },
+        "contended": 0
+      },
+      "baseline": {
+        "GET": {
+          "median": 3330046.0,
+          "low": 3328937.5,
+          "high": 3359104.25
+        },
+        "SET": {
+          "median": 3631128.5,
+          "low": 3629810.5,
+          "high": 3637899.75
+        },
+        "startup_RAM": {
+          "median": 50.3125,
+          "low": 50.3125,
+          "high": 50.3125
+        },
+        "RAM": {
+          "median": 118.4296875,
+          "low": 80.625,
+          "high": 118.484375
+        },
+        "container_RAM": {
+          "median": 130.65234375,
+          "low": 92.77734375,
+          "high": 130.7578125
+        },
+        "p99": {
+          "GET": {
+            "median": 5.703,
+            "low": 5.351,
+            "high": 6.119
+          },
+          "SET": {
+            "median": 5.583,
+            "low": 5.479,
+            "high": 5.759
+          }
+        },
+        "contended": 0
+      }
+    }
+  },
+  {
+    "mode": "standard",
+    "core": "single",
+    "size": 1024,
+    "cohort": "",
+    "versions": {
+      "dragonfly": {
+        "GET": {
+          "median": 480844.72,
+          "low": 475200.91,
+          "high": 492641.41
+        },
+        "SET": {
+          "median": 448396.03,
+          "low": 448375.94,
+          "high": 480775.41
+        },
+        "startup_RAM": {
+          "median": 47.47265625,
+          "low": 47.47265625,
+          "high": 47.47265625
+        },
+        "RAM": {
+          "median": 161.734375,
+          "low": 161.55078125,
+          "high": 170.109375
+        },
+        "container_RAM": {
+          "median": 240.26171875,
+          "low": 233.85546875,
+          "high": 240.58203125
+        },
+        "p99": {
+          "GET": {
+            "median": 38.079,
+            "low": 36.863,
+            "high": 38.175
+          },
+          "SET": {
+            "median": 44.767,
+            "low": 40.991,
+            "high": 44.895
+          }
+        },
+        "contended": 0
+      },
+      "candidate": {
+        "GET": {
+          "median": 1997628.38,
+          "low": 1997229.5,
+          "high": 1997628.38
+        },
+        "SET": {
+          "median": 2100867.25,
+          "low": 1995635.12,
+          "high": 2218307.0
+        },
+        "startup_RAM": {
+          "median": 6.8984375,
+          "low": 6.8984375,
+          "high": 6.8984375
+        },
+        "RAM": {
+          "median": 127.671875,
+          "low": 127.375,
+          "high": 131.0390625
+        },
+        "container_RAM": {
+          "median": 141.21484375,
+          "low": 139.98046875,
+          "high": 151.6953125
+        },
+        "p99": {
+          "GET": {
+            "median": 10.367,
+            "low": 9.383,
+            "high": 12.655
+          },
+          "SET": {
+            "median": 12.271,
+            "low": 9.551,
+            "high": 13.127
+          }
+        },
+        "contended": 0
+      },
+      "baseline": {
+        "GET": {
+          "median": 1997229.5,
+          "low": 1996432.12,
+          "high": 2014893.5
+        },
+        "SET": {
+          "median": 2108222.5,
+          "low": 2101750.25,
+          "high": 2217815.0
+        },
+        "startup_RAM": {
+          "median": 48.328125,
+          "low": 48.328125,
+          "high": 48.328125
+        },
+        "RAM": {
+          "median": 129.2421875,
+          "low": 129.12890625,
+          "high": 168.45703125
+        },
+        "container_RAM": {
+          "median": 150.02734375,
+          "low": 147.16015625,
+          "high": 174.25
+        },
+        "p99": {
+          "GET": {
+            "median": 9.519,
+            "low": 9.087,
+            "high": 9.567
+          },
+          "SET": {
+            "median": 9.359,
+            "low": 9.087,
+            "high": 9.671
+          }
+        },
+        "contended": 0
+      }
+    }
+  },
+  {
+    "mode": "standard",
+    "core": "single",
+    "size": 2048,
+    "cohort": "",
+    "versions": {
+      "dragonfly": {
+        "GET": {
+          "median": 362802.09,
+          "low": 362670.53,
+          "high": 362848.53
+        },
+        "SET": {
+          "median": 346702.72,
+          "low": 346642.62,
+          "high": 346762.81
+        },
+        "startup_RAM": {
+          "median": 47.3828125,
+          "low": 47.3828125,
+          "high": 47.3828125
+        },
+        "RAM": {
+          "median": 280.78515625,
+          "low": 278.4375,
+          "high": 301.08984375
+        },
+        "container_RAM": {
+          "median": 358.9921875,
+          "low": 354.88671875,
+          "high": 401.13671875
+        },
+        "p99": {
+          "GET": {
+            "median": 48.351,
+            "low": 46.719,
+            "high": 61.759
+          },
+          "SET": {
+            "median": 58.655,
+            "low": 58.527,
+            "high": 65.279
+          }
+        },
+        "contended": 0
+      },
+      "candidate": {
+        "GET": {
+          "median": 725472.62,
+          "low": 725209.62,
+          "high": 725735.81
+        },
+        "SET": {
+          "median": 1137082.5,
+          "low": 1136405.12,
+          "high": 1137082.5
+        },
+        "startup_RAM": {
+          "median": 5.16796875,
+          "low": 5.16796875,
+          "high": 5.16796875
+        },
+        "RAM": {
+          "median": 251.48828125,
+          "low": 243.61328125,
+          "high": 259.5703125
+        },
+        "container_RAM": {
+          "median": 262.21875,
+          "low": 252.9921875,
+          "high": 270.10546875
+        },
+        "p99": {
+          "GET": {
+            "median": 25.391,
+            "low": 25.375,
+            "high": 26.767
+          },
+          "SET": {
+            "median": 14.911,
+            "low": 14.519,
+            "high": 18.239
+          }
+        },
+        "contended": 0
+      },
+      "baseline": {
+        "GET": {
+          "median": 725472.62,
+          "low": 725209.62,
+          "high": 725735.81
+        },
+        "SET": {
+          "median": 1137082.5,
+          "low": 1135791.0,
+          "high": 1137729.25
+        },
+        "startup_RAM": {
+          "median": 48.19140625,
+          "low": 48.19140625,
+          "high": 48.19140625
+        },
+        "RAM": {
+          "median": 287.39453125,
+          "low": 279.2578125,
+          "high": 295.23828125
+        },
+        "container_RAM": {
+          "median": 297.09765625,
+          "low": 290.375,
+          "high": 306.36328125
+        },
+        "p99": {
+          "GET": {
+            "median": 23.695,
+            "low": 23.087,
+            "high": 24.831
+          },
+          "SET": {
+            "median": 15.199,
+            "low": 14.855,
+            "high": 21.679
+          }
+        },
+        "contended": 0
+      }
+    }
+  },
+  {
+    "mode": "standard",
+    "core": "single",
+    "size": 4096,
+    "cohort": "",
+    "versions": {
+      "dragonfly": {
+        "GET": {
+          "median": 257516.16,
+          "low": 257516.16,
+          "high": 257549.33
+        },
+        "SET": {
+          "median": 241770.91,
+          "low": 241590.52,
+          "high": 248988.92
+        },
+        "startup_RAM": {
+          "median": 47.41796875,
+          "low": 47.41796875,
+          "high": 47.41796875
+        },
+        "RAM": {
+          "median": 504.16796875,
+          "low": 503.41796875,
+          "high": 561.8984375
+        },
+        "container_RAM": {
+          "median": 673.4921875,
+          "low": 653.65234375,
+          "high": 746.546875
+        },
+        "p99": {
+          "GET": {
+            "median": 75.263,
+            "low": 68.671,
+            "high": 77.439
+          },
+          "SET": {
+            "median": 79.359,
+            "low": 79.103,
+            "high": 79.615
+          }
+        },
+        "contended": 0
+      },
+      "candidate": {
+        "GET": {
+          "median": 379891.38,
+          "low": 363733.16,
+          "high": 380107.94
+        },
+        "SET": {
+          "median": 722067.88,
+          "low": 721807.31,
+          "high": 722328.62
+        },
+        "startup_RAM": {
+          "median": 5.1015625,
+          "low": 5.1015625,
+          "high": 5.1015625
+        },
+        "RAM": {
+          "median": 484.1015625,
+          "low": 466.48046875,
+          "high": 494.5625
+        },
+        "container_RAM": {
+          "median": 510.6484375,
+          "low": 490.5234375,
+          "high": 519.171875
+        },
+        "p99": {
+          "GET": {
+            "median": 61.855,
+            "low": 47.199,
+            "high": 67.199
+          },
+          "SET": {
+            "median": 24.447,
+            "low": 23.855,
+            "high": 24.687
+          }
+        },
+        "contended": 0
+      },
+      "baseline": {
+        "GET": {
+          "median": 379963.53,
+          "low": 364794.16,
+          "high": 380180.19
+        },
+        "SET": {
+          "median": 722589.62,
+          "low": 721807.31,
+          "high": 722850.75
+        },
+        "startup_RAM": {
+          "median": 48.1953125,
+          "low": 48.1953125,
+          "high": 48.1953125
+        },
+        "RAM": {
+          "median": 504.203125,
+          "low": 496.671875,
+          "high": 517.65234375
+        },
+        "container_RAM": {
+          "median": 522.3984375,
+          "low": 517.8359375,
+          "high": 543.62890625
+        },
+        "p99": {
+          "GET": {
+            "median": 47.519,
+            "low": 47.135,
+            "high": 48.607
+          },
+          "SET": {
+            "median": 25.375,
+            "low": 24.671,
+            "high": 34.559
+          }
+        },
+        "contended": 0
+      }
+    }
+  },
+  {
+    "mode": "standard",
+    "core": "single",
+    "size": 8192,
+    "cohort": "",
+    "versions": {
+      "dragonfly": {
+        "GET": {
+          "median": 137664.53,
+          "low": 137655.06,
+          "high": 140104.23
+        },
+        "SET": {
+          "median": 156162.41,
+          "low": 156004.05,
+          "high": 156162.41
+        },
+        "startup_RAM": {
+          "median": 47.40234375,
+          "low": 47.40234375,
+          "high": 47.40234375
+        },
+        "RAM": {
+          "median": 962.984375,
+          "low": 961.5625,
+          "high": 963.9375
+        },
+        "container_RAM": {
+          "median": 1222.9921875,
+          "low": 1215.69921875,
+          "high": 1223.33984375
+        },
+        "p99": {
+          "GET": {
+            "median": 135.167,
+            "low": 126.719,
+            "high": 139.007
+          },
+          "SET": {
+            "median": 124.159,
+            "low": 123.391,
+            "high": 131.839
+          }
+        },
+        "contended": 0
+      },
+      "candidate": {
+        "GET": {
+          "median": 209965.14,
+          "low": 200029.58,
+          "high": 211847.12
+        },
+        "SET": {
+          "median": 349570.25,
+          "low": 345684.09,
+          "high": 361026.34
+        },
+        "startup_RAM": {
+          "median": 6.859375,
+          "low": 6.859375,
+          "high": 6.859375
+        },
+        "RAM": {
+          "median": 934.5703125,
+          "low": 906.390625,
+          "high": 959.10546875
+        },
+        "container_RAM": {
+          "median": 940.89453125,
+          "low": 913.828125,
+          "high": 965.24609375
+        },
+        "p99": {
+          "GET": {
+            "median": 89.471,
+            "low": 86.079,
+            "high": 91.327
+          },
+          "SET": {
+            "median": 63.007,
+            "low": 51.711,
+            "high": 64.191
+          }
+        },
+        "contended": 0
+      },
+      "baseline": {
+        "GET": {
+          "median": 210053.34,
+          "low": 210053.34,
+          "high": 210097.47
+        },
+        "SET": {
+          "median": 360968.78,
+          "low": 360773.44,
+          "high": 361099.12
+        },
+        "startup_RAM": {
+          "median": 47.9765625,
+          "low": 47.9765625,
+          "high": 47.9765625
+        },
+        "RAM": {
+          "median": 937.984375,
+          "low": 929.91796875,
+          "high": 956.18359375
+        },
+        "container_RAM": {
+          "median": 947.31640625,
+          "low": 938.92578125,
+          "high": 965.36328125
+        },
+        "p99": {
+          "GET": {
+            "median": 95.231,
+            "low": 91.711,
+            "high": 103.295
+          },
+          "SET": {
+            "median": 51.871,
+            "low": 51.199,
+            "high": 53.375
+          }
+        },
+        "contended": 0
+      }
+    }
+  },
+  {
+    "mode": "standard",
+    "core": "single",
+    "size": 10240,
+    "cohort": "",
+    "versions": {
+      "dragonfly": {
+        "GET": {
+          "median": 113108.88,
+          "low": 112726.54,
+          "high": 114090.92
+        },
+        "SET": {
+          "median": 132722.5,
+          "low": 132696.08,
+          "high": 132722.5
+        },
+        "startup_RAM": {
+          "median": 47.46484375,
+          "low": 47.46484375,
+          "high": 47.46484375
+        },
+        "RAM": {
+          "median": 1225.24609375,
+          "low": 1225.19140625,
+          "high": 1225.95703125
+        },
+        "container_RAM": {
+          "median": 1388.21484375,
+          "low": 1387.2890625,
+          "high": 1389.96484375
+        },
+        "p99": {
+          "GET": {
+            "median": 160.767,
+            "low": 155.007,
+            "high": 161.919
+          },
+          "SET": {
+            "median": 142.079,
+            "low": 140.671,
+            "high": 146.175
+          }
+        },
+        "contended": 0
+      },
+      "candidate": {
+        "GET": {
+          "median": 181401.05,
+          "low": 177889.05,
+          "high": 181433.95
+        },
+        "SET": {
+          "median": 256131.12,
+          "low": 249726.58,
+          "high": 256426.66
+        },
+        "startup_RAM": {
+          "median": 6.98046875,
+          "low": 6.98046875,
+          "high": 6.98046875
+        },
+        "RAM": {
+          "median": 1134.515625,
+          "low": 1109.47265625,
+          "high": 1160.6875
+        },
+        "container_RAM": {
+          "median": 1146.17578125,
+          "low": 1119.890625,
+          "high": 1169.65625
+        },
+        "p99": {
+          "GET": {
+            "median": 103.807,
+            "low": 100.031,
+            "high": 110.847
+          },
+          "SET": {
+            "median": 87.551,
+            "low": 86.143,
+            "high": 94.655
+          }
+        },
+        "contended": 0
+      },
+      "baseline": {
+        "GET": {
+          "median": 177667.91,
+          "low": 174157.53,
+          "high": 181433.95
+        },
+        "SET": {
+          "median": 256358.75,
+          "low": 256153.81,
+          "high": 256379.05
+        },
+        "startup_RAM": {
+          "median": 48.01171875,
+          "low": 48.01171875,
+          "high": 48.01171875
+        },
+        "RAM": {
+          "median": 1143.1015625,
+          "low": 1135.5625,
+          "high": 1161.89453125
+        },
+        "container_RAM": {
+          "median": 1154.703125,
+          "low": 1144.55078125,
+          "high": 1169.4296875
+        },
+        "p99": {
+          "GET": {
+            "median": 106.303,
+            "low": 105.535,
+            "high": 107.967
+          },
+          "SET": {
+            "median": 86.975,
+            "low": 86.975,
+            "high": 89.151
+          }
+        },
+        "contended": 0
+      }
+    }
+  },
+  {
+    "mode": "capacity",
+    "core": "multi",
+    "size": 5,
+    "cohort": "",
+    "versions": {
+      "dragonfly": {
+        "GET": {
+          "median": 3885717.0,
+          "low": 3871576.5000000005,
+          "high": 3901787.6399999997
+        },
+        "SET": {
+          "median": 3109153.5,
+          "low": 3104520.36,
+          "high": 3114382.3199999994
+        },
+        "RAM": {
+          "median": 84.8671875,
+          "low": 83.48828125,
+          "high": 85.421875
+        },
+        "container_RAM": {
+          "median": 98.74609375,
+          "low": 96.73046875,
+          "high": 99.74609375
+        },
+        "contended": 0
+      },
+      "candidate": {
+        "GET": {
+          "median": 37765413.0,
+          "low": 37454238.0,
+          "high": 38227377.0
+        },
+        "SET": {
+          "median": 35311728.0,
+          "low": 33557991.0,
+          "high": 35998131.0
+        },
+        "RAM": {
+          "median": 21.3046875,
+          "low": 21.20703125,
+          "high": 23.33203125
+        },
+        "container_RAM": {
+          "median": 21.32421875,
+          "low": 21.31640625,
+          "high": 23.4375
+        },
+        "contended": 0
+      },
+      "baseline": {
+        "GET": {
+          "median": 37482315.0,
+          "low": 37286658.0,
+          "high": 37736910.0
+        },
+        "SET": {
+          "median": 35946375.0,
+          "low": 35138025.0,
+          "high": 36076050.0
+        },
+        "RAM": {
+          "median": 56.9609375,
+          "low": 56.80078125,
+          "high": 58.78515625
+        },
+        "container_RAM": {
+          "median": 57.59765625,
+          "low": 57.49609375,
+          "high": 59.44140625
+        },
+        "contended": 0
+      }
+    }
+  },
+  {
+    "mode": "capacity",
+    "core": "multi",
+    "size": 1024,
+    "cohort": "",
+    "versions": {
+      "dragonfly": {
+        "GET": {
+          "median": 1604507.6400000001,
+          "low": 1603735.6800000002,
+          "high": 1609931.8199999998
+        },
+        "SET": {
+          "median": 1168056.0,
+          "low": 1151778.9600000002,
+          "high": 1170379.86
+        },
+        "RAM": {
+          "median": 192.3828125,
+          "low": 191.578125,
+          "high": 192.65234375
+        },
+        "container_RAM": {
+          "median": 254.01953125,
+          "low": 253.18359375,
+          "high": 255.90234375
+        },
+        "contended": 0
+      },
+      "candidate": {
+        "GET": {
+          "median": 6878195.279999999,
+          "low": 6849928.5,
+          "high": 6878195.279999999
+        },
+        "SET": {
+          "median": 2852508.72,
+          "low": 2815567.5,
+          "high": 2908082.64
+        },
+        "RAM": {
+          "median": 160.359375,
+          "low": 127.3046875,
+          "high": 162.015625
+        },
+        "container_RAM": {
+          "median": 170.57421875,
+          "low": 142.05078125,
+          "high": 175.16015625
+        },
+        "contended": 0
+      },
+      "baseline": {
+        "GET": {
+          "median": 7032978.720000002,
+          "low": 7008336.0,
+          "high": 7067771.279999999
+        },
+        "SET": {
+          "median": 2859850.14,
+          "low": 2816360.46,
+          "high": 3006883.86
+        },
+        "RAM": {
+          "median": 163.09375,
+          "low": 160.82421875,
+          "high": 165.16796875
+        },
+        "container_RAM": {
+          "median": 178.30078125,
+          "low": 174.81640625,
+          "high": 179.6953125
+        },
+        "contended": 2
+      }
+    }
+  },
+  {
+    "mode": "capacity",
+    "core": "multi",
+    "size": 10240,
+    "cohort": "",
+    "versions": {
+      "dragonfly": {
+        "GET": {
+          "median": 370014.42000000004,
+          "low": 362902.62,
+          "high": 377552.88000000006
+        },
+        "SET": {
+          "median": 210342.42,
+          "low": 199761.24000000002,
+          "high": 211498.26
+        },
+        "RAM": {
+          "median": 1290.46875,
+          "low": 1286.140625,
+          "high": 1293.61328125
+        },
+        "container_RAM": {
+          "median": 1513.78125,
+          "low": 1503.3515625,
+          "high": 1519.9453125
+        },
+        "contended": 0
+      },
+      "candidate": {
+        "GET": {
+          "median": 929590.32,
+          "low": 766529.28,
+          "high": 1012345.98
+        },
+        "SET": {
+          "median": 297077.04,
+          "low": 296504.88,
+          "high": 305278.8
+        },
+        "RAM": {
+          "median": 1105.86328125,
+          "low": 1082.8671875,
+          "high": 1106.21875
+        },
+        "container_RAM": {
+          "median": 1196.734375,
+          "low": 1181.6640625,
+          "high": 1198.57421875
+        },
+        "contended": 1
+      },
+      "baseline": {
+        "GET": {
+          "median": 866410.38,
+          "low": 828740.3400000001,
+          "high": 937866.8400000001
+        },
+        "SET": {
+          "median": 294931.92,
+          "low": 273977.82,
+          "high": 299836.38000000006
+        },
+        "RAM": {
+          "median": 1114.19140625,
+          "low": 1113.91796875,
+          "high": 1116.33984375
+        },
+        "container_RAM": {
+          "median": 1220.41015625,
+          "low": 1205.90625,
+          "high": 1220.96875
+        },
+        "contended": 1
+      }
+    }
+  },
+  {
+    "mode": "capacity1024",
+    "core": "multi",
+    "size": 5,
+    "cohort": "",
+    "versions": {
+      "dragonfly": {
+        "GET": {
+          "median": 3378328.5,
+          "low": 3356559.0,
+          "high": 3396225.0
+        },
+        "SET": {
+          "median": 2653401.96,
+          "low": 2650589.28,
+          "high": 2660177.46
+        },
+        "RAM": {
+          "median": 111.46484375,
+          "low": 109.53515625,
+          "high": 113.72265625
+        },
+        "container_RAM": {
+          "median": 143.32421875,
+          "low": 136.0859375,
+          "high": 171.2265625
+        },
+        "contended": 0
+      },
+      "candidate": {
+        "GET": {
+          "median": 43942017.0,
+          "low": 43864926.0,
+          "high": 47624777.99999999
+        },
+        "SET": {
+          "median": 41157213.0,
+          "low": 39750411.0,
+          "high": 41671677.0
+        },
+        "RAM": {
+          "median": 26.02734375,
+          "low": 25.9921875,
+          "high": 27.8671875
+        },
+        "container_RAM": {
+          "median": 26.90234375,
+          "low": 26.5703125,
+          "high": 28.58984375
+        },
+        "contended": 0
+      },
+      "baseline": {
+        "GET": {
+          "median": 43408002.0,
+          "low": 42997434.0,
+          "high": 47898479.99999999
+        },
+        "SET": {
+          "median": 40294935.0,
+          "low": 39909030.0,
+          "high": 43635267.0
+        },
+        "RAM": {
+          "median": 61.515625,
+          "low": 61.4609375,
+          "high": 61.60546875
+        },
+        "container_RAM": {
+          "median": 62.3671875,
+          "low": 62.296875,
+          "high": 62.51953125
+        },
+        "contended": 0
+      }
+    }
+  },
+  {
+    "mode": "pubsub",
+    "core": "multi",
+    "size": 5,
+    "cohort": "direct1",
+    "versions": {
+      "dragonfly": {
+        "PUBLISH": {
+          "median": 59701.49,
+          "low": 58651.03,
+          "high": 60060.06
+        },
+        "DELIVERED": {
+          "median": 39358.76557371828,
+          "low": 37571.77552286937,
+          "high": 39677.38508569305
+        },
+        "RAM": {
+          "median": 74.68359375,
+          "low": 74.16015625,
+          "high": 74.80078125
+        },
+        "container_RAM": {
+          "median": 69.15625,
+          "low": 68.9921875,
+          "high": 69.24609375
+        },
+        "contended": 0,
+        "verified_messages": 60000
+      },
+      "candidate": {
+        "PUBLISH": {
+          "median": 89686.09,
+          "low": 85836.91,
+          "high": 92165.9
+        },
+        "DELIVERED": {
+          "median": 48904.71042061138,
+          "low": 47519.76965553937,
+          "high": 50279.03077211669
+        },
+        "RAM": {
+          "median": 7.2890625,
+          "low": 7.2421875,
+          "high": 7.32421875
+        },
+        "container_RAM": {
+          "median": 5.2109375,
+          "low": 4.90625,
+          "high": 5.2265625
+        },
+        "contended": 0,
+        "verified_messages": 60000
+      },
+      "baseline": {
+        "PUBLISH": {
+          "median": 91743.12,
+          "low": 88105.73,
+          "high": 93457.95
+        },
+        "DELIVERED": {
+          "median": 51939.40316110392,
+          "low": 51172.9662639233,
+          "high": 52195.531024989614
+        },
+        "RAM": {
+          "median": 50.48828125,
+          "low": 50.1640625,
+          "high": 52.3984375
+        },
+        "container_RAM": {
+          "median": 48.4296875,
+          "low": 48.1640625,
+          "high": 50.546875
+        },
+        "contended": 0,
+        "verified_messages": 60000
+      }
+    }
+  },
+  {
+    "mode": "pubsub",
+    "core": "multi",
+    "size": 5,
+    "cohort": "direct8",
+    "versions": {
+      "dragonfly": {
+        "PUBLISH": {
+          "median": 41841.0,
+          "low": 41237.11,
+          "high": 41928.72
+        },
+        "DELIVERED": {
+          "median": 244015.9685722925,
+          "low": 155103.77567446601,
+          "high": 244538.6006029374
+        },
+        "RAM": {
+          "median": 74.75,
+          "low": 74.1953125,
+          "high": 74.85546875
+        },
+        "container_RAM": {
+          "median": 69.6953125,
+          "low": 69.65234375,
+          "high": 69.91015625
+        },
+        "contended": 0,
+        "verified_messages": 480000
+      },
+      "candidate": {
+        "PUBLISH": {
+          "median": 43103.45,
+          "low": 42462.85,
+          "high": 48780.49
+        },
+        "DELIVERED": {
+          "median": 251359.8852571537,
+          "low": 93962.46870540424,
+          "high": 274818.00833917013
+        },
+        "RAM": {
+          "median": 7.51953125,
+          "low": 7.5,
+          "high": 7.609375
+        },
+        "container_RAM": {
+          "median": 6.68359375,
+          "low": 6.28515625,
+          "high": 6.95703125
+        },
+        "contended": 0,
+        "verified_messages": 480000
+      },
+      "baseline": {
+        "PUBLISH": {
+          "median": 50377.83,
+          "low": 50377.83,
+          "high": 50505.05
+        },
+        "DELIVERED": {
+          "median": 284904.5818049894,
+          "low": 282118.5960487256,
+          "high": 286415.00411719887
+        },
+        "RAM": {
+          "median": 50.65625,
+          "low": 50.2734375,
+          "high": 52.53515625
+        },
+        "container_RAM": {
+          "median": 49.6640625,
+          "low": 49.60546875,
+          "high": 51.34375
+        },
+        "contended": 0,
+        "verified_messages": 480000
+      }
+    }
+  },
+  {
+    "mode": "pubsub",
+    "core": "multi",
+    "size": 5,
+    "cohort": "none",
+    "versions": {
+      "dragonfly": {
+        "PUBLISH": {
+          "median": 2101750.25,
+          "low": 2101308.75,
+          "high": 2101858.0
+        },
+        "DELIVERED": {
+          "median": 0.0,
+          "low": 0.0,
+          "high": 0.0
+        },
+        "RAM": {
+          "median": 77.77734375,
+          "low": 77.734375,
+          "high": 77.8828125
+        },
+        "container_RAM": {
+          "median": 70.66015625,
+          "low": 70.609375,
+          "high": 70.8671875
+        },
+        "contended": 0,
+        "verified_messages": 0
+      },
+      "candidate": {
+        "PUBLISH": {
+          "median": 9980168.0,
+          "low": 9980168.0,
+          "high": 10025042.0
+        },
+        "DELIVERED": {
+          "median": 0.0,
+          "low": 0.0,
+          "high": 0.0
+        },
+        "RAM": {
+          "median": 7.0390625,
+          "low": 6.99609375,
+          "high": 7.13671875
+        },
+        "container_RAM": {
+          "median": 7.07421875,
+          "low": 7.05859375,
+          "high": 7.2734375
+        },
+        "contended": 0,
+        "verified_messages": 0
+      },
+      "baseline": {
+        "PUBLISH": {
+          "median": 9990137.0,
+          "low": 9980168.0,
+          "high": 10051666.0
+        },
+        "DELIVERED": {
+          "median": 0.0,
+          "low": 0.0,
+          "high": 0.0
+        },
+        "RAM": {
+          "median": 50.31640625,
+          "low": 50.23046875,
+          "high": 52.3828125
+        },
+        "container_RAM": {
+          "median": 50.67578125,
+          "low": 50.59375,
+          "high": 52.48046875
+        },
+        "contended": 0,
+        "verified_messages": 0
+      }
+    }
+  },
+  {
+    "mode": "pubsub",
+    "core": "multi",
+    "size": 5,
+    "cohort": "pattern8",
+    "versions": {
+      "dragonfly": {
+        "PUBLISH": {
+          "median": 41237.11,
+          "low": 40816.32,
+          "high": 42194.09
+        },
+        "DELIVERED": {
+          "median": 232715.22705009917,
+          "low": 228598.29572974087,
+          "high": 236749.8580574885
+        },
+        "RAM": {
+          "median": 74.7578125,
+          "low": 72.9375,
+          "high": 74.859375
+        },
+        "container_RAM": {
+          "median": 69.79296875,
+          "low": 69.73828125,
+          "high": 70.09765625
+        },
+        "contended": 0,
+        "verified_messages": 480000
+      },
+      "candidate": {
+        "PUBLISH": {
+          "median": 44642.86,
+          "low": 41753.65,
+          "high": 48192.77
+        },
+        "DELIVERED": {
+          "median": 242748.08676032122,
+          "low": 43283.902854850276,
+          "high": 272857.9271781002
+        },
+        "RAM": {
+          "median": 7.6328125,
+          "low": 7.61328125,
+          "high": 7.6640625
+        },
+        "container_RAM": {
+          "median": 6.59375,
+          "low": 6.359375,
+          "high": 6.73046875
+        },
+        "contended": 0,
+        "verified_messages": 480000
+      },
+      "baseline": {
+        "PUBLISH": {
+          "median": 43859.65,
+          "low": 40899.8,
+          "high": 46189.38
+        },
+        "DELIVERED": {
+          "median": 258338.4523895971,
+          "low": 242136.68126533742,
+          "high": 260063.7604831305
+        },
+        "RAM": {
+          "median": 50.765625,
+          "low": 50.39453125,
+          "high": 52.66796875
+        },
+        "container_RAM": {
+          "median": 49.8515625,
+          "low": 49.78515625,
+          "high": 51.59375
+        },
+        "contended": 0,
+        "verified_messages": 480000
+      }
+    }
+  },
+  {
+    "mode": "pubsub",
+    "core": "multi",
+    "size": 1024,
+    "cohort": "direct1",
+    "versions": {
+      "dragonfly": {
+        "PUBLISH": {
+          "median": 58479.53,
+          "low": 58309.04,
+          "high": 59701.49
+        },
+        "DELIVERED": {
+          "median": 39126.164307045015,
+          "low": 36816.64997961712,
+          "high": 39160.37692546075
+        },
+        "RAM": {
+          "median": 91.171875,
+          "low": 88.9140625,
+          "high": 93.6796875
+        },
+        "container_RAM": {
+          "median": 102.99609375,
+          "low": 100.00390625,
+          "high": 102.99609375
+        },
+        "contended": 0,
+        "verified_messages": 60000
+      },
+      "candidate": {
+        "PUBLISH": {
+          "median": 80971.66,
+          "low": 74349.45,
+          "high": 86956.52
+        },
+        "DELIVERED": {
+          "median": 47901.26396063361,
+          "low": 45632.551295913945,
+          "high": 49433.92165802075
+        },
+        "RAM": {
+          "median": 18.609375,
+          "low": 15.60546875,
+          "high": 18.6328125
+        },
+        "container_RAM": {
+          "median": 16.4140625,
+          "low": 13.8203125,
+          "high": 16.5859375
+        },
+        "contended": 0,
+        "verified_messages": 60000
+      },
+      "baseline": {
+        "PUBLISH": {
+          "median": 77821.02,
+          "low": 76335.88,
+          "high": 85836.91
+        },
+        "DELIVERED": {
+          "median": 47891.299737902664,
+          "low": 43976.292477169765,
+          "high": 48018.77257394222
+        },
+        "RAM": {
+          "median": 55.28515625,
+          "low": 53.3203125,
+          "high": 56.6953125
+        },
+        "container_RAM": {
+          "median": 53.59375,
+          "low": 51.671875,
+          "high": 54.55859375
+        },
+        "contended": 0,
+        "verified_messages": 60000
+      }
+    }
+  },
+  {
+    "mode": "pubsub",
+    "core": "multi",
+    "size": 1024,
+    "cohort": "direct8",
+    "versions": {
+      "dragonfly": {
+        "PUBLISH": {
+          "median": 39920.16,
+          "low": 39447.73,
+          "high": 40567.95
+        },
+        "DELIVERED": {
+          "median": 226152.86582566058,
+          "low": 154498.80850998365,
+          "high": 236159.69397661858
+        },
+        "RAM": {
+          "median": 93.32421875,
+          "low": 90.9921875,
+          "high": 93.375
+        },
+        "container_RAM": {
+          "median": 103.734375,
+          "low": 102.72265625,
+          "high": 105.828125
+        },
+        "contended": 0,
+        "verified_messages": 480000
+      },
+      "candidate": {
+        "PUBLISH": {
+          "median": 43103.45,
+          "low": 39447.73,
+          "high": 46189.38
+        },
+        "DELIVERED": {
+          "median": 255030.1606958807,
+          "low": 233490.0001621444,
+          "high": 264827.9113042107
+        },
+        "RAM": {
+          "median": 20.4921875,
+          "low": 18.86328125,
+          "high": 21.8984375
+        },
+        "container_RAM": {
+          "median": 19.1328125,
+          "low": 17.5546875,
+          "high": 20.3984375
+        },
+        "contended": 0,
+        "verified_messages": 480000
+      },
+      "baseline": {
+        "PUBLISH": {
+          "median": 46189.38,
+          "low": 43103.45,
+          "high": 47619.05
+        },
+        "DELIVERED": {
+          "median": 254699.2801178214,
+          "low": 164475.92648019042,
+          "high": 255818.2994255014
+        },
+        "RAM": {
+          "median": 60.48828125,
+          "low": 58.3203125,
+          "high": 62.3828125
+        },
+        "container_RAM": {
+          "median": 59.18359375,
+          "low": 57.66796875,
+          "high": 61.3125
+        },
+        "contended": 0,
+        "verified_messages": 480000
+      }
+    }
+  },
+  {
+    "mode": "pubsub",
+    "core": "multi",
+    "size": 1024,
+    "cohort": "none",
+    "versions": {
+      "dragonfly": {
+        "PUBLISH": {
+          "median": 1990752.5,
+          "low": 1990752.5,
+          "high": 1992074.38
+        },
+        "DELIVERED": {
+          "median": 0.0,
+          "low": 0.0,
+          "high": 0.0
+        },
+        "RAM": {
+          "median": 89.48046875,
+          "low": 88.25390625,
+          "high": 91.703125
+        },
+        "container_RAM": {
+          "median": 112.125,
+          "low": 111.7578125,
+          "high": 118.4921875
+        },
+        "contended": 0,
+        "verified_messages": 0
+      },
+      "candidate": {
+        "PUBLISH": {
+          "median": 5952508.0,
+          "low": 5952508.0,
+          "high": 5964341.5
+        },
+        "DELIVERED": {
+          "median": 0.0,
+          "low": 0.0,
+          "high": 0.0
+        },
+        "RAM": {
+          "median": 20.54296875,
+          "low": 18.6328125,
+          "high": 20.625
+        },
+        "container_RAM": {
+          "median": 20.7421875,
+          "low": 19.18359375,
+          "high": 20.79296875
+        },
+        "contended": 0,
+        "verified_messages": 0
+      },
+      "baseline": {
+        "PUBLISH": {
+          "median": 3984148.75,
+          "low": 3978864.75,
+          "high": 3984148.75
+        },
+        "DELIVERED": {
+          "median": 0.0,
+          "low": 0.0,
+          "high": 0.0
+        },
+        "RAM": {
+          "median": 57.3828125,
+          "low": 56.9140625,
+          "high": 59.08203125
+        },
+        "container_RAM": {
+          "median": 68.7421875,
+          "low": 67.60546875,
+          "high": 69.484375
+        },
+        "contended": 0,
+        "verified_messages": 0
+      }
+    }
+  },
+  {
+    "mode": "pubsub",
+    "core": "multi",
+    "size": 1024,
+    "cohort": "pattern8",
+    "versions": {
+      "dragonfly": {
+        "PUBLISH": {
+          "median": 40000.0,
+          "low": 39292.73,
+          "high": 40485.83
+        },
+        "DELIVERED": {
+          "median": 237780.36346332534,
+          "low": 210402.23743528698,
+          "high": 243190.2685563257
+        },
+        "RAM": {
+          "median": 93.1640625,
+          "low": 90.9140625,
+          "high": 93.19140625
+        },
+        "container_RAM": {
+          "median": 103.44140625,
+          "low": 102.6875,
+          "high": 104.25390625
+        },
+        "contended": 0,
+        "verified_messages": 480000
+      },
+      "candidate": {
+        "PUBLISH": {
+          "median": 41237.11,
+          "low": 38684.72,
+          "high": 45045.04
+        },
+        "DELIVERED": {
+          "median": 245529.75484271304,
+          "low": 230156.18675214087,
+          "high": 256326.66146663632
+        },
+        "RAM": {
+          "median": 20.265625,
+          "low": 18.0234375,
+          "high": 27.56640625
+        },
+        "container_RAM": {
+          "median": 18.5859375,
+          "low": 16.39453125,
+          "high": 26.10546875
+        },
+        "contended": 0,
+        "verified_messages": 480000
+      },
+      "baseline": {
+        "PUBLISH": {
+          "median": 40816.32,
+          "low": 37037.04,
+          "high": 42553.19
+        },
+        "DELIVERED": {
+          "median": 243119.17131661536,
+          "low": 218439.64100149806,
+          "high": 246906.33422751393
+        },
+        "RAM": {
+          "median": 60.35546875,
+          "low": 58.265625,
+          "high": 62.4765625
+        },
+        "container_RAM": {
+          "median": 58.91015625,
+          "low": 57.27734375,
+          "high": 61.31640625
+        },
+        "contended": 0,
+        "verified_messages": 480000
+      }
+    }
+  },
+  {
+    "mode": "pubsub",
+    "core": "multi",
+    "size": 10240,
+    "cohort": "direct1",
+    "versions": {
+      "dragonfly": {
+        "PUBLISH": {
+          "median": 49875.31,
+          "low": 48192.77,
+          "high": 52356.02
+        },
+        "DELIVERED": {
+          "median": 34230.80724861261,
+          "low": 33930.7191004729,
+          "high": 35931.72397574394
+        },
+        "RAM": {
+          "median": 146.64453125,
+          "low": 143.66015625,
+          "high": 150.015625
+        },
+        "container_RAM": {
+          "median": 174.3203125,
+          "low": 172.46875,
+          "high": 186.9921875
+        },
+        "contended": 0,
+        "verified_messages": 60000
+      },
+      "candidate": {
+        "PUBLISH": {
+          "median": 50251.26,
+          "low": 48076.92,
+          "high": 50377.83
+        },
+        "DELIVERED": {
+          "median": 34771.40794841338,
+          "low": 34589.8099082046,
+          "high": 34974.99476727126
+        },
+        "RAM": {
+          "median": 29.13671875,
+          "low": 24.796875,
+          "high": 32.4765625
+        },
+        "container_RAM": {
+          "median": 27.1328125,
+          "low": 22.9140625,
+          "high": 30.49609375
+        },
+        "contended": 0,
+        "verified_messages": 60000
+      },
+      "baseline": {
+        "PUBLISH": {
+          "median": 52631.58,
+          "low": 50125.32,
+          "high": 53050.4
+        },
+        "DELIVERED": {
+          "median": 35423.89504572584,
+          "low": 35328.94745918067,
+          "high": 35963.405121103744
+        },
+        "RAM": {
+          "median": 85.84375,
+          "low": 79.5859375,
+          "high": 89.4296875
+        },
+        "container_RAM": {
+          "median": 83.1875,
+          "low": 78.3671875,
+          "high": 87.9453125
+        },
+        "contended": 0,
+        "verified_messages": 60000
+      }
+    }
+  },
+  {
+    "mode": "pubsub",
+    "core": "multi",
+    "size": 10240,
+    "cohort": "direct8",
+    "versions": {
+      "dragonfly": {
+        "PUBLISH": {
+          "median": 30257.19,
+          "low": 30120.48,
+          "high": 31055.9
+        },
+        "DELIVERED": {
+          "median": 193272.27077169862,
+          "low": 190216.8293769774,
+          "high": 198244.04592737192
+        },
+        "RAM": {
+          "median": 145.33984375,
+          "low": 140.890625,
+          "high": 149.47265625
+        },
+        "container_RAM": {
+          "median": 176.71875,
+          "low": 174.40234375,
+          "high": 194.578125
+        },
+        "contended": 0,
+        "verified_messages": 480000
+      },
+      "candidate": {
+        "PUBLISH": {
+          "median": 28818.44,
+          "low": 28571.43,
+          "high": 30303.03
+        },
+        "DELIVERED": {
+          "median": 185512.67237912965,
+          "low": 184826.58801900296,
+          "high": 192567.94464538927
+        },
+        "RAM": {
+          "median": 37.6640625,
+          "low": 35.63671875,
+          "high": 45.13671875
+        },
+        "container_RAM": {
+          "median": 36.3828125,
+          "low": 34.3671875,
+          "high": 44.203125
+        },
+        "contended": 0,
+        "verified_messages": 480000
+      },
+      "baseline": {
+        "PUBLISH": {
+          "median": 29498.53,
+          "low": 27137.04,
+          "high": 29806.26
+        },
+        "DELIVERED": {
+          "median": 185375.43724089817,
+          "low": 175759.8892303893,
+          "high": 190554.25420201698
+        },
+        "RAM": {
+          "median": 89.9609375,
+          "low": 86.98046875,
+          "high": 91.33203125
+        },
+        "container_RAM": {
+          "median": 89.046875,
+          "low": 86.44140625,
+          "high": 90.4765625
+        },
+        "contended": 0,
+        "verified_messages": 480000
+      }
+    }
+  },
+  {
+    "mode": "pubsub",
+    "core": "multi",
+    "size": 10240,
+    "cohort": "none",
+    "versions": {
+      "dragonfly": {
+        "PUBLISH": {
+          "median": 418140.47,
+          "low": 379867.84,
+          "high": 425432.56
+        },
+        "DELIVERED": {
+          "median": 0.0,
+          "low": 0.0,
+          "high": 0.0
+        },
+        "RAM": {
+          "median": 148.125,
+          "low": 141.62109375,
+          "high": 152.66015625
+        },
+        "container_RAM": {
+          "median": 186.0078125,
+          "low": 176.02734375,
+          "high": 192.08984375
+        },
+        "contended": 0,
+        "verified_messages": 0
+      },
+      "candidate": {
+        "PUBLISH": {
+          "median": 620851.69,
+          "low": 617402.44,
+          "high": 647568.12
+        },
+        "DELIVERED": {
+          "median": 0.0,
+          "low": 0.0,
+          "high": 0.0
+        },
+        "RAM": {
+          "median": 27.8125,
+          "low": 27.02734375,
+          "high": 29.21484375
+        },
+        "container_RAM": {
+          "median": 29.75,
+          "low": 26.75,
+          "high": 31.3203125
+        },
+        "contended": 0,
+        "verified_messages": 0
+      },
+      "baseline": {
+        "PUBLISH": {
+          "median": 423272.12,
+          "low": 422735.44,
+          "high": 431861.84
+        },
+        "DELIVERED": {
+          "median": 0.0,
+          "low": 0.0,
+          "high": 0.0
+        },
+        "RAM": {
+          "median": 90.5078125,
+          "low": 89.88671875,
+          "high": 92.13671875
+        },
+        "container_RAM": {
+          "median": 164.63671875,
+          "low": 158.4921875,
+          "high": 195.08984375
+        },
+        "contended": 0,
+        "verified_messages": 0
+      }
+    }
+  },
+  {
+    "mode": "pubsub",
+    "core": "multi",
+    "size": 10240,
+    "cohort": "pattern8",
+    "versions": {
+      "dragonfly": {
+        "PUBLISH": {
+          "median": 29985.01,
+          "low": 29895.37,
+          "high": 30627.87
+        },
+        "DELIVERED": {
+          "median": 192353.52700776086,
+          "low": 191916.92430627457,
+          "high": 193465.13701922074
+        },
+        "RAM": {
+          "median": 143.72265625,
+          "low": 140.8671875,
+          "high": 149.0078125
+        },
+        "container_RAM": {
+          "median": 174.94140625,
+          "low": 171.16796875,
+          "high": 191.75390625
+        },
+        "contended": 0,
+        "verified_messages": 480000
+      },
+      "candidate": {
+        "PUBLISH": {
+          "median": 28530.67,
+          "low": 28288.54,
+          "high": 28694.4
+        },
+        "DELIVERED": {
+          "median": 184058.21632647383,
+          "low": 179816.61407382367,
+          "high": 184847.820369019
+        },
+        "RAM": {
+          "median": 47.37109375,
+          "low": 47.109375,
+          "high": 50.86328125
+        },
+        "container_RAM": {
+          "median": 46.37890625,
+          "low": 45.93359375,
+          "high": 49.75390625
+        },
+        "contended": 0,
+        "verified_messages": 480000
+      },
+      "baseline": {
+        "PUBLISH": {
+          "median": 25773.2,
+          "low": 25740.03,
+          "high": 28409.09
+        },
+        "DELIVERED": {
+          "median": 170215.2288275682,
+          "low": 158688.38590108324,
+          "high": 181068.32193097787
+        },
+        "RAM": {
+          "median": 96.51953125,
+          "low": 90.63671875,
+          "high": 97.38671875
+        },
+        "container_RAM": {
+          "median": 95.63671875,
+          "low": 89.484375,
+          "high": 96.25390625
+        },
+        "contended": 0,
+        "verified_messages": 480000
+      }
+    }
+  },
+  {
+    "mode": "pubsub",
+    "core": "single",
+    "size": 5,
+    "cohort": "direct1",
+    "versions": {
+      "dragonfly": {
+        "PUBLISH": {
+          "median": 80321.29,
+          "low": 80000.0,
+          "high": 83682.01
+        },
+        "DELIVERED": {
+          "median": 46927.631868402015,
+          "low": 45643.24073205603,
+          "high": 47081.361211073185
+        },
+        "RAM": {
+          "median": 47.890625,
+          "low": 47.87890625,
+          "high": 47.9453125
+        },
+        "container_RAM": {
+          "median": 41.43359375,
+          "low": 41.203125,
+          "high": 41.4609375
+        },
+        "contended": 0,
+        "verified_messages": 60000
+      },
+      "candidate": {
+        "PUBLISH": {
+          "median": 98522.17,
+          "low": 93023.26,
+          "high": 99009.9
+        },
+        "DELIVERED": {
+          "median": 50355.445494861924,
+          "low": 48526.92338639579,
+          "high": 54796.279132510084
+        },
+        "RAM": {
+          "median": 7.640625,
+          "low": 7.6328125,
+          "high": 7.79296875
+        },
+        "container_RAM": {
+          "median": 5.03515625,
+          "low": 4.92578125,
+          "high": 5.05078125
+        },
+        "contended": 0,
+        "verified_messages": 60000
+      },
+      "baseline": {
+        "PUBLISH": {
+          "median": 90090.09,
+          "low": 88495.58,
+          "high": 100502.52
+        },
+        "DELIVERED": {
+          "median": 48696.54221086996,
+          "low": 47209.65170251057,
+          "high": 53516.01546006335
+        },
+        "RAM": {
+          "median": 50.67578125,
+          "low": 50.51171875,
+          "high": 52.84765625
+        },
+        "container_RAM": {
+          "median": 48.5546875,
+          "low": 48.42578125,
+          "high": 50.609375
+        },
+        "contended": 0,
+        "verified_messages": 60000
+      }
+    }
+  },
+  {
+    "mode": "pubsub",
+    "core": "single",
+    "size": 5,
+    "cohort": "direct8",
+    "versions": {
+      "dragonfly": {
+        "PUBLISH": {
+          "median": 33500.84,
+          "low": 31152.65,
+          "high": 35149.38
+        },
+        "DELIVERED": {
+          "median": 207922.11401746786,
+          "low": 165720.1535935572,
+          "high": 217698.06073236777
+        },
+        "RAM": {
+          "median": 47.890625,
+          "low": 47.87890625,
+          "high": 47.9453125
+        },
+        "container_RAM": {
+          "median": 42.28515625,
+          "low": 42.1484375,
+          "high": 42.3984375
+        },
+        "contended": 0,
+        "verified_messages": 480000
+      },
+      "candidate": {
+        "PUBLISH": {
+          "median": 38610.04,
+          "low": 35714.29,
+          "high": 41928.72
+        },
+        "DELIVERED": {
+          "median": 236619.67883888484,
+          "low": 213596.4876230577,
+          "high": 248331.30712943382
+        },
+        "RAM": {
+          "median": 7.67578125,
+          "low": 7.66796875,
+          "high": 7.80859375
+        },
+        "container_RAM": {
+          "median": 5.8515625,
+          "low": 5.8046875,
+          "high": 6.01953125
+        },
+        "contended": 0,
+        "verified_messages": 480000
+      },
+      "baseline": {
+        "PUBLISH": {
+          "median": 42016.8,
+          "low": 37383.18,
+          "high": 42372.88
+        },
+        "DELIVERED": {
+          "median": 231489.15793157538,
+          "low": 215497.0692982906,
+          "high": 235913.85571273346
+        },
+        "RAM": {
+          "median": 50.703125,
+          "low": 50.51953125,
+          "high": 52.875
+        },
+        "container_RAM": {
+          "median": 49.44140625,
+          "low": 49.125,
+          "high": 51.6953125
+        },
+        "contended": 0,
+        "verified_messages": 480000
+      }
+    }
+  },
+  {
+    "mode": "pubsub",
+    "core": "single",
+    "size": 5,
+    "cohort": "none",
+    "versions": {
+      "dragonfly": {
+        "PUBLISH": {
+          "median": 1740194.12,
+          "low": 1738681.5,
+          "high": 1815564.25
+        },
+        "DELIVERED": {
+          "median": 0.0,
+          "low": 0.0,
+          "high": 0.0
+        },
+        "RAM": {
+          "median": 51.4296875,
+          "low": 51.171875,
+          "high": 51.4375
+        },
+        "container_RAM": {
+          "median": 43.61328125,
+          "low": 43.54296875,
+          "high": 43.640625
+        },
+        "contended": 0,
+        "verified_messages": 0
+      },
+      "candidate": {
+        "PUBLISH": {
+          "median": 9990137.0,
+          "low": 9990137.0,
+          "high": 10267861.0
+        },
+        "DELIVERED": {
+          "median": 0.0,
+          "low": 0.0,
+          "high": 0.0
+        },
+        "RAM": {
+          "median": 8.3046875,
+          "low": 8.21875,
+          "high": 8.3125
+        },
+        "container_RAM": {
+          "median": 6.71875,
+          "low": 6.703125,
+          "high": 6.984375
+        },
+        "contended": 0,
+        "verified_messages": 0
+      },
+      "baseline": {
+        "PUBLISH": {
+          "median": 9990137.0,
+          "low": 9990137.0,
+          "high": 10204996.0
+        },
+        "DELIVERED": {
+          "median": 0.0,
+          "low": 0.0,
+          "high": 0.0
+        },
+        "RAM": {
+          "median": 51.4140625,
+          "low": 51.08203125,
+          "high": 53.5078125
+        },
+        "container_RAM": {
+          "median": 50.48828125,
+          "low": 50.265625,
+          "high": 52.69921875
+        },
+        "contended": 1,
+        "verified_messages": 0
+      }
+    }
+  },
+  {
+    "mode": "pubsub",
+    "core": "single",
+    "size": 5,
+    "cohort": "pattern8",
+    "versions": {
+      "dragonfly": {
+        "PUBLISH": {
+          "median": 32414.91,
+          "low": 31897.93,
+          "high": 34188.04
+        },
+        "DELIVERED": {
+          "median": 189204.7749325684,
+          "low": 187873.63714552825,
+          "high": 212517.13407719394
+        },
+        "RAM": {
+          "median": 47.890625,
+          "low": 47.87890625,
+          "high": 47.9453125
+        },
+        "container_RAM": {
+          "median": 41.64453125,
+          "low": 41.046875,
+          "high": 42.1328125
+        },
+        "contended": 0,
+        "verified_messages": 480000
+      },
+      "candidate": {
+        "PUBLISH": {
+          "median": 40733.2,
+          "low": 40080.16,
+          "high": 41493.78
+        },
+        "DELIVERED": {
+          "median": 243013.26054273755,
+          "low": 228905.81745905662,
+          "high": 244696.51502069226
+        },
+        "RAM": {
+          "median": 7.69140625,
+          "low": 7.6796875,
+          "high": 7.8203125
+        },
+        "container_RAM": {
+          "median": 5.8515625,
+          "low": 5.6875,
+          "high": 5.91796875
+        },
+        "contended": 0,
+        "verified_messages": 480000
+      },
+      "baseline": {
+        "PUBLISH": {
+          "median": 38022.81,
+          "low": 36968.57,
+          "high": 39215.69
+        },
+        "DELIVERED": {
+          "median": 226077.8771117929,
+          "low": 210040.71354117506,
+          "high": 236025.41393217846
+        },
+        "RAM": {
+          "median": 50.7890625,
+          "low": 50.5390625,
+          "high": 52.8984375
+        },
+        "container_RAM": {
+          "median": 49.34375,
+          "low": 49.2421875,
+          "high": 51.61328125
+        },
+        "contended": 0,
+        "verified_messages": 480000
+      }
+    }
+  },
+  {
+    "mode": "pubsub",
+    "core": "single",
+    "size": 1024,
+    "cohort": "direct1",
+    "versions": {
+      "dragonfly": {
+        "PUBLISH": {
+          "median": 86956.52,
+          "low": 78740.16,
+          "high": 87719.3
+        },
+        "DELIVERED": {
+          "median": 44951.21616388061,
+          "low": 44096.87036432993,
+          "high": 48853.38241352499
+        },
+        "RAM": {
+          "median": 50.5703125,
+          "low": 47.5078125,
+          "high": 53.53515625
+        },
+        "container_RAM": {
+          "median": 47.359375,
+          "low": 44.71484375,
+          "high": 54.96875
+        },
+        "contended": 0,
+        "verified_messages": 60000
+      },
+      "candidate": {
+        "PUBLISH": {
+          "median": 80971.66,
+          "low": 78125.0,
+          "high": 88888.89
+        },
+        "DELIVERED": {
+          "median": 46099.06847466522,
+          "low": 41836.98809581595,
+          "high": 51387.10721581908
+        },
+        "RAM": {
+          "median": 8.46484375,
+          "low": 8.453125,
+          "high": 8.62109375
+        },
+        "container_RAM": {
+          "median": 5.87890625,
+          "low": 5.56640625,
+          "high": 6.01953125
+        },
+        "contended": 0,
+        "verified_messages": 60000
+      },
+      "baseline": {
+        "PUBLISH": {
+          "median": 88495.58,
+          "low": 80645.16,
+          "high": 90909.09
+        },
+        "DELIVERED": {
+          "median": 47381.68242563897,
+          "low": 45809.15642560538,
+          "high": 47737.486937381604
+        },
+        "RAM": {
+          "median": 51.30078125,
+          "low": 50.640625,
+          "high": 53.1015625
+        },
+        "container_RAM": {
+          "median": 49.0,
+          "low": 48.75390625,
+          "high": 51.12109375
+        },
+        "contended": 0,
+        "verified_messages": 60000
+      }
+    }
+  },
+  {
+    "mode": "pubsub",
+    "core": "single",
+    "size": 1024,
+    "cohort": "direct8",
+    "versions": {
+      "dragonfly": {
+        "PUBLISH": {
+          "median": 31645.57,
+          "low": 30959.75,
+          "high": 33333.33
+        },
+        "DELIVERED": {
+          "median": 195429.3038367874,
+          "low": 186824.4154717466,
+          "high": 199435.37153728126
+        },
+        "RAM": {
+          "median": 50.4765625,
+          "low": 48.1328125,
+          "high": 53.5
+        },
+        "container_RAM": {
+          "median": 48.08203125,
+          "low": 40.40234375,
+          "high": 53.33984375
+        },
+        "contended": 0,
+        "verified_messages": 480000
+      },
+      "candidate": {
+        "PUBLISH": {
+          "median": 38095.24,
+          "low": 36630.04,
+          "high": 38461.54
+        },
+        "DELIVERED": {
+          "median": 224443.98701585634,
+          "low": 215052.28958197366,
+          "high": 224616.45298035268
+        },
+        "RAM": {
+          "median": 8.4765625,
+          "low": 8.46484375,
+          "high": 8.6328125
+        },
+        "container_RAM": {
+          "median": 6.49609375,
+          "low": 6.3515625,
+          "high": 6.99609375
+        },
+        "contended": 0,
+        "verified_messages": 480000
+      },
+      "baseline": {
+        "PUBLISH": {
+          "median": 38240.92,
+          "low": 37453.18,
+          "high": 39215.69
+        },
+        "DELIVERED": {
+          "median": 222127.86939747597,
+          "low": 213741.1440285086,
+          "high": 233281.9646446697
+        },
+        "RAM": {
+          "median": 51.3359375,
+          "low": 50.4921875,
+          "high": 52.953125
+        },
+        "container_RAM": {
+          "median": 49.3984375,
+          "low": 49.265625,
+          "high": 51.6875
+        },
+        "contended": 0,
+        "verified_messages": 480000
+      }
+    }
+  },
+  {
+    "mode": "pubsub",
+    "core": "single",
+    "size": 1024,
+    "cohort": "none",
+    "versions": {
+      "dragonfly": {
+        "PUBLISH": {
+          "median": 1200813.12,
+          "low": 1097597.62,
+          "high": 1203703.12
+        },
+        "DELIVERED": {
+          "median": 0.0,
+          "low": 0.0,
+          "high": 0.0
+        },
+        "RAM": {
+          "median": 54.9609375,
+          "low": 52.390625,
+          "high": 58.5234375
+        },
+        "container_RAM": {
+          "median": 64.85546875,
+          "low": 59.265625,
+          "high": 72.33203125
+        },
+        "contended": 0,
+        "verified_messages": 0
+      },
+      "candidate": {
+        "PUBLISH": {
+          "median": 3984148.75,
+          "low": 3978864.75,
+          "high": 3984148.75
+        },
+        "DELIVERED": {
+          "median": 0.0,
+          "low": 0.0,
+          "high": 0.0
+        },
+        "RAM": {
+          "median": 12.12890625,
+          "low": 12.1171875,
+          "high": 12.28515625
+        },
+        "container_RAM": {
+          "median": 24.84375,
+          "low": 24.36328125,
+          "high": 25.51171875
+        },
+        "contended": 0,
+        "verified_messages": 0
+      },
+      "baseline": {
+        "PUBLISH": {
+          "median": 1709438.12,
+          "low": 1500050.0,
+          "high": 1709438.12
+        },
+        "DELIVERED": {
+          "median": 0.0,
+          "low": 0.0,
+          "high": 0.0
+        },
+        "RAM": {
+          "median": 55.46875,
+          "low": 55.19921875,
+          "high": 57.4921875
+        },
+        "container_RAM": {
+          "median": 66.953125,
+          "low": 66.63671875,
+          "high": 69.2109375
+        },
+        "contended": 0,
+        "verified_messages": 0
+      }
+    }
+  },
+  {
+    "mode": "pubsub",
+    "core": "single",
+    "size": 1024,
+    "cohort": "pattern8",
+    "versions": {
+      "dragonfly": {
+        "PUBLISH": {
+          "median": 31948.88,
+          "low": 30674.85,
+          "high": 32520.32
+        },
+        "DELIVERED": {
+          "median": 200409.46886167748,
+          "low": 179757.52671310306,
+          "high": 202315.54158515894
+        },
+        "RAM": {
+          "median": 50.4140625,
+          "low": 48.0390625,
+          "high": 53.4453125
+        },
+        "container_RAM": {
+          "median": 48.12890625,
+          "low": 40.5234375,
+          "high": 53.36328125
+        },
+        "contended": 0,
+        "verified_messages": 480000
+      },
+      "candidate": {
+        "PUBLISH": {
+          "median": 37037.04,
+          "low": 35714.29,
+          "high": 37735.85
+        },
+        "DELIVERED": {
+          "median": 220095.13994656922,
+          "low": 217197.72156489,
+          "high": 224875.41480197175
+        },
+        "RAM": {
+          "median": 7.96875,
+          "low": 7.95703125,
+          "high": 8.125
+        },
+        "container_RAM": {
+          "median": 6.0859375,
+          "low": 6.0390625,
+          "high": 6.34375
+        },
+        "contended": 0,
+        "verified_messages": 480000
+      },
+      "baseline": {
+        "PUBLISH": {
+          "median": 36363.64,
+          "low": 35587.19,
+          "high": 37664.78
+        },
+        "DELIVERED": {
+          "median": 213929.5386980551,
+          "low": 198128.16116457377,
+          "high": 221364.97222474904
+        },
+        "RAM": {
+          "median": 50.84765625,
+          "low": 50.4609375,
+          "high": 52.953125
+        },
+        "container_RAM": {
+          "median": 49.54296875,
+          "low": 49.04296875,
+          "high": 51.51171875
+        },
+        "contended": 0,
+        "verified_messages": 480000
+      }
+    }
+  },
+  {
+    "mode": "pubsub",
+    "core": "single",
+    "size": 10240,
+    "cohort": "direct1",
+    "versions": {
+      "dragonfly": {
+        "PUBLISH": {
+          "median": 72202.16,
+          "low": 66006.6,
+          "high": 77519.38
+        },
+        "DELIVERED": {
+          "median": 40959.365998583104,
+          "low": 39843.90155467401,
+          "high": 44617.336921719325
+        },
+        "RAM": {
+          "median": 163.5546875,
+          "low": 163.3984375,
+          "high": 164.12109375
+        },
+        "container_RAM": {
+          "median": 167.98828125,
+          "low": 163.19140625,
+          "high": 168.3125
+        },
+        "contended": 0,
+        "verified_messages": 60000
+      },
+      "candidate": {
+        "PUBLISH": {
+          "median": 53763.44,
+          "low": 53619.3,
+          "high": 54945.05
+        },
+        "DELIVERED": {
+          "median": 35916.08608016468,
+          "low": 35681.59633911333,
+          "high": 36537.536235232685
+        },
+        "RAM": {
+          "median": 12.515625,
+          "low": 12.19921875,
+          "high": 12.734375
+        },
+        "container_RAM": {
+          "median": 10.16015625,
+          "low": 9.98828125,
+          "high": 10.48828125
+        },
+        "contended": 0,
+        "verified_messages": 60000
+      },
+      "baseline": {
+        "PUBLISH": {
+          "median": 54945.05,
+          "low": 52083.33,
+          "high": 56022.41
+        },
+        "DELIVERED": {
+          "median": 36357.04370751603,
+          "low": 34309.24040600111,
+          "high": 36677.42231512825
+        },
+        "RAM": {
+          "median": 57.62109375,
+          "low": 57.22265625,
+          "high": 57.94140625
+        },
+        "container_RAM": {
+          "median": 55.625,
+          "low": 55.3515625,
+          "high": 56.5234375
+        },
+        "contended": 0,
+        "verified_messages": 60000
+      }
+    }
+  },
+  {
+    "mode": "pubsub",
+    "core": "single",
+    "size": 10240,
+    "cohort": "direct8",
+    "versions": {
+      "dragonfly": {
+        "PUBLISH": {
+          "median": 25740.03,
+          "low": 25510.21,
+          "high": 25906.73
+        },
+        "DELIVERED": {
+          "median": 165292.0728247676,
+          "low": 163124.3300812854,
+          "high": 167710.21166438542
+        },
+        "RAM": {
+          "median": 163.0625,
+          "low": 162.90625,
+          "high": 163.62890625
+        },
+        "container_RAM": {
+          "median": 164.9921875,
+          "low": 163.89453125,
+          "high": 168.6328125
+        },
+        "contended": 0,
+        "verified_messages": 480000
+      },
+      "candidate": {
+        "PUBLISH": {
+          "median": 22002.2,
+          "low": 18709.07,
+          "high": 24420.02
+        },
+        "DELIVERED": {
+          "median": 146859.42110178355,
+          "low": 116714.81460355886,
+          "high": 157966.3031137419
+        },
+        "RAM": {
+          "median": 12.61328125,
+          "low": 8.1640625,
+          "high": 12.83203125
+        },
+        "container_RAM": {
+          "median": 10.5625,
+          "low": 6.4609375,
+          "high": 10.65234375
+        },
+        "contended": 0,
+        "verified_messages": 480000
+      },
+      "baseline": {
+        "PUBLISH": {
+          "median": 23809.53,
+          "low": 22471.91,
+          "high": 25031.29
+        },
+        "DELIVERED": {
+          "median": 150948.02662761774,
+          "low": 146289.71329351875,
+          "high": 163139.982320555
+        },
+        "RAM": {
+          "median": 51.140625,
+          "low": 50.81640625,
+          "high": 57.94921875
+        },
+        "container_RAM": {
+          "median": 49.69921875,
+          "low": 49.5234375,
+          "high": 55.2734375
+        },
+        "contended": 0,
+        "verified_messages": 480000
+      }
+    }
+  },
+  {
+    "mode": "pubsub",
+    "core": "single",
+    "size": 10240,
+    "cohort": "none",
+    "versions": {
+      "dragonfly": {
+        "PUBLISH": {
+          "median": 247144.06,
+          "low": 232602.78,
+          "high": 247327.39
+        },
+        "DELIVERED": {
+          "median": 0.0,
+          "low": 0.0,
+          "high": 0.0
+        },
+        "RAM": {
+          "median": 169.9375,
+          "low": 169.50390625,
+          "high": 170.16796875
+        },
+        "container_RAM": {
+          "median": 202.74609375,
+          "low": 199.8515625,
+          "high": 203.77734375
+        },
+        "contended": 0,
+        "verified_messages": 0
+      },
+      "candidate": {
+        "PUBLISH": {
+          "median": 436003.5,
+          "low": 356447.62,
+          "high": 438680.72
+        },
+        "DELIVERED": {
+          "median": 0.0,
+          "low": 0.0,
+          "high": 0.0
+        },
+        "RAM": {
+          "median": 17.26171875,
+          "low": 17.08203125,
+          "high": 17.40234375
+        },
+        "container_RAM": {
+          "median": 52.63671875,
+          "low": 48.6953125,
+          "high": 57.52734375
+        },
+        "contended": 0,
+        "verified_messages": 0
+      },
+      "baseline": {
+        "PUBLISH": {
+          "median": 188929.34,
+          "low": 180096.7,
+          "high": 189031.94
+        },
+        "DELIVERED": {
+          "median": 0.0,
+          "low": 0.0,
+          "high": 0.0
+        },
+        "RAM": {
+          "median": 65.75,
+          "low": 65.72265625,
+          "high": 67.99609375
+        },
+        "container_RAM": {
+          "median": 100.375,
+          "low": 96.19921875,
+          "high": 102.77734375
+        },
+        "contended": 0,
+        "verified_messages": 0
+      }
+    }
+  },
+  {
+    "mode": "pubsub",
+    "core": "single",
+    "size": 10240,
+    "cohort": "pattern8",
+    "versions": {
+      "dragonfly": {
+        "PUBLISH": {
+          "median": 25348.54,
+          "low": 24937.66,
+          "high": 25839.79
+        },
+        "DELIVERED": {
+          "median": 158098.08165848957,
+          "low": 157824.35185287363,
+          "high": 164053.67963816537
+        },
+        "RAM": {
+          "median": 163.0703125,
+          "low": 162.9140625,
+          "high": 163.63671875
+        },
+        "container_RAM": {
+          "median": 165.12109375,
+          "low": 163.71875,
+          "high": 168.72265625
+        },
+        "contended": 0,
+        "verified_messages": 480000
+      },
+      "candidate": {
+        "PUBLISH": {
+          "median": 23696.68,
+          "low": 22701.48,
+          "high": 24154.59
+        },
+        "DELIVERED": {
+          "median": 155023.5897589852,
+          "low": 147907.74055153364,
+          "high": 159079.9177076682
+        },
+        "RAM": {
+          "median": 8.15234375,
+          "low": 8.13671875,
+          "high": 8.37109375
+        },
+        "container_RAM": {
+          "median": 6.35546875,
+          "low": 6.34765625,
+          "high": 6.7109375
+        },
+        "contended": 0,
+        "verified_messages": 480000
+      },
+      "baseline": {
+        "PUBLISH": {
+          "median": 23474.18,
+          "low": 21715.53,
+          "high": 23952.1
+        },
+        "DELIVERED": {
+          "median": 154002.30833623122,
+          "low": 137217.68127848965,
+          "high": 154583.26108812704
+        },
+        "RAM": {
+          "median": 51.47265625,
+          "low": 50.7890625,
+          "high": 53.7265625
+        },
+        "container_RAM": {
+          "median": 49.859375,
+          "low": 49.53125,
+          "high": 52.515625
+        },
+        "contended": 0,
+        "verified_messages": 480000
+      }
+    }
+  }
+]

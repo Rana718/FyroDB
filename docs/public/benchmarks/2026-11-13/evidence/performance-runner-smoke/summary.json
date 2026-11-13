@@ -1,0 +1,224 @@
+{
+  "metadata": {
+    "status": "complete",
+    "cpu": "11th Gen Intel(R) Core(TM) i5-11400H @ 2.70GHz",
+    "initial_pressure": {
+      "cpu": 3.06,
+      "memory": 0.0,
+      "io": 1.52
+    },
+    "governor": "powersave",
+    "server_cpus": [
+      0,
+      1,
+      2,
+      3,
+      6,
+      7,
+      8,
+      9
+    ],
+    "client_cpus": [
+      4,
+      5,
+      10,
+      11
+    ],
+    "direct_cpus": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+    ],
+    "workers": 8,
+    "runs": 3,
+    "warmups": 0,
+    "inner": 1,
+    "hotkey_duration_seconds": null,
+    "counts": {
+      "clients": 100,
+      "kv_per_client": 100000,
+      "mixed_per_client": 20000,
+      "hotkey_per_client": 100000,
+      "subscribers": 50,
+      "publishers": 10,
+      "messages_per_publisher": 20000
+    },
+    "binary_sha256": {
+      "smoke": "d33d30daeecdc28a7bdae61612662dfaa84581432b9e87729c0fa40620c1011f",
+      "tcp-bench": "694535e448acdda854546242ebc57d6f497d9f370ed37510fbd76cf1a84afed2"
+    },
+    "readme_basis": "Historical best-of-three claims with conflicting TCP/in-process labels; rates are references, not matched measurements."
+  },
+  "results": {
+    "tcp": {
+      "smoke": {
+        "Pub/Sub publish": {
+          "median": 1469084.3142378693,
+          "best": 1660740.1355793371,
+          "minimum": 1452281.6906563027,
+          "maximum": 1660740.1355793371,
+          "cv_pct": 7.5822018283661174,
+          "median_ci95": [
+            1452281.6906563027,
+            1660740.1355793371
+          ],
+          "samples": [
+            1469084.3142378693,
+            1452281.6906563027,
+            1660740.1355793371
+          ]
+        },
+        "Pub/Sub delivery": {
+          "median": 65459430.251461685,
+          "best": 67815261.43532641,
+          "minimum": 62034284.58731773,
+          "maximum": 67815261.43532641,
+          "cv_pct": 4.465116431325193,
+          "median_ci95": [
+            62034284.58731773,
+            67815261.43532641
+          ],
+          "samples": [
+            62034284.58731773,
+            65459430.251461685,
+            67815261.43532641
+          ],
+          "readme_rate": 113980000.0,
+          "versus_readme_pct": -42.56937159899835
+        }
+      }
+    },
+    "in-process": {}
+  },
+  "samples": [
+    {
+      "transport": "tcp",
+      "side": "smoke",
+      "mode": "pub",
+      "round": 0,
+      "rows": {
+        "Pub/Sub publish": {
+          "ops": 200000,
+          "elapsed_ns": 136139225,
+          "ops_per_sec": 1469084.3142378693
+        },
+        "Pub/Sub delivery": {
+          "ops": 10000000,
+          "elapsed_ns": 161201182,
+          "ops_per_sec": 62034284.58731773
+        }
+      },
+      "peak_rss_kib": 44636,
+      "cpu_seconds": 0.42,
+      "cpu_ns_per_operation": 41.1764705882353,
+      "host_before": {
+        "cpu_busy_pct": 20.0,
+        "pressure_avg10": {
+          "cpu": 3.06,
+          "memory": 0.0,
+          "io": 1.52
+        },
+        "load_average": [
+          4.11767578125,
+          10.52490234375,
+          12.33642578125
+        ]
+      },
+      "pressure_after": {
+        "cpu": 3.6,
+        "memory": 0.0,
+        "io": 1.6
+      },
+      "unattributed_cpu_cores": 5.336652674636592
+    },
+    {
+      "transport": "tcp",
+      "side": "smoke",
+      "mode": "pub",
+      "round": 1,
+      "rows": {
+        "Pub/Sub publish": {
+          "ops": 200000,
+          "elapsed_ns": 137714330,
+          "ops_per_sec": 1452281.6906563027
+        },
+        "Pub/Sub delivery": {
+          "ops": 10000000,
+          "elapsed_ns": 152766377,
+          "ops_per_sec": 65459430.251461685
+        }
+      },
+      "peak_rss_kib": 44472,
+      "cpu_seconds": 0.42,
+      "cpu_ns_per_operation": 41.1764705882353,
+      "host_before": {
+        "cpu_busy_pct": 34.73154362416108,
+        "pressure_avg10": {
+          "cpu": 3.6,
+          "memory": 0.0,
+          "io": 1.6
+        },
+        "load_average": [
+          4.11767578125,
+          10.52490234375,
+          12.33642578125
+        ]
+      },
+      "pressure_after": {
+        "cpu": 3.6,
+        "memory": 0.0,
+        "io": 1.6
+      },
+      "unattributed_cpu_cores": 5.499682148960255
+    },
+    {
+      "transport": "tcp",
+      "side": "smoke",
+      "mode": "pub",
+      "round": 2,
+      "rows": {
+        "Pub/Sub publish": {
+          "ops": 200000,
+          "elapsed_ns": 120428233,
+          "ops_per_sec": 1660740.1355793371
+        },
+        "Pub/Sub delivery": {
+          "ops": 10000000,
+          "elapsed_ns": 147459433,
+          "ops_per_sec": 67815261.43532641
+        }
+      },
+      "peak_rss_kib": 43416,
+      "cpu_seconds": 0.43,
+      "cpu_ns_per_operation": 42.15686274509804,
+      "host_before": {
+        "cpu_busy_pct": 19.08783783783784,
+        "pressure_avg10": {
+          "cpu": 3.6,
+          "memory": 0.0,
+          "io": 1.6
+        },
+        "load_average": [
+          4.11767578125,
+          10.52490234375,
+          12.33642578125
+        ]
+      },
+      "pressure_after": {
+        "cpu": 3.6,
+        "memory": 0.0,
+        "io": 1.6
+      },
+      "unattributed_cpu_cores": 4.34128603464313
+    }
+  ]
+}
