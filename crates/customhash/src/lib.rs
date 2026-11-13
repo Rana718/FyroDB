@@ -45,6 +45,7 @@ use std::marker::PhantomData;
 use std::ops::Deref;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+use crossbeam_utils::CachePadded;
 use foldhash::fast::RandomState;
 pub use key::CompactKey;
 use std::hash::{BuildHasher, Hasher};
@@ -101,6 +102,11 @@ pub struct CustomMap<V> {
    observing_ptr: *const Flag,
    snap_active: AtomicBool,
    snap: std::sync::Arc<snap::SnapCtl<V>>,
+   /// Net insert/remove count, kept exact by the same bump calls that
+   /// update shard live counters: `is_full` reads one shared line instead
+   /// of scanning every shard, which mattered whenever a key ceiling was
+   /// configured. Reset exactly by `clear`.
+   approx: CachePadded<AtomicUsize>,
 }
 
 impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
@@ -233,6 +239,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
          observing,
          snap_active: AtomicBool::new(false),
          snap,
+         approx: CachePadded::new(AtomicUsize::new(0)),
       }
    }
 
@@ -1303,15 +1310,19 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
       let live = &unsafe { self.shards.get_unchecked(idx) }.live;
       if up {
          live.fetch_add(1, Ordering::Relaxed);
+         self.approx.fetch_add(1, Ordering::Relaxed);
       } else {
          live.fetch_sub(1, Ordering::Relaxed);
+         self.approx.fetch_sub(1, Ordering::Relaxed);
       }
    }
 
-   /// One relaxed load; trivially false with no limit configured.
+   /// One relaxed load; trivially false with no limit configured. The
+   /// approximate counter is exact (same bump events that drive the shard
+   /// live counters), so no re-check fallback is needed.
    #[inline(always)]
    pub fn is_full(&self) -> bool {
-      self.max_keys != usize::MAX && self.len() >= self.max_keys
+      self.max_keys != usize::MAX && self.approx.load(Ordering::Relaxed) >= self.max_keys
    }
 
    /// The configured key ceiling, or `usize::MAX` when unlimited.

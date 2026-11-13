@@ -1307,13 +1307,30 @@ impl HnswGraph {
          if by_batch || by_milestone {
             self.last_shrink.store(count, Ordering::Relaxed);
             let mut g = self.inner.write();
-            g.blocks.shrink_to_fit();
-            g.flags.shrink_to_fit();
-            g.levels.shrink_to_fit();
-            g.locks.shrink_to_fit();
-            g.upper.shrink_to_fit();
-            g.flat_int8.shrink_to_fit();
-            g.flat_scales.shrink_to_fit();
+            // Shrink with slack instead of exact fit: an exact-fit shrink
+            // discards the reserved headroom, forcing the next incremental
+            // insert to realloc-and-copy the whole block arena under the
+            // write lock (all searches stall for the copy).
+            let slack_target = (count * 3 / 2).max(1024).next_power_of_two();
+            let block_lines = slack_target * g.stride / 16;
+            if g.blocks.capacity() > block_lines * 2 {
+               g.blocks.shrink_to(block_lines);
+            }
+            if g.flags.capacity() > slack_target * 2 {
+               g.flags.shrink_to(slack_target);
+               g.levels.shrink_to(slack_target);
+            }
+            if g.locks.capacity() > slack_target * 2 {
+               g.locks.shrink_to(slack_target);
+            }
+            if g.upper.capacity() > slack_target * 2 {
+               g.upper.shrink_to(slack_target);
+            }
+            let flat_target = slack_target * g.dims;
+            if g.flat_int8.capacity() > flat_target * 2 {
+               g.flat_int8.shrink_to(flat_target);
+               g.flat_scales.shrink_to(slack_target);
+            }
          }
       }
    }

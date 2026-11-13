@@ -1,10 +1,11 @@
 use crossbeam_queue::SegQueue;
 use foldhash::fast::FixedState;
 use mio::Waker;
+use parking_lot::Mutex;
 use smallvec::SmallVec;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 #[path = "signal.rs"]
 mod signal;
@@ -176,29 +177,41 @@ impl WorkerNotifier {
    ) -> usize {
       let mut seen = 0usize;
       let mut bytes = 0usize;
+      // Publishers and this drainer RMW the same `fanout_bytes` line; fold
+      // the consumer's charges into one release per drain instead of one
+      // RMW per entry.
+      let mut freed = 0usize;
+      macro_rules! settle_return {
+         () => {
+            if freed != 0 {
+               self.fanout_bytes.fetch_sub(freed, Ordering::Release);
+            }
+            return seen;
+         };
+      }
       loop {
          while seen < max_entries && bytes < max_bytes {
             let Some(entry) = self.fanout.pop() else {
                break;
             };
             let charge = entry.charge();
-            self.fanout_bytes.fetch_sub(charge, Ordering::Release);
+            freed += charge;
             seen += 1;
             bytes = bytes.saturating_add(charge);
             f(entry);
          }
          signal::disarm(&self.fanout_pending);
          if self.fanout.is_empty() {
-            return seen;
+            settle_return!();
          }
          if seen >= max_entries || bytes >= max_bytes {
             if !signal::arm(&self.fanout_pending) {
                let _ = self.waker.wake();
             }
-            return seen;
+            settle_return!();
          }
          if signal::arm(&self.fanout_pending) {
-            return seen;
+            settle_return!();
          }
       }
    }
@@ -211,22 +224,17 @@ impl WorkerNotifier {
       self
          .local_subs
          .lock()
-         .unwrap_or_else(|e| e.into_inner())
          .as_ref()
          .and_then(|subs| subs.channels.get(channel))
          .map(|members| members.iter().map(|member| member.token).collect())
    }
 
    pub(crate) fn with_local_subs<R>(&self, f: impl FnOnce(Option<&LocalSubscriptions>) -> R) -> R {
-      f(self
-         .local_subs
-         .lock()
-         .unwrap_or_else(|e| e.into_inner())
-         .as_deref())
+      f(self.local_subs.lock().as_deref())
    }
 
    pub fn register_local(&self, channel: &str, token: usize) {
-      let mut local = self.local_subs.lock().unwrap_or_else(|e| e.into_inner());
+      let mut local = self.local_subs.lock();
       let subs = local.get_or_insert_with(|| Box::new(LocalSubscriptions::new()));
       if let Some(members) = subs.channels.get_mut(channel) {
          if !members.iter().any(|m| m.token == token) {
@@ -253,7 +261,7 @@ impl WorkerNotifier {
       generation: u64,
       pattern: bool,
    ) {
-      let mut local = self.local_subs.lock().unwrap_or_else(|e| e.into_inner());
+      let mut local = self.local_subs.lock();
       let subs = local.get_or_insert_with(|| Box::new(LocalSubscriptions::new()));
       let map = if pattern {
          &mut subs.patterns
@@ -273,7 +281,7 @@ impl WorkerNotifier {
    }
 
    pub(crate) fn unregister_subscription(&self, name: &str, token: usize, pattern: bool) {
-      let mut local = self.local_subs.lock().unwrap_or_else(|e| e.into_inner());
+      let mut local = self.local_subs.lock();
       let Some(subs) = local.as_deref_mut() else {
          return;
       };

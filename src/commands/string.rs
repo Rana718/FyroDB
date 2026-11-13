@@ -248,8 +248,28 @@ pub fn getex(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
 pub fn mset(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
    match parts {
       [_, items @ ..] if !items.is_empty() && items.len() % 2 == 0 => {
-         for &[key, val] in items.as_chunks::<2>().0 {
-            store.set_string(key, val, 0);
+         let pairs = items.as_chunks::<2>().0;
+         const STACK_PAIRS: usize = 64;
+         if pairs.len() >= 2 && pairs.len() <= STACK_PAIRS {
+            // One slot-line prefetch for the whole batch; every SET then
+            // probes a warm table instead of cold-locating its shard.
+            let mut hashes = [0u64; STACK_PAIRS];
+            let mut tables = [std::ptr::null(); STACK_PAIRS];
+            let keys: Vec<&str> = pairs.iter().map(|&[k, _]| k).collect();
+            store.prefetch_slots_write(&keys, &mut hashes, &mut tables);
+            for (i, &[key, val]) in pairs.iter().enumerate() {
+               store.set_string_auto_bytes(
+                  key,
+                  Some(hashes[i]),
+                  std::ptr::null(),
+                  val.as_bytes(),
+                  0,
+               );
+            }
+         } else {
+            for &[key, val] in pairs {
+               store.set_string(key, val, 0);
+            }
          }
          resp::write_ok(out);
       }
@@ -292,10 +312,65 @@ pub fn msetnx(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
 pub fn mget(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
    match parts {
       [_, keys @ ..] if !keys.is_empty() => {
-         out.reserve(keys.len() * 32);
-         resp::write_array_header(out, keys.len());
-         for &k in keys.iter() {
-            if !store.get_to_buf(k, out) {
+         const STACK_KEYS: usize = 64;
+         /// Batch threshold for admitting a map read epoch: at this size
+         /// skipping the per-key read-guard RMWs outweighs the admission.
+         const EPOCH_MIN: usize = 8;
+         let n = keys.len();
+         if n > STACK_KEYS {
+            // Large MGET: keep the simple per-key path rather than growing
+            // stack batches; the per-key cost is identical to before.
+            out.reserve(n * 32);
+            resp::write_array_header(out, n);
+            for &k in keys.iter() {
+               if !store.get_to_buf(k, out) {
+                  resp::write_nil(out);
+               }
+            }
+            return;
+         }
+         out.reserve(n * 32);
+         resp::write_array_header(out, n);
+
+         let mut hashes = [0u64; STACK_KEYS];
+         let mut tables = [std::ptr::null(); STACK_KEYS];
+         let mut entries = [std::ptr::null(); STACK_KEYS];
+         let read_epoch = if n >= EPOCH_MIN {
+            store.data.try_read_epoch()
+         } else {
+            None
+         };
+         store.prefetch_slots(keys, &mut hashes[..n], &mut tables[..n]);
+         // Same retry as the pipelined GET path: a writer registered
+         // elsewhere can drain during the slot prefetch.
+         let read_epoch = if read_epoch.is_none() && n >= EPOCH_MIN {
+            store.data.try_read_epoch()
+         } else {
+            read_epoch
+         };
+         if read_epoch.is_some() {
+            store.probe_and_prefetch_entries(&tables[..n], &hashes[..n], &mut entries[..n]);
+         } else {
+            store
+               .probe_and_prefetch_entries_write(&tables[..n], &hashes[..n], &mut entries[..n]);
+         }
+         for (i, &k) in keys.iter().enumerate() {
+            let found = if let Some(epoch) = &read_epoch {
+               unsafe {
+                  store.get_to_buf_epoch_entry_bytes(
+                     k.as_bytes(),
+                     hashes[i],
+                     entries[i].cast(),
+                     epoch,
+                     out,
+                  )
+               }
+            } else {
+               unsafe {
+                  store.get_to_buf_fast_entry_bytes(k.as_bytes(), hashes[i], entries[i].cast(), out)
+               }
+            };
+            if !found {
                resp::write_nil(out);
             }
          }

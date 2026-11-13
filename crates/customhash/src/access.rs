@@ -5,19 +5,29 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 type LocalWrite = (u64, usize);
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+static NEXT_MARKER: AtomicUsize = AtomicUsize::new(1);
+
 struct ReadState {
    count: AtomicUsize,
    id: u64,
 }
+
 thread_local! {
    static READING: Cell<u64> = const { Cell::new(0) };
    static WRITING: Cell<LocalWrite> = const { Cell::new((0, 0)) };
    static OTHER_WRITES: RefCell<Vec<LocalWrite>> = const { RefCell::new(Vec::new()) };
+   static WRITE_MARKER: Cell<usize> = const { Cell::new(0) };
 }
+
+/// Writer-admission stripes. One (thread, map) pair always lands on the
+/// same stripe, so a thread's nested writes share a stripe and each thread
+/// has a stable slot; with W active writers the RMWs spread over W cache
+/// lines instead of contending on one.
+const WRITE_STRIPES: usize = 16;
 
 pub(crate) struct Access {
    readers: CachePadded<ReadState>,
-   writers: CachePadded<AtomicUsize>,
+   writers: Box<[CachePadded<AtomicUsize>]>,
 }
 
 #[must_use]
@@ -37,12 +47,16 @@ impl Access {
       let id = NEXT_ID
          .try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
          .expect("map access IDs exhausted");
+      let writers = (0..WRITE_STRIPES)
+         .map(|_| CachePadded::new(AtomicUsize::new(0)))
+         .collect::<Vec<_>>()
+         .into_boxed_slice();
       Self {
          readers: CachePadded::new(ReadState {
             count: AtomicUsize::new(0),
             id,
          }),
-         writers: CachePadded::new(AtomicUsize::new(0)),
+         writers,
       }
    }
 
@@ -51,17 +65,39 @@ impl Access {
       READING.get() == self.readers.id
    }
 
+   /// Deterministic per (thread, map) stripe: nested writes on one map
+   /// always hit the same slot without per-thread lookup tables. The
+   /// marker is one cold counter fetch per thread.
+   #[inline(always)]
+   fn write_stripe(&self) -> usize {
+      let marker = WRITE_MARKER.with(|m| {
+         let value = m.get();
+         if value == 0 {
+            let fresh = NEXT_MARKER.fetch_add(1, Ordering::Relaxed);
+            m.set(fresh);
+            fresh
+         } else {
+            value
+         }
+      });
+      (marker.rotate_left(17) ^ self.readers.id as usize) % self.writers.len()
+   }
+
    #[inline]
    pub(crate) fn try_read(&self) -> Option<ReadEpochGuard<'_>> {
-      if READING.get() != 0 || self.writers.load(Ordering::Acquire) != 0 {
+      if READING.get() != 0 {
          return None;
       }
+      // The reader registers before checking every writer stripe, and the
+      // writer registers before checking the reader count: the SeqCst RMW
+      // plus check form the same Dekker handshake as before, spread across
+      // stripes — whichever side registers second observes the other.
       self.readers.count.fetch_add(1, Ordering::SeqCst);
-      // The second check pairs with writer registration so either the
-      // writer waits for this reader, or this reader falls back.
-      if self.writers.load(Ordering::SeqCst) != 0 {
-         self.readers.count.fetch_sub(1, Ordering::Release);
-         return None;
+      for stripe in self.writers.iter() {
+         if stripe.load(Ordering::SeqCst) != 0 {
+            self.readers.count.fetch_sub(1, Ordering::Release);
+            return None;
+         }
       }
       READING.set(self.readers.id);
       Some(ReadEpochGuard {
@@ -85,7 +121,8 @@ impl Access {
          }
       }) {
          assert!(!self.reading(), "mutation inside a protected read batch");
-         self.writers.fetch_add(1, Ordering::SeqCst);
+         let stripe = &self.writers[self.write_stripe()];
+         stripe.fetch_add(1, Ordering::SeqCst);
          let mut spins = 0;
          while self.readers.count.load(Ordering::SeqCst) != 0 {
             if spins < 64 {
@@ -145,7 +182,10 @@ impl Drop for WriteEpochGuard<'_> {
          })
       };
       if last {
-         self.access.writers.fetch_sub(1, Ordering::Release);
+         // The stripe index is deterministic per (thread, map), so the
+         // releasing store lands on the same line the acquire RMW used.
+         let stripe = &self.access.writers[self.access.write_stripe()];
+         stripe.fetch_sub(1, Ordering::Release);
       }
    }
 }

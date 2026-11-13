@@ -59,7 +59,10 @@ pub fn run_worker(
    let mut dirty: Vec<usize> = Vec::with_capacity(32);
    let mut sub_dirty: Vec<usize> = Vec::with_capacity(16);
    let mut fanout_scratch: Vec<crate::pubsub::FanEntry> = Vec::new();
-   let mut fanout_seen: Vec<bool> = Vec::new();
+   // Generation-stamped marks: one u32 store per touched connection instead
+   // of filling the whole table each fanout cycle.
+   let mut fanout_seen: Vec<u32> = Vec::new();
+   let mut fanout_gen: u32 = 0;
    let mut completions: Vec<crate::pubsub::Completion> = Vec::new();
    let mut expired: Vec<(usize, u64)> = Vec::new();
    let busy_window = std::env::var("FYRODB_BUSY_POLL_US")
@@ -186,11 +189,15 @@ pub fn run_worker(
                      close_conn(&mut conns, &mut poll, &mut free, token);
                   }
                }
-               fanout_seen.resize(conns.len(), false);
-               fanout_seen.fill(false);
+               fanout_gen = fanout_gen.wrapping_add(1);
+               if fanout_gen == 0 {
+                  fanout_seen.fill(0);
+                  fanout_gen = 1;
+               }
+               fanout_seen.resize(conns.len(), 0);
                for &id in &sub_dirty {
                   if id < fanout_seen.len() {
-                     fanout_seen[id] = true;
+                     fanout_seen[id] = fanout_gen;
                   }
                }
                let pre_drain = sub_dirty.len();
@@ -199,8 +206,8 @@ pub fn run_worker(
                   let mut w = pre_drain;
                   for r in pre_drain..sub_dirty.len() {
                      let id = sub_dirty[r];
-                     if id < fanout_seen.len() && !fanout_seen[id] {
-                        fanout_seen[id] = true;
+                     if id < fanout_seen.len() && fanout_seen[id] != fanout_gen {
+                        fanout_seen[id] = fanout_gen;
                         sub_dirty[w] = id;
                         w += 1;
                      }
@@ -213,6 +220,7 @@ pub fn run_worker(
                   &mut sub_dirty,
                   &mut fanout_scratch,
                   &mut fanout_seen,
+                  fanout_gen,
                );
             }
 
@@ -337,6 +345,7 @@ pub fn run_worker(
          &mut sub_dirty,
          &mut fanout_scratch,
          &mut fanout_seen,
+         &mut fanout_gen,
       );
 
       let mut i = 0;
@@ -394,21 +403,26 @@ fn flush_fanout(
    conns: &mut [Option<Conn>],
    sub_dirty: &mut Vec<usize>,
    scratch: &mut Vec<crate::pubsub::FanEntry>,
-   seen: &mut Vec<bool>,
+   seen: &mut Vec<u32>,
+   fgen: &mut u32,
 ) {
    if notifier.fanout.is_empty() {
       return;
    }
-   if conns.len() > seen.len() {
-      seen.resize(conns.len(), false);
+   *fgen = fgen.wrapping_add(1);
+   if *fgen == 0 {
+      seen.fill(0);
+      *fgen = 1;
    }
-   seen.fill(false);
+   if conns.len() > seen.len() {
+      seen.resize(conns.len(), 0);
+   }
    for &id in sub_dirty.iter() {
       if id < seen.len() {
-         seen[id] = true;
+         seen[id] = *fgen;
       }
    }
-   deliver_fanout(notifier, conns, sub_dirty, scratch, seen);
+   deliver_fanout(notifier, conns, sub_dirty, scratch, seen, *fgen);
 }
 
 /// Frames append straight to wbuf (memcpy); a connection past the batch
@@ -418,7 +432,8 @@ fn deliver_fanout(
    conns: &mut [Option<Conn>],
    sub_dirty: &mut Vec<usize>,
    scratch: &mut Vec<crate::pubsub::FanEntry>,
-   seen: &mut [bool],
+   seen: &mut [u32],
+   fgen: u32,
 ) {
    scratch.clear();
    notifier.drain_fanout_limit(1024, 1024 * 1024, |entry| scratch.push(entry));
@@ -486,8 +501,10 @@ fn deliver_fanout(
                   }
                }
             }
-            if !seen[token] {
-               seen[token] = true;
+            if seen.get(token).copied().unwrap_or(0) != fgen {
+               if token < seen.len() {
+                  seen[token] = fgen;
+               }
                sub_dirty.push(token);
             }
          }
@@ -532,8 +549,10 @@ fn deliver_fanout(
                } else {
                   slot.push_local(Arc::clone(&entry.frame));
                }
-               if !seen[token] {
-                  seen[token] = true;
+               if seen.get(token).copied().unwrap_or(0) != fgen {
+                  if token < seen.len() {
+                     seen[token] = fgen;
+                  }
                   sub_dirty.push(token);
                }
             }
@@ -708,7 +727,8 @@ mod pubsub_regressions {
          conns,
          &mut Vec::new(),
          &mut Vec::new(),
-         &mut [false],
+         &mut [0],
+         1,
       );
    }
 

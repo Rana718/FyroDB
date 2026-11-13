@@ -141,9 +141,15 @@ impl Store {
 
    #[cold]
    #[inline(never)]
+   /// `set_string_fallback_bytes` with a pre-validated `&str` value.
+   #[allow(dead_code)]
    fn set_string_fallback(&self, key: &str, hash: u64, value: &str, expires_ms: u64) {
+      self.set_string_fallback_bytes(key, hash, value.as_bytes(), expires_ms)
+   }
+
+   fn set_string_fallback_bytes(&self, key: &str, hash: u64, value: &[u8], expires_ms: u64) {
       let store_val = StoreValue {
-         value: crate::storage::value::FyroDB::String(SmallStr::new(value)),
+         value: crate::storage::value::FyroDB::String(SmallStr::from_slice(value)),
          expires_ms,
       };
       self.data.set_str_hinted_pinned(key, Some(hash), store_val);
@@ -411,10 +417,30 @@ impl Store {
       value: &str,
       expires_ms: u64,
    ) {
+      unsafe { self.set_string_fast_entry_bytes(key, hash, p, value.as_bytes(), expires_ms) }
+   }
+
+   /// Bytes-native twin of `set_string_fast_entry`: no value UTF-8 scan on
+   /// the caller side, and the old/new TTL transition is counter-adjusted
+   /// so the active-expiry scan cadence does not drift upward.
+   ///
+   /// # Safety
+   ///
+   /// `p` must be null or point to a valid `Entry<StoreValue>`.
+   #[inline(always)]
+   pub unsafe fn set_string_fast_entry_bytes(
+      &self,
+      key: &str,
+      hash: u64,
+      p: *const customhash::Entry<StoreValue>,
+      value: &[u8],
+      expires_ms: u64,
+   ) {
       let _write_epoch = self.data.write_epoch();
       if !p.is_null() {
          let e = unsafe { &*p };
          if e.key.eq_str(key) {
+            let old_expires;
             let mut current = e.state.load(std::sync::atomic::Ordering::Relaxed);
             for _ in 0..32 {
                while current & customhash::STATE_LOCK != 0 {
@@ -434,18 +460,26 @@ impl Store {
                   Ok(_) => {
                      self.data.snap_before_write(e);
                      let val = unsafe { (*e.value.get()).assume_init_mut() };
+                     old_expires = val.expires_ms;
                      if val.expires_ms != expires_ms {
                         val.expires_ms = expires_ms;
                      }
                      if let crate::storage::value::FyroDB::String(ref mut s) = val.value {
-                        s.overwrite_str(value);
+                        s.overwrite_bytes(value);
                      } else {
-                        val.value = crate::storage::value::FyroDB::String(SmallStr::new(value));
+                        val.value =
+                           crate::storage::value::FyroDB::String(SmallStr::from_slice(value));
                      }
                      customhash::unlock_write(&e.state, locked, true);
                      self.data.touched(key);
-                     if expires_ms != 0 {
+                     // Adjust the TTL counters for the transition under the
+                     // same lock the mutation used; previously a TTL'd key
+                     // overwritten without TTL only ever over-counted, and
+                     // a TTL'd key re-TTL'd double-counted until a scan.
+                     if old_expires == 0 && expires_ms != 0 {
                         self.add_ttl();
+                     } else if old_expires != 0 && expires_ms == 0 {
+                        self.sub_ttl();
                      }
                      return;
                   }
@@ -457,7 +491,7 @@ impl Store {
             }
          }
       }
-      self.set_string_fallback(key, hash, value, expires_ms);
+      self.set_string_fallback_bytes(key, hash, value, expires_ms);
    }
 
    #[inline(always)]
@@ -469,10 +503,24 @@ impl Store {
       value: &str,
       expires_ms: u64,
    ) {
+      self.set_string_auto_bytes(key, hash_hint, entry_hint, value.as_bytes(), expires_ms)
+   }
+
+   /// Bytes-native `set_string_auto`: identical semantics without a caller
+   /// value UTF-8 scan; binary payloads keep the fast in-place path.
+   #[inline(always)]
+   pub fn set_string_auto_bytes(
+      &self,
+      key: &str,
+      hash_hint: Option<u64>,
+      entry_hint: *const (),
+      value: &[u8],
+      expires_ms: u64,
+   ) {
       if !entry_hint.is_null() {
          let hash = hash_hint.unwrap_or_else(|| self.data.locate_key(key).0);
          unsafe {
-            self.set_string_fast_entry(key, hash, entry_hint.cast(), value, expires_ms);
+            self.set_string_fast_entry_bytes(key, hash, entry_hint.cast(), value, expires_ms);
          }
          return;
       }
@@ -483,7 +531,7 @@ impl Store {
       let idx = self.data.shard_of(hash);
       if value.len() <= crate::storage::value::SMALL_STR_CAP {
          let store_val = StoreValue {
-            value: crate::storage::value::FyroDB::String(SmallStr::new(value)),
+            value: crate::storage::value::FyroDB::String(SmallStr::from_slice(value)),
             expires_ms,
          };
          if self
@@ -500,11 +548,11 @@ impl Store {
       let _pin = customhash::pin();
       let _write_epoch = self.data.write_epoch();
       match self.data.probe_or_insert_fast(hash, key, || StoreValue {
-         value: crate::storage::value::FyroDB::String(SmallStr::new(value)),
+         value: crate::storage::value::FyroDB::String(SmallStr::from_slice(value)),
          expires_ms,
       }) {
          customhash::FastSet::Existing(entry) => unsafe {
-            self.set_string_fast_entry(key, hash, entry, value, expires_ms);
+            self.set_string_fast_entry_bytes(key, hash, entry, value, expires_ms);
          },
          customhash::FastSet::Inserted => {
             self.data.touched(key);
@@ -512,7 +560,7 @@ impl Store {
                self.add_ttl();
             }
          }
-         customhash::FastSet::Retry => self.set_string_fallback(key, hash, value, expires_ms),
+         customhash::FastSet::Retry => self.set_string_fallback_bytes(key, hash, value, expires_ms),
       }
    }
 
@@ -530,14 +578,7 @@ impl Store {
          self.data.touched(key);
          return;
       }
-      if let Ok(val_str) = std::str::from_utf8(val_bytes) {
-         self.set_string_auto(key, Some(hash), std::ptr::null(), val_str, 0);
-      } else {
-         self.set(
-            key,
-            StoreValue::string_small(SmallStr::from_slice(val_bytes)),
-         );
-      }
+      self.set_string_auto_bytes(key, Some(hash), std::ptr::null(), val_bytes, 0);
    }
 
    #[inline(always)]
@@ -562,6 +603,15 @@ impl Store {
          None => self.data.locate_key(key),
       };
       if let Some(entry) = self.data.probe_entry_fast(key, hash, idx) {
+         unsafe {
+            if self.get_to_buf_fast_entry(key, hash, entry, out) {
+               return true;
+            }
+         }
+         // The probe found the entry but the guard attempt failed (a writer
+         // held the lock). One yielding retry avoids a full re-probe while
+         // keeping the absent-key path untouched.
+         std::hint::spin_loop();
          unsafe {
             if self.get_to_buf_fast_entry(key, hash, entry, out) {
                return true;

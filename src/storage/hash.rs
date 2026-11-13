@@ -145,11 +145,12 @@ impl Store {
       &self,
       key: &str,
       fields: &[(&str, &[u8])],
-   ) -> Result<Vec<bool>, &'static str> {
+   ) -> Result<smallvec::SmallVec<[bool; 32]>, &'static str> {
       let result = self.data.update_with(key, |val| {
          if val.is_expired() {
             let mut h = HashInner::new();
-            let flags: Vec<bool> = fields.iter().map(|(f, v)| h.insert_bytes(f, v)).collect();
+            let flags: smallvec::SmallVec<[bool; 32]> =
+               fields.iter().map(|(f, v)| h.insert_bytes(f, v)).collect();
             val.value = FyroDB::Hash(Box::new(h));
             val.expires_ms = 0;
             return Ok(flags);
@@ -164,7 +165,8 @@ impl Store {
          Some(r) => r,
          None => {
             let mut h = HashInner::new();
-            let flags: Vec<bool> = fields.iter().map(|(f, v)| h.insert_bytes(f, v)).collect();
+            let flags: smallvec::SmallVec<[bool; 32]> =
+               fields.iter().map(|(f, v)| h.insert_bytes(f, v)).collect();
             self.data.insert_str(
                key,
                StoreValue {

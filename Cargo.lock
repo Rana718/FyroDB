@@ -216,6 +216,7 @@ dependencies = [
  "crossbeam-utils",
  "dashmap",
  "foldhash",
+ "parking_lot",
  "rust-zmalloc",
  "scc",
 ]

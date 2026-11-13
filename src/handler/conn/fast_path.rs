@@ -179,6 +179,14 @@ fn dispatch_get_one(conn: &mut Conn<'_>, key_part: (*const u8, usize)) {
    }
 }
 
+/// Pointer-identity first: two raw slices into the same read buffer with
+/// equal length are equal without a memcmp; only differing pointers pay
+/// the content compare.
+#[inline(always)]
+fn same_parts(a: &[u8], b: &[u8]) -> bool {
+   a.len() == b.len() && (std::ptr::eq(a.as_ptr(), b.as_ptr()) || a == b)
+}
+
 #[inline(always)]
 pub(super) fn dispatch_get_run<const STREAM_IO: bool>(
    conn: &mut Conn<'_>,
@@ -270,7 +278,7 @@ fn dispatch_get_batch<const STREAM_IO: bool>(
       return;
    }
 
-   if keys[0] == keys[1] && keys[2..count].iter().all(|&key| key == keys[0]) {
+   if same_parts(keys[0], keys[1]) && keys[2..count].iter().all(|&key| same_parts(key, keys[0])) {
       dispatch_repeated_get::<STREAM_IO>(conn, keys[0], count);
       return;
    }
@@ -281,11 +289,22 @@ fn dispatch_get_batch<const STREAM_IO: bool>(
       None
    };
    #[cfg(not(feature = "io-uring"))]
+   #[allow(unused_mut)] // STREAM_IO=false instantiations prune the mutable borrow
    let mut read_epoch = read_epoch;
 
    conn
       .store
       .prefetch_slots(&keys[..count], &mut hashes[..count], &mut tables[..count]);
+   // A writer registered elsewhere can make the first epoch attempt fail;
+   // the slot prefetch just took microseconds, so retry once before
+   // committing the whole batch to per-entry read guards.
+   let read_epoch = if read_epoch.is_none() && read_only && count >= READ_EPOCH_MIN {
+      store.data.try_read_epoch()
+   } else {
+      read_epoch
+   };
+   #[cfg(not(feature = "io-uring"))]
+   let mut read_epoch = read_epoch;
    if read_epoch.is_some() {
       conn.store.probe_and_prefetch_entries(
          &tables[..count],
@@ -302,8 +321,8 @@ fn dispatch_get_batch<const STREAM_IO: bool>(
    let first_payload_len = read_epoch.as_ref().map_or(0, |epoch| unsafe {
       store.string_payload_len_epoch(hashes[0], entries[0], epoch)
    });
-   let prefetch_payloads = (24..=1024).contains(&first_payload_len)
-      && (first_payload_len <= 256 || store.worker_capacity() == 1);
+   let prefetch_payloads = (24..=8192).contains(&first_payload_len)
+      && (first_payload_len <= 1024 || store.worker_capacity() == 1);
    #[cfg(not(feature = "io-uring"))]
    let stream_minimum = if store.worker_capacity() == 1 {
       4 * 1024
@@ -326,9 +345,18 @@ fn dispatch_get_batch<const STREAM_IO: bool>(
       return;
    }
    let out = &mut conn.parser.wbuf;
-   // This is only an initial estimate. The Vec writers below grow for the
-   // actual payload size, including when a preceding fallback reallocated.
-   out.reserve(count * 64);
+   // Reserve from the observed first payload instead of doubling from a
+   // small base; varied sizes still grow, but uniform batches (the common
+   // case) now hit one allocation. Without an epoch there is no observed
+   // payload length — keep the historical per-reply estimate rather than
+   // under-reserving. Bounded so a hostile first reply cannot pre-commit
+   // unbounded memory.
+   let per_reply = if first_payload_len > 0 {
+      16 + first_payload_len.min(4096)
+   } else {
+      64
+   };
+   out.reserve((count * per_reply).min(64 << 20));
 
    let mut i = 0;
    while i < count {
@@ -339,7 +367,7 @@ fn dispatch_get_batch<const STREAM_IO: bool>(
          unsafe { store.prefetch_string_epoch(entries[i + 16], epoch) };
       }
       let mut end = i + 1;
-      while end < count && keys[end] == keys[i] {
+      while end < count && same_parts(keys[end], keys[i]) {
          end += 1;
       }
       let run_len = end - i;
@@ -377,17 +405,11 @@ fn dispatch_set_one(
    let Some(key) = part_str(out, key_part) else {
       return;
    };
+   // Bytes-native: no value UTF-8 scan, and binary payloads keep the fast
+   // in-place overwrite instead of the general-path fallback.
    let bytes = unsafe { part_bytes(value_part) };
-   if let Ok(value) = std::str::from_utf8(bytes) {
-      conn.store.set_string_auto(key, hint, entry, value, 0);
-   } else {
-      conn.store.set(
-         key,
-         crate::storage::value::StoreValue::string_small(
-            crate::storage::value::SmallStr::from_slice(bytes),
-         ),
-      );
-   }
+   conn.store
+      .set_string_auto_bytes(key, hint, entry, bytes, 0);
    if conn.store.has_replication() {
       conn.store.record_current_value(key);
    }
@@ -539,6 +561,7 @@ fn dispatch_set_batch<const PREFETCH: usize, const STREAMING: bool>(
                   Ok(_) => {
                      conn.store.data.snap_before_write(e);
                      let val = unsafe { (*e.value.get()).assume_init_mut() };
+                     let old_expires = val.expires_ms;
                      val.expires_ms = 0;
                      if let crate::storage::value::FyroDB::String(ref mut s) = val.value {
                         if STREAMING
@@ -559,6 +582,9 @@ fn dispatch_set_batch<const PREFETCH: usize, const STREAMING: bool>(
                      }
                      customhash::unlock_write(&e.state, locked, true);
                      conn.store.data.touched_bytes(keys[i]);
+                     if old_expires != 0 {
+                        conn.store.sub_ttl();
+                     }
                      updated = true;
                      break;
                   }
@@ -602,18 +628,10 @@ fn dispatch_set_batch<const PREFETCH: usize, const STREAMING: bool>(
                   store.set_string_fast_bytes(key_str, hashes[k], val_bytes);
                }
             } else {
-               if let Ok(val_str) = std::str::from_utf8(val_bytes) {
-                  conn
-                     .store
-                     .set_string_auto(key_str, Some(hashes[k]), entries[local], val_str, 0);
-               } else {
-                  conn.store.set(
-                     key_str,
-                     crate::storage::value::StoreValue::string_small(
-                        crate::storage::value::SmallStr::from_slice(val_bytes),
-                     ),
-                  );
-               }
+               // Bytes-native: no value UTF-8 scan, binary keeps fast path.
+               conn
+                  .store
+                  .set_string_auto_bytes(key_str, Some(hashes[k]), entries[local], val_bytes, 0);
                if conn.store.has_replication() {
                   conn.store.record_current_value(key_str);
                }
@@ -1120,14 +1138,23 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
             let Some(key) = part_str(out, raw[1]) else {
                return;
             };
-            match conn.store.pop_one_to_buf(key, true, out) {
-               Ok(true) => {
-                  if conn.store.has_replication() {
-                     conn.store.record_current_value(key);
-                  }
+            // Pop into per-connection scratch so the RESP reply is built
+            // after the entry lock is released (shorter critical section
+            // for contended shared-queue keys).
+            let popped = match conn.store.pop_one_to_scratch(key, true, &mut conn.pop_scratch) {
+               Ok(popped) => popped,
+               Err(_) => {
+                  crate::utils::resp::write_wrong_type(out);
+                  return;
                }
-               Ok(false) => out.extend_from_slice(b"$-1\r\n"),
-               Err(_) => crate::utils::resp::write_wrong_type(out),
+            };
+            if popped {
+               crate::utils::resp::write_bulk_bytes(out, conn.pop_scratch.as_bytes());
+               if conn.store.has_replication() {
+                  conn.store.record_current_value(key);
+               }
+            } else {
+               out.extend_from_slice(b"$-1\r\n");
             }
             return;
          }
@@ -1136,14 +1163,20 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
             let Some(key) = part_str(out, raw[1]) else {
                return;
             };
-            match conn.store.pop_one_to_buf(key, false, out) {
-               Ok(true) => {
-                  if conn.store.has_replication() {
-                     conn.store.record_current_value(key);
-                  }
+            let popped = match conn.store.pop_one_to_scratch(key, false, &mut conn.pop_scratch) {
+               Ok(popped) => popped,
+               Err(_) => {
+                  crate::utils::resp::write_wrong_type(out);
+                  return;
                }
-               Ok(false) => out.extend_from_slice(b"$-1\r\n"),
-               Err(_) => crate::utils::resp::write_wrong_type(out),
+            };
+            if popped {
+               crate::utils::resp::write_bulk_bytes(out, conn.pop_scratch.as_bytes());
+               if conn.store.has_replication() {
+                  conn.store.record_current_value(key);
+               }
+            } else {
+               out.extend_from_slice(b"$-1\r\n");
             }
             return;
          }
@@ -1576,16 +1609,7 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
          };
          if raw.len() == 3 {
             let bytes = unsafe { part_bytes(raw[2]) };
-            if let Ok(value) = std::str::from_utf8(bytes) {
-               conn.store.set_string_auto(key, hint, entry, value, 0);
-            } else {
-               conn.store.set(
-                  key,
-                  crate::storage::value::StoreValue::string_small(
-                     crate::storage::value::SmallStr::from_slice(bytes),
-                  ),
-               );
-            }
+            conn.store.set_string_auto_bytes(key, hint, entry, bytes, 0);
             if conn.store.has_replication() {
                conn.store.record_current_value(key);
             }
@@ -1701,14 +1725,21 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
          let Some(key) = part_str(out, raw[1]) else {
             return;
          };
-         match conn.store.pop_one_to_buf(key, true, &mut conn.parser.wbuf) {
-            Ok(true) => {
-               if conn.store.has_replication() {
-                  conn.store.record_current_value(key);
-               }
+         let store = conn.store;
+         let popped = match store.pop_one_to_scratch(key, true, &mut conn.pop_scratch) {
+            Ok(popped) => popped,
+            Err(_) => {
+               crate::utils::resp::write_wrong_type(&mut conn.parser.wbuf);
+               return;
             }
-            Ok(false) => conn.parser.wbuf.extend_from_slice(b"$-1\r\n"),
-            Err(_) => crate::utils::resp::write_wrong_type(&mut conn.parser.wbuf),
+         };
+         if popped {
+            crate::utils::resp::write_bulk_bytes(&mut conn.parser.wbuf, conn.pop_scratch.as_bytes());
+            if store.has_replication() {
+               store.record_current_value(key);
+            }
+         } else {
+            conn.parser.wbuf.extend_from_slice(b"$-1\r\n");
          }
          return;
       }
@@ -1717,14 +1748,21 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
          let Some(key) = part_str(out, raw[1]) else {
             return;
          };
-         match conn.store.pop_one_to_buf(key, false, &mut conn.parser.wbuf) {
-            Ok(true) => {
-               if conn.store.has_replication() {
-                  conn.store.record_current_value(key);
-               }
+         let store = conn.store;
+         let popped = match store.pop_one_to_scratch(key, false, &mut conn.pop_scratch) {
+            Ok(popped) => popped,
+            Err(_) => {
+               crate::utils::resp::write_wrong_type(&mut conn.parser.wbuf);
+               return;
             }
-            Ok(false) => conn.parser.wbuf.extend_from_slice(b"$-1\r\n"),
-            Err(_) => crate::utils::resp::write_wrong_type(&mut conn.parser.wbuf),
+         };
+         if popped {
+            crate::utils::resp::write_bulk_bytes(&mut conn.parser.wbuf, conn.pop_scratch.as_bytes());
+            if store.has_replication() {
+               store.record_current_value(key);
+            }
+         } else {
+            conn.parser.wbuf.extend_from_slice(b"$-1\r\n");
          }
          return;
       }
