@@ -177,23 +177,12 @@ Per SET: **1 CAS + 1 Release store** (entry) + 1 Relaxed load each for snap/obse
 
 ## 6. Bugs & data-corruption risks (ranked, with scenarios)
 
-### 6.1 HIGH — reader-join clobber in `EntryReadGuard::drop`
+### 6.1 RE-CLASSIFIED (2026-11-14) — hardening, not a bug; original code was safe
 **File**: `crates/customhash/src/shard.rs:74-90` (drop) interacting with `Entry::read` join-under-lock (`shard.rs:147-168`).
 
-`read()` intentionally lets a new reader join while `STATE_LOCK` is set **if readers > 0** (line 147: spin only when `LOCK && readers == 0`). The last reader's drop does:
+The original finding claimed a joiner could land between the last reader's `fetch_sub` and its conditional store and be clobbered by the store. **The formal model (proofs/verus/entry_protocol.rs, verified with Verus — see `proofs/README.md`) refutes this**: for a joiner's CAS to succeed it must match the base it loaded; any joiner that loaded the pre-decrement state `(readers=1, LOCK)` fails its CAS against the post-decrement state `(readers=0, LOCK)`; any joiner that loads the post-decrement state is blocked by the join rule (`lock set && readers == 0` spins); and RMWs on one `AtomicU64` are linearized, so no third interleaving exists. The two-step release therefore linearizes to the atomic release, and the invariant **`LOCK == 0 ⇒ readers == 0`** holds in both the old and new implementations. The entry protocol is now machine-verified (6 proofs, 0 errors), including the writer-safety corollary that justifies the unguarded in-place mutations.
 
-```
-previous = fetch_sub(READER_ONE)        // (a)
-if previous & READER_MASK == READER_ONE:
-    store((previous - READER_ONE) & !LOCK)   // (b)
-```
-
-**Scenario**: readers R1,R2 hold; R2 is last. Between R2's step (a) and (b), a new reader R3 CAS-joins from `(LOCK|readers=1)` → `readers=2`. R2's store (b) then writes `readers=0, LOCK=0` — **destroying R3's count**. A writer spinning in `state_lock_slow` sees `LOCK=0`, acquires, and mutates the value **while R3 still dereferences it**: torn read on same-len overwrite; use-after-free when the mutation reallocs the SmallStr payload. R3's own later drop underflows the reader field, compounding the corruption.
-Probability per op is tiny (a ~2-instruction window), but at 37M+ ops/s with hot keys + mixed traffic it is reachable over hours of load — and the impact is memory corruption, not just a wrong reply. The invariant comment at `shard.rs:159-160` ("LOCK excludes new readers until this store") is violated by the join rule.
-**Fix (pick one)**:
-1. Make the last-reader release a CAS loop: expected `(LOCK|0 readers)`, on mismatch re-read and if `readers != 0` (a joiner landed) re-run the decrement logic — ~1 extra branch on the common path (last reader with no joiner is still a single CAS).
-2. Or forbid join-while-locked (spin in `read()` whenever `LOCK` is set) — simpler, loses reader-herd coalescing; measure hot-key read cost before choosing.
-Either way, add a loom test for `2 readers + 1 late joiner + 1 waiting writer`.
+The single-CAS release shipped in the implementation pass is **kept as defense in depth**: it makes the atomicity explicit in the code rather than relying on the join rule's interaction with CAS base-matching, and the verified model covers it directly.
 
 ### 6.2 WITHDRAWN on implementation review — replication capture is order-safe
 **File**: `src/storage/store/cluster.rs:56-80` (`record_current_value`).
@@ -493,11 +482,82 @@ For a 1M-node, 768-dim unquantized graph the arena is ≈ 3.2 GB (≈3.2 KB/node
 
 ---
 
-## 12. BOTTOM LINE — if all recommended changes land
+## 12. Round-2 lock audit — remaining locks, removal candidates, memory-shock table
+
+Second sweep (2026-11-14) after the implementation pass: a complete
+re-inventory of every synchronization point in the server, classified by
+(eliminate / replace / keep), with the **memory delta** of each change —
+the constraint being that no lock may be replaced by a structure that
+costs a memory blow-up. Also verified: the first implementation pass added
+**zero new locks** — every change there was an atomic, a TLS snapshot, a
+lock-*scope* reduction, or a same-API lock swap.
+
+### 12.1 Fixed in this round (zero memory delta)
+
+| Site | Change | Memory |
+|---|---|---|
+| `pubsub/registry.rs` `ChannelShard.mu` (64) | std `Mutex` → `parking_lot` | 0 |
+| `crates/customhash/src/snap.rs` `SnapCtl.sink` | std `RwLock` → `parking_lot` (taken per pre-image write **during SAVE** — warm under save) | 0 |
+| `src/storage/store/fence.rs` `WriteFence.gate` | std `Mutex` → `parking_lot` (the barrier fallback for off-worker/engaged writers) | 0 |
+
+Cold-path std locks deliberately left as-is: `main.rs` PROFILER,
+`rdb/save.rs SAVE_LOCK`, `ebr.rs TEST_SERIALIZE` (test-only),
+`fyro-vector pool.rs` queues (§V-4, background indexing).
+
+### 12.2 Remaining lock inventory and verdicts
+
+| Lock | Warm path? | Verdict | Memory if replaced |
+|---|---|---|---|
+| Entry state CAS (`customhash`) | **yes — the hottest** | **keep** — proven sound (`proofs/verus/entry_protocol.rs`); removal requires epoch-only workloads | n/a |
+| Map admission handshake (`access.rs`, striped) | yes (per batch/scalar write) | **keep** — proven (`admission_protocol.rs`); striping already removed the cross-core line | n/a |
+| Replication `log: Mutex<MutationLog>` + journal | yes **when replication on** | **replace (open, §3.2-D)**: per-worker striped append shards with offset ranges — removes the last global write-path mutex | +1 small buffer per worker (bounded: workers × record buffer); **low shock** |
+| `script_cache` RwLock | was yes — now cold | **done** (TLS epoch snapshot); write lock only on SCRIPT LOAD | 0 |
+| `Isolation` per-worker slots + writer mutex | 1 RMW per read batch | **keep** (Redis atomicity semantics; §M-10) | n/a |
+| `WriteFence` SeqCst counters | cluster writes only | **keep** — proven (`fence_protocol.rs`); cluster-only cost | n/a |
+| `ChannelShard.mu` ×64 | subscribe/unsubscribe only | keep (publish path is lock-free ArcSwap) | n/a |
+| `patterns` RwLock | 1 read per publish **when pattern subs exist** | keep (now parking_lot); ArcSwap would add an Arc clone per publish | +Arc/publish if swapped — not worth it |
+| `WorkerNotifier.local_subs` | effectively thread-local | keep | n/a |
+| `WatchRegistry.keys` RwLock | 1 read per write **only while watchers exist** | keep; ArcSwap not justified (watchers rare) | +Arc/write if swapped |
+| `BlockRegistry.keys` Mutex | BLPOP paths only | optional sharding by key hash (unchanged memory) | 0 |
+| `SnapCtl.sink` RwLock | SAVE window only | keep | n/a |
+| `Aof.writers` Vec Mutex + per-writer Mutex | uncontended per thread | keep | n/a |
+| SearchState 7 mutexes | FT workloads only | ArcSwap for `indexes` when FT used (§9 finding); postings under per-index locks | low; optional |
+| Cluster transport per-peer Mutexes/Condvar | cluster links | bounded queues, cold links — keep; per-peer, not global | n/a |
+| fyro-dbcache session/cache locks | proxy engine | separate engine; same patterns apply — out of KV scope | — |
+| EBR internals (crossbeam) | pin per batch | keep (§7 verdict) | n/a |
+
+**Bottom line for locks:** after the two passes, the KV GET/SET path takes
+**no global locks at all** — entry CAS (per key), striped admission
+RMWs, and per-connection state only. The one remaining global mutex on a
+write path is the replication log when replication is enabled, whose
+striped replacement is the last open §3.2-D item (bounded per-worker
+buffers, low memory shock).
+
+### 12.3 Verified-protocol coverage ("safe grade")
+
+The following protocols are now machine-checked with Verus
+(`task verify:proofs` — 28 proofs, 0 errors, dev-only):
+
+| Proof file | Protocol | Key theorem |
+|---|---|---|
+| `entry_protocol.rs` | per-entry lock/reader state machine (`shard.rs`) | `LOCK == 0 ⇒ readers == 0`; writer mutation never races a live guard |
+| `admission_protocol.rs` | map read/write admission handshake (`access.rs`) | committed read epochs and active writer mutations exclude each other |
+| `fence_protocol.rs` | cluster write fence (`store/fence.rs`) | holding the barrier ⇒ no write section open anywhere |
+| `gate_protocol.rs` | shard growth gate (`shard.rs` GROWING) | table swap never overlaps a claim; no entry lost across rebuild |
+| `wake_protocol.rs` | pub/sub arm/disarm wakeup (`signal.rs`, queues) | a non-empty queue is always armed, owed, or inside the re-check window — no push strands |
+| `seq_window.rs` | AOF sequence windows (`aof.rs next_seq`) | two writers can never hand out the same sequence number (replay-merge safety) |
+
+Not yet modeled (candidate follow-ups): the snapshot parity scheme
+(`snap.rs`, RDB point-in-time consistency — the richest remaining
+protocol), EBR reclamation boundaries (delegated to crossbeam's own
+verified internals), and the tag/slot claim encoding (covered by unit
+tests at the bit level).
+
+## 13. BOTTOM LINE — if all recommended changes land
 
 ### Implementation status (2026-11-13, same-day pass)
 
-The following changes from this audit have been **implemented and verified** (full `cargo test --workspace`: 789 passed, 0 failed; release profile builds):
+The following changes from this audit have been **implemented and verified** (full `cargo test --workspace`: **791 passed, 0 failed** — including new binary-key protocol tests; release profile builds warning-free):
 
 | Audit item | Change |
 |---|---|
@@ -524,7 +584,20 @@ The following changes from this audit have been **implemented and verified** (fu
 | **V-1(b)** | Vector graph shrink keeps 50% slack at power-of-two targets instead of exact fit (`hnsw/mod.rs`) — no post-build headroom discard. |
 | **V-3 (partial)** | Vector search encode/result allocations kept; the Int8 scratch-encode refactor remains open (QEnc borrow plumbing). |
 
-Still open by design (audit §3.3/§7/§10-11): S-2 binary keys (semantic decision), 3.2-D striped replication log, V-1(a) chunked arena, V-3 Int8 scratch, V-4/V-5 pool polish, M-4b futex park, M-7 purge-delay knob, MSG_ZEROCOPY, entry alignment.
+**Formal verification (same-day follow-up, dev-only)**: Verus is installed outside the repo (`~/tools/verus`, weekly release binary + the linked system 1.99.1 toolchain) and `proofs/verus/` carries two machine-checked protocol models — the per-entry lock/readers state machine and the map admission handshake — 10 proofs total, 0 errors, run via `task verify:proofs`. These settle §6.1 (re-classified above) and give future lock-removal work a proof scaffold: any change to the entry state machine or the admission handshake can be re-verified in seconds. This is exactly the class of question the audit's §3.2-A striped-admission work raised; the model proves the Dekker handshake rather than arguing it.
+
+**Final-cleanup pass (2026-11-14, "fix everything open"):** all remaining actionable audit items are now implemented —
+- **3.2-D striped replication log**: per-thread log shards with 256-wide offset windows (one global `fetch_add` per window instead of one contended RMW per append), k-way merge by offset for `replay_from`, per-shard O(1) `record_at`, global-budget eviction of the oldest records across shards, journal restore sorted by original offset (sharded appends interleave file order vs offset order). The last global mutex on the write path is gone.
+- **S-2 binary keys** (scope decision taken): `CompactKey::from_bytes` + bytes-key twins across the customhash API (find/probe/update/remove/insert/probe-or-insert/set-if-absent) and the store string core (`get_to_buf_auto_bytes`, `set_string_auto_bytes` with bytes keys, `del_bytes`, `incr_bytes`, `expire_ms_bytes`, `record_current_value_bytes`, AOF bytes encode). GET/SET/DEL/INCR/EXPIRE fast handlers and both batch engines are bytes-native; binary keys round-trip byte-for-byte through the TCP protocol (new tests). Collection commands (H*/S*/Z*/L*/X*/GEO*/PF*/JSON) keep UTF-8 key gating — their store fns remain `&str`-keyed, documented scope.
+- **V-1(a) chunked vector arena**: `blocks: Vec<Box<[Line]>>` with ~1 MiB chunks — growth appends a chunk instead of realloc-copying the whole arena under the write lock; shrink drops trailing chunks with slack.
+- **V-3 encode-buffer recycling**: per-thread free lists with `QEnc::drop` returning the Int8 codes / Rq parts / residual buffers — the quantized search path stops allocating per search.
+- **V-4 pool queues**: high/low queues are lock-free `SegQueue`s; the worker sleep path uses a SeqCst Dekker handshake (sleeper add vs queued increment) with a bounded timeout — no queue mutex.
+- **M-7**: `FYRODB_MALLOC_PURGE_DELAY_MS` env knob for mimalloc's purge delay (default 0 = unchanged RSS behavior).
+- **M-10**: INFO `# Persistence` section (`aof_enabled`, `aof_failed`, `aof_fsync`, `isolation_exclusive_total`) — the documented EVAL throughput cliff is now observable.
+- **§4.4 repeated-GET cap**: buffered replies above 16 MiB re-run the GET per repetition instead of building `count × payload` in `wbuf`.
+- **§12.2 blocking registry**: sharded 16 ways by key hash — BLPOP-family wakeups on distinct keys no longer serialize on one mutex (same memory).
+
+Deliberately not implemented (recorded rationale): M-4b futex entry-park (risky experiment, bench-gated), MSG_ZEROCOPY (needs real-NIC measurement), entry 64-B alignment (experiment with ambiguous outcome), 6.6 unwind drop-guard (unreachable in release — `panic = abort`), SearchState ArcSwap (FT-only, optional), collection-command binary keys (documented scope above).
 
 ### Second-day deep sweep (daily-use commands) — additional fixes landed
 
@@ -541,10 +614,10 @@ A follow-up pass over the coalesced run machinery and the remaining everyday com
 | **HSET run flags alloc** | `hset_bytes_added_flags` returns `SmallVec<[bool; 32]>` instead of `Vec<bool>` — no heap allocation for typical field runs. |
 | **PUBLISH pattern registry lock** | `patterns` std `RwLock` → `parking_lot` (read taken per publish when pattern subscribers exist). |
 
-Verified again after the sweep: `cargo test --workspace` 789 passed / 0 failed, zero warnings in dev and release.
+Verified again after the sweep: `cargo test --workspace` 789 passed / 0 failed, zero warnings in dev and release. After the final-cleanup pass: **791 passed / 0 failed** (two binary-key tests added), release warning-free, 28 Verus proofs 0 errors.
 
 ### Issues fixed
-1. **Hot-key memory-corruption race** (6.1) — the only reachable unsound-state path found in the core map; **fixed and covered by the workspace suite**.
+1. ~~Hot-key memory-corruption race (6.1)~~ — **re-classified after formal verification**: the original protocol was safe (join rule + CAS base-matching + RMW linearization close the window); the shipped single-CAS release is kept as explicit defense in depth and the whole entry + admission protocol is now machine-verified with Verus (10 proofs, 0 errors — `proofs/verus/`, `task verify:proofs`).
 2. ~~Replica divergence under concurrent same-key writes (6.2)~~ — **withdrawn during implementation review**: the capture's entry read guard spans encode+append, which serializes records per key and guarantees replay convergence (see §6.2). No fix needed; the risk was 6.1 itself.
 3. **Silent AOF data loss on corruption/write failure** (6.3) — **fixed**: CRC-32 per record (backward-compatible flag), loud replay stop on checksum mismatch, write errors keep the buffer for retry, `failed` surfaced.
 4. TTL scan-cycle waste (6.4), GROWING spin burn (6.5), dev-profile wedge-on-panic (6.6), repeated-GET memory spike (§4.4) — 6.4 and 6.5 **fixed**; 6.6 remains release-safe (`panic=abort`) with a documented note.

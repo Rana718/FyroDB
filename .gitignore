@@ -5,3 +5,5 @@ temp/
 .claude/
 fyrodb_*
 bench/fyrodb-test
+
+**/__pycache__/

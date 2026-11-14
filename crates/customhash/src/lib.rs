@@ -249,7 +249,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
    }
 
    #[inline(always)]
-   fn locate_bytes(&self, key: &[u8]) -> (u64, usize) {
+   pub fn locate_bytes(&self, key: &[u8]) -> (u64, usize) {
       let mut hasher = self.hasher.build_hasher();
       hasher.write(key);
       hasher.write_u8(0xff);
@@ -639,6 +639,114 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
       None
    }
 
+   /// Bytes-key twin of the probe chain (audit S-2): probes by tag and
+   /// validates the full key bytes.
+   #[inline(always)]
+   pub fn probe_entry_fast_bytes(&self, key: &[u8], hash: u64, idx: usize) -> Option<*const Entry<V>> {
+      let sf = unsafe { &*self.shard_fast.as_ptr().add(idx) };
+      let (slots, mask) = sf.layout();
+      let base = unsafe { slots.add((hash as usize) & mask) };
+      let p = unsafe { TaggedSlot::probe_from_base(base, hash, 16) };
+      if !p.is_null() {
+         let e = unsafe { &*p };
+         let state = e.state.load(Ordering::Relaxed);
+         let expected = ((hash as u32 as u64) << 32) | STATE_OCCUPIED;
+         if (state & (0xFFFF_FFFF_0000_0000 | STATE_OCCUPIED)) == expected && e.key.eq_bytes(key) {
+            return Some(p as *const Entry<V>);
+         }
+      }
+      None
+   }
+
+   /// Bytes-key pinned read: find by full byte comparison under an EBR pin.
+   pub fn with_entry_pinned_bytes<R>(
+      &self,
+      key: &[u8],
+      hash: u64,
+      idx: usize,
+      f: impl FnOnce(&V) -> R,
+   ) -> Option<R> {
+      let _guard = ebr::pin();
+      let sf = unsafe { &*self.shard_fast.as_ptr().add(idx) };
+      let (slots, mask) = sf.layout();
+      let entry = Shard::find_fast_bytes(slots, mask, key, hash)?;
+      let read = entry.read()?;
+      Some(f(&read))
+   }
+
+   /// Bytes-key in-place update (update_with_hinted twin).
+   pub fn update_with_hinted_bytes<R>(
+      &self,
+      key: &[u8],
+      hash: Option<u64>,
+      mut f: impl FnMut(&mut V) -> R,
+   ) -> Option<R> {
+      let _write_epoch = self.write_epoch();
+      let (h, idx) = match hash {
+         Some(h) => (h, self.shard_of(h)),
+         None => self.locate_bytes(key),
+      };
+      let _guard = ebr::pin();
+      let entry = {
+         let shard = unsafe { self.shards.get_unchecked(idx) };
+         let table = shard.table();
+         Shard::find_fast_bytes(table.slots, table.mask, key, h)?
+      };
+
+      state_lock(&entry.state);
+      if !state_occupied(&entry.state, Ordering::Relaxed) {
+         state_unlock(&entry.state);
+         return None;
+      }
+      self.snap_before_write(entry);
+      write_begin(&entry.state);
+      let result = f(unsafe { (*entry.value.get()).assume_init_mut() });
+      write_end(&entry.state, true);
+      self.touched_bytes(key);
+      Some(result)
+   }
+
+   /// Bytes-key remove (remove_no_clone twin).
+   #[inline]
+   pub fn remove_no_clone_bytes(&self, key: &[u8]) -> bool {
+      self.remove_if_bytes(key, |_| true)
+   }
+
+   /// Bytes-key conditional remove.
+   #[inline]
+   pub fn remove_if_bytes(&self, key: &[u8], predicate: impl FnOnce(&V) -> bool) -> bool {
+      let _write_epoch = self.write_epoch();
+      let (h, idx) = self.locate_bytes(key);
+      let _guard = ebr::pin();
+      let entry = {
+         let shard = unsafe { self.shards.get_unchecked(idx) };
+         let table = shard.table();
+         match Shard::find_fast_bytes(table.slots, table.mask, key, h) {
+            Some(e) => e,
+            None => return false,
+         }
+      };
+      if !state_occupied(&entry.state, Ordering::Acquire) {
+         return false;
+      }
+      state_lock(&entry.state);
+      if !state_occupied(&entry.state, Ordering::Relaxed) {
+         state_unlock(&entry.state);
+         return false;
+      }
+      if !predicate(unsafe { (*entry.value.get()).assume_init_ref() }) {
+         state_unlock(&entry.state);
+         return false;
+      }
+      self.snap_before_write(entry);
+      write_begin(&entry.state);
+      unsafe { (*entry.value.get()).assume_init_drop() };
+      write_end(&entry.state, false);
+      self.bump(idx, false);
+      self.touched_bytes(key);
+      true
+   }
+
    #[inline(always)]
    pub fn with_entry_pinned<R>(
       &self,
@@ -744,6 +852,22 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
       let sf = unsafe { &*self.shard_fast.as_ptr().add(idx) };
       let (slots, mask) = sf.layout();
       let e = Shard::find_fast(slots, mask, key, h)?;
+      let read = e.read()?;
+      Some(ValueRef {
+         read,
+         _guard: guard,
+         _map: PhantomData,
+      })
+   }
+
+   /// Bytes-key twin of `get_ref` (audit S-2).
+   #[inline]
+   pub fn get_ref_bytes(&self, key: &[u8]) -> Option<ValueRef<'_, V>> {
+      let (h, idx) = self.locate_bytes(key);
+      let guard = ebr::pin();
+      let sf = unsafe { &*self.shard_fast.as_ptr().add(idx) };
+      let (slots, mask) = sf.layout();
+      let e = Shard::find_fast_bytes(slots, mask, key, h)?;
       let read = e.read()?;
       Some(ValueRef {
          read,
@@ -867,6 +991,20 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
       unsafe { self.insert_slot_fast_located_pinned(hash, idx, key, value, &epoch, &pin) }
    }
 
+   /// Bytes-key twin of `insert_slot_fast_located` (audit S-2).
+   #[inline(always)]
+   pub fn insert_slot_fast_located_bytes(
+      &self,
+      hash: u64,
+      idx: usize,
+      key: &[u8],
+      value: V,
+   ) -> bool {
+      let epoch = self.write_epoch();
+      let pin = ebr::pin();
+      unsafe { self.insert_slot_fast_located_pinned_bytes(hash, idx, key, value, &epoch, &pin) }
+   }
+
    /// # Safety
    /// idx must be valid, with this map's write epoch and an active EBR pin.
    #[inline(always)]
@@ -889,6 +1027,65 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
          InsertFastResult::Updated => true,
          InsertFastResult::Fallback(_) => false,
       }
+   }
+
+   /// # Safety
+   /// Bytes-key twin of `insert_slot_fast_located_pinned` (audit S-2).
+   #[inline(always)]
+   pub unsafe fn insert_slot_fast_located_pinned_bytes(
+      &self,
+      hash: u64,
+      idx: usize,
+      key: &[u8],
+      value: V,
+      epoch: &WriteEpochGuard<'_>,
+      pin: &ebr::Guard,
+   ) -> bool {
+      debug_assert!(epoch.guards(&self.access));
+      let shard = unsafe { self.shards.get_unchecked(idx) };
+      match shard.insert_or_update_slot_fast_bytes(hash, key, value, pin) {
+         InsertFastResult::Inserted => {
+            self.bump(idx, true);
+            true
+         }
+         InsertFastResult::Updated => true,
+         InsertFastResult::Fallback(_) => false,
+      }
+   }
+
+   /// Bytes-key fused probe-or-insert (probe_or_insert_fast twin).
+   #[inline(always)]
+   pub fn probe_or_insert_fast_bytes<F>(&self, hash: u64, key: &[u8], make_value: F) -> FastSet<V>
+   where
+      F: FnOnce() -> V,
+   {
+      let _pin = ebr::pin();
+      let _write_epoch = self.write_epoch();
+      let idx = self.shard_of(hash);
+      let shard = unsafe { self.shards.get_unchecked(idx) };
+      let outcome = shard.probe_or_insert_bytes(hash, key, make_value);
+      if matches!(outcome, FastSet::Inserted) {
+         self.bump(idx, true);
+      }
+      outcome
+   }
+
+   /// Bytes-key insert-if-absent (insert_if_absent_str_hinted twin).
+   #[inline]
+   pub fn insert_if_absent_bytes_hinted(&self, key: &[u8], hash: Option<u64>, value: V) -> bool {
+      let _write_epoch = self.write_epoch();
+      let (h, idx) = match hash {
+         Some(h) => (h, self.shard_of(h)),
+         None => self.locate_bytes(key),
+      };
+      let _guard = ebr::pin();
+      let shard = unsafe { self.shards.get_unchecked(idx) };
+      let is_new = shard.set_key_with_overwrite_bytes(key, h, value, false);
+      if is_new {
+         self.bump(idx, true);
+      }
+      self.touched_bytes(key);
+      is_new
    }
 
    /// Probes for key; inserts make_value() on miss or returns existing entry.
@@ -915,6 +1112,34 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
          None => self.locate(key),
       };
       self.set_located_pinned(key, h, idx, value, || CompactKey::from_str(key))
+   }
+
+   /// Bytes-key set (set_str_hinted_pinned twin, audit S-2).
+   #[inline(always)]
+   pub fn set_bytes_hinted_pinned(&self, key: &[u8], hash: Option<u64>, value: V) -> bool {
+      let (h, idx) = match hash {
+         Some(h) => (h, self.shard_of(h)),
+         None => self.locate_bytes(key),
+      };
+      self.set_located_pinned_bytes(key, h, idx, value)
+   }
+
+   #[inline(always)]
+   pub(crate) fn set_located_pinned_bytes(
+      &self,
+      key: &[u8],
+      h: u64,
+      idx: usize,
+      value: V,
+   ) -> bool {
+      let _write_epoch = self.write_epoch();
+      let shard = unsafe { self.shards.get_unchecked(idx) };
+      let is_new = shard.set_key_with_overwrite_bytes(key, h, value, true);
+      if is_new {
+         self.bump(idx, true);
+      }
+      self.touched_bytes(key);
+      is_new
    }
 
    #[inline(always)]

@@ -168,7 +168,7 @@ impl ChannelSnapshot {
 const CHANNEL_SHARDS: usize = 64;
 struct ChannelShard {
    snapshot: ArcSwap<ChannelSnapshot>,
-   mu: std::sync::Mutex<()>,
+   mu: parking_lot::Mutex<()>,
 }
 impl ChannelShard {
    fn new() -> Self {
@@ -177,7 +177,7 @@ impl ChannelShard {
             generation: 0,
             channels: Vec::new(),
          }),
-         mu: std::sync::Mutex::new(()),
+         mu: parking_lot::Mutex::new(()),
       }
    }
    fn publish(&self, channel: &str, frame: impl FnOnce() -> Arc<[u8]>) -> usize {
@@ -192,7 +192,7 @@ impl ChannelShard {
       count
    }
    fn subscribe(&self, channel: &str, slot: Arc<SubSlot>) -> Arc<str> {
-      let _lock = self.mu.lock().unwrap_or_else(|e| e.into_inner());
+      let _lock = self.mu.lock();
       let old = self.snapshot.load_full();
       let index = old.locate(channel);
       if let Ok(index) = index
@@ -248,7 +248,7 @@ impl ChannelShard {
       name
    }
    fn unsubscribe(&self, channel: &str, slot: &Arc<SubSlot>) {
-      let _lock = self.mu.lock().unwrap_or_else(|e| e.into_inner());
+      let _lock = self.mu.lock();
       let old = self.snapshot.load_full();
       let Ok(index) = old.locate(channel) else {
          return;

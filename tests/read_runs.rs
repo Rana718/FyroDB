@@ -320,14 +320,16 @@ fn concurrent_heap_overwrites_and_reply_encoding_do_not_tear_values() {
 }
 
 #[test]
-fn invalid_utf8_keys_in_prefetched_batches_keep_reply_order() {
+fn binary_keys_in_prefetched_batches_are_valid_keys() {
+   // Audit S-2: binary keys are valid keys — a miss replies nil like any
+   // other absent key, preserving reply order across the batch.
    let store = Arc::new(Store::with_config(2, usize::MAX));
    let mut wire = Vec::new();
    let mut expected = Vec::new();
    for i in 0..300 {
       if i % 2 == 0 {
          wire.extend_from_slice(&command(&[b"GET", b"\xff"]));
-         expected.extend_from_slice(b"-ERR invalid UTF-8 in request\r\n");
+         expected.extend_from_slice(b"$-1\r\n");
       } else {
          wire.extend_from_slice(&command(&[b"GET", b"missing"]));
          expected.extend_from_slice(b"$-1\r\n");
@@ -492,19 +494,22 @@ fn protected_json_batches_defer_expiry_cleanup_and_end_before_writes() {
 }
 
 #[test]
-fn invalid_set_keys_keep_successful_reply_positions_and_prefixes() {
+fn binary_set_keys_keep_successful_reply_positions_and_round_trip() {
+   // Audit S-2: binary keys SET and GET byte-for-byte through the batch
+   // engines, with reply positions unchanged.
    let store = Arc::new(Store::with_config(2, usize::MAX));
    let mut wire = command(&[b"PING"]);
    wire.extend_from_slice(&command(&[b"SET", b"first", b"a"]));
-   wire.extend_from_slice(&command(&[b"SET", b"\xff", b"b"]));
+   wire.extend_from_slice(&command(&[b"SET", b"\xff\x00fe\r\n", b"b"]));
    wire.extend_from_slice(&command(&[b"SET", b"second", b"c"]));
    wire.extend_from_slice(&command(&[b"GET", b"first"]));
+   wire.extend_from_slice(&command(&[b"GET", b"\xff\x00fe\r\n"]));
    wire.extend_from_slice(&command(&[b"GET", b"second"]));
    wire.extend_from_slice(&command(&[b"PING"]));
    check_pipeline(
       store,
       wire,
-      b"+PONG\r\n+OK\r\n-ERR invalid UTF-8 in request\r\n+OK\r\n$1\r\na\r\n$1\r\nc\r\n+PONG\r\n",
+      b"+PONG\r\n+OK\r\n+OK\r\n+OK\r\n$1\r\na\r\n$1\r\nb\r\n$1\r\nc\r\n+PONG\r\n",
    );
 }
 
@@ -709,4 +714,51 @@ fn deep_set_admission_preserves_expire_pairs_and_large_value_boundaries() {
    let remaining = store.ttl("expiring").unwrap();
    assert!(remaining > std::time::Duration::ZERO);
    assert!(remaining <= std::time::Duration::from_secs(60));
+}
+
+#[test]
+fn binary_keys_round_trip_through_the_string_core() {
+   // Audit S-2: binary keys are first-class on the string fast paths —
+   // SET/GET/DEL/INCR byte-for-byte, including through the batch engines.
+   let store = Arc::new(Store::with_config(2, usize::MAX));
+   let binary_key: &[u8] = b"\xff\x00bin\r\nkey\x80";
+   store.set_string_auto_bytes(binary_key, None, std::ptr::null(), b"one", 0);
+   let mut out = Vec::new();
+   assert!(store.get_to_buf_auto_bytes(binary_key, None, std::ptr::null(), &mut out));
+   assert_eq!(&out, b"$3\r\none\r\n");
+
+   // INCR on a different binary key creates and then increments
+   let counter_key: &[u8] = b"\x01counter\xff";
+   assert_eq!(store.incr_bytes(counter_key).unwrap(), 1);
+   out.clear();
+   assert!(store.get_to_buf_auto_bytes(counter_key, None, std::ptr::null(), &mut out));
+   assert_eq!(&out, b"$1\r\n1\r\n");
+
+   // EXPIRE on the binary key
+   let exp = fyro_db::storage::value::expiry_from_secs(60).unwrap();
+   assert!(store.expire_ms_bytes(binary_key, exp));
+   // ttl accounting verified via the store unit tests; here we
+   // assert the observable protocol behavior
+
+
+   // DEL removes it
+   assert!(store.del_bytes(binary_key));
+   out.clear();
+   assert!(!store.get_to_buf_auto_bytes(binary_key, None, std::ptr::null(), &mut out));
+   assert!(out.is_empty());
+}
+
+#[test]
+fn binary_keys_set_and_get_through_the_tcp_protocol() {
+   let store = Arc::new(Store::with_config(2, usize::MAX));
+   let key: &[u8] = b"\xfe\x00k\x7f";
+   let mut wire = command(&[b"SET", key, b"val"]);
+   wire.extend_from_slice(&command(&[b"GET", key]));
+   wire.extend_from_slice(&command(&[b"DEL", key]));
+   wire.extend_from_slice(&command(&[b"GET", key]));
+   check_pipeline(
+      store,
+      wire,
+      b"+OK\r\n$3\r\nval\r\n:1\r\n$-1\r\n",
+   );
 }

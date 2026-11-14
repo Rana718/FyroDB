@@ -503,7 +503,7 @@ pub(super) fn execute_write_run(
          // state. Plain SET clears TTL. Bytes-native: no value scan.
          let last = parts[parts.len() - 1];
          let value = unsafe { part_bytes(last) };
-         conn.store.set_string_auto_bytes(key, None, std::ptr::null(), value, 0);
+         conn.store.set_string_auto_bytes(key.as_bytes(), None, std::ptr::null(), value, 0);
          for _ in 0..cmds {
             conn.parser.wbuf.extend_from_slice(b"+OK\r\n");
          }

@@ -3,7 +3,7 @@ use parking_lot::lock_api::RawRwLock as _;
 use parking_lot::{Mutex, MutexGuard, RawRwLock};
 use std::cell::Cell;
 use std::marker::PhantomData;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 thread_local! {
    static CURRENT: Cell<(*const Isolation, bool)> = const { Cell::new((std::ptr::null(), false)) };
@@ -16,6 +16,10 @@ thread_local! {
 pub(super) struct Isolation {
    slots: Box<[CachePadded<RawRwLock>]>,
    writer: Mutex<()>,
+   /// Audit M-10: exclusive admissions stall every worker slot (EVAL /
+   /// EXEC / WATCH atomicity); surfaced via INFO so operators can see the
+   /// throughput cliff the architecture doc documents.
+   exclusive_total: AtomicU64,
 }
 
 enum Held<'a> {
@@ -38,6 +42,7 @@ impl Isolation {
             .collect::<Vec<_>>()
             .into_boxed_slice(),
          writer: Mutex::new(()),
+         exclusive_total: AtomicU64::new(0),
       }
    }
 
@@ -51,6 +56,7 @@ impl Isolation {
          );
          Held::Nested
       } else if exclusive {
+         self.exclusive_total.fetch_add(1, Ordering::Relaxed);
          let writer = self.writer.lock();
          for slot in &self.slots {
             slot.lock_exclusive();
@@ -98,6 +104,15 @@ impl super::Store {
    #[inline(always)]
    pub(crate) fn worker_capacity(&self) -> usize {
       self.isolation.slots.len() - 1
+   }
+
+   /// Total exclusive-admission acquisitions (EVAL/EXEC/WATCH): each one
+   /// stalls every worker slot. INFO surfaces this so the documented
+   /// atomic-command throughput cliff is observable in production.
+   pub fn isolation_exclusive_total(&self) -> u64 {
+      self.isolation
+         .exclusive_total
+         .load(std::sync::atomic::Ordering::Relaxed)
    }
 
    #[inline]

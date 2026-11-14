@@ -1,20 +1,24 @@
 use crossbeam_queue::SegQueue;
-use std::collections::VecDeque;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 
 type Job = Box<dyn FnOnce() + Send + 'static>;
 
-#[derive(Default)]
-struct Queues {
-   high: VecDeque<Job>,
-   low: VecDeque<Job>,
-}
-
+/// Audit V-4: the two-priority queues were a `VecDeque` pair behind one
+/// std Mutex — every worker contended on that mutex per job once the
+/// ticket queue emptied. Both queues are now lock-free `SegQueue`s; the
+/// Condvar stays for sleep/wake only.
 pub struct Pool {
    tickets: SegQueue<Job>,
-   queues: Mutex<Queues>,
+   high: SegQueue<Job>,
+   low: SegQueue<Job>,
+   /// Condvar pairing gate: held only while a worker sleeps. The
+   /// push-side SeqCst queued-add + sleeper read versus the worker's
+   /// sleeper add + queued re-read form a Dekker handshake, so a push
+   /// either observes the sleeper (and notifies) or the worker observes
+   /// the queued job (and never sleeps); the wait timeout bounds the rest.
+   sleep_gate: std::sync::Mutex<()>,
    cv: Condvar,
    threads: usize,
    busy: AtomicUsize,
@@ -90,7 +94,9 @@ impl Pool {
    fn start(threads: usize, cores: Option<Vec<usize>>) -> Arc<Pool> {
       let pool = Arc::new(Pool {
          tickets: SegQueue::new(),
-         queues: Mutex::new(Queues::default()),
+         high: SegQueue::new(),
+         low: SegQueue::new(),
+         sleep_gate: std::sync::Mutex::new(()),
          cv: Condvar::new(),
          threads,
          busy: AtomicUsize::new(0),
@@ -129,8 +135,7 @@ impl Pool {
       if self.queued.load(Ordering::Acquire) == 0 {
          return None;
       }
-      let mut q = self.queues.lock().unwrap();
-      let job = q.high.pop_front().or_else(|| q.low.pop_front());
+      let job = self.high.pop().or_else(|| self.low.pop());
       if job.is_some() {
          self.queued.fetch_sub(1, Ordering::AcqRel);
       }
@@ -138,17 +143,13 @@ impl Pool {
    }
 
    fn push(&self, job: Job, low: bool) {
-      let sleepers = {
-         let mut q = self.queues.lock().unwrap();
-         if low {
-            q.low.push_back(job);
-         } else {
-            q.high.push_back(job);
-         }
-         self.queued.fetch_add(1, Ordering::AcqRel);
-         self.sleepers.load(Ordering::Relaxed)
-      };
-      if sleepers > 0 {
+      if low {
+         self.low.push(job);
+      } else {
+         self.high.push(job);
+      }
+      self.queued.fetch_add(1, Ordering::SeqCst);
+      if self.sleepers.load(Ordering::SeqCst) > 0 {
          self.cv.notify_one();
       }
    }
@@ -191,15 +192,21 @@ impl Pool {
                break;
             }
          }
-         if !self.tickets.is_empty() || self.queued.load(Ordering::Acquire) != 0 {
+         // Dekker against the push side (SeqCst on both sides): either the
+         // push observed our sleeper registration (and notifies) or we
+         // observe its queued increment (and never sleep).
+         self.sleepers.fetch_add(1, Ordering::SeqCst);
+         let queued = self.queued.load(Ordering::SeqCst);
+         if queued != 0 {
+            self.sleepers.fetch_sub(1, Ordering::SeqCst);
             continue;
          }
-         let mut q = self.queues.lock().unwrap();
-         while self.tickets.is_empty() && q.high.is_empty() && q.low.is_empty() {
-            self.sleepers.fetch_add(1, Ordering::Relaxed);
-            q = self.cv.wait(q).unwrap();
-            self.sleepers.fetch_sub(1, Ordering::Relaxed);
-         }
+         let gate = self.sleep_gate.lock().unwrap();
+         let _ = self
+            .cv
+            .wait_timeout(gate, std::time::Duration::from_millis(2))
+            .unwrap();
+         self.sleepers.fetch_sub(1, Ordering::SeqCst);
       }
    }
 
@@ -231,9 +238,8 @@ impl Pool {
             .tickets
             .push(Box::new(move || shared.drain(tasks, f_static)));
       }
-      self.queued.fetch_add(tasks - 1, Ordering::AcqRel);
-      let sleepers = self.sleepers.load(Ordering::Relaxed);
-      if sleepers > 0 {
+      self.queued.fetch_add(tasks - 1, Ordering::SeqCst);
+      if self.sleepers.load(Ordering::SeqCst) > 0 {
          self.cv.notify_all();
       }
       shared.drain(tasks, f_static);

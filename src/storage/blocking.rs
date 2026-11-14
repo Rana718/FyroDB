@@ -15,17 +15,40 @@ pub struct Waiter {
    pub uid: u64,
 }
 
-#[derive(Default)]
+const KEY_SHARDS: usize = 16;
+
+fn key_shard(key: &str) -> usize {
+   // foldhash-free cheap mixer: sharding only needs to spread, not hash
+   let mut h = 0x9E37_79B9_7F4A_7C15u64;
+   for b in key.as_bytes() {
+      h = (h ^ (*b as u64)).wrapping_mul(0x100_0000_01b3);
+   }
+   (h >> 32) as usize % KEY_SHARDS
+}
+
 pub struct BlockRegistry {
    /// Registered (key, waiter) pairs; lets `signal` skip the lock.
    waiting: AtomicUsize,
-   keys: Mutex<HashMap<String, Vec<Waiter>>>,
+   /// Sharded by key hash (audit §12.2): BLPOP-family wakeups on distinct
+   /// keys no longer serialize on one mutex. Same memory as before.
+   keys: [Mutex<HashMap<String, Vec<Waiter>>>; KEY_SHARDS],
+}
+
+impl Default for BlockRegistry {
+   fn default() -> Self {
+      Self {
+         waiting: AtomicUsize::new(0),
+         keys: std::array::from_fn(|_| Mutex::new(HashMap::new())),
+      }
+   }
 }
 
 impl BlockRegistry {
    pub fn register(&self, keys: &[String], waiter: &Waiter) {
-      let mut map = self.keys.lock();
+      // one lock per shard: register all keys of a command that land in
+      // the same shard under a single acquisition
       for k in keys {
+         let mut map = self.keys[key_shard(k)].lock();
          let list = map.entry(k.clone()).or_default();
          if !list.iter().any(|w| w.uid == waiter.uid) {
             list.push(waiter.clone());
@@ -35,8 +58,8 @@ impl BlockRegistry {
    }
 
    pub fn unregister(&self, keys: &[String], uid: u64) {
-      let mut map = self.keys.lock();
       for k in keys {
+         let mut map = self.keys[key_shard(k)].lock();
          if let Some(list) = map.get_mut(k) {
             let before = list.len();
             list.retain(|w| w.uid != uid);
@@ -62,7 +85,7 @@ impl BlockRegistry {
 
    #[cold]
    fn signal_slow(&self, key: &str) {
-      let map = self.keys.lock();
+      let map = self.keys[key_shard(key)].lock();
       if let Some(list) = map.get(key) {
          for w in list {
             w.wake.wake_retry(w.token, w.uid);
@@ -71,8 +94,11 @@ impl BlockRegistry {
    }
 
    pub fn blocked_clients(&self) -> usize {
-      let map = self.keys.lock();
-      let mut uids: Vec<u64> = map.values().flatten().map(|w| w.uid).collect();
+      let mut uids: Vec<u64> = Vec::new();
+      for shard in &self.keys {
+         let map = shard.lock();
+         uids.extend(map.values().flatten().map(|w| w.uid));
+      }
       uids.sort_unstable();
       uids.dedup();
       uids.len()

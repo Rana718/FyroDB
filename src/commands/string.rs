@@ -259,7 +259,7 @@ pub fn mset(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
             store.prefetch_slots_write(&keys, &mut hashes, &mut tables);
             for (i, &[key, val]) in pairs.iter().enumerate() {
                store.set_string_auto_bytes(
-                  key,
+                  key.as_bytes(),
                   Some(hashes[i]),
                   std::ptr::null(),
                   val.as_bytes(),

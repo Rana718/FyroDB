@@ -92,6 +92,10 @@ fn parse_name(name: &str) -> Option<(u64, String)> {
 }
 
 fn encode(buf: &mut Vec<u8>, seq: u64, key: &str, value: Option<&[u8]>) {
+   encode_bytes(buf, seq, key.as_bytes(), value)
+}
+
+fn encode_bytes(buf: &mut Vec<u8>, seq: u64, key: &[u8], value: Option<&[u8]>) {
    encode_kind(
       buf,
       seq,
@@ -101,7 +105,7 @@ fn encode(buf: &mut Vec<u8>, seq: u64, key: &str, value: Option<&[u8]>) {
    );
 }
 
-fn encode_kind(buf: &mut Vec<u8>, seq: u64, kind: u8, key: &str, value: Option<&[u8]>) {
+fn encode_kind(buf: &mut Vec<u8>, seq: u64, kind: u8, key: &[u8], value: Option<&[u8]>) {
    let body = 8 + 1 + 4 + key.len() + value.map_or(0, <[u8]>::len);
    // The length field counts everything after it: body + trailing CRC.
    buf.extend_from_slice(&(((body + 4) as u32) | LEN_CRC_FLAG).to_le_bytes());
@@ -109,7 +113,7 @@ fn encode_kind(buf: &mut Vec<u8>, seq: u64, kind: u8, key: &str, value: Option<&
    buf.extend_from_slice(&seq.to_le_bytes());
    buf.push(kind);
    buf.extend_from_slice(&(key.len() as u32).to_le_bytes());
-   buf.extend_from_slice(key.as_bytes());
+   buf.extend_from_slice(key);
    if let Some(v) = value {
       buf.extend_from_slice(v);
    }
@@ -417,10 +421,15 @@ impl Aof {
    /// `record` with an already-captured value: lets the caller reuse one
    /// map lookup and one encoding for both the AOF and the replication log.
    pub fn record_encoded(&self, key: &str, encoded: Option<&[u8]>) {
+      self.record_encoded_bytes(key.as_bytes(), encoded)
+   }
+
+   /// Bytes-key twin of `record_encoded` (audit S-2).
+   pub fn record_encoded_bytes(&self, key: &[u8], encoded: Option<&[u8]>) {
       let w = self.local();
       let mut w = w.lock();
       let seq = Self::next_seq(&mut w, &self.seq);
-      encode(&mut w.buf, seq, key, encoded);
+      encode_bytes(&mut w.buf, seq, key, encoded);
       if w.buf.len() >= FLUSH_BYTES || self.fsync == Fsync::Always {
          self.write_out(&mut w);
       }
@@ -430,7 +439,7 @@ impl Aof {
       let w = self.local();
       let mut w = w.lock();
       let seq = Self::next_seq(&mut w, &self.seq);
-      encode_kind(&mut w.buf, seq, KIND_FLUSH, "", None);
+      encode_kind(&mut w.buf, seq, KIND_FLUSH, b"", None);
       self.write_out(&mut w);
    }
 
@@ -438,6 +447,11 @@ impl Aof {
    /// through INFO so silent durability loss is visible to operators.
    pub fn failed(&self) -> bool {
       self.failed.load(Ordering::Relaxed)
+   }
+
+   /// The configured fsync policy, for INFO.
+   pub fn fsync_policy(&self) -> Fsync {
+      self.fsync
    }
 
    pub fn flush_local(&self) {
@@ -487,7 +501,7 @@ impl Aof {
                &mut carry,
                rec.seq,
                rec.kind,
-               &rec.key,
+               rec.key.as_bytes(),
                rec.value.as_deref(),
             );
          }

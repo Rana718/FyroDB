@@ -129,6 +129,24 @@ impl Store {
          String::new()
       };
 
+      let persistence_info = format!(
+            "# Persistence\r\n\
+             aof_enabled:{}\r\n\
+             aof_failed:{}\r\n\
+             aof_fsync:{}\r\n\
+             isolation_exclusive_total:{}\r\n\
+             \r\n",
+            crate::storage::persistence::aof::enabled(),
+            crate::storage::persistence::aof::failed(),
+            match crate::storage::persistence::aof::get().map(|a| a.fsync_policy()) {
+               Some(crate::storage::persistence::aof::Fsync::Always) => "always",
+               Some(crate::storage::persistence::aof::Fsync::EverySec) => "everysec",
+               Some(crate::storage::persistence::aof::Fsync::No) => "no",
+               None => "none",
+            },
+            self.isolation_exclusive_total()
+         );
+
       format!(
          "# Server\r\n\
              redis_version:8.2.0\r\n\
@@ -138,7 +156,7 @@ impl Store {
              \r\n\
              # Clients\r\n\
              connected_clients:{connected}\r\n\
-             \r\n\
+             {persistence_info}\r\n\
              # Memory\r\n\
              used_memory:{allocated}\r\n\
              used_memory_human:{allocated_human}\r\n\
@@ -165,6 +183,7 @@ impl Store {
          peak_allocated_human = format_bytes(peak_allocated),
          cgroup_human = format_bytes(cgroup),
          cluster_info = cluster_info,
+         persistence_info = persistence_info,
       )
    }
 

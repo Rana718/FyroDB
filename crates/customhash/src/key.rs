@@ -11,16 +11,26 @@ pub struct CompactKey {
 impl CompactKey {
    #[inline(always)]
    fn fits_full_width(s: &str) -> bool {
-      s.len() == 16 && s.as_bytes()[15] > INLINE_CAP as u8 && s.as_bytes()[15] != HEAP
+      Self::fits_full_width_bytes(s.as_bytes())
+   }
+
+   #[inline(always)]
+   fn fits_full_width_bytes(key: &[u8]) -> bool {
+      key.len() == 16 && key[15] > INLINE_CAP as u8 && key[15] != HEAP
    }
 
    #[inline(always)]
    fn full_width(s: &str) -> Self {
+      Self::full_width_bytes(s.as_bytes())
+   }
+
+   #[inline(always)]
+   fn full_width_bytes(key: &[u8]) -> Self {
       let mut data = [0u8; INLINE_CAP];
-      data.copy_from_slice(&s.as_bytes()[..INLINE_CAP]);
+      data.copy_from_slice(&key[..INLINE_CAP]);
       Self {
          data,
-         tag: s.as_bytes()[15],
+         tag: key[15],
       }
    }
 
@@ -67,11 +77,19 @@ impl CompactKey {
    #[inline(always)]
    #[allow(clippy::should_implement_trait)]
    pub fn from_str(s: &str) -> Self {
-      let len = s.len();
+      Self::from_bytes(s.as_bytes())
+   }
+
+   /// Audit S-2: bytes-native key construction — identical layout rules as
+   /// `from_str` (inline ≤15, eligible 16-byte full-width, heap otherwise),
+   /// enabling binary keys end to end.
+   #[inline(always)]
+   pub fn from_bytes(key: &[u8]) -> Self {
+      let len = key.len();
       if len <= INLINE_CAP {
          let mut data = [0u8; INLINE_CAP];
          unsafe {
-            let src = s.as_bytes().as_ptr();
+            let src = key.as_ptr();
             let dst = data.as_mut_ptr();
             if len >= 8 {
                let w1 = std::ptr::read_unaligned(src.cast::<u64>());
@@ -102,10 +120,10 @@ impl CompactKey {
             data,
             tag: len as u8,
          }
-      } else if Self::fits_full_width(s) {
-         Self::full_width(s)
+      } else if Self::fits_full_width_bytes(key) {
+         Self::full_width_bytes(key)
       } else {
-         Self::from_string(String::from(s))
+         Self::from_string(unsafe { String::from_utf8_unchecked(key.to_vec()) })
       }
    }
 
