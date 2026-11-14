@@ -1,4 +1,5 @@
-use std::sync::{Arc, Mutex};
+use parking_lot::Mutex;
+use std::sync::Arc;
 use std::time::Instant;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,17 +34,17 @@ impl PeerHealth {
    }
 
    pub fn connecting(&self) {
-      self.0.lock().unwrap().state = PeerState::Connecting;
+      self.0.lock().state = PeerState::Connecting;
    }
    pub fn connected(&self) -> u64 {
-      let mut health = self.0.lock().unwrap();
+      let mut health = self.0.lock();
       health.generation = health.generation.wrapping_add(1);
       health.state = PeerState::Connected;
       health.connected_at = Some(Instant::now());
       health.generation
    }
    pub fn pong(&self, generation: u64) {
-      let mut health = self.0.lock().unwrap();
+      let mut health = self.0.lock();
       if health.generation != generation {
          return;
       }
@@ -52,7 +53,7 @@ impl PeerHealth {
       health.consecutive_failures = 0;
    }
    pub fn disconnected(&self, generation: Option<u64>) {
-      let mut health = self.0.lock().unwrap();
+      let mut health = self.0.lock();
       if generation.is_some_and(|value| value != health.generation) {
          return;
       }
@@ -60,11 +61,11 @@ impl PeerHealth {
       health.consecutive_failures = health.consecutive_failures.saturating_add(1);
    }
    pub fn snapshot(&self) -> PeerHealthSnapshot {
-      self.0.lock().unwrap().clone()
+      self.0.lock().clone()
    }
 
    pub fn is_suspect(&self, timeout: std::time::Duration) -> bool {
-      let health = self.0.lock().unwrap();
+      let health = self.0.lock();
       match health.state {
          PeerState::Disconnected => true,
          PeerState::Connecting => health.connected_at.is_none(),

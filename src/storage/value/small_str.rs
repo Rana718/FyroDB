@@ -127,8 +127,15 @@ impl SmallStr {
 
    #[inline]
    pub fn from_float(f: f64) -> Self {
-      let mut buffer = ryu::Buffer::new();
-      Self::new(buffer.format(f))
+      // Redis d2string semantics: integral doubles print without a decimal
+      // point (9.0 -> "9"), everything else shortest-roundtrip (ryu).
+      if f.is_finite() && f == f.trunc() && f.abs() < 9.007_199_254_740_992e15 {
+         let mut buf = [0u8; 20];
+         Self::new(crate::utils::int_format::write_i64_to(&mut buf, f as i64))
+      } else {
+         let mut buffer = ryu::Buffer::new();
+         Self::new(buffer.format(f))
+      }
    }
 
    #[inline]

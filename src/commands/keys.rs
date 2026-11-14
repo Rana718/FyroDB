@@ -1,6 +1,6 @@
 use crate::parse_int;
 use crate::storage::store::Store;
-use crate::storage::value::{expiry_from_ms, expiry_from_secs, expiry_from_unix_secs};
+use crate::storage::value::{expiry_from_ms_signed, expiry_from_secs_signed, expiry_from_unix_ms, expiry_from_unix_secs};
 use crate::utils::resp;
 
 pub fn del(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
@@ -44,8 +44,10 @@ pub fn expire(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
    let [_, key, secs] = parts else {
       return resp::write_wrong_args(out, "expire");
    };
-   let s = parse_int!(out, secs, u64);
-   let Some(exp) = expiry_from_secs(s) else {
+   // Redis accepts negative seconds — the deadline lands in the past and
+   // the key expires immediately.
+   let s = parse_int!(out, secs, i64);
+   let Some(exp) = expiry_from_secs_signed(s) else {
       return resp::write_err(out, "invalid expire time in 'expire' command");
    };
    resp::write_boolean(out, store.expire_ms(key, exp));
@@ -55,9 +57,20 @@ pub fn pexpire(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
    let [_, key, ms] = parts else {
       return resp::write_wrong_args(out, "pexpire");
    };
-   let m = parse_int!(out, ms, u64);
-   let Some(exp) = expiry_from_ms(m) else {
+   let m = parse_int!(out, ms, i64);
+   let Some(exp) = expiry_from_ms_signed(m) else {
       return resp::write_err(out, "invalid expire time in 'pexpire' command");
+   };
+   resp::write_boolean(out, store.expire_ms(key, exp));
+}
+
+pub fn pexpireat(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
+   let [_, key, ts] = parts else {
+      return resp::write_wrong_args(out, "pexpireat");
+   };
+   let unix_ms = parse_int!(out, ts, u64);
+   let Some(exp) = expiry_from_unix_ms(unix_ms) else {
+      return resp::write_err(out, "invalid expire time in 'pexpireat' command");
    };
    resp::write_boolean(out, store.expire_ms(key, exp));
 }

@@ -163,7 +163,7 @@ impl Store {
          }
          let _ = self.cluster_state.replace_topology(topology);
       }
-      *self.cluster_meta_path.lock().unwrap() = Some(path);
+      *self.cluster_meta_path.lock() = Some(path);
       let _ = self.persist_cluster_metadata();
       if let Some(log) = &self.replication {
          let journal_path = format!("{rdb_path}.repllog");
@@ -195,7 +195,7 @@ impl Store {
    }
 
    fn persist_cluster_metadata(&self) -> std::io::Result<()> {
-      let Some(path) = self.cluster_meta_path.lock().unwrap().clone() else {
+      let Some(path) = self.cluster_meta_path.lock().clone() else {
          return Ok(());
       };
       crate::storage::rdb::save_cluster_metadata(
@@ -314,7 +314,7 @@ impl Store {
    pub fn set_replica_identity(&self, identity: [u8; 16]) {
       if self.replica_identity() != Some(identity) {
          self.replica_applied_offset.store(0, Ordering::Release);
-         if let Some(path) = self.replica_meta_path.lock().unwrap().as_ref() {
+         if let Some(path) = self.replica_meta_path.lock().as_ref() {
             let _ = crate::storage::rdb::save_replication_metadata(
                path,
                self.cluster_state.topology().epoch,
@@ -322,14 +322,14 @@ impl Store {
             );
          }
       }
-      *self.replica_identity.lock().unwrap() = Some(identity);
-      if let Some(path) = self.replica_meta_path.lock().unwrap().as_ref() {
+      *self.replica_identity.lock() = Some(identity);
+      if let Some(path) = self.replica_meta_path.lock().as_ref() {
          let _ = std::fs::write(format!("{path}.id"), identity);
       }
    }
 
    pub fn replica_identity(&self) -> Option<[u8; 16]> {
-      *self.replica_identity.lock().unwrap()
+      *self.replica_identity.lock()
    }
 
    /// Visit live values in one hash slot. The callback receives an owned
@@ -487,7 +487,7 @@ impl Store {
 
    pub fn persist_replica_offset(&self) {
       let offset = self.replica_applied_offset();
-      if let Some(path) = self.replica_meta_path.lock().unwrap().as_deref() {
+      if let Some(path) = self.replica_meta_path.lock().as_deref() {
          let _ = crate::storage::rdb::save_replication_metadata(
             path,
             self.cluster_state.topology_arc().epoch,
@@ -506,9 +506,9 @@ impl Store {
       if let Ok(bytes) = std::fs::read(format!("{path}.id"))
          && bytes.len() == 16
       {
-         *self.replica_identity.lock().unwrap() = Some(bytes.try_into().unwrap());
+         *self.replica_identity.lock() = Some(bytes.try_into().unwrap());
       }
-      *self.replica_meta_path.lock().unwrap() = Some(path);
+      *self.replica_meta_path.lock() = Some(path);
    }
 
    pub fn update_cluster_health(&self, total: usize, healthy: usize, suspect: usize) {

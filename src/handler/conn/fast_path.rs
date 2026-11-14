@@ -1306,9 +1306,9 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
                return;
             };
             let reply = match secs
-               .parse::<u64>()
+               .parse::<i64>()
                .ok()
-               .and_then(crate::storage::value::expiry_from_secs)
+               .and_then(crate::storage::value::expiry_from_secs_signed)
             {
                Some(exp) => {
                   let ok = conn.store.expire_ms_bytes(key, exp);

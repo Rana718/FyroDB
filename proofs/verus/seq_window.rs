@@ -1,27 +1,8 @@
 // Verified model of the AOF sequence-window allocator in
 // src/storage/persistence/aof.rs (`Writer.seq_base/seq_next` +
-// `Aof::next_seq` + the global `Aof.seq` counter).
-//
-// Writers allocate sequence numbers in windows of W (64 in the code, 2
-// here to keep the SMT domain small — the proofs are size-generic):
-//
-//   refill: if the window is exhausted, take the next W-wide range from
-//           the global counter with one fetch_add (the only global RMW)
-//   alloc:  hand out `next` inside the writer's window
-//
-// THE CORRECTNESS PROPERTY (why windows are safe for the replay merge,
-// which orders records across per-writer files by sequence): two writers
-// can never hand out the same sequence number, because every refill takes
-// a disjoint W-wide range of the global counter (RMWs serialize and the
-// counter only ever advances by W), and all handed-out numbers sit inside
-// their writer's current range.
-//
-// `primed` distinguishes a writer that has never refilled (its window is
-// empty and allocation is disabled until the first refill).
 
 use vstd::prelude::*;
 verus! {
-
 
 /// Window width (64 in the real AOF; 2 keeps the SMT domain small —
 /// the proofs are size-generic).
@@ -136,8 +117,6 @@ proof fn any_step_preserves_inv(s: SeqState, s2: SeqState)
     if refill_w0(s, s2) {
         // the new window is [global, global + W): global advances by W so
         // it stays a multiple of W; the other writer's window (if primed)
-        // ends at or before the old global, hence strictly below the new
-        // base + W, preserving the disjointness clause
         assert(s.w1.primed ==> s.w1.end <= s.global);
         assert(s2.global % window_width() == 0nat);
         assert(s2.w0.end <= s2.global);
@@ -188,7 +167,6 @@ proof fn any_step_preserves_inv(s: SeqState, s2: SeqState)
 
 /// THE UNIQUENESS THEOREM for the replay merge: the two writers' current
 /// windows never overlap, so a sequence handed out by one writer can never
-/// be handed out by the other.
 proof fn windows_are_disjoint(s: SeqState)
     requires
         inv(s),
@@ -208,7 +186,6 @@ proof fn windows_are_disjoint(s: SeqState)
 
 /// Every handed-out sequence sits below the global counter, which only
 /// advances in W-wide refills — the ranges tile the sequence space without
-/// gaps or reuse, which is exactly what `merged()`'s ordering relies on.
 proof fn handed_out_seqs_are_below_global(s: SeqState, s2: SeqState, a: nat)
     requires
         inv(s),

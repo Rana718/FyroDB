@@ -188,8 +188,15 @@ pub fn write_bulk(out: &mut Vec<u8>, s: &str) {
 
 #[inline]
 pub fn write_float(out: &mut Vec<u8>, f: f64) {
-   let mut buffer = ryu::Buffer::new();
-   write_bulk(out, buffer.format(f));
+   // Redis d2string semantics: integral doubles print without a decimal
+   // point (9.0 -> "9"); otherwise shortest-roundtrip (ryu).
+   if f.is_finite() && f == f.trunc() && f.abs() < 9.007_199_254_740_992e15 {
+      let mut buf = [0u8; 20];
+      write_bulk(out, crate::utils::int_format::write_i64_to(&mut buf, f as i64));
+   } else {
+      let mut buffer = ryu::Buffer::new();
+      write_bulk(out, buffer.format(f));
+   }
 }
 
 #[cold]
