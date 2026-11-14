@@ -257,10 +257,10 @@ pub fn write_array_header(out: &mut Vec<u8>, len: usize) {
 }
 
 #[inline]
-pub fn write_array(out: &mut Vec<u8>, items: &[String]) {
+pub fn write_array<S: AsRef<str>>(out: &mut Vec<u8>, items: &[S]) {
    write_array_header(out, items.len());
    for item in items {
-      write_bulk(out, item);
+      write_bulk(out, item.as_ref());
    }
 }
 

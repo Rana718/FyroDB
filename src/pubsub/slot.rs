@@ -24,12 +24,12 @@ pub enum Completion {
 }
 
 pub struct WorkerNotifier {
-   pub pending: SegQueue<usize>,
-   pub fanout: SegQueue<FanEntry>,
-   pub completions: SegQueue<Completion>,
+   pub(crate) fanout: SegQueue<FanEntry>,
+   pending: SegQueue<usize>,
+   completions: SegQueue<Completion>,
    completion_pending: AtomicBool,
    local_subs: Mutex<HashMap<String, Vec<usize>, FixedState>>,
-   pub waker: Arc<Waker>,
+   waker: Arc<Waker>,
    worker_index: usize,
    wake_pending: AtomicBool,
    fanout_pending: AtomicBool,
@@ -175,8 +175,8 @@ impl WorkerNotifier {
 }
 
 pub struct SubSlot {
-   pub token: usize,
-   pub queue: SegQueue<Arc<[u8]>>,
+   token: usize,
+   queue: SegQueue<Arc<[u8]>>,
    notify_pending: AtomicBool,
    notifier: Arc<WorkerNotifier>,
 }

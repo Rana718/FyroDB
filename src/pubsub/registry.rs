@@ -38,13 +38,6 @@ fn fan_out(ch: &ChannelData, frame: Arc<[u8]>) {
    if n == 0 {
       return;
    }
-   if n == 1 {
-      workers[0].notify_fanout(FanEntry {
-         channel: Arc::clone(&ch.name),
-         frame,
-      });
-      return;
-   }
 
    for w in &workers[..n - 1] {
       w.notify_fanout(FanEntry {
@@ -212,14 +205,20 @@ impl ChannelShard {
       self.store_snapshot_locked(Arc::new(new_vec));
    }
 
-   fn active_channels(&self, pattern: Option<&str>) -> Vec<String> {
+   fn active_channels(&self, pattern: Option<&str>) -> Vec<Arc<str>> {
       let snap = self.load_snapshot();
-      let mut result = Vec::new();
-      for ch in snap.iter() {
-         if !ch.slots.is_empty()
-            && pattern.is_none_or(|p| glob_match_bytes(p.as_bytes(), ch.name.as_bytes()))
-         {
-            result.push(ch.name.to_string());
+      let mut result = Vec::with_capacity(snap.len());
+      if let Some(pattern) = pattern {
+         for ch in snap.iter() {
+            if !ch.slots.is_empty() && glob_match_bytes(pattern.as_bytes(), ch.name.as_bytes()) {
+               result.push(Arc::clone(&ch.name));
+            }
+         }
+      } else {
+         for ch in snap.iter() {
+            if !ch.slots.is_empty() {
+               result.push(Arc::clone(&ch.name));
+            }
          }
       }
       result
@@ -423,7 +422,7 @@ impl PubSub {
       n
    }
 
-   pub fn active_channels(&self, pattern: Option<&str>) -> Vec<String> {
+   pub fn active_channels(&self, pattern: Option<&str>) -> Vec<Arc<str>> {
       let mut result = Vec::new();
       for shard in self.shards.iter() {
          result.extend(shard.active_channels(pattern));
@@ -431,13 +430,10 @@ impl PubSub {
       result
    }
 
-   pub fn numsub(&self, channels: &[&str]) -> Vec<(String, usize)> {
+   pub fn numsub<'a>(&self, channels: &[&'a str]) -> Vec<(&'a str, usize)> {
       channels
          .iter()
-         .map(|&ch| {
-            let n = self.shard_for(ch).count_for(ch);
-            (ch.to_string(), n)
-         })
+         .map(|&ch| (ch, self.shard_for(ch).count_for(ch)))
          .collect()
    }
 

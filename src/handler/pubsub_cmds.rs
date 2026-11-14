@@ -18,11 +18,11 @@ pub fn pubsub_info(parts: &[&str], pubsub: &PubSub, out: &mut Vec<u8>) {
          resp::write_array(out, &channels);
       }
       "NUMSUB" => {
-         let keys: Vec<&str> = parts[2..].to_vec();
-         let pairs = pubsub.numsub(&keys);
+         let keys = &parts[2..];
+         let pairs = pubsub.numsub(keys);
          resp::write_array_header(out, pairs.len() * 2);
          for (ch, n) in pairs {
-            resp::write_bulk(out, &ch);
+            resp::write_bulk(out, ch);
             resp::write_integer(out, n as i64);
          }
       }
