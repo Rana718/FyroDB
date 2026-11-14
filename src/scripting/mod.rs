@@ -78,15 +78,6 @@ fn format_i64(n: i64, buf: &mut [u8; 32]) -> &str {
    unsafe { std::str::from_utf8_unchecked(&buf[idx..32]) }
 }
 
-#[inline(always)]
-fn format_f64(f: f64, buf: &mut [u8; 32]) -> &str {
-   use std::io::Write;
-   let mut cursor = std::io::Cursor::new(&mut buf[..]);
-   let _ = write!(cursor, "{}", f);
-   let pos = cursor.position() as usize;
-   unsafe { std::str::from_utf8_unchecked(&buf[..pos]) }
-}
-
 struct ScratchBuffers {
    resp_buf: Vec<u8>,
    num_strings: Vec<String>,
@@ -338,10 +329,16 @@ fn execute_redis_call(lua: &Lua, args: LuaMultiValue, is_pcall: bool) -> LuaResu
    if args_len <= STACK_ARGS_CAP {
       let mut stack_parts: [&str; STACK_ARGS_CAP] = [""; STACK_ARGS_CAP];
       let mut num_bufs = [[0u8; 32]; STACK_ARGS_CAP];
+      let mut ryu_bufs: [ryu::Buffer; STACK_ARGS_CAP] = std::array::from_fn(|_| ryu::Buffer::new());
       let mut borrowed_strs: [Option<mlua::BorrowedStr>; STACK_ARGS_CAP] =
          [const { None }; STACK_ARGS_CAP];
 
-      for (i, (val, buf)) in args.iter().zip(num_bufs.iter_mut()).enumerate() {
+      for (i, ((val, buf), rbuf)) in args
+         .iter()
+         .zip(num_bufs.iter_mut())
+         .zip(ryu_bufs.iter_mut())
+         .enumerate()
+      {
          match val {
             LuaValue::String(s) => {
                borrowed_strs[i] = Some(s.to_str()?);
@@ -350,7 +347,7 @@ fn execute_redis_call(lua: &Lua, args: LuaMultiValue, is_pcall: bool) -> LuaResu
                stack_parts[i] = format_i64(*n, buf);
             }
             LuaValue::Number(f) => {
-               stack_parts[i] = format_f64(*f, buf);
+               stack_parts[i] = rbuf.format(*f);
             }
             LuaValue::Boolean(b) => {
                stack_parts[i] = if *b { "1" } else { "0" };
@@ -403,6 +400,7 @@ fn execute_redis_call(lua: &Lua, args: LuaMultiValue, is_pcall: bool) -> LuaResu
 
       SCRATCH.with_borrow_mut(|scratch| {
          scratch.prepare_for_cmd();
+         let mut float_buf = ryu::Buffer::new();
 
          for val in &args {
             match val {
@@ -414,12 +412,12 @@ fn execute_redis_call(lua: &Lua, args: LuaMultiValue, is_pcall: bool) -> LuaResu
                   scratch.num_strings.push(i.to_string());
                }
                LuaValue::Number(f) => {
-                  scratch.num_strings.push(f.to_string());
+                  scratch.num_strings.push(float_buf.format(*f).to_owned());
                }
                LuaValue::Boolean(b) => {
                   scratch
                      .num_strings
-                     .push(if *b { "1".into() } else { "0".into() });
+                     .push(if *b { "1" } else { "0" }.into());
                }
                LuaValue::Nil => {
                   scratch.num_strings.push(String::new());
