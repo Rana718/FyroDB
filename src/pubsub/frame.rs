@@ -15,23 +15,18 @@ thread_local! {
 
 #[inline(always)]
 fn resp_int_len(n: usize) -> usize {
-   if n < 10 {
-      1
-   } else if n < 100 {
-      2
-   } else if n < 1000 {
-      3
-   } else if n < 10000 {
-      4
-   } else {
-      let mut len = 5;
-      let mut cur = 10000;
-      while cur <= n / 10 {
-         cur *= 10;
-         len += 1;
-      }
-      len
+   match n {
+      0..10 => 1,
+      10..100 => 2,
+      100..1000 => 3,
+      1000..10000 => 4,
+      _ => (n as u32).ilog10() as usize,
    }
+}
+
+#[inline(always)]
+fn resp_msg_len(n: usize) -> usize {
+   1 + resp_int_len(n) + 2 + n + 2
 }
 
 pub fn encode_message(channel: &str, message: &str) -> Arc<[u8]> {
@@ -39,21 +34,11 @@ pub fn encode_message(channel: &str, message: &str) -> Arc<[u8]> {
    let msg_bytes = message.as_bytes();
    let ch_len = ch_bytes.len();
    let msg_len = msg_bytes.len();
-   let total = b"*3\r\n$7\r\nmessage\r\n".len()
-      + 1
-      + resp_int_len(ch_len)
-      + 2
-      + ch_len
-      + 2
-      + 1
-      + resp_int_len(msg_len)
-      + 2
-      + msg_len
-      + 2;
+   let total = b"*3\r\n$7\r\nmessage\r\n".len() + resp_msg_len(ch_len) + resp_msg_len(msg_len);
    let mut out = Vec::with_capacity(total);
    out.extend_from_slice(b"*3\r\n$7\r\nmessage\r\n");
-   bulk_into(&mut out, ch_bytes);
-   bulk_into(&mut out, msg_bytes);
+   crate::utils::resp::write_bulk_bytes(&mut out, ch_bytes);
+   crate::utils::resp::write_bulk_bytes(&mut out, msg_bytes);
    out.into()
 }
 
@@ -220,20 +205,7 @@ pub fn encode_batch(channel: &str, messages: &[&str]) -> Arc<[u8]> {
 
          for &m in messages {
             buf.extend_from_slice(prefix);
-            let m_bytes = m.as_bytes();
-            let m_len = m_bytes.len();
-            buf.push(b'$');
-            if m_len < 10 {
-               buf.push(b'0' + m_len as u8);
-            } else if m_len < 100 {
-               buf.push(b'0' + (m_len / 10) as u8);
-               buf.push(b'0' + (m_len % 10) as u8);
-            } else {
-               push_usize(buf, m_len);
-            }
-            buf.extend_from_slice(b"\r\n");
-            buf.extend_from_slice(m_bytes);
-            buf.extend_from_slice(b"\r\n");
+            crate::utils::resp::write_bulk_bytes(buf, m.as_bytes());
          }
          Arc::from(&buf[..])
       })
@@ -245,66 +217,27 @@ pub fn encode_pmessage(pattern: &str, channel: &str, message: &str) -> Arc<[u8]>
    let ch_len = channel.len();
    let msg_len = message.len();
    let total = "*4\r\n$8\r\npmessage\r\n".len()
-      + 1
-      + resp_int_len(pat_len)
-      + 2
-      + pat_len
-      + 2
-      + 1
-      + resp_int_len(ch_len)
-      + 2
-      + ch_len
-      + 2
-      + 1
-      + resp_int_len(msg_len)
-      + 2
-      + msg_len
-      + 2;
+      + resp_msg_len(pat_len)
+      + resp_msg_len(ch_len)
+      + resp_msg_len(msg_len);
    let mut out = Vec::with_capacity(total);
    out.extend_from_slice(b"*4\r\n$8\r\npmessage\r\n");
-   bulk_into(&mut out, pattern.as_bytes());
-   bulk_into(&mut out, channel.as_bytes());
-   bulk_into(&mut out, message.as_bytes());
+   crate::utils::resp::write_bulk_bytes(&mut out, pattern.as_bytes());
+   crate::utils::resp::write_bulk_bytes(&mut out, channel.as_bytes());
+   crate::utils::resp::write_bulk_bytes(&mut out, message.as_bytes());
    out.into()
 }
 
 pub fn encode_sub_reply(kind: &str, channel: &str, count: usize, out: &mut Vec<u8>) {
    out.reserve(32 + kind.len() + channel.len());
    out.extend_from_slice(b"*3\r\n");
-   bulk_into(out, kind.as_bytes());
-   bulk_into(out, channel.as_bytes());
-   out.push(b':');
-   push_usize(out, count);
-   out.extend_from_slice(b"\r\n");
-}
-
-#[inline(always)]
-pub(crate) fn bulk_into(out: &mut Vec<u8>, b: &[u8]) {
-   out.push(b'$');
-   let len = b.len();
-   if len < 10 {
-      out.push(b'0' + len as u8);
-   } else if len < 100 {
-      out.push(b'0' + (len / 10) as u8);
-      out.push(b'0' + (len % 10) as u8);
+   crate::utils::resp::write_bulk(out, kind);
+   crate::utils::resp::write_bulk(out, channel);
+   if let Ok(count) = i64::try_from(count) {
+      crate::utils::resp::write_integer(out, count);
    } else {
-      push_usize(out, len);
+      out.push(b':');
+      crate::utils::resp::write_usize(out, count);
+      out.extend_from_slice(b"\r\n");
    }
-   out.extend_from_slice(b"\r\n");
-   out.extend_from_slice(b);
-   out.extend_from_slice(b"\r\n");
-}
-
-#[inline]
-pub(crate) fn push_usize(out: &mut Vec<u8>, mut n: usize) {
-   if n == 0 {
-      out.push(b'0');
-      return;
-   }
-   let start = out.len();
-   while n > 0 {
-      out.push(b'0' + (n % 10) as u8);
-      n /= 10;
-   }
-   out[start..].reverse();
 }

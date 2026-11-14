@@ -1,3 +1,4 @@
+use fyro_db::pubsub::frame::{encode_batch, encode_message, encode_pmessage};
 use fyro_db::pubsub::{PubSub, SubSlot, WorkerNotifier, encode_sub_reply};
 use mio::{Poll, Token, Waker};
 use std::sync::Arc;
@@ -33,6 +34,65 @@ fn drain(slot: &SubSlot) -> Vec<u8> {
    buf
 }
 
+fn append_expected_bulk(out: &mut Vec<u8>, bytes: &[u8]) {
+   out.extend_from_slice(format!("${}\r\n", bytes.len()).as_bytes());
+   out.extend_from_slice(bytes);
+   out.extend_from_slice(b"\r\n");
+}
+
+fn payloads_at_length_boundaries() -> Vec<String> {
+   [0, 9, 10, 99, 100]
+      .into_iter()
+      .map(|len| "x".repeat(len))
+      .chain(["é🦀".to_string()])
+      .collect()
+}
+
+#[test]
+fn message_frames_match_resp_bulk_wire_format_at_length_boundaries() {
+   for channel in payloads_at_length_boundaries() {
+      for message in payloads_at_length_boundaries() {
+         let mut expected = b"*3\r\n$7\r\nmessage\r\n".to_vec();
+         append_expected_bulk(&mut expected, channel.as_bytes());
+         append_expected_bulk(&mut expected, message.as_bytes());
+         assert_eq!(encode_message(&channel, &message).as_ref(), expected);
+      }
+   }
+}
+
+#[test]
+fn pattern_message_frames_match_resp_bulk_wire_format_at_length_boundaries() {
+   let values = payloads_at_length_boundaries();
+   for pattern in &values {
+      for channel in &values {
+         for message in &values {
+            let mut expected = b"*4\r\n$8\r\npmessage\r\n".to_vec();
+            append_expected_bulk(&mut expected, pattern.as_bytes());
+            append_expected_bulk(&mut expected, channel.as_bytes());
+            append_expected_bulk(&mut expected, message.as_bytes());
+            assert_eq!(
+               encode_pmessage(pattern, channel, message).as_ref(),
+               expected
+            );
+         }
+      }
+   }
+}
+
+#[test]
+fn variable_length_batch_frames_match_resp_bulk_wire_format() {
+   let messages = payloads_at_length_boundaries();
+   let messages: Vec<&str> = messages.iter().map(String::as_str).collect();
+   let channel = "batch-é";
+   let mut expected = Vec::new();
+   for message in &messages {
+      expected.extend_from_slice(b"*3\r\n$7\r\nmessage\r\n");
+      append_expected_bulk(&mut expected, channel.as_bytes());
+      append_expected_bulk(&mut expected, message.as_bytes());
+   }
+   assert_eq!(encode_batch(channel, &messages).as_ref(), expected);
+}
+
 #[test]
 fn sub_reply_format() {
    let mut out = Vec::new();
@@ -45,6 +105,23 @@ fn sub_reply_zero_count() {
    let mut out = Vec::new();
    encode_sub_reply("unsubscribe", "", 0, &mut out);
    assert_eq!(out, b"*3\r\n$11\r\nunsubscribe\r\n$0\r\n\r\n:0\r\n");
+}
+
+#[test]
+fn sub_reply_counts_preserve_usize_range() {
+   let mut counts = vec![0, 9, 10, usize::MAX];
+   if usize::BITS > 63 {
+      counts.push(i64::MAX as usize);
+      counts.push(i64::MAX as usize + 1);
+   }
+
+   for count in counts {
+      let mut expected = b"*3\r\n$9\r\nsubscribe\r\n$1\r\nx\r\n".to_vec();
+      expected.extend_from_slice(format!(":{count}\r\n").as_bytes());
+      let mut out = Vec::new();
+      encode_sub_reply("subscribe", "x", count, &mut out);
+      assert_eq!(out, expected);
+   }
 }
 
 #[test]
@@ -242,7 +319,10 @@ fn active_channels_with_pattern_filter() {
 
    let mut channels = pubsub.active_channels(Some("news.*"));
    channels.sort();
-   assert_eq!(channels, vec![Arc::from("news.sports"), Arc::from("news.tech")]);
+   assert_eq!(
+      channels,
+      vec![Arc::from("news.sports"), Arc::from("news.tech")]
+   );
 }
 
 #[test]
@@ -265,10 +345,7 @@ fn numsub_counts_correctly() {
    pubsub.subscribe("ch", Arc::clone(&s2));
 
    let result = pubsub.numsub(&["ch", "missing"]);
-   assert_eq!(
-      result,
-      vec![("ch", 2), ("missing", 0)]
-   );
+   assert_eq!(result, vec![("ch", 2), ("missing", 0)]);
 }
 
 #[test]
