@@ -57,8 +57,7 @@ impl JsonValue {
                use std::fmt::Write;
                let _ = write!(out, "{}", *n as i64);
             } else {
-               use std::fmt::Write;
-               let _ = write!(out, "{}", n);
+               out.push_str(ryu::Buffer::new().format(*n));
             }
          }
          Self::String(s) => write_json_string(out, s),

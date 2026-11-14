@@ -15,14 +15,8 @@ pub fn write_boolean_r3(out: &mut Vec<u8>, b: bool) {
 #[inline]
 pub fn write_double(out: &mut Vec<u8>, f: f64) {
    out.push(b',');
-   let s = if f == f64::INFINITY {
-      "inf".to_string()
-   } else if f == f64::NEG_INFINITY {
-      "-inf".to_string()
-   } else {
-      format!("{}", f)
-   };
-   out.extend_from_slice(s.as_bytes());
+   let mut buffer = ryu::Buffer::new();
+   out.extend_from_slice(buffer.format(f).as_bytes());
    out.extend_from_slice(b"\r\n");
 }
 
