@@ -1,21 +1,5 @@
 // Verified model of the pub/sub wakeup protocol in src/pubsub/ (signal.rs
 // arm/disarm over the worker queues: notify / notify_fanout producers,
-// drain_*_limit consumers).
-//
-//   producer:  push(entry); if pending.swap(true, AcqRel) == false { wake() }
-//   consumer:  drain queue; pending.swap(false); re-check queue;
-//              if non-empty { re-arm (swap(true)); loop }
-//
-// This is the classic arm/disarm idiom; the property that matters is no
-// lost wakeup on the safety side: a non-empty queue is always either armed
-// (a consumer cycle is owed) or the producer still owes its arm — and any
-// producer arm that transitions the flag false->true issues the wake. The
-// consumer's disarm-then-recheck closes the race with a push that lands
-// while it is finishing: either the push's arm sees `armed == true` (the
-// consumer's re-check will observe the queue) or it sees `false` and wakes.
-//
-// Transitions are one successful atomic step each; `arm_owed` models the
-// producer's outstanding obligation between its push and its arm swap.
 
 use vstd::prelude::*;
 verus! {
@@ -104,8 +88,6 @@ proof fn any_step_preserves_inv(s: WakeState, s2: WakeState)
 
 /// THE NO-LOST-WAKEUP CORE: whenever the queue holds an entry, a consumer
 /// cycle is owed — the flag is armed, the producer still owes its arm (and
-/// its arm-swap wakes on a false->true transition), or the consumer is in
-/// its re-check window where it re-arms and loops. No push can strand.
 proof fn nonempty_queue_is_covered(s: WakeState)
     requires
         inv(s),
@@ -118,10 +100,6 @@ proof fn nonempty_queue_is_covered(s: WakeState)
 
 /// When the consumer is idle, any queued entry is covered: either the flag
 /// is armed (the consumer cycle is owed) or a producer owes its arm swap —
-/// and a producer's swap on a false flag *issues the wake*, so the entry
-/// cannot strand. The arm_owed case's resolution is a liveness step (the
-/// producer eventually runs); the safety content is that no push can be
-/// dropped by the flag protocol itself.
 proof fn idle_consumer_entries_are_covered(s: WakeState)
     requires
         inv(s),

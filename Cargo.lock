@@ -393,6 +393,7 @@ dependencies = [
 name = "fyro-vector"
 version = "0.3.1"
 dependencies = [
+ "arc-swap",
  "bytemuck",
  "crossbeam-queue",
  "libc",

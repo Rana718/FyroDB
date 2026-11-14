@@ -2,7 +2,7 @@ use super::value::StoreValue;
 use crossbeam_utils::CachePadded;
 use customhash::CustomMap;
 use std::sync::Arc;
-use std::sync::Mutex;
+use parking_lot::Mutex;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 

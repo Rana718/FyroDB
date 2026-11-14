@@ -1,23 +1,5 @@
 // Verified model of the shard growth gate in
 // crates/customhash/src/shard.rs:
-//   - enter_insert / InsertGuard::drop  (insert_gate fetch_add / fetch_sub)
-//   - grow / rehash                     (GROWING flag, drain, rebuild_to)
-//   - insert_or_update_slot_fast / set_key_with_overwrite claim steps
-//   - remove paths (entry lock — orthogonal to the gate)
-//
-// What the gate protects: `rebuild_to` swaps the slot table while readers
-// traverse the old one under EBR and while inserts claim slots into it.
-// A claim may only complete against the table it probed; the code's
-// post-gate re-check (`self.table.load(Acquire) != table_ptr -> Fallback`)
-// is exactly "the probed table is still current", which the model captures
-// by making every claim a single atomic step on the *current* table.
-//
-// Model abstraction: the code checks the gate *before* probing and the
-// table pointer *after* taking the gate; a claim is modeled as one atomic
-// step (gate held + table current + below threshold) because the real
-// claim's three checks are re-evaluated against the same serialized state
-// at its single CAS. `grow_lock` serializes growers; the model expresses
-// that by allowing only one growing-set at a time.
 
 use vstd::prelude::*;
 verus! {
@@ -102,9 +84,6 @@ proof fn any_step_preserves_inv(s: GateState, s2: GateState)
 
 /// THE SAFETY THEOREM: a table swap never overlaps an in-flight claim.
 /// `rebuild_to` requires a fully drained gate and every claim requires a
-/// gate slot, so at the linearization point of the swap no insert is
-/// between its probe and its CAS — no entry is claimed into a table that
-/// is being retired.
 proof fn rebuild_never_overlaps_a_claim(s: GateState, s2: GateState)
     requires
         inv(s),
@@ -121,8 +100,6 @@ proof fn rebuild_never_overlaps_a_claim(s: GateState, s2: GateState)
 
 /// THE NO-LOST-ENTRY THEOREM: the swap preserves the occupied-entry count.
 /// Combined with `rebuild_never_overlaps_a_claim` this is the argument that
-/// every entry claimed before the swap is migrated into the new table, and
-/// every entry claimed after it lands in the new table directly.
 proof fn rebuild_preserves_entries(s: GateState, s2: GateState)
     requires
         inv(s),
@@ -136,9 +113,6 @@ proof fn rebuild_preserves_entries(s: GateState, s2: GateState)
 
 /// Claims cannot land on a retired table: after a swap (cur advanced), any
 /// still-pending insert's probe targets the old generation; the real code
-/// detects this with the table-pointer re-check and falls back. The model
-/// shows the fallback is exhaustive: a post-swap claim step necessarily
-/// targets the new generation.
 proof fn claims_follow_the_current_table(s: GateState, s2: GateState)
     requires
         inv(s),

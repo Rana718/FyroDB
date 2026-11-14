@@ -1,23 +1,5 @@
 // Verified model of the cluster write fence in src/storage/store/fence.rs:
 //   - begin_write        (worker write ticket: SeqCst counter step + engaged check)
-//   - WriteTicket::drop  (counter decrement)
-//   - cluster_write_guard (holder: SeqCst engaged store, drain, hold)
-//   - WriteFenceGuard::drop (disarm)
-//
-// This fence is what slot migration and replica snapshot bootstrap use to
-// see a quiescent keyspace: while the holder holds the barrier, no write
-// section may be executing anywhere.
-//
-// Model abstraction (documented in the step for `wf_begin`): the real
-// writer does fetch_add(SeqCst) *then* an engaged load, rolling back to
-// the barrier mutex when it observes engaged. A writer that rolls back has
-// no net shared-state effect (increment then decrement) and the holder's
-// drain observes exactly that transient pair by waiting for the counter to
-// return to zero — so the protocol is linearizable on `engaged`: a writer
-// either completes its increment before the holder's drain observes it
-// (holder waits for its end) or observes `engaged` and never proceeds.
-// Each transition below is one successful step; the SeqCst orderings give
-// the single total order this interleaving model assumes.
 
 use vstd::prelude::*;
 verus! {
@@ -40,8 +22,6 @@ pub open spec fn inv(s: FenceState) -> bool {
 pub open spec fn step(s: FenceState, s2: FenceState) -> bool {
     // begin_write: fetch_add(SeqCst) then the engaged load — linearized on
     // `engaged`. Enabled only while not engaged; a writer reaching the
-    // check after the engage store falls back to the barrier (no shared
-    // effect, modeled as no step).
     (!s.engaged
         && s2 == (FenceState { in_flight: (s.in_flight + 1nat) as nat, engaged: s.engaged, holding: s.holding }))
     // WriteTicket::drop: counter decrement (Release)
@@ -100,8 +80,6 @@ proof fn any_step_preserves_inv(s: FenceState, s2: FenceState)
 
 /// THE SAFETY THEOREM for `drain_writes` / slot migration: while the
 /// barrier is held, no write section is open anywhere in the process, so
-/// the holder's keyspace scan (migration, replica snapshot bootstrap) sees
-/// a quiescent keyspace.
 proof fn barrier_holds_keyspace_quiescent(s: FenceState)
     requires
         inv(s),

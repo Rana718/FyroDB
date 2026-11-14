@@ -1,5 +1,6 @@
+use parking_lot::{Condvar, Mutex};
 use std::collections::HashMap;
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use super::Frame;
@@ -45,7 +46,7 @@ impl RequestRegistry {
 
    pub fn register(&self, request_id: u64) -> Result<(), RequestError> {
       let (lock, _) = &*self.state;
-      let mut state = lock.lock().expect("request registry poisoned");
+      let mut state = lock.lock();
       if state.closed {
          return Err(RequestError::Closed);
       }
@@ -62,7 +63,7 @@ impl RequestRegistry {
 
    pub fn complete(&self, frame: Frame) -> Result<(), RequestError> {
       let (lock, wake) = &*self.state;
-      let mut state = lock.lock().expect("request registry poisoned");
+      let mut state = lock.lock();
       let Some(slot) = state.pending.get_mut(&frame.request_id) else {
          return Err(RequestError::Unknown);
       };
@@ -73,7 +74,7 @@ impl RequestRegistry {
 
    pub fn wait(&self, request_id: u64, timeout: Duration) -> Result<Frame, RequestError> {
       let (lock, wake) = &*self.state;
-      let mut state = lock.lock().expect("request registry poisoned");
+      let mut state = lock.lock();
       let deadline = std::time::Instant::now() + timeout;
       loop {
          if state.closed {
@@ -97,11 +98,12 @@ impl RequestRegistry {
             state.pending.remove(&request_id);
             return Err(RequestError::Timeout);
          }
-         let (next, result) = wake
-            .wait_timeout(state, remaining)
-            .expect("request registry poisoned");
-         state = next;
-         if result.timed_out() {
+         // parking_lot: wait_for takes the guard by &mut (mutating it in
+         // place) and returns the timeout result; the deadline check above
+         // handles expiry, and a wake without the response arriving loops
+         // back to the slot re-check.
+         let timed_out = wake.wait_for(&mut state, remaining).timed_out();
+         if timed_out {
             state.pending.remove(&request_id);
             return Err(RequestError::Timeout);
          }
@@ -110,7 +112,7 @@ impl RequestRegistry {
 
    pub fn close(&self) {
       let (lock, wake) = &*self.state;
-      let mut state = lock.lock().expect("request registry poisoned");
+      let mut state = lock.lock();
       state.closed = true;
       state.pending.clear();
       wake.notify_all();
@@ -118,7 +120,7 @@ impl RequestRegistry {
 
    pub fn fail_pending(&self) {
       let (lock, wake) = &*self.state;
-      let mut state = lock.lock().expect("request registry poisoned");
+      let mut state = lock.lock();
       state.failed = true;
       state.pending.clear();
       wake.notify_all();
@@ -126,7 +128,7 @@ impl RequestRegistry {
 
    pub fn cancel(&self, request_id: u64) -> Result<(), RequestError> {
       let (lock, _) = &*self.state;
-      let mut state = lock.lock().expect("request registry poisoned");
+      let mut state = lock.lock();
       state
          .pending
          .remove(&request_id)
@@ -135,11 +137,7 @@ impl RequestRegistry {
    }
 
    pub fn len(&self) -> usize {
-      self
-         .state
-         .0
-         .lock()
-         .expect("request registry poisoned")
+      self.state.0.lock()
          .pending
          .len()
    }

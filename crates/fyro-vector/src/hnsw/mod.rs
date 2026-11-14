@@ -1,6 +1,7 @@
 use crate::DistanceMetric;
 use crate::kernels::{self, Isa, Kernel};
 use crate::pool;
+use arc_swap::ArcSwap;
 use parking_lot::{Mutex, RwLock};
 use std::cell::{RefCell, UnsafeCell};
 use std::cmp::Reverse;
@@ -420,7 +421,8 @@ pub struct HnswGraph {
    quant: Quant,
    rot: Option<quant::Rotation>,
    /// RaBitQ centroids; replaced only while the graph is empty.
-   book: RwLock<Arc<quant::Codebook>>,
+   /// Audit continue §4: read per quantized encode (E3 ArcSwap pattern).
+   book: ArcSwap<quant::Codebook>,
    m: usize,
    m0: usize,
    ef_construction: usize,
@@ -532,7 +534,7 @@ impl HnswGraph {
          metric,
          quant,
          rot: (quant == Quant::RaBitQ).then(|| quant::Rotation::new(dims, dims as u64)),
-         book: RwLock::new(Arc::new(quant::Codebook::zero(dims))),
+         book: ArcSwap::from_pointee(quant::Codebook::zero(dims)),
          m,
          m0,
          ef_construction: ef_construction.clamp(1, 10_000),
@@ -649,7 +651,7 @@ impl HnswGraph {
       quant::encode(
          self.quant,
          self.rot.as_ref(),
-         &self.book.read(),
+         &self.book.load(),
          self.metric,
          v,
          buf,
@@ -735,7 +737,7 @@ impl HnswGraph {
       quant::encode_query(
          self.quant,
          self.rot.as_ref(),
-         &self.book.read(),
+         &self.book.load(),
          self.metric,
          v,
       )
@@ -744,17 +746,17 @@ impl HnswGraph {
    // Only honored while graph is empty — existing codes are tied to the old codebook.
    pub fn train(&self, sample: &[Vec<f32>]) -> usize {
       if self.quant != Quant::RaBitQ || self.node_count() > 0 {
-         return self.book.read().centroids.len();
+         return self.book.load().centroids.len();
       }
       let book = quant::Codebook::train(sample, self.inner.read().dims);
       let n = book.centroids.len();
-      *self.book.write() = Arc::new(book);
+      self.book.store(Arc::new(book));
       n
    }
 
    /// The centroids codes are encoded against (persistence).
    pub fn centroids(&self) -> Vec<Vec<f32>> {
-      self.book.read().centroids.clone()
+      self.book.load().centroids.clone()
    }
 
    /// Install persisted centroids (empty graph only), as `train` would.
@@ -765,7 +767,7 @@ impl HnswGraph {
          && !centroids.is_empty()
          && centroids.iter().all(|c| c.len() == dims)
       {
-         *self.book.write() = Arc::new(quant::Codebook { centroids });
+         self.book.store(Arc::new(quant::Codebook { centroids }));
       }
    }
 
@@ -851,7 +853,7 @@ impl HnswGraph {
       quant::encode(
          self.quant,
          self.rot.as_ref(),
-         &self.book.read(),
+         &self.book.load(),
          self.metric,
          vector,
          payload,
@@ -960,7 +962,7 @@ impl HnswGraph {
       // Keep the exclusive lock through encoding so queries cannot see
       // partially written payloads or mismatched Int8 codes.
       {
-         let book = self.book.read();
+         let book = self.book.load();
          let rot = self.rot.as_ref();
          let quant = self.quant;
          let metric = self.metric;
@@ -1169,7 +1171,7 @@ impl HnswGraph {
             self.quant,
          )
       };
-      *out.book.write() = Arc::clone(&self.book.read());
+      out.book.store(Arc::clone(&self.book.load()));
       {
          let mut o = out.inner.write();
          let count = order.len();

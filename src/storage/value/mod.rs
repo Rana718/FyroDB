@@ -220,12 +220,35 @@ pub fn expiry_from_secs(secs: u64) -> Option<u64> {
    approx_now_ms().checked_add(secs.checked_mul(1000)?)
 }
 
+/// Standalone EXPIRE-family semantics (Redis): negative deltas are valid
+/// and delete the key by placing the deadline in the past. Only used by
+/// EXPIRE/PEXPIRE — SET's EX/PX options keep strict u64 parsing.
+#[inline]
+pub fn expiry_from_secs_signed(secs: i64) -> Option<u64> {
+   let deadline = (approx_now_ms() as i64).saturating_add(secs.saturating_mul(1000));
+   Some(deadline.max(1) as u64)
+}
+
+#[inline]
+pub fn expiry_from_ms_signed(ms: i64) -> Option<u64> {
+   let deadline = (approx_now_ms() as i64).saturating_add(ms);
+   Some(deadline.max(1) as u64)
+}
+
 #[inline]
 pub fn expiry_from_ms(ms: u64) -> Option<u64> {
    approx_now_ms().checked_add(ms)
 }
 
 #[inline]
+/// Unix **milliseconds** → absolute expiry deadline.
+pub fn expiry_from_unix_ms(unix_ms: u64) -> Option<u64> {
+    // Redis semantics: ANY timestamp (including past ones) is accepted —
+    // a past deadline makes the key immediately expired (EXPIREAT 0
+    // deletes). Non-integer input is rejected upstream by parse_int.
+    Some(unix_ms)
+}
+
 pub fn expiry_from_unix_secs(unix_secs: u64) -> Option<u64> {
    unix_secs.checked_mul(1000)
 }

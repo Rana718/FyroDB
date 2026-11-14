@@ -1,7 +1,8 @@
 use crossbeam_queue::SegQueue;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use parking_lot::{Condvar, Mutex};
+use std::sync::{Arc, OnceLock};
 
 type Job = Box<dyn FnOnce() + Send + 'static>;
 
@@ -18,7 +19,7 @@ pub struct Pool {
    /// sleeper add + queued re-read form a Dekker handshake, so a push
    /// either observes the sleeper (and notifies) or the worker observes
    /// the queued job (and never sleeps); the wait timeout bounds the rest.
-   sleep_gate: std::sync::Mutex<()>,
+   sleep_gate: Mutex<()>,
    cv: Condvar,
    threads: usize,
    busy: AtomicUsize,
@@ -33,7 +34,7 @@ static GLOBAL: OnceLock<Arc<Pool>> = OnceLock::new();
 
 // Configures search thread pool size and CPU core affinity.
 pub fn configure(threads: usize, cores: Option<Vec<usize>>) {
-   let mut cfg = CONFIG.lock().unwrap();
+   let mut cfg = CONFIG.lock();
    *cfg = Some((threads.max(1), cores.filter(|c| !c.is_empty())));
 }
 
@@ -59,7 +60,7 @@ pub fn allowed_cores() -> Vec<usize> {
 
 pub fn global() -> &'static Pool {
    GLOBAL.get_or_init(|| {
-      let configured = CONFIG.lock().unwrap().clone();
+      let configured = CONFIG.lock().clone();
       let (threads, cores) = configured.unwrap_or_else(|| {
          let env_threads = std::env::var("FYRODB_SEARCH_THREADS")
             .or_else(|_| std::env::var("FYRODB_WORKERS"))
@@ -96,7 +97,7 @@ impl Pool {
          tickets: SegQueue::new(),
          high: SegQueue::new(),
          low: SegQueue::new(),
-         sleep_gate: std::sync::Mutex::new(()),
+         sleep_gate: Mutex::new(()),
          cv: Condvar::new(),
          threads,
          busy: AtomicUsize::new(0),
@@ -201,11 +202,11 @@ impl Pool {
             self.sleepers.fetch_sub(1, Ordering::SeqCst);
             continue;
          }
-         let gate = self.sleep_gate.lock().unwrap();
+         let mut gate = self.sleep_gate.lock();
          let _ = self
             .cv
-            .wait_timeout(gate, std::time::Duration::from_millis(2))
-            .unwrap();
+            .wait_for(&mut gate, std::time::Duration::from_millis(2));
+         drop(gate);
          self.sleepers.fetch_sub(1, Ordering::SeqCst);
       }
    }

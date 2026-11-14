@@ -9,6 +9,9 @@ pub struct RespParser {
    /// Progress through multi-read commands with offsets relative to command start,
    /// surviving buffer compaction.
    partial: Option<Partial>,
+   /// Set when the last parse consumed an empty inline line (Redis skips
+   /// bare CRLF lines instead of erroring).
+   inline_skipped: bool,
 }
 
 struct Partial {
@@ -28,6 +31,9 @@ pub enum ParseResult {
 /// Redis accepts multibulk headers up to INT_MAX; 16M elements covers any
 /// real HSET/MSET/SADD batch while bounding a hostile header.
 const MAX_ARRAY_ELEMENTS: usize = 1 << 24;
+/// Redis PROTO_INLINE_MAX_SIZE: an inline request without a terminator
+/// beyond this size is a protocol error.
+const INLINE_MAX_BYTES: usize = 64 * 1024;
 const MAX_BULK_BYTES: usize = 512 * 1024 * 1024;
 /// Upfront reservation cap: the header's count is untrusted until the
 /// elements actually arrive.
@@ -105,6 +111,7 @@ impl RespParser {
          wbuf: Vec::new(),
          parts_raw: Vec::new(),
          partial: None,
+         inline_skipped: false,
       }
    }
 
@@ -1353,6 +1360,26 @@ impl RespParser {
          return self.resume();
       }
 
+      loop {
+         let parsed = self.parse_one_inner();
+         // Empty inline lines (bare \r\n) are consumed and skipped, so the
+         // loop re-enters the parser for the following command.
+         if self.inline_skipped {
+            self.inline_skipped = false;
+            if matches!(parsed, ParseResult::Complete) {
+               continue;
+            }
+         }
+         return parsed;
+      }
+   }
+
+   fn parse_one_inner(&mut self) -> ParseResult {
+      self.parts_raw.clear();
+      if self.partial.is_some() {
+         return self.resume();
+      }
+
       let avail = self.filled - self.pos;
       if avail >= 14 {
          let buf = unsafe { self.rbuf.as_ptr().add(self.pos) };
@@ -1413,13 +1440,69 @@ impl RespParser {
       let (s, e) = match self.scan_line() {
          Some(r) => r,
          None => {
+            // Redis caps inline requests at 64 KiB without a terminator;
+            // multibulk frames have their own bounds and keep waiting.
+            if start_pos < self.filled
+               && self.rbuf[start_pos] != b'*'
+               && self.filled - start_pos > INLINE_MAX_BYTES
+            {
+               return ParseResult::Error;
+            }
             self.pos = start_pos;
             return ParseResult::Incomplete;
          }
       };
 
       if self.rbuf.get(s) != Some(&b'*') {
-         return ParseResult::Error;
+         // Redis-compat inline command: split the line on spaces/tabs.
+         // Empty lines are consumed and skipped.
+         let mut tokens = 0usize;
+         let mut i = s;
+         while i < e {
+            while i < e
+               && (self.rbuf[i] == b' ' || self.rbuf[i] == b'\t')
+            {
+               i += 1;
+            }
+            if i >= e {
+               break;
+            }
+            tokens += 1;
+            while i < e && self.rbuf[i] != b' ' && self.rbuf[i] != b'\t' {
+               i += 1;
+            }
+         }
+         if tokens == 0 {
+            self.pos = e + 2;
+            self.parts_raw.clear();
+            self.inline_skipped = true;
+            return ParseResult::Complete;
+         }
+         if tokens > MAX_ARRAY_ELEMENTS {
+            return ParseResult::Error;
+         }
+         if self.parts_raw.capacity() < tokens {
+            self.parts_raw.reserve(tokens.min(MAX_PREALLOC_PARTS));
+         }
+         let base = unsafe { self.rbuf.as_ptr().add(s) };
+         i = s;
+         while i < e {
+            while i < e
+               && (self.rbuf[i] == b' ' || self.rbuf[i] == b'\t')
+            {
+               i += 1;
+            }
+            if i >= e {
+               break;
+            }
+            let tok_start = i;
+            while i < e && self.rbuf[i] != b' ' && self.rbuf[i] != b'\t' {
+               i += 1;
+            }
+            self.parts_raw.push((unsafe { base.add(tok_start - s) }, i - tok_start));
+         }
+         self.pos = e + 2;
+         return ParseResult::Complete;
       }
       let count = match parse_usize(&self.rbuf[s + 1..e], MAX_ARRAY_ELEMENTS) {
          Some(c) => c,

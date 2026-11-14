@@ -3,12 +3,15 @@ use crate::search::hooks::HookObserver;
 use crate::storage::value::now_ms;
 use customhash::WriteObserver;
 use foldhash::HashMap;
-use parking_lot::RwLock;
+use arc_swap::ArcSwap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub(super) struct WatchRegistry {
-   keys: RwLock<HashMap<String, Arc<AtomicU64>>>,
+   /// Audit continue §4: per-KV-write reads when watchers exist go through
+   /// an ArcSwap guard load (E3: ~393 M reads/s vs ~9-15 M/s RwLock).
+   /// Watch/unwatch are rare copy-on-write publishes.
+   keys: ArcSwap<HashMap<String, Arc<AtomicU64>>>,
    observing: Arc<customhash::Flag>,
 }
 
@@ -29,10 +32,15 @@ impl WatchedKey {
 
 impl Drop for WatchedKey {
    fn drop(&mut self) {
-      let mut keys = self.registry.keys.write();
+      // Copy-on-write publish (unwatch is rare); strong_count == 2 means
+      // only this WatchedKey and the map still hold the version.
+      let mut keys = self.registry.keys.load_full();
       if Arc::strong_count(&self.version) == 2 {
-         keys.remove(&self.key);
-         if keys.is_empty() {
+         let map = Arc::make_mut(&mut keys);
+         map.remove(&self.key);
+         let empty = map.is_empty();
+         self.registry.keys.store(keys);
+         if empty {
             self.registry.observing.set_watching(false);
          }
       }
@@ -42,7 +50,7 @@ impl Drop for WatchedKey {
 impl WatchRegistry {
    pub(super) fn new(observing: Arc<customhash::Flag>) -> Self {
       Self {
-         keys: Default::default(),
+         keys: ArcSwap::default(),
          observing,
       }
    }
@@ -56,7 +64,7 @@ pub(super) struct StoreObserver {
 impl WriteObserver for StoreObserver {
    fn on_write(&self, key: &str) {
       if self.watches.observing.is_watching()
-         && let Some(version) = self.watches.keys.read().get(key)
+         && let Some(version) = self.watches.keys.load().get(key)
       {
          version.fetch_add(1, Ordering::Release);
       }
@@ -66,7 +74,7 @@ impl WriteObserver for StoreObserver {
    }
 
    fn on_clear(&self) {
-      for version in self.watches.keys.read().values() {
+      for version in self.watches.keys.load().values() {
          version.fetch_add(1, Ordering::Release);
       }
       self.search.on_clear();
@@ -83,10 +91,12 @@ impl Store {
       } else {
          expires_ms
       };
-      let mut keys = self.watches.keys.write();
-      let first = keys.is_empty();
-      let version = Arc::clone(keys.entry(key.to_owned()).or_default());
+      let mut keys = self.watches.keys.load_full();
+      let map = Arc::make_mut(&mut keys);
+      let first = map.is_empty();
+      let version = Arc::clone(map.entry(key.to_owned()).or_default());
       let initial = version.load(Ordering::Acquire);
+      self.watches.keys.store(keys);
       if first {
          self.watches.observing.set_watching(true);
       }

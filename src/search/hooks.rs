@@ -1,5 +1,6 @@
 use super::{FxHashMap, IndexDef};
-use parking_lot::{Mutex, RwLock};
+use arc_swap::ArcSwap;
+use parking_lot::Mutex;
 use std::collections::HashSet;
 use std::hash::BuildHasher;
 use std::sync::Arc;
@@ -127,7 +128,9 @@ impl IndexDirty {
 
 #[derive(Default)]
 pub struct SearchHooks {
-   indexes: RwLock<Vec<Arc<IndexDirty>>>,
+   /// Audit continue §4: per-KV-write hook reads use an ArcSwap snapshot
+   /// (E3: guard load ≈393 M reads/s vs RwLock ≈9-15 M/s).
+   indexes: ArcSwap<Vec<Arc<IndexDirty>>>,
    active: AtomicBool,
    /// Shared observer flag; this hook controls the index bit.
    observing: std::sync::OnceLock<Arc<customhash::Flag>>,
@@ -146,9 +149,12 @@ impl SearchHooks {
             .collect(),
          filter: DirtySet::default(),
       });
-      let mut list = self.indexes.write();
-      list.retain(|d| d.def.name != def.name);
-      list.push(Arc::clone(&dirty));
+      // ArcSwap publish: copy-on-write via make_mut (registration is rare)
+      let mut list = self.indexes.load_full();
+      let list_mut = Arc::make_mut(&mut list);
+      list_mut.retain(|d| d.def.name != def.name);
+      list_mut.push(Arc::clone(&dirty));
+      self.indexes.store(list);
       self.set_active(true);
       dirty
    }
@@ -156,7 +162,7 @@ impl SearchHooks {
    /// Attach the keyspace's observing flag (store construction).
    pub fn attach(&self, flag: Arc<customhash::Flag>) {
       let _ = self.observing.set(flag);
-      self.set_active(!self.indexes.read().is_empty());
+      self.set_active(!self.indexes.load_full().is_empty());
    }
 
    fn set_active(&self, on: bool) {
@@ -167,20 +173,15 @@ impl SearchHooks {
    }
 
    pub fn unregister(&self, name: &str) {
-      let mut list = self.indexes.write();
-      list.retain(|d| d.def.name != name);
+      let mut list = self.indexes.load_full();
+      Arc::make_mut(&mut list).retain(|d| d.def.name != name);
       let any = !list.is_empty();
-      drop(list);
+      self.indexes.store(list);
       self.set_active(any);
    }
 
    pub fn get(&self, name: &str) -> Option<Arc<IndexDirty>> {
-      self
-         .indexes
-         .read()
-         .iter()
-         .find(|d| d.def.name == name)
-         .cloned()
+      self.indexes.load_full().iter().find(|d| d.def.name == name).cloned()
    }
 
    pub fn is_active(&self) -> bool {
@@ -193,7 +194,9 @@ pub struct HookObserver(pub Arc<SearchHooks>);
 
 impl customhash::WriteObserver for HookObserver {
    fn on_write(&self, key: &str) {
-      for d in self.0.indexes.read().iter() {
+      // Audit continue §4: per-KV-write hook — ArcSwap guard load with no
+      // refcount, iterating the snapshot without a lock.
+      for d in self.0.indexes.load().iter() {
          if d.def.matches_key(key) {
             d.mark(key);
          }
@@ -201,7 +204,7 @@ impl customhash::WriteObserver for HookObserver {
    }
 
    fn on_clear(&self) {
-      for d in self.0.indexes.read().iter() {
+      for d in self.0.indexes.load().iter() {
          d.mark_all();
       }
    }

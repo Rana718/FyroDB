@@ -58,7 +58,7 @@ fn write_record(w: &mut impl Write, key: &str, val: &StoreValue) -> io::Result<(
    }
 }
 
-static SAVE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static SAVE_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 static AOF_MARK: parking_lot::Mutex<Option<(u64, u64)>> = parking_lot::Mutex::new(None);
 
 struct SnapshotGuard<'a>(&'a Store);
@@ -106,7 +106,7 @@ fn write_keyspace(
 
 pub fn save(store: &Store, path: &str) -> io::Result<()> {
    let boundary = store.command_guard(usize::MAX);
-   let _serial = SAVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+   let _serial = SAVE_LOCK.lock();
    let tmp = format!("{path}.tmp");
    {
       let f = File::create(&tmp)?;

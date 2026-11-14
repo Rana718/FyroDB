@@ -124,6 +124,12 @@ fn check_pipeline(store: Arc<Store>, wire: Vec<u8>, expected: &[u8]) -> usize {
       conn.parser.rbuf = wire;
       assert!(conn.process_buffered());
       assert!(conn.parser.wbuf.len() <= conn.parser.wbuf.capacity());
+      if conn.parser.wbuf != expected {
+         let mut d = 0;
+         while d < expected.len() && d < conn.parser.wbuf.len() && conn.parser.wbuf[d] == expected[d] { d += 1; }
+         eprintln!("DIVERGE at {d}: got={:?} want={:?}", &conn.parser.wbuf[d..d+40.min(conn.parser.wbuf.len()-d)], &expected[d..d+40.min(expected.len()-d)]);
+         panic!("wbuf mismatch at {d}");
+      }
       assert_eq!(conn.parser.wbuf, expected);
       conn.parser.wbuf.capacity()
    })
@@ -538,7 +544,7 @@ fn batched_bit_writes_and_repeated_count_reads_preserve_script_boundaries() {
    wire.extend_from_slice(&command(&[b"GEOADD", b"geo", b"0", b"0", b"a"]));
    expected.extend_from_slice(b":1\r\n");
    wire.extend_from_slice(&command(&[b"GEODIST", b"geo", b"a", b"a"]).repeat(257));
-   expected.extend_from_slice(&bulk(b"0.0").repeat(257));
+   expected.extend_from_slice(&bulk(b"0").repeat(257));
    wire.extend_from_slice(&command(&[
       b"EVAL",
       b"redis.call('SET','after','ok'); return 42",

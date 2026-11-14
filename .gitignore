@@ -7,3 +7,7 @@ fyrodb_*
 bench/fyrodb-test
 
 **/__pycache__/
+
+# Internal audit documents (local-only)
+AUDIT.md
+continue_audit.md

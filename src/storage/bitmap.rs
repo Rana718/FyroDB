@@ -35,14 +35,53 @@ impl Store {
       match result {
          Some(r) => r,
          None => {
-            let mut bytes = vec![0u8; byte_idx + 1];
-            if value {
-               bytes[byte_idx] |= 1 << bit_idx;
+            // Absent-key fallback. The create MUST be insert-if-absent:
+            // with 8 threads SETBITting different bits of a brand-new
+            // byte, an unconditional insert would let each creator
+            // overwrite the others' bits (battery 2 H3 lost-update).
+            loop {
+               let mut bytes = vec![0u8; byte_idx + 1];
+               if value {
+                  bytes[byte_idx] |= 1 << bit_idx;
+               }
+               if self
+                  .data
+                  .insert_if_absent_str(key, StoreValue::string_small(SmallStr::from_bytes(bytes)))
+               {
+                  return Ok(0);
+               }
+               // Lost the create race: the key exists now — retry the
+               // in-place update against it (the INCR pattern).
+               let retry = self.data.update_with(key, |val| {
+                  if val.is_expired() {
+                     let mut fresh = vec![0u8; byte_idx + 1];
+                     if value {
+                        fresh[byte_idx] |= 1 << bit_idx;
+                     }
+                     val.value = FyroDB::String(SmallStr::from_bytes(fresh));
+                     val.expires_ms = 0;
+                     return Ok(0u8);
+                  }
+                  match val.value.as_string_mut() {
+                     Some(s) => {
+                        s.ensure_len(byte_idx + 1);
+                        let bytes = s.as_bytes_mut();
+                        let old = (bytes[byte_idx] >> bit_idx) & 1;
+                        if value {
+                           bytes[byte_idx] |= 1 << bit_idx;
+                        } else {
+                           bytes[byte_idx] &= !(1 << bit_idx);
+                        }
+                        Ok(old)
+                     }
+                     None => Err("WRONGTYPE"),
+                  }
+               });
+               if let Some(r) = retry {
+                  return r;
+               }
+               // Key vanished between insert and update — re-create.
             }
-            self
-               .data
-               .insert_str(key, StoreValue::string_small(SmallStr::from_bytes(bytes)));
-            Ok(0)
          }
       }
    }
