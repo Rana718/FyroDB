@@ -5,19 +5,30 @@ use std::time::Duration;
 
 impl Store {
    pub fn del(&self, key: &str) -> bool {
-      let removed = self.data.remove_no_clone(key);
+      self.del_bytes(key.as_bytes())
+   }
+
+   /// Bytes-key twin of `del` (audit S-2). Non-UTF-8 keys skip the
+   /// PG-proxy invalidation (that cache's key domain is UTF-8).
+   pub fn del_bytes(&self, key: &[u8]) -> bool {
+      let removed = self.data.remove_no_clone_bytes(key);
       if removed {
-         self.aof_capture(key);
-         if let Some(mgr) = self.dbcache_manager() {
-            mgr.invalidate_key(key);
+         if let Some(aof) = crate::storage::persistence::aof::get() {
+            // post-removal read yields no value → the AOF record is a DEL
+            aof.record_encoded_bytes(key, None);
+         }
+         if let Ok(key_str) = std::str::from_utf8(key)
+            && let Some(mgr) = self.dbcache_manager()
+         {
+            mgr.invalidate_key(key_str);
          }
       }
       if removed && let Some(log) = &self.replication {
          let _ = log.append(crate::cluster::MutationRecord {
             offset: 0,
-            slot: crate::cluster::hash_slot(key.as_bytes()),
+            slot: crate::cluster::hash_slot(key),
             kind: crate::cluster::MutationKind::Delete,
-            key: key.as_bytes().to_vec(),
+            key: key.to_vec(),
             value: Vec::new(),
             expire_at_ms: None,
          });
@@ -61,9 +72,14 @@ impl Store {
    }
 
    pub fn expire_ms(&self, key: &str, abs_ms: u64) -> bool {
+      self.expire_ms_bytes(key.as_bytes(), abs_ms)
+   }
+
+   /// Bytes-key twin of `expire_ms` (audit S-2).
+   pub fn expire_ms_bytes(&self, key: &[u8], abs_ms: u64) -> bool {
       let ok = self
          .data
-         .update_with(key, |val| {
+         .update_with_hinted_bytes(key, None, |val| {
             if val.is_expired() {
                return false;
             }
@@ -74,13 +90,21 @@ impl Store {
          .unwrap_or(false);
       if ok {
          self.add_ttl();
-         self.aof_capture(key);
+         if let Some(aof) = crate::storage::persistence::aof::get() {
+            // EXPIRE is recorded by re-reading the value with its new TTL
+            let encoded = self
+               .data
+               .get_ref_bytes(key)
+               .filter(|v| !v.is_expired())
+               .and_then(|v| crate::storage::persistence::aof::encode_live(&v));
+            aof.record_encoded_bytes(key, encoded.as_deref());
+         }
          if let Some(log) = &self.replication {
             let _ = log.append(crate::cluster::MutationRecord {
                offset: 0,
-               slot: crate::cluster::hash_slot(key.as_bytes()),
+               slot: crate::cluster::hash_slot(key),
                kind: crate::cluster::MutationKind::Expire,
-               key: key.as_bytes().to_vec(),
+               key: key.to_vec(),
                value: Vec::new(),
                expire_at_ms: Some(abs_ms),
             });

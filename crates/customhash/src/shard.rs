@@ -730,6 +730,84 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
       Self::find_slow(key, mask, slots, base_idx + 16, expected_hi, expected_match)
    }
 
+   /// Bytes-key twin of `find_fast` (audit S-2): identical probe, full
+   /// byte comparison instead of `eq_str`.
+   pub(crate) fn find_fast_bytes<'a>(
+      slots: *mut TaggedSlot<V>,
+      mask: usize,
+      key: &[u8],
+      hash: u64,
+   ) -> Option<&'a Entry<V>> {
+      let expected_hi = (hash_tag(hash) | (1 << TAG_BITS)) as u16;
+      let expected_match = hash_bits(hash) | STATE_OCCUPIED;
+      let base_idx = (hash as usize) & mask;
+      if base_idx + 16 > mask + 1 {
+         return Self::find_slow_bytes(key, mask, slots, base_idx, expected_hi, expected_match);
+      }
+      let base_ptr = unsafe { slots.add(base_idx) };
+
+      for j in 0..16 {
+         let w = unsafe { (*base_ptr.add(j)).0.load(Ordering::Acquire) } as usize;
+         if let Some(res) =
+            unsafe { Self::check_slot_entry_bytes(w, expected_hi, expected_match, key) }
+         {
+            return res;
+         }
+      }
+
+      Self::find_slow_bytes(key, mask, slots, base_idx + 16, expected_hi, expected_match)
+   }
+
+   #[cold]
+   fn find_slow_bytes<'a>(
+      key: &[u8],
+      mask: usize,
+      slots: *mut TaggedSlot<V>,
+      start_idx: usize,
+      expected_hi: u16,
+      expected_match: u64,
+   ) -> Option<&'a Entry<V>> {
+      let cap = mask + 1;
+      let mut i = start_idx & mask;
+      let mut probes = 0;
+      while probes < cap {
+         let w = unsafe { (*slots.add(i)).0.load(Ordering::Acquire) } as usize;
+         if let Some(res) =
+            unsafe { Self::check_slot_entry_bytes(w, expected_hi, expected_match, key) }
+         {
+            return res;
+         }
+         i = (i + 1) & mask;
+         probes += 1;
+      }
+      None
+   }
+
+   #[inline(always)]
+   unsafe fn check_slot_entry_bytes<'a>(
+      w: usize,
+      expected_hi: u16,
+      expected_match: u64,
+      key: &[u8],
+   ) -> Option<Option<&'a Entry<V>>> {
+      let p = if (w >> TAG_SHIFT) as u16 == expected_hi {
+         (w & PTR_MASK) as *mut Entry<V>
+      } else if w == 0 {
+         return Some(None);
+      } else if (w & TAG_FLAG) == 0 {
+         w as *mut Entry<V>
+      } else {
+         return None;
+      };
+      let e = unsafe { &*p };
+      let state = e.state.load(Ordering::Relaxed);
+      if (state & STATE_HASH_OCCUPIED_MASK) == expected_match && e.key.eq_bytes(key) {
+         Some(Some(e))
+      } else {
+         None
+      }
+   }
+
    #[cold]
    fn find_slow<'a>(
       key: &str,
@@ -1012,6 +1090,84 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
       InsertFastResult::Fallback(value)
    }
 
+   /// Bytes-key twin of `insert_or_update_slot_fast` (audit S-2).
+   #[inline(always)]
+   pub(crate) fn insert_or_update_slot_fast_bytes(
+      &self,
+      hash: u64,
+      key: &[u8],
+      value: V,
+      _pin: &ebr::Guard,
+   ) -> InsertFastResult<V> {
+      if self.insert_gate.load(Ordering::Relaxed) & GROWING != 0 {
+         return InsertFastResult::Fallback(value);
+      }
+      let table_ptr = self.table.load(Ordering::Acquire);
+      let table = unsafe { &*table_ptr };
+      let base = (hash as usize) & table.mask;
+      let expected_hi = (hash_tag(hash) | (1 << TAG_BITS)) as u16;
+      for offset in 0..16 {
+         let slot = unsafe { table.slot((base + offset) & table.mask) };
+         let word = slot.0.load(Ordering::Acquire) as usize;
+         if word == 0 {
+            let insert_guard = self.enter_insert();
+            if self.table.load(Ordering::Acquire) != table_ptr
+               || self.len.load(Ordering::Relaxed) >= table.threshold
+            {
+               return InsertFastResult::Fallback(value);
+            }
+            let entry = alloc_entry(
+               CompactKey::from_bytes(key),
+               self.snap.fresh_state() | hash_bits(hash),
+               value,
+            );
+            if slot.claim(entry, hash) {
+               let new_len = self.len.fetch_add(1, Ordering::Relaxed) + 1;
+               drop(insert_guard);
+               if new_len >= table.threshold {
+                  self.grow();
+               }
+               return InsertFastResult::Inserted;
+            }
+            let value = unsafe { (*(*entry).value.get()).assume_init_read() };
+            unsafe {
+               state_set_occupied(&(*entry).state, false, Ordering::Relaxed);
+               drop_raw_entry::<V>(entry.cast());
+            }
+            return InsertFastResult::Fallback(value);
+         }
+         let p = if (word >> TAG_SHIFT) as u16 == expected_hi {
+            (word & PTR_MASK) as *mut Entry<V>
+         } else if word & TAG_FLAG == 0 {
+            word as *mut Entry<V>
+         } else {
+            continue;
+         };
+         let entry = unsafe { &*p };
+         let state = entry.state.load(Ordering::Relaxed);
+         if stored_hash(state) != hash as u32 as u64 || !entry.key.eq_bytes(key) {
+            continue;
+         }
+         if state & (STATE_LOCK | STATE_OCCUPIED) != STATE_OCCUPIED {
+            return InsertFastResult::Fallback(value);
+         }
+         let locked = bump_seq(state) | STATE_LOCK;
+         if entry
+            .state
+            .compare_exchange(state, locked, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+         {
+            return InsertFastResult::Fallback(value);
+         }
+         self.snap.before_write(entry);
+         unsafe { (*entry.value.get()).assume_init_drop() };
+         unsafe { (*entry.value.get()).write(value) };
+         unlock_write(&entry.state, locked, true);
+         return InsertFastResult::Updated;
+      }
+      InsertFastResult::Fallback(value)
+   }
+
    /// Single-pass lookup-or-insert: returns existing entry or claims empty slot.
    #[inline(always)]
    pub(crate) fn probe_or_insert<F>(&self, hash: u64, key: &str, make_value: F) -> FastSet<V>
@@ -1082,6 +1238,93 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
 
       let entry = alloc_entry(
          CompactKey::from_str(key),
+         self.snap.fresh_state() | hash_bits(hash),
+         make_value(),
+      );
+      let slot = unsafe { t.slot((base_idx + vacant) & t.mask) };
+      if slot.claim(entry, hash) {
+         let new_len = self.len.fetch_add(1, Ordering::Relaxed) + 1;
+         drop(insert_guard);
+         if new_len >= t.threshold {
+            self.grow();
+         }
+         return FastSet::Inserted;
+      }
+      unsafe { drop_raw_entry::<V>(entry.cast()) };
+      drop(insert_guard);
+      FastSet::Retry
+   }
+
+   /// Bytes-key twin of `probe_or_insert` (audit S-2).
+   #[inline(always)]
+   pub(crate) fn probe_or_insert_bytes<F>(&self, hash: u64, key: &[u8], make_value: F) -> FastSet<V>
+   where
+      F: FnOnce() -> V,
+   {
+      let table_ptr = self.table.load(Ordering::Acquire);
+      let t = unsafe { &*table_ptr };
+      let base_idx = (hash as usize) & t.mask;
+      let base_ptr = unsafe { t.slots.add(base_idx) };
+      let expected_hi = (hash_tag(hash) | (1 << TAG_BITS)) as u16;
+      let mut vacant = usize::MAX;
+
+      let w0 = unsafe { (*base_ptr).0.load(Ordering::Acquire) } as usize;
+      if (w0 >> TAG_SHIFT) as u16 == expected_hi {
+         let p = (w0 & PTR_MASK) as *mut Entry<V>;
+         let e = unsafe { &*p };
+         let state = e.state.load(Ordering::Relaxed);
+         if stored_hash(state) == hash as u32 as u64 && e.key.eq_bytes(key) {
+            return if state & STATE_OCCUPIED != 0 {
+               FastSet::Existing(p)
+            } else {
+               FastSet::Retry
+            };
+         }
+      } else if w0 == 0 && base_idx < t.capacity {
+         vacant = 0;
+      }
+
+      if vacant == usize::MAX && w0 != 0 {
+         for j in 1..16usize {
+            let slot = unsafe { &*base_ptr.add(j) };
+            let word = slot.0.load(Ordering::Acquire) as usize;
+            if (word >> TAG_SHIFT) as u16 == expected_hi {
+               let p = (word & PTR_MASK) as *mut Entry<V>;
+               let e = unsafe { &*p };
+               let state = e.state.load(Ordering::Relaxed);
+               if stored_hash(state) == hash as u32 as u64 && e.key.eq_bytes(key) {
+                  return if state & STATE_OCCUPIED != 0 {
+                     FastSet::Existing(p)
+                  } else {
+                     FastSet::Retry
+                  };
+               }
+            } else if word == 0 {
+               if base_idx + j < t.capacity {
+                  vacant = j;
+               }
+               break;
+            }
+         }
+      }
+
+      if vacant == usize::MAX {
+         return FastSet::Retry;
+      }
+
+      let insert_guard = self.enter_insert();
+      if self.table.load(Ordering::Acquire) != table_ptr {
+         drop(insert_guard);
+         return FastSet::Retry;
+      }
+      if self.len.load(Ordering::Relaxed) >= t.threshold {
+         drop(insert_guard);
+         self.grow();
+         return FastSet::Retry;
+      }
+
+      let entry = alloc_entry(
+         CompactKey::from_bytes(key),
          self.snap.fresh_state() | hash_bits(hash),
          make_value(),
       );
@@ -1191,6 +1434,136 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
                let p = word as *mut Entry<V>;
                let e = unsafe { &*p };
                if stored_hash(e.state.load(Ordering::Relaxed)) == expected_hash && e.key.eq_str(key)
+               {
+                  Some(e)
+               } else {
+                  None
+               }
+            } else {
+               None
+            };
+
+            if let Some(e) = is_match {
+               let val = if !entry.is_null() {
+                  let extracted_val = unsafe { (*(*entry).value.get()).assume_init_read() };
+                  unsafe {
+                     state_set_occupied(&(*entry).state, false, Ordering::Relaxed);
+                     drop_raw_entry::<V>(entry.cast());
+                  }
+                  extracted_val
+               } else {
+                  value.take().expect("value taken once")
+               };
+               state_lock(&e.state);
+               let was_occupied = state_occupied(&e.state, Ordering::Relaxed);
+               if !overwrite && was_occupied {
+                  state_unlock(&e.state);
+                  drop(insert_guard);
+                  return false;
+               }
+               self.snap.before_write(e);
+               write_begin(&e.state);
+               if was_occupied {
+                  unsafe { (*e.value.get()).assume_init_drop() };
+               }
+               unsafe { (*e.value.get()).write(val) };
+               write_end(&e.state, true);
+               drop(insert_guard);
+
+               if !was_occupied {
+                  return true;
+               }
+               return false;
+            }
+
+            i = (i + 1) & t.mask;
+         }
+      }
+   }
+
+   /// Bytes-key twin of `set_key_with_overwrite` (audit S-2): probes by
+   /// tag, compares full key bytes, and builds the key with
+   /// `CompactKey::from_bytes`.
+   pub(crate) fn set_key_with_overwrite_bytes(
+      &self,
+      key: &[u8],
+      hash: u64,
+      value: V,
+      overwrite: bool,
+   ) -> bool {
+      let expected_tag = TAG_FLAG | (hash_tag(hash) << TAG_SHIFT);
+      let expected_hash = hash as u32 as u64;
+      let mut value = Some(value);
+
+      loop {
+         let insert_guard = self.enter_insert();
+         let t = self.table();
+         if self.len.load(Ordering::Relaxed) >= t.threshold {
+            drop(insert_guard);
+            self.grow();
+            continue;
+         }
+
+         let mut i = (hash as usize) & t.mask;
+         let mut entry: *mut Entry<V> = ptr::null_mut();
+         let mut probes = 0usize;
+
+         loop {
+            if probes >= t.capacity {
+               if !entry.is_null() {
+                  let owned_key = unsafe { std::ptr::read(&(*entry).key) };
+                  let extracted_val = unsafe { (*(*entry).value.get()).assume_init_read() };
+                  unsafe {
+                     rust_zmalloc::dealloc_raw(entry.cast(), std::alloc::Layout::new::<Entry<V>>());
+                  }
+                  value = Some(extracted_val);
+                  let _ = owned_key;
+               }
+               drop(insert_guard);
+               self.rehash(t);
+               break;
+            }
+            probes += 1;
+
+            let slot = unsafe { t.slot(i) };
+            let word = slot.0.load(Ordering::Acquire) as usize;
+
+            if word == 0 {
+               if entry.is_null() {
+                  let val = value.take().expect("value taken once");
+                  entry = alloc_entry(
+                     CompactKey::from_bytes(key),
+                     self.snap.fresh_state() | hash_bits(hash),
+                     val,
+                  );
+               }
+
+               if slot.claim(entry, hash) {
+                  let new_len = self.len.fetch_add(1, Ordering::Relaxed) + 1;
+                  drop(insert_guard);
+                  if new_len >= t.threshold {
+                     self.grow();
+                  }
+                  return true;
+               }
+               continue;
+            }
+
+            let is_match = if (word & RESERVED_MASK) == expected_tag {
+               let p = (word & PTR_MASK) as *mut Entry<V>;
+               let e = unsafe { &*p };
+               if stored_hash(e.state.load(Ordering::Relaxed)) == expected_hash
+                  && e.key.eq_bytes(key)
+               {
+                  Some(e)
+               } else {
+                  None
+               }
+            } else if word & TAG_FLAG == 0 {
+               let p = word as *mut Entry<V>;
+               let e = unsafe { &*p };
+               if stored_hash(e.state.load(Ordering::Relaxed)) == expected_hash
+                  && e.key.eq_bytes(key)
                {
                   Some(e)
                } else {

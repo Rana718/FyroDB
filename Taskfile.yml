@@ -30,6 +30,11 @@ tasks:
       desc: Release build
       cmds:
          - cargo build --release --bin {{.BINARY}}
+   verify:proofs:
+      desc: Verify the formal concurrency-protocol proofs (Verus; needs VERUS_BIN, dev-only)
+      cmds:
+         - sh -c 'for f in proofs/verus/*.rs; do ~/tools/verus/verus --crate-type=lib "$f" || exit 1; done'
+
    fmt:
       desc: Format entire codebase (all workspace crates) with rustfmt
       cmds:

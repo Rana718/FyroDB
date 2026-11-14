@@ -142,7 +142,13 @@ pub(crate) struct Inner {
    pay: usize,
    /// u32 words per level-0 block (multiple of 16: whole cache lines).
    stride: usize,
-   blocks: Vec<Line>,
+   /// Chunked node arena (audit V-1a): one `Box<[Line]>` per chunk of
+   /// `nodes_per_chunk` nodes. Growth appends a chunk instead of
+   /// realloc-and-copying the whole arena under the write lock, which
+   /// stalled every concurrent search; `base()` adds one divide per node.
+   blocks: Vec<Box<[Line]>>,
+   /// nodes per arena chunk (>= 1)
+   nodes_per_chunk: usize,
    /// Node slots allocated (ids `0..len`).
    len: usize,
    flags: Vec<AtomicU8>,
@@ -163,10 +169,30 @@ pub(crate) struct Inner {
 
 impl Inner {
    #[inline(always)]
+   fn nodes_per_chunk_for(stride: usize) -> usize {
+      // ~1 MiB per chunk: at least 64 nodes, power of two
+      (16384 / (stride / 16)).max(64).next_power_of_two()
+   }
+
+   #[inline(always)]
    fn base(&self, id: u32) -> *mut u32 {
       debug_assert!((id as usize) < self.len);
-      // SAFETY: ids < len; blocks hold at least len * stride words.
-      unsafe { (self.blocks.as_ptr() as *mut u32).add(id as usize * self.stride) }
+      // SAFETY: ids < len; chunk (id / nodes_per_chunk) exists and holds
+      // at least one node's stride words at the node's offset.
+      let np = self.nodes_per_chunk;
+      let chunk = id as usize / np;
+      let off = (id as usize % np) * self.stride;
+      unsafe { self.blocks[chunk].as_ptr().cast::<u32>().add(off) as *mut u32 }
+   }
+
+   /// Append zeroed chunks until the arena holds `n` nodes. Growth is
+   /// O(new chunk) — no copy of existing blocks, no giant realloc.
+   fn ensure_chunks(&mut self, n: usize) {
+      let needed = n.div_ceil(self.nodes_per_chunk);
+      let chunk_lines = self.nodes_per_chunk * (self.stride / 16);
+      while self.blocks.len() < needed {
+         self.blocks.push((0..chunk_lines).map(|_| Line::zero()).collect());
+      }
    }
 
    #[inline(always)]
@@ -517,6 +543,7 @@ impl HnswGraph {
             pay,
             stride,
             blocks: Vec::new(),
+            nodes_per_chunk: Inner::nodes_per_chunk_for(stride),
             len: 0,
             flags: Vec::new(),
             levels: Vec::new(),
@@ -594,7 +621,7 @@ impl HnswGraph {
    /// Approximate heap bytes held by the index.
    pub fn memory_bytes(&self) -> usize {
       let g = self.inner.read();
-      g.blocks.capacity() * 64
+      g.blocks.iter().map(|c| c.len() * 64).sum::<usize>()
          + g.flags.capacity()
          + g.levels.capacity()
          + g.locks.capacity()
@@ -779,11 +806,7 @@ impl HnswGraph {
 
    pub fn reserve(&self, n: usize) {
       let mut g = self.inner.write();
-      let lines = n * g.stride / 16;
-      if g.blocks.capacity() < lines {
-         let extra = lines - g.blocks.len();
-         g.blocks.reserve_exact(extra);
-      }
+      g.ensure_chunks(n);
       let extra = n.saturating_sub(g.flags.len());
       g.flags.reserve_exact(extra);
       g.levels.reserve_exact(extra);
@@ -796,10 +819,8 @@ impl HnswGraph {
          return;
       }
       let n = id + 1;
-      let lines = n * g.stride / 16;
-      if g.blocks.len() < lines {
-         g.blocks.resize_with(lines, Line::zero);
-      }
+      // chunked arena: append zeroed chunks — no copy of existing blocks
+      g.ensure_chunks(n);
       while g.flags.len() < n {
          g.flags.push(AtomicU8::new(F_DELETED));
          g.levels.push(0);
@@ -1152,8 +1173,7 @@ impl HnswGraph {
       {
          let mut o = out.inner.write();
          let count = order.len();
-         let lines = count * o.stride / 16;
-         o.blocks.resize_with(lines, Line::zero);
+         o.ensure_chunks(count);
          o.len = count;
          o.flags = (0..count).map(|_| AtomicU8::new(0)).collect();
          o.levels = vec![0; count];
@@ -1312,9 +1332,9 @@ impl HnswGraph {
             // insert to realloc-and-copy the whole block arena under the
             // write lock (all searches stall for the copy).
             let slack_target = (count * 3 / 2).max(1024).next_power_of_two();
-            let block_lines = slack_target * g.stride / 16;
-            if g.blocks.capacity() > block_lines * 2 {
-               g.blocks.shrink_to(block_lines);
+            let keep_chunks = slack_target.div_ceil(g.nodes_per_chunk);
+            if g.blocks.len() > keep_chunks {
+               g.blocks.truncate(keep_chunks.max(1));
             }
             if g.flags.capacity() > slack_target * 2 {
                g.flags.shrink_to(slack_target);

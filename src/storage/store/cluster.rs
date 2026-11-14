@@ -53,6 +53,50 @@ impl Store {
       }
    }
 
+   /// Bytes-key twin of `record_current_value` (audit S-2): the captured
+   /// record carries the raw key bytes; non-UTF-8 keys skip the PG-proxy
+   /// invalidation (that cache's key domain is UTF-8).
+   pub fn record_current_value_bytes(&self, key: &[u8]) {
+      let mut encoded: Option<Vec<u8>> = None;
+      let mut expire_at_ms: Option<u64> = None;
+      let mut live = false;
+      {
+         let value = self.data.get_ref_bytes(key);
+         if let Some(value) = value.as_ref().filter(|value| !value.is_expired()) {
+            live = true;
+            if crate::storage::persistence::aof::enabled() {
+               encoded = crate::storage::persistence::aof::encode_live(value);
+            }
+            expire_at_ms = Some(value.expires_ms).filter(|expiry| *expiry != 0);
+            if self.replication.is_some() && encoded.is_none() {
+               encoded = crate::storage::rdb::encode_single_value(value).ok();
+            }
+         }
+      }
+      if let Some(aof) = crate::storage::persistence::aof::get() {
+         aof.record_encoded_bytes(key, encoded.as_deref());
+      }
+      let Some(log) = &self.replication else { return };
+      let slot = crate::cluster::hash_slot(key);
+      let Some(encoded) = (live.then_some(encoded)).flatten() else {
+         let _ = log.append(crate::cluster::MutationRecord {
+            offset: 0,
+            slot,
+            kind: crate::cluster::MutationKind::Delete,
+            key: key.to_vec(),
+            value: Vec::new(),
+            expire_at_ms: None,
+         });
+         return;
+      };
+      let _ = log.append(crate::cluster::MutationRecord::replace(
+         slot,
+         key.to_vec(),
+         encoded,
+         expire_at_ms,
+      ));
+   }
+
    pub fn record_current_value(&self, key: &str) {
       // One lookup, one encoding, shared by the AOF record and the
       // replication record. The entry read guard spans the encode so the

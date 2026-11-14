@@ -171,10 +171,9 @@ fn dispatch_get_one(conn: &mut Conn<'_>, key_part: (*const u8, usize)) {
    if out.capacity().saturating_sub(out.len()) < 32 {
       out.reserve(32);
    }
-   let Some(key) = part_str(out, key_part) else {
-      return;
-   };
-   if !conn.store.get_to_buf_auto(key, hint, entry, out) {
+   // Audit S-2: bytes-native key — binary keys GET identically.
+   let key = unsafe { part_bytes(key_part) };
+   if !conn.store.get_to_buf_auto_bytes(key, hint, entry, out) {
       out.extend_from_slice(b"$-1\r\n");
    }
 }
@@ -205,22 +204,37 @@ fn dispatch_repeated_get<const STREAM_IO: bool>(conn: &mut Conn<'_>, key: &[u8],
    let out = &mut conn.parser.wbuf;
    let start = out.len();
    if !conn.store.get_to_buf_hinted_bytes(key, None, out) {
-      if std::str::from_utf8(key).is_ok() {
-         out.extend_from_slice(b"$-1\r\n");
-      } else {
-         crate::utils::resp::write_err(out, "invalid UTF-8 in request");
-      }
+      // Audit S-2: binary keys are valid — a miss is a nil reply.
+      out.extend_from_slice(b"$-1\r\n");
    }
+   let reply_len = out.len() - start;
    #[cfg(not(feature = "io-uring"))]
    if STREAM_IO
       && conn.store.worker_capacity() > 1
-      && out.len() - start >= super::bulk::MIN_STREAM_BYTES
+      && reply_len >= super::bulk::MIN_STREAM_BYTES
    {
       super::bulk::send_repeated(&mut conn.stream, out, &mut conn.write_offset, start, count);
       return;
    }
-   crate::utils::resp::repeat_reply(out, start, count);
+   // Audit §4.4: buffer the replicated reply only up to a ceiling — a deep
+   // pipeline of huge values would otherwise build count × payload in wbuf
+   // (100 × 1 MiB = 100 MiB transient). Past the cap, re-run the GET per
+   // repetition so memory stays bounded.
+   if reply_len.saturating_mul(count as usize) <= REPEAT_REPLY_CAP {
+      crate::utils::resp::repeat_reply(out, start, count);
+   } else {
+      out.truncate(start);
+      for _ in 0..count {
+         if conn.store.get_to_buf_hinted_bytes(key, None, out) {
+            continue;
+         }
+         out.extend_from_slice(b"$-1\r\n");
+      }
+   }
 }
+
+/// Ceiling for the buffered repeated-GET reply (audit §4.4).
+const REPEAT_REPLY_CAP: usize = 16 * 1024 * 1024;
 
 #[inline(never)]
 fn dispatch_get_batch<const STREAM_IO: bool>(
@@ -381,11 +395,8 @@ fn dispatch_get_batch<const STREAM_IO: bool>(
          }
       };
       if !found {
-         if std::str::from_utf8(keys[i]).is_ok() {
-            out.extend_from_slice(b"$-1\r\n");
-         } else {
-            crate::utils::resp::write_err(out, "invalid UTF-8 in request");
-         }
+         // Audit S-2: binary keys are valid keys — a miss is a nil reply.
+         out.extend_from_slice(b"$-1\r\n");
       }
       if run_len > 1 {
          crate::utils::resp::repeat_reply(out, start_offset, run_len);
@@ -402,16 +413,14 @@ fn dispatch_set_one(
 ) {
    let (hint, entry) = conn.hint_for(key_part);
    let out = &mut conn.parser.wbuf;
-   let Some(key) = part_str(out, key_part) else {
-      return;
-   };
-   // Bytes-native: no value UTF-8 scan, and binary payloads keep the fast
-   // in-place overwrite instead of the general-path fallback.
+   // Audit S-2: bytes-native key and value — binary keys and payloads
+   // take the same fast in-place overwrite.
+   let key = unsafe { part_bytes(key_part) };
    let bytes = unsafe { part_bytes(value_part) };
    conn.store
       .set_string_auto_bytes(key, hint, entry, bytes, 0);
    if conn.store.has_replication() {
-      conn.store.record_current_value(key);
+      conn.store.record_current_value_bytes(key);
    }
    out.extend_from_slice(b"+OK\r\n");
 }
@@ -508,7 +517,6 @@ fn dispatch_set_batch<const PREFETCH: usize, const STREAMING: bool>(
    let out = &mut conn.parser.wbuf;
    out.reserve(count * 5);
    let old_len = out.len();
-   let mut errors = Vec::new();
    let mut i = 0;
    while i < count {
       if i >= prefetched {
@@ -604,17 +612,16 @@ fn dispatch_set_batch<const PREFETCH: usize, const STREAMING: bool>(
 
       if !updated {
          for k in i..end {
-            let Ok(key_str) = std::str::from_utf8(keys[k]) else {
-               errors.push(k);
-               continue;
-            };
+            // Audit S-2: keys are bytes-native — binary keys insert and
+            // overwrite through the same fast paths.
+            let key_bytes = keys[k];
             let val_bytes = unsafe { std::slice::from_raw_parts(vals[k].0, vals[k].1) };
             if entries[local].is_null() && !conn.store.has_replication() {
                let written = unsafe {
-                  store.data.insert_slot_fast_located_pinned(
+                  store.data.insert_slot_fast_located_pinned_bytes(
                      hashes[k],
                      store.data.shard_of(hashes[k]),
-                     key_str,
+                     key_bytes,
                      crate::storage::value::StoreValue::string_small(
                         crate::storage::value::SmallStr::from_slice(val_bytes),
                      ),
@@ -623,38 +630,27 @@ fn dispatch_set_batch<const PREFETCH: usize, const STREAMING: bool>(
                   )
                };
                if written {
-                  store.data.touched(key_str);
+                  store.data.touched_bytes(key_bytes);
                } else {
-                  store.set_string_fast_bytes(key_str, hashes[k], val_bytes);
+                  store.set_string_fast_bytes(key_bytes, hashes[k], val_bytes);
                }
             } else {
-               // Bytes-native: no value UTF-8 scan, binary keeps fast path.
                conn
                   .store
-                  .set_string_auto_bytes(key_str, Some(hashes[k]), entries[local], val_bytes, 0);
+                  .set_string_auto_bytes(key_bytes, Some(hashes[k]), entries[local], val_bytes, 0);
                if conn.store.has_replication() {
-                  conn.store.record_current_value(key_str);
+                  conn.store.record_current_value_bytes(key_bytes);
                }
             }
          }
       }
       i = end;
    }
-   if errors.is_empty() {
-      unsafe {
-         out.set_len(old_len + count * 5);
-         std::ptr::copy_nonoverlapping(OK_BLOCK.as_ptr(), out.as_mut_ptr().add(old_len), count * 5);
-      }
-   } else {
-      let mut errors = errors.into_iter().peekable();
-      for index in 0..count {
-         if errors.peek() == Some(&index) {
-            errors.next();
-            crate::utils::resp::write_err(out, "invalid UTF-8 in request");
-         } else {
-            crate::utils::resp::write_ok(out);
-         }
-      }
+   // S-2: keys are bytes-native, so the batch cannot fail on encoding —
+   // every command replies +OK (matching the sequential SET semantics).
+   unsafe {
+      out.set_len(old_len + count * 5);
+      std::ptr::copy_nonoverlapping(OK_BLOCK.as_ptr(), out.as_mut_ptr().add(old_len), count * 5);
    }
 }
 
@@ -1072,11 +1068,9 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
             return;
          }
          CmdId::Del if raw.len() == 2 => {
-            let out = &mut conn.parser.wbuf;
-            let Some(key) = part_str(out, raw[1]) else {
-               return;
-            };
-            crate::utils::resp::write_boolean(out, conn.store.del(key));
+            // Audit S-2: bytes-native key.
+            let key = unsafe { part_bytes(raw[1]) };
+            crate::utils::resp::write_boolean(&mut conn.parser.wbuf, conn.store.del_bytes(key));
             return;
          }
          CmdId::Hget if raw.len() == 3 => {
@@ -1117,15 +1111,13 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
             }
          }
          CmdId::Incr if raw.len() == 2 => {
-            let (hint, _) = conn.hint_for(raw[1]);
             let out = &mut conn.parser.wbuf;
-            let Some(key) = part_str(out, raw[1]) else {
-               return;
-            };
-            match conn.store.incr_hinted(key, hint) {
+            // Audit S-2: bytes-native key.
+            let key = unsafe { part_bytes(raw[1]) };
+            match conn.store.incr_bytes(key) {
                Ok(n) => {
                   if conn.store.has_replication() {
-                     conn.store.record_current_value(key);
+                     conn.store.record_current_value_bytes(key);
                   }
                   crate::utils::resp::write_integer(out, n)
                }
@@ -1308,9 +1300,8 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
          }
          CmdId::Expire if raw.len() == 3 => {
             let out = &mut conn.parser.wbuf;
-            let Some(key) = part_str(out, raw[1]) else {
-               return;
-            };
+            // Audit S-2: bytes-native key.
+            let key = unsafe { part_bytes(raw[1]) };
             let Some(secs) = part_str(out, raw[2]) else {
                return;
             };
@@ -1320,9 +1311,9 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
                .and_then(crate::storage::value::expiry_from_secs)
             {
                Some(exp) => {
-                  let ok = conn.store.expire_ms(key, exp);
+                  let ok = conn.store.expire_ms_bytes(key, exp);
                   if conn.store.has_replication() {
-                     conn.store.record_current_value(key);
+                     conn.store.record_current_value_bytes(key);
                   }
                   if ok {
                      crate::utils::resp::ONE
@@ -1609,7 +1600,7 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
          };
          if raw.len() == 3 {
             let bytes = unsafe { part_bytes(raw[2]) };
-            conn.store.set_string_auto_bytes(key, hint, entry, bytes, 0);
+            conn.store.set_string_auto_bytes(key.as_bytes(), hint, entry, bytes, 0);
             if conn.store.has_replication() {
                conn.store.record_current_value(key);
             }
@@ -1629,11 +1620,9 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
          return;
       }
       CmdId::Del if raw.len() == 2 => {
-         let out = &mut conn.parser.wbuf;
-         let Some(key) = part_str(out, raw[1]) else {
-            return;
-         };
-         if conn.store.del(key) {
+         // Audit S-2: bytes-native key.
+         let key = unsafe { part_bytes(raw[1]) };
+         if conn.store.del_bytes(key) {
             conn.parser.wbuf.extend_from_slice(b":1\r\n");
          } else {
             conn.parser.wbuf.extend_from_slice(b":0\r\n");

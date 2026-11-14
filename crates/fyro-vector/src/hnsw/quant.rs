@@ -330,6 +330,41 @@ pub(crate) enum QEnc {
    },
 }
 
+thread_local! {
+    // Audit V-3: query-encoding buffers recycle through per-thread
+    // free lists (returned by QEnc's Drop), so the quantized search
+    // path stops allocating a fresh Vec per search.
+    static INT8_FREE: std::cell::RefCell<Vec<Vec<i8>>> = const { std::cell::RefCell::new(Vec::new()) };
+    static RQ_FREE: std::cell::RefCell<Vec<Vec<(RqPlanes, f32)>>> = const { std::cell::RefCell::new(Vec::new()) };
+    static F32_FREE: std::cell::RefCell<Vec<Vec<f32>>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+const ENCODE_FREE_CAP: usize = 4;
+
+fn take_int8_buf() -> Vec<i8> {
+   INT8_FREE
+      .try_with(|f| f.borrow_mut().pop())
+      .ok()
+      .flatten()
+      .unwrap_or_default()
+}
+
+fn take_rq_buf() -> Vec<(RqPlanes, f32)> {
+   RQ_FREE
+      .try_with(|f| f.borrow_mut().pop())
+      .ok()
+      .flatten()
+      .unwrap_or_default()
+}
+
+fn take_f32_buf() -> Vec<f32> {
+   F32_FREE
+      .try_with(|f| f.borrow_mut().pop())
+      .ok()
+      .flatten()
+      .unwrap_or_default()
+}
+
 pub(crate) fn encode_query(
    q: Quant,
    rot: Option<&Rotation>,
@@ -342,10 +377,9 @@ pub(crate) fn encode_query(
       Quant::Int8 => {
          let maxabs = v.iter().fold(0f32, |m, x| m.max(x.abs()));
          let scale = if maxabs > 0.0 { maxabs / 127.0 } else { 1.0 };
-         let codes: Vec<i8> = v
-            .iter()
-            .map(|&x| (x / scale).round().clamp(-127.0, 127.0) as i8)
-            .collect();
+         let mut codes = take_int8_buf();
+         codes.clear();
+         codes.extend(v.iter().map(|&x| (x / scale).round().clamp(-127.0, 127.0) as i8));
          let sq: i64 = codes.iter().map(|&c| c as i64 * c as i64).sum();
          QEnc::Int8 {
             codes,
@@ -359,19 +393,50 @@ pub(crate) fn encode_query(
          // Score metrics through centered residuals: uncentered direction
          // estimates are noisier, and x·q follows from ‖x−q‖².
          let _ = metric;
-         let parts = book
-            .centroids
-            .iter()
-            .map(|c| {
-               let r: Vec<f32> = v.iter().zip(c).map(|(x, c)| x - c).collect();
-               rq_planes(rot, &r)
-            })
-            .collect();
+         let mut parts = take_rq_buf();
+         parts.clear();
+         let mut r = take_f32_buf();
+         for c in &book.centroids {
+            r.clear();
+            r.extend(v.iter().zip(c.iter()).map(|(x, c)| x - c));
+            parts.push(rq_planes(rot, &r));
+         }
          QEnc::Rq {
             parts,
             qnorm,
             inv_sqrt_dp: 1.0 / (rot.dp() as f32).sqrt(),
          }
+      }
+   }
+}
+
+impl Drop for QEnc {
+   fn drop(&mut self) {
+      // Return the encode buffers to this thread's free lists; buffers
+      // dying on another thread (brute-batch results crossing threads)
+      // just deallocate as before.
+      match self {
+         QEnc::Int8 { codes, .. } => {
+            let mut codes = std::mem::take(codes);
+            codes.clear();
+            let _ = INT8_FREE.try_with(|f| {
+               let mut f = f.borrow_mut();
+               if f.len() < ENCODE_FREE_CAP {
+                  f.push(codes);
+               }
+            });
+         }
+         QEnc::Rq { parts, .. } => {
+            let mut parts = std::mem::take(parts);
+            parts.clear();
+            let _ = RQ_FREE.try_with(|f| {
+               let mut f = f.borrow_mut();
+               if f.len() < ENCODE_FREE_CAP {
+                  f.push(parts);
+               }
+            });
+         }
+         QEnc::None => {}
       }
    }
 }

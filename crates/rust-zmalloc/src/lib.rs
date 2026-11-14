@@ -166,6 +166,14 @@ pub fn configure_allocator() {
       unsafe extern "C" {
          fn mi_option_set(option: i32, value: i64);
       }
+      // Audit M-7: immediate purge keeps RSS tight but page-refaults on
+      // regrowth; deployments sensitive to tail latency can raise the
+      // delay without touching the RSS-default behavior.
+      let purge_delay_ms = std::env::var("FYRODB_MALLOC_PURGE_DELAY_MS")
+         .ok()
+         .and_then(|v| v.parse::<i64>().ok())
+         .filter(|&v| v >= 0)
+         .unwrap_or(0);
       unsafe {
          // mi_option_eager_commit = 3: 0 (don't eagerly commit segments)
          mi_option_set(3, 0);
@@ -175,8 +183,8 @@ pub fn configure_allocator() {
          mi_option_set(5, 1);
          // mi_option_abandoned_page_purge = 12: 1 (immediately purge delayed purges on thread exit)
          mi_option_set(12, 1);
-         // mi_option_purge_delay = 15: 0 (immediate purge of unused pages to OS)
-         mi_option_set(15, 0);
+         // mi_option_purge_delay = 15: 0 by default (immediate purge of unused pages to OS)
+         mi_option_set(15, purge_delay_ms);
          // mi_option_arena_reserve = 23: 0 (don't pre-reserve 1GB arena upfront)
          mi_option_set(23, 0);
          // THP is disabled by the no_thp build feature; option 37 in v3

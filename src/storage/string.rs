@@ -144,15 +144,15 @@ impl Store {
    /// `set_string_fallback_bytes` with a pre-validated `&str` value.
    #[allow(dead_code)]
    fn set_string_fallback(&self, key: &str, hash: u64, value: &str, expires_ms: u64) {
-      self.set_string_fallback_bytes(key, hash, value.as_bytes(), expires_ms)
+      self.set_string_fallback_bytes(key.as_bytes(), hash, value.as_bytes(), expires_ms)
    }
 
-   fn set_string_fallback_bytes(&self, key: &str, hash: u64, value: &[u8], expires_ms: u64) {
+   fn set_string_fallback_bytes(&self, key: &[u8], hash: u64, value: &[u8], expires_ms: u64) {
       let store_val = StoreValue {
          value: crate::storage::value::FyroDB::String(SmallStr::from_slice(value)),
          expires_ms,
       };
-      self.data.set_str_hinted_pinned(key, Some(hash), store_val);
+      self.data.set_bytes_hinted_pinned(key, Some(hash), store_val);
       if expires_ms != 0 {
          self.add_ttl();
       }
@@ -417,7 +417,7 @@ impl Store {
       value: &str,
       expires_ms: u64,
    ) {
-      unsafe { self.set_string_fast_entry_bytes(key, hash, p, value.as_bytes(), expires_ms) }
+      unsafe { self.set_string_fast_entry_bytes(key.as_bytes(), hash, p, value.as_bytes(), expires_ms) }
    }
 
    /// Bytes-native twin of `set_string_fast_entry`: no value UTF-8 scan on
@@ -430,7 +430,7 @@ impl Store {
    #[inline(always)]
    pub unsafe fn set_string_fast_entry_bytes(
       &self,
-      key: &str,
+      key: &[u8],
       hash: u64,
       p: *const customhash::Entry<StoreValue>,
       value: &[u8],
@@ -439,7 +439,7 @@ impl Store {
       let _write_epoch = self.data.write_epoch();
       if !p.is_null() {
          let e = unsafe { &*p };
-         if e.key.eq_str(key) {
+         if e.key.eq_bytes(key) {
             let old_expires;
             let mut current = e.state.load(std::sync::atomic::Ordering::Relaxed);
             for _ in 0..32 {
@@ -471,7 +471,7 @@ impl Store {
                            crate::storage::value::FyroDB::String(SmallStr::from_slice(value));
                      }
                      customhash::unlock_write(&e.state, locked, true);
-                     self.data.touched(key);
+                     self.data.touched_bytes(key);
                      // Adjust the TTL counters for the transition under the
                      // same lock the mutation used; previously a TTL'd key
                      // overwritten without TTL only ever over-counted, and
@@ -503,22 +503,23 @@ impl Store {
       value: &str,
       expires_ms: u64,
    ) {
-      self.set_string_auto_bytes(key, hash_hint, entry_hint, value.as_bytes(), expires_ms)
+      self.set_string_auto_bytes(key.as_bytes(), hash_hint, entry_hint, value.as_bytes(), expires_ms)
    }
 
    /// Bytes-native `set_string_auto`: identical semantics without a caller
-   /// value UTF-8 scan; binary payloads keep the fast in-place path.
+   /// value UTF-8 scan; binary payloads keep the fast in-place path, and
+   /// the key is bytes-native (audit S-2) so binary keys take this path.
    #[inline(always)]
    pub fn set_string_auto_bytes(
       &self,
-      key: &str,
+      key: &[u8],
       hash_hint: Option<u64>,
       entry_hint: *const (),
       value: &[u8],
       expires_ms: u64,
    ) {
       if !entry_hint.is_null() {
-         let hash = hash_hint.unwrap_or_else(|| self.data.locate_key(key).0);
+         let hash = hash_hint.unwrap_or_else(|| self.data.locate_bytes(key).0);
          unsafe {
             self.set_string_fast_entry_bytes(key, hash, entry_hint.cast(), value, expires_ms);
          }
@@ -526,7 +527,7 @@ impl Store {
       }
       let hash = match hash_hint {
          Some(h) => h,
-         None => self.data.locate_key(key).0,
+         None => self.data.locate_bytes(key).0,
       };
       let idx = self.data.shard_of(hash);
       if value.len() <= crate::storage::value::SMALL_STR_CAP {
@@ -536,9 +537,9 @@ impl Store {
          };
          if self
             .data
-            .insert_slot_fast_located(hash, idx, key, store_val)
+            .insert_slot_fast_located_bytes(hash, idx, key, store_val)
          {
-            self.data.touched(key);
+            self.data.touched_bytes(key);
             if expires_ms != 0 {
                self.add_ttl();
             }
@@ -547,7 +548,7 @@ impl Store {
       }
       let _pin = customhash::pin();
       let _write_epoch = self.data.write_epoch();
-      match self.data.probe_or_insert_fast(hash, key, || StoreValue {
+      match self.data.probe_or_insert_fast_bytes(hash, key, || StoreValue {
          value: crate::storage::value::FyroDB::String(SmallStr::from_slice(value)),
          expires_ms,
       }) {
@@ -555,7 +556,7 @@ impl Store {
             self.set_string_fast_entry_bytes(key, hash, entry, value, expires_ms);
          },
          customhash::FastSet::Inserted => {
-            self.data.touched(key);
+            self.data.touched_bytes(key);
             if expires_ms != 0 {
                self.add_ttl();
             }
@@ -564,8 +565,9 @@ impl Store {
       }
    }
 
+   /// Bytes-key fast insert/overwrite (audit S-2).
    #[inline(always)]
-   pub fn set_string_fast_bytes(&self, key: &str, hash: u64, val_bytes: &[u8]) {
+   pub fn set_string_fast_bytes(&self, key: &[u8], hash: u64, val_bytes: &[u8]) {
       let idx = self.data.shard_of(hash);
       let store_val = StoreValue {
          value: crate::storage::value::FyroDB::String(SmallStr::from_slice(val_bytes)),
@@ -573,9 +575,9 @@ impl Store {
       };
       if self
          .data
-         .insert_slot_fast_located(hash, idx, key, store_val)
+         .insert_slot_fast_located_bytes(hash, idx, key, store_val)
       {
-         self.data.touched(key);
+         self.data.touched_bytes(key);
          return;
       }
       self.set_string_auto_bytes(key, Some(hash), std::ptr::null(), val_bytes, 0);
@@ -619,6 +621,69 @@ impl Store {
          }
       }
       self.get_to_buf_fallback(key, hash, out)
+   }
+
+   /// Bytes-key twin of `get_to_buf_auto` (audit S-2): binary keys take
+   /// the same hint/probe/serialize chain with no UTF-8 gate.
+   pub fn get_to_buf_auto_bytes(
+      &self,
+      key: &[u8],
+      hash_hint: Option<u64>,
+      entry_hint: *const (),
+      out: &mut Vec<u8>,
+   ) -> bool {
+      let _guard = customhash::pin();
+      if !entry_hint.is_null() {
+         let hash = hash_hint.unwrap_or_else(|| self.data.locate_bytes(key).0);
+         unsafe {
+            if self.get_to_buf_fast_entry_bytes(key, hash, entry_hint.cast(), out) {
+               return true;
+            }
+         }
+      }
+      let (hash, idx) = match hash_hint {
+         Some(h) => (h, self.data.shard_of(h)),
+         None => {
+            let (h, i) = self.data.locate_bytes(key);
+            (h, i)
+         }
+      };
+      if let Some(entry) = self.data.probe_entry_fast_bytes(key, hash, idx) {
+         unsafe {
+            if self.get_to_buf_fast_entry_bytes(key, hash, entry.cast(), out) {
+               return true;
+            }
+         }
+         std::hint::spin_loop();
+         unsafe {
+            if self.get_to_buf_fast_entry_bytes(key, hash, entry.cast(), out) {
+               return true;
+            }
+         }
+      }
+      self.get_to_buf_fallback_bytes(key, hash, out)
+   }
+
+   /// Bytes-key fallback (get_to_buf_fallback twin).
+   fn get_to_buf_fallback_bytes(&self, key: &[u8], hash: u64, out: &mut Vec<u8>) -> bool {
+      let idx = self.data.shard_of(hash);
+      let mut expired = false;
+      let matched = self.data.with_entry_pinned_bytes(key, hash, idx, |val| {
+         if val.expires_ms != 0 && val.is_expired() {
+            expired = true;
+            return false;
+         }
+         if let crate::storage::value::FyroDB::String(s) = &val.value {
+            s.write_resp(out);
+            return true;
+         }
+         false
+      });
+      if expired && !self.data.read_epoch_active() {
+         self.data.remove_if_bytes(key, |value| value.is_expired());
+         return false;
+      }
+      matched.unwrap_or(false)
    }
 
    #[inline(always)]
@@ -925,11 +990,25 @@ impl Store {
       self.int_op_hinted(key, None, delta)
    }
 
+   pub fn incr_bytes(&self, key: &[u8]) -> Result<i64, &'static str> {
+      self.int_op_hinted_bytes(key, None, 1)
+   }
+
    fn int_op_hinted(&self, key: &str, hash: Option<u64>, delta: i64) -> Result<i64, &'static str> {
+      self.int_op_hinted_bytes(key.as_bytes(), hash, delta)
+   }
+
+   /// Bytes-key twin of the integer ops (audit S-2).
+   fn int_op_hinted_bytes(
+      &self,
+      key: &[u8],
+      hash: Option<u64>,
+      delta: i64,
+   ) -> Result<i64, &'static str> {
       loop {
          let result = self
             .data
-            .update_with_hinted(key, hash, |val| match val.value.as_string() {
+            .update_with_hinted_bytes(key, hash, |val| match val.value.as_string() {
                Some(s) => {
                   let n = match s
                      .try_as_str()
@@ -953,11 +1032,10 @@ impl Store {
          }
          // Absent: lock-free create. Losing the insert race just means the
          // key now exists, so the loop retries the in-place update.
-         if self.data.insert_if_absent_str_hinted(
-            key,
-            hash,
-            StoreValue::string_small(SmallStr::from_int(delta)),
-         ) {
+         if self
+            .data
+            .insert_if_absent_bytes_hinted(key, hash, StoreValue::string_small(SmallStr::from_int(delta)))
+         {
             return Ok(delta);
          }
       }
