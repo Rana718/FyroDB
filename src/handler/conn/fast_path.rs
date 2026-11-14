@@ -167,15 +167,117 @@ pub(super) fn cmd_id(cmd: &[u8]) -> CmdId {
 #[inline(always)]
 fn dispatch_get_one(conn: &mut Conn<'_>, key_part: (*const u8, usize)) {
    let (hint, entry) = conn.hint_for(key_part);
+   // Audit §6.2: large values send directly from the entry bytes while
+   // holding the read guard — no wbuf payload memcpy.
+   let key = unsafe { part_bytes(key_part) };
+   if get_direct_send(conn, key, hint, entry) {
+      return;
+   }
    let out = &mut conn.parser.wbuf;
    if out.capacity().saturating_sub(out.len()) < 32 {
       out.reserve(32);
    }
    // Audit S-2: bytes-native key — binary keys GET identically.
-   let key = unsafe { part_bytes(key_part) };
    if !conn.store.get_to_buf_auto_bytes(key, hint, entry, out) {
       out.extend_from_slice(b"$-1\r\n");
    }
+}
+
+/// Below this size the wbuf path measures equal or better (the copy is
+/// cheap and batch-friendly); above it the direct send wins.
+const DIRECT_SEND_MIN: usize = 512 * 1024;
+
+/// Audit §6.2: single large GET sent straight from the entry bytes under
+/// the read guard via `write_vectored` — kills the wbuf payload memcpy.
+/// Falls back to `false` (the caller's wbuf path) for anything the fast
+/// shape does not cover: pending unsent wbuf bytes, small values,
+/// non-strings, misses, expired keys.
+fn get_direct_send(
+   conn: &mut Conn<'_>,
+   key: &[u8],
+   hint: Option<u64>,
+   entry_hint: *const (),
+) -> bool {
+   use std::io::IoSlice;
+
+   // Reply ordering: only safe when nothing unsent is queued ahead of us.
+   if conn.write_offset < conn.parser.wbuf.len() {
+      return false;
+   }
+   self_parser_wbuf_clear(conn);
+   let store = conn.store;
+   let _pin = customhash::pin();
+   let (h, idx) = match hint {
+      Some(h) => (h, store.data.shard_of(h)),
+      None => store.data.locate_bytes(key),
+   };
+   let entry = match store.data.probe_entry_fast_bytes(key, h, idx) {
+      Some(e) => e,
+      None => return false,
+   };
+   let e = unsafe { &*entry };
+   let state = e.state.load(std::sync::atomic::Ordering::Relaxed);
+   let expected = ((h as u32 as u64) << 32) | customhash::STATE_OCCUPIED;
+   if (state & (0xFFFF_FFFF_0000_0000 | customhash::STATE_OCCUPIED)) != expected {
+      return false;
+   }
+   let Some(read) = e.read() else { return false };
+   let val = &*read;
+   if val.expires_ms != 0 && val.is_expired() {
+      drop(read);
+      if !store.data.read_epoch_active() {
+         store.data.remove_if_bytes(key, |v| v.is_expired());
+      }
+      return false;
+   }
+   let Some(s) = val.value.as_string() else { return false };
+   let payload = s.as_bytes();
+   if payload.len() < DIRECT_SEND_MIN {
+      return false;
+   }
+   let mut d20 = [0u8; 20];
+   let digits = crate::utils::int_format::write_usize_to(&mut d20, payload.len());
+   let mut hdr = [0u8; 24];
+   hdr[0] = b'$';
+   hdr[1..1 + digits.len()].copy_from_slice(digits.as_bytes());
+   let hl = 1 + digits.len();
+   hdr[hl] = b'\r';
+   hdr[hl + 1] = b'\n';
+   let hl = hl + 2;
+   let total = hl + payload.len() + 2;
+
+   let n = match conn.stream.write_vectored(&[
+      IoSlice::new(&hdr[..hl]),
+      IoSlice::new(payload),
+      IoSlice::new(b"\r\n"),
+   ]) {
+      Ok(n) => n,
+      Err(_) => return false,
+   };
+   if n >= total {
+      self_parser_wbuf_clear(conn);
+      return true;
+   }
+   // Partial write: the unsent remainder moves into wbuf (write_offset 0).
+   let mut rem = Vec::with_capacity(total - n);
+   let mut pos = n;
+   for src in [&hdr[..hl], payload, b"\r\n" as &[u8]] {
+      if pos >= src.len() {
+         pos -= src.len();
+         continue;
+      }
+      rem.extend_from_slice(&src[pos..]);
+      pos = 0;
+   }
+   conn.parser.wbuf = rem;
+   conn.write_offset = 0;
+   true
+}
+
+#[inline(always)]
+fn self_parser_wbuf_clear(conn: &mut Conn<'_>) {
+   conn.parser.wbuf.clear();
+   conn.write_offset = 0;
 }
 
 /// Pointer-identity first: two raw slices into the same read buffer with
@@ -358,22 +460,17 @@ fn dispatch_get_batch<const STREAM_IO: bool>(
    {
       return;
    }
-   let out = &mut conn.parser.wbuf;
-   // Reserve from the observed first payload instead of doubling from a
-   // small base; varied sizes still grow, but uniform batches (the common
-   // case) now hit one allocation. Without an epoch there is no observed
-   // payload length — keep the historical per-reply estimate rather than
-   // under-reserving. Bounded so a hostile first reply cannot pre-commit
-   // unbounded memory.
-   let per_reply = if first_payload_len > 0 {
-      16 + first_payload_len.min(4096)
-   } else {
-      64
-   };
-   out.reserve((count * per_reply).min(64 << 20));
-
    let mut i = 0;
    while i < count {
+      // Bound wbuf growth (OOM hardening): a deep batch of large replies
+      // accumulated per connection OOM'd the process (16 conns x P16 x
+      // 1MB = ~4 GB of pending wbuf). Flush to the socket when the batch
+      // buffer exceeds the cap; do_write appends are order-preserving.
+      if conn.parser.wbuf.len() >= GET_BATCH_FLUSH_BYTES {
+         if !conn.do_write() {
+            return; // connection dead — outer loop handles cleanup
+         }
+      }
       if prefetch_payloads
          && i + 16 < count
          && let Some(epoch) = &read_epoch
@@ -385,25 +482,28 @@ fn dispatch_get_batch<const STREAM_IO: bool>(
          end += 1;
       }
       let run_len = end - i;
-      let start_offset = out.len();
+      let start_offset = conn.parser.wbuf.len();
       // process_buffered's epoch guard protects the prefetched entry.
       let found = unsafe {
          if let Some(epoch) = &read_epoch {
-            store.get_to_buf_epoch_entry_bytes(keys[i], hashes[i], entries[i].cast(), epoch, out)
+            store.get_to_buf_epoch_entry_bytes(keys[i], hashes[i], entries[i].cast(), epoch, &mut conn.parser.wbuf)
          } else {
-            store.get_to_buf_fast_entry_bytes(keys[i], hashes[i], entries[i].cast(), out)
+            store.get_to_buf_fast_entry_bytes(keys[i], hashes[i], entries[i].cast(), &mut conn.parser.wbuf)
          }
       };
       if !found {
          // Audit S-2: binary keys are valid keys — a miss is a nil reply.
-         out.extend_from_slice(b"$-1\r\n");
+         conn.parser.wbuf.extend_from_slice(b"$-1\r\n");
       }
       if run_len > 1 {
-         crate::utils::resp::repeat_reply(out, start_offset, run_len);
+         crate::utils::resp::repeat_reply(&mut conn.parser.wbuf, start_offset, run_len);
       }
       i = end;
    }
 }
+
+/// Audit OOM hardening: wbuf flush threshold for large batch GET replies.
+const GET_BATCH_FLUSH_BYTES: usize = 8 * 1024 * 1024;
 
 #[inline(always)]
 fn dispatch_set_one(
