@@ -487,7 +487,7 @@ fn expiry_loop(store: &Arc<Store>) {
    loop {
       std::thread::sleep(TICK);
       tick += 1;
-      if tick.is_multiple_of(100) {
+      if tick.is_multiple_of(10) {
          customhash::force_collect();
          rust_zmalloc::purge();
       }

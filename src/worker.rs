@@ -137,7 +137,13 @@ pub fn run_worker(
                            let sock_ref = socket2::SockRef::from(tcp);
                            let _ = sock_ref.set_tcp_nodelay(true);
                            #[cfg(target_os = "linux")]
-                           let _ = sock_ref.set_tcp_quickack(true);
+                           {
+                              let _ = sock_ref.set_tcp_quickack(true);
+                              // Kerrisk Ch. 61 & Gregg Ch. 10: 4MB send/recv buffers prevent
+                              // TCP window stall and EAGAIN drops during large payload pipelines (64KB - 1MB).
+                              let _ = sock_ref.set_send_buffer_size(4 * 1024 * 1024);
+                              let _ = sock_ref.set_recv_buffer_size(4 * 1024 * 1024);
+                           }
                         }
                         #[cfg(feature = "unix-sockets")]
                         Stream::Unix(_) => {}

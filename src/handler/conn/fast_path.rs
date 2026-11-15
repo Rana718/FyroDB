@@ -174,8 +174,9 @@ fn dispatch_get_one(conn: &mut Conn<'_>, key_part: (*const u8, usize)) {
       return;
    }
    let out = &mut conn.parser.wbuf;
-   if out.capacity().saturating_sub(out.len()) < 32 {
-      out.reserve(32);
+   let needed = 32;
+   if out.capacity().saturating_sub(out.len()) < needed {
+      out.reserve(needed.max(out.capacity()));
    }
    // Audit S-2: bytes-native key — binary keys GET identically.
    if !conn.store.get_to_buf_auto_bytes(key, hint, entry, out) {
@@ -314,19 +315,22 @@ fn dispatch_repeated_get<const STREAM_IO: bool>(conn: &mut Conn<'_>, key: &[u8],
       super::bulk::send_repeated(&mut conn.stream, out, &mut conn.write_offset, start, count);
       return;
    }
-   // Audit §4.4: buffer the replicated reply only up to a ceiling — a deep
-   // pipeline of huge values would otherwise build count × payload in wbuf
-   // (100 × 1 MiB = 100 MiB transient). Past the cap, re-run the GET per
-   // repetition so memory stays bounded.
+   // Audit §4.4 & Herlihy Ch. 7: buffer the replicated reply up to the ceiling.
+   // Past the cap, repeat into wbuf in batches up to REPEAT_REPLY_CAP
+   // using the already formatted reply slice instead of redundantly re-probing the hash table.
    if reply_len.saturating_mul(count as usize) <= REPEAT_REPLY_CAP {
       crate::utils::resp::repeat_reply(out, start, count);
    } else {
+      let single_reply = out[start..].to_vec();
       out.truncate(start);
-      for _ in 0..count {
-         if conn.store.get_to_buf_hinted_bytes(key, None, out) {
-            continue;
+      let batch_cap = REPEAT_REPLY_CAP / single_reply.len().max(1);
+      let mut rem = count;
+      while rem > 0 {
+         let chunk = rem.min(batch_cap.max(1));
+         for _ in 0..chunk {
+            out.extend_from_slice(&single_reply);
          }
-         out.extend_from_slice(b"$-1\r\n");
+         rem -= chunk;
       }
    }
 }

@@ -5,7 +5,7 @@ use std::io::IoSlice;
 pub(super) const MIN_STREAM_BYTES: usize = 1024;
 /// Above this payload the wbuf double-copy loses to streaming from the
 /// entry bytes; also the epoch-less stream gate for sub-READ_EPOCH_MIN batches.
-pub(super) const DIRECT_SEND_MIN: usize = 512 * 1024;
+pub(super) const DIRECT_SEND_MIN: usize = 32 * 1024;
 const BATCH: usize = 256;
 /// Eager-drain bounds: one call per 256 KB of reply, floored at 4 and
 /// capped at 256 — enough to drain deep large batches without spinning

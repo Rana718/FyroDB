@@ -42,12 +42,12 @@ const MAX_PREALLOC_PARTS: usize = 1024;
 /// instead of re-parsing from the start on every read.
 const RESUME_THRESHOLD: usize = 64;
 
-/// Parse a 1–4 digit length (the digits of a `$<len>\r\n` prefix) at `p`,
+/// Parse a 1–6 digit length (the digits of a `$<len>\r\n` prefix) at `p`,
 /// returning the value and the width of the digits plus CRLF. The caller
 /// guarantees `avail` readable bytes; anything else falls back to the generic
 /// parser.
 #[inline(always)]
-pub(crate) unsafe fn parse_len_le4(p: *const u8, avail: usize) -> Option<(usize, usize)> {
+pub fn parse_len_le4(p: *const u8, avail: usize) -> Option<(usize, usize)> {
    if avail < 3 {
       return None;
    }
@@ -80,13 +80,42 @@ pub(crate) unsafe fn parse_len_le4(p: *const u8, avail: usize) -> Option<(usize,
    if !d4.is_ascii_digit() || avail < 6 {
       return None;
    }
-   if unsafe { *p.add(4) } == b'\r' && unsafe { *p.add(5) } == b'\n' {
-      return Some((
+   let d5 = unsafe { *p.add(4) };
+   if d5 == b'\r' {
+      return (unsafe { *p.add(5) } == b'\n').then_some((
          ((d1 - b'0') as usize) * 1000
             + ((d2 - b'0') as usize) * 100
             + ((d3 - b'0') as usize) * 10
             + (d4 - b'0') as usize,
          6,
+      ));
+   }
+   if !d5.is_ascii_digit() || avail < 7 {
+      return None;
+   }
+   let d6 = unsafe { *p.add(5) };
+   if d6 == b'\r' {
+      return (unsafe { *p.add(6) } == b'\n').then_some((
+         ((d1 - b'0') as usize) * 10000
+            + ((d2 - b'0') as usize) * 1000
+            + ((d3 - b'0') as usize) * 100
+            + ((d4 - b'0') as usize) * 10
+            + (d5 - b'0') as usize,
+         7,
+      ));
+   }
+   if !d6.is_ascii_digit() || avail < 8 {
+      return None;
+   }
+   if unsafe { *p.add(6) } == b'\r' && unsafe { *p.add(7) } == b'\n' {
+      return Some((
+         ((d1 - b'0') as usize) * 100000
+            + ((d2 - b'0') as usize) * 10000
+            + ((d3 - b'0') as usize) * 1000
+            + ((d4 - b'0') as usize) * 100
+            + ((d5 - b'0') as usize) * 10
+            + (d6 - b'0') as usize,
+         8,
       ));
    }
    None

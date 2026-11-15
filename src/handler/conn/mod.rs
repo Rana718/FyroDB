@@ -122,10 +122,7 @@ pub struct Conn<'a> {
    /// value before serializing it (pops), keeping the RESP reply build
    /// outside the entry critical section.
    pub(crate) pop_scratch: String,
-   hints: [prefetch::Hint; customhash::PREFETCH_BATCH],
-   pub(crate) hint_n: u8,
-   pub(crate) hint_idx: u8,
-   pf_backoff: u8,
+   pub(crate) prefetch: Option<Box<prefetch::PrefetchState>>,
    topology_cache: Option<(
       u64,
       Arc<crate::cluster::Topology>,
@@ -163,10 +160,7 @@ impl<'a> Conn<'a> {
          uid: park::next_uid(),
          park: None,
          pop_scratch: String::new(),
-         hints: [prefetch::Hint::default(); customhash::PREFETCH_BATCH],
-         hint_n: 0,
-         hint_idx: 0,
-         pf_backoff: 0,
+         prefetch: None,
          topology_cache: None,
       }
    }

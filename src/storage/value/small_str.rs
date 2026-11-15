@@ -58,14 +58,24 @@ fn copy_medium_payload(destination: &mut [u8], source: &[u8]) {
    }
 }
 
+#[cfg(target_arch = "x86_64")]
+static HAS_AVX: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+#[cfg(target_arch = "x86_64")]
+static AVX_INIT: std::sync::Once = std::sync::Once::new();
+
 #[inline(never)]
 fn copy_large_payload(destination: &mut [u8], source: &[u8]) {
    assert_eq!(destination.len(), source.len());
    #[cfg(target_arch = "x86_64")]
-   if source.len() >= 8192 && std::is_x86_feature_detected!("avx") {
-      // The helper fences streaming stores before the caller can reuse the destination.
-      unsafe { copy_streaming_payload(destination, source) };
-      return;
+   {
+      AVX_INIT.call_once(|| {
+         HAS_AVX.store(std::is_x86_feature_detected!("avx"), std::sync::atomic::Ordering::Relaxed);
+      });
+      if source.len() >= 8192 && HAS_AVX.load(std::sync::atomic::Ordering::Relaxed) {
+         // The helper fences streaming stores before the caller can reuse the destination.
+         unsafe { copy_streaming_payload(destination, source) };
+         return;
+      }
    }
    destination.copy_from_slice(source);
 }
