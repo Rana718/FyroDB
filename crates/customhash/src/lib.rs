@@ -966,7 +966,24 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
    /// and only when actually absent.
    #[inline]
    pub fn set_str(&self, key: &str, value: V) -> bool {
-      self.set_compact(key, value, || CompactKey::from_str(key))
+      let (h, idx) = self.locate(key);
+      let pin = ebr::pin();
+      let _write_epoch = self.write_epoch();
+      let shard = unsafe { self.shards.get_unchecked(idx) };
+      match shard.insert_or_update_slot_fast(h, key, value, &pin) {
+         InsertFastResult::Inserted => {
+            self.bump(idx, true);
+            self.touched(key);
+            true
+         }
+         InsertFastResult::Updated => {
+            self.touched(key);
+            false
+         }
+         InsertFastResult::Fallback(val) => {
+            self.set_located_pinned(key, h, idx, val, || CompactKey::from_str(key))
+         }
+      }
    }
 
    #[inline]

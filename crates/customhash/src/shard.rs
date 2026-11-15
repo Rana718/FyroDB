@@ -164,6 +164,7 @@ impl<V> Entry<V> {
                backoff <<= 1;
             } else {
                std::thread::yield_now();
+               backoff = 1;
             }
             current = self.state.load(Ordering::Relaxed);
             continue;
@@ -256,6 +257,7 @@ fn state_lock_slow(state: &AtomicU64) {
             backoff <<= 1;
          } else {
             std::thread::yield_now();
+            backoff = 1;
          }
       }
       let current = state.load(Ordering::Relaxed);
@@ -271,6 +273,7 @@ fn state_lock_slow(state: &AtomicU64) {
       {
          return;
       }
+      backoff = 1;
    }
 }
 
@@ -1068,24 +1071,36 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
          if stored_hash(state) != hash as u32 as u64 || !entry.key.eq_str(key) {
             continue;
          }
-         // A busy matching key is never vacant. Retry from its original
-         // probe position instead of inserting a duplicate farther on.
-         if state & (STATE_LOCK | STATE_OCCUPIED) != STATE_OCCUPIED {
-            return InsertFastResult::Fallback(value);
+         let mut current_state = state;
+         for _ in 0..32 {
+            while current_state & STATE_LOCK != 0 {
+               std::hint::spin_loop();
+               current_state = entry.state.load(Ordering::Relaxed);
+            }
+            if current_state & STATE_OCCUPIED == 0 {
+               break;
+            }
+            let locked = bump_seq(current_state) | STATE_LOCK;
+            match entry.state.compare_exchange_weak(
+               current_state,
+               locked,
+               Ordering::Acquire,
+               Ordering::Relaxed,
+            ) {
+               Ok(_) => {
+                  self.snap.before_write(entry);
+                  unsafe { (*entry.value.get()).assume_init_drop() };
+                  unsafe { (*entry.value.get()).write(value) };
+                  unlock_write(&entry.state, locked, true);
+                  return InsertFastResult::Updated;
+               }
+               Err(observed) => {
+                  current_state = observed;
+                  std::hint::spin_loop();
+               }
+            }
          }
-         let locked = bump_seq(state) | STATE_LOCK;
-         if entry
-            .state
-            .compare_exchange(state, locked, Ordering::Acquire, Ordering::Relaxed)
-            .is_err()
-         {
-            return InsertFastResult::Fallback(value);
-         }
-         self.snap.before_write(entry);
-         unsafe { (*entry.value.get()).assume_init_drop() };
-         unsafe { (*entry.value.get()).write(value) };
-         unlock_write(&entry.state, locked, true);
-         return InsertFastResult::Updated;
+         return InsertFastResult::Fallback(value);
       }
       InsertFastResult::Fallback(value)
    }
@@ -1148,22 +1163,36 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
          if stored_hash(state) != hash as u32 as u64 || !entry.key.eq_bytes(key) {
             continue;
          }
-         if state & (STATE_LOCK | STATE_OCCUPIED) != STATE_OCCUPIED {
-            return InsertFastResult::Fallback(value);
+         let mut current_state = state;
+         for _ in 0..32 {
+            while current_state & STATE_LOCK != 0 {
+               std::hint::spin_loop();
+               current_state = entry.state.load(Ordering::Relaxed);
+            }
+            if current_state & STATE_OCCUPIED == 0 {
+               break;
+            }
+            let locked = bump_seq(current_state) | STATE_LOCK;
+            match entry.state.compare_exchange_weak(
+               current_state,
+               locked,
+               Ordering::Acquire,
+               Ordering::Relaxed,
+            ) {
+               Ok(_) => {
+                  self.snap.before_write(entry);
+                  unsafe { (*entry.value.get()).assume_init_drop() };
+                  unsafe { (*entry.value.get()).write(value) };
+                  unlock_write(&entry.state, locked, true);
+                  return InsertFastResult::Updated;
+               }
+               Err(observed) => {
+                  current_state = observed;
+                  std::hint::spin_loop();
+               }
+            }
          }
-         let locked = bump_seq(state) | STATE_LOCK;
-         if entry
-            .state
-            .compare_exchange(state, locked, Ordering::Acquire, Ordering::Relaxed)
-            .is_err()
-         {
-            return InsertFastResult::Fallback(value);
-         }
-         self.snap.before_write(entry);
-         unsafe { (*entry.value.get()).assume_init_drop() };
-         unsafe { (*entry.value.get()).write(value) };
-         unlock_write(&entry.state, locked, true);
-         return InsertFastResult::Updated;
+         return InsertFastResult::Fallback(value);
       }
       InsertFastResult::Fallback(value)
    }
