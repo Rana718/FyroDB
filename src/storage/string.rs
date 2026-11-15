@@ -334,6 +334,38 @@ impl Store {
          .map_or(0, SmallStr::len)
    }
 
+   /// First-entry payload peek without a global read epoch (batches below
+   /// READ_EPOCH_MIN): validates the prefetched pointer, then reads under
+   /// the entry's own guard — the same contract as the no-epoch GET path.
+   /// # Safety
+   /// Pointer must be pinned/current (EBR guard covers the caller).
+   #[inline(always)]
+   pub(crate) unsafe fn string_payload_len_unguarded(
+      &self,
+      hash: u64,
+      pointer: *const (),
+   ) -> usize {
+      let Some(entry) = (unsafe { pointer.cast::<customhash::Entry<StoreValue>>().as_ref() })
+      else {
+         return 0;
+      };
+      let expected = ((hash as u32 as u64) << 32) | customhash::STATE_OCCUPIED;
+      if entry.state.load(std::sync::atomic::Ordering::Relaxed)
+         & (customhash::STATE_MATCH_MASK & !customhash::STATE_LOCK)
+         != expected
+      {
+         return 0;
+      }
+      let Some(read) = entry.read() else {
+         return 0;
+      };
+      let val = &*read;
+      if val.expires_ms != 0 && val.is_expired() {
+         return 0;
+      }
+      val.value.as_string().map_or(0, SmallStr::len)
+   }
+
    /// # Safety
    /// Pointer must be pinned/current; epoch must guard this store.
    #[inline(always)]

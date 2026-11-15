@@ -3,7 +3,22 @@ use crate::storage::value::{FyroDB, StoreValue};
 use std::io::IoSlice;
 
 pub(super) const MIN_STREAM_BYTES: usize = 1024;
+/// Above this payload the wbuf double-copy loses to streaming from the
+/// entry bytes; also the epoch-less stream gate for sub-READ_EPOCH_MIN batches.
+pub(super) const DIRECT_SEND_MIN: usize = 512 * 1024;
 const BATCH: usize = 256;
+/// Eager-drain bounds: one call per 256 KB of reply, floored at 4 and
+/// capped at 256 — enough to drain deep large batches without spinning
+/// against a stalled reader.
+const EAGER_DRAIN_CALLS_MIN: usize = 4;
+const EAGER_DRAIN_CALLS_MAX: usize = 256;
+const EAGER_DRAIN_BYTES_PER_CALL: usize = 256 * 1024;
+
+#[inline]
+fn eager_drain_calls(total_bytes: usize) -> usize {
+   (total_bytes / EAGER_DRAIN_BYTES_PER_CALL + EAGER_DRAIN_CALLS_MIN)
+      .min(EAGER_DRAIN_CALLS_MAX)
+}
 
 fn owner_slot(
    entries: &[*const ()],
@@ -32,11 +47,15 @@ fn header(length: usize, out: &mut [u8; 24]) -> usize {
 }
 
 #[inline]
-fn write_vectored_bounded<W: Write>(writer: &mut W, slices: &mut [IoSlice<'_>]) -> usize {
+fn write_vectored_bounded<W: Write>(
+   writer: &mut W,
+   slices: &mut [IoSlice<'_>],
+   max_calls: usize,
+) -> usize {
    let mut pending = slices;
    let mut written = 0;
    let mut calls = 0;
-   while calls < 4 && !pending.is_empty() {
+   while calls < max_calls && !pending.is_empty() {
       match writer.write_vectored(pending) {
          Ok(0) => break,
          Ok(n) => {
@@ -134,7 +153,18 @@ pub(super) fn send_repeated<W: Write>(
       for slice in &mut slices[1..=count] {
          *slice = IoSlice::new(&buffered[start..]);
       }
-      write_vectored_bounded(writer, &mut slices[usize::from(prefix == 0)..=count])
+      // Large repeated replies drain eagerly like batch streams; small ones
+      // keep the tight 4-call bound (client drains at wire speed anyway).
+      let max_calls = if reply >= DIRECT_SEND_MIN {
+         eager_drain_calls(total)
+      } else {
+         EAGER_DRAIN_CALLS_MIN
+      };
+      write_vectored_bounded(
+         writer,
+         &mut slices[usize::from(prefix == 0)..=count],
+         max_calls,
+      )
    };
    if written == total {
       buffered.clear();
@@ -156,7 +186,10 @@ pub(super) fn send_repeated<W: Write>(
 }
 
 /// # Safety
-/// Entries must stay pinned, and epoch must guard conn's store.
+/// Entries must stay pinned (EBR guard covers the whole call). Each
+/// pointer is re-validated against the tagged state + key before use, so
+/// the global read epoch is optional — absent it, per-entry guards alone
+/// protect the payloads.
 #[inline(never)]
 pub(super) unsafe fn try_stream_get_run(
    conn: &mut Conn<'_>,
@@ -166,12 +199,7 @@ pub(super) unsafe fn try_stream_get_run(
    epoch: &mut Option<customhash::ReadEpochGuard<'_>>,
 ) -> bool {
    let count = keys.len();
-   if count == 0
-      || count > BATCH
-      || hashes.len() != count
-      || entries.len() != count
-      || epoch.is_none()
-   {
+   if count == 0 || count > BATCH || hashes.len() != count || entries.len() != count {
       return false;
    }
    let mut reads: [Option<customhash::EntryReadGuard<'_, StoreValue>>; BATCH] =

@@ -183,10 +183,6 @@ fn dispatch_get_one(conn: &mut Conn<'_>, key_part: (*const u8, usize)) {
    }
 }
 
-/// Below this size the wbuf path measures equal or better (the copy is
-/// cheap and batch-friendly); above it the direct send wins.
-const DIRECT_SEND_MIN: usize = 512 * 1024;
-
 /// Audit §6.2: single large GET sent straight from the entry bytes under
 /// the read guard via `write_vectored` — kills the wbuf payload memcpy.
 /// Falls back to `false` (the caller's wbuf path) for anything the fast
@@ -196,7 +192,7 @@ fn get_direct_send(
    conn: &mut Conn<'_>,
    key: &[u8],
    hint: Option<u64>,
-   entry_hint: *const (),
+   _entry_hint: *const (),
 ) -> bool {
    use std::io::IoSlice;
 
@@ -232,7 +228,7 @@ fn get_direct_send(
    }
    let Some(s) = val.value.as_string() else { return false };
    let payload = s.as_bytes();
-   if payload.len() < DIRECT_SEND_MIN {
+   if payload.len() < super::bulk::DIRECT_SEND_MIN {
       return false;
    }
    let mut d20 = [0u8; 20];
@@ -434,9 +430,13 @@ fn dispatch_get_batch<const STREAM_IO: bool>(
          &mut entries[..count],
       );
    }
-   let first_payload_len = read_epoch.as_ref().map_or(0, |epoch| unsafe {
-      store.string_payload_len_epoch(hashes[0], entries[0], epoch)
-   });
+   let first_payload_len = if let Some(epoch) = read_epoch.as_ref() {
+      unsafe { store.string_payload_len_epoch(hashes[0], entries[0], epoch) }
+   } else {
+      // Below READ_EPOCH_MIN: peek the first entry under its own guard so
+      // large-value pipelines still reach the zero-copy stream path.
+      unsafe { store.string_payload_len_unguarded(hashes[0], entries[0]) }
+   };
    let prefetch_payloads = (24..=8192).contains(&first_payload_len)
       && (first_payload_len <= 1024 || store.worker_capacity() == 1);
    #[cfg(not(feature = "io-uring"))]
@@ -446,8 +446,14 @@ fn dispatch_get_batch<const STREAM_IO: bool>(
       super::bulk::MIN_STREAM_BYTES
    };
    #[cfg(not(feature = "io-uring"))]
+   let stream_floor = if read_epoch.is_some() {
+      stream_minimum
+   } else {
+      super::bulk::DIRECT_SEND_MIN
+   };
+   #[cfg(not(feature = "io-uring"))]
    if STREAM_IO
-      && first_payload_len >= stream_minimum
+      && first_payload_len >= stream_floor
       && unsafe {
          super::bulk::try_stream_get_run(
             conn,
