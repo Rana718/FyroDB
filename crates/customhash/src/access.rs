@@ -88,6 +88,13 @@ impl Access {
       if READING.get() != 0 {
          return None;
       }
+      // Quick fast path: if any writer stripe is active, bail out immediately
+      // with relaxed loads before executing the SeqCst memory barrier.
+      for stripe in self.writers.iter() {
+         if stripe.load(Ordering::Relaxed) != 0 {
+            return None;
+         }
+      }
       // The reader registers before checking every writer stripe, and the
       // writer registers before checking the reader count: the SeqCst RMW
       // plus check form the same Dekker handshake as before, spread across

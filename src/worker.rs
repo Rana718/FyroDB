@@ -143,6 +143,20 @@ pub fn run_worker(
                               // TCP window stall and EAGAIN drops during large payload pipelines (64KB - 1MB).
                               let _ = sock_ref.set_send_buffer_size(4 * 1024 * 1024);
                               let _ = sock_ref.set_recv_buffer_size(4 * 1024 * 1024);
+                              // TCP_NOTSENT_LOWAT (Kerrisk Ch. 61): limit unsent queued bytes to 128KB
+                              // preventing TCP bufferbloat, tail latency spikes, and socket memory waste.
+                              #[allow(unsafe_code)]
+                              unsafe {
+                                 use std::os::fd::AsRawFd;
+                                 let val: libc::c_int = 128 * 1024;
+                                 let _ = libc::setsockopt(
+                                    tcp.as_raw_fd(),
+                                    libc::IPPROTO_TCP,
+                                    libc::TCP_NOTSENT_LOWAT,
+                                    &val as *const _ as *const libc::c_void,
+                                    std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+                                 );
+                              }
                            }
                         }
                         #[cfg(feature = "unix-sockets")]
