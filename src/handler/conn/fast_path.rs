@@ -2134,13 +2134,13 @@ pub(super) fn handle_unauth(conn: &mut Conn<'_>, raw: &[(*const u8, usize)], cmd
 }
 
 #[inline(never)]
-pub(super) fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-   if a.len() != b.len() {
-      return false;
-   }
-   let mut diff = 0u8;
-   for (x, y) in a.iter().zip(b.iter()) {
-      diff |= x ^ y;
+pub(crate) fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+   let max_len = a.len().max(b.len());
+   let mut diff = (a.len() ^ b.len()) as u8;
+   for i in 0..max_len {
+      let byte_a = if i < a.len() { a[i] } else { 0 };
+      let byte_b = if i < b.len() { b[i] } else { 0 };
+      diff |= byte_a ^ byte_b;
    }
    diff == 0
 }

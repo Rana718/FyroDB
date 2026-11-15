@@ -79,7 +79,6 @@ impl<'a> Conn<'a> {
       let mut batch_guard = Some(store.command_guard(self.worker));
       let mut prefetched = 0usize;
       let mut read_only = true;
-      self.hint_n = 0;
       loop {
          if batch_guard.is_none() {
             batch_guard = Some(store.command_guard(self.worker));
@@ -203,7 +202,6 @@ impl<'a> Conn<'a> {
          }
       }
 
-      self.hint_n = 0;
       self.parser.release_read_buffer();
 
       true

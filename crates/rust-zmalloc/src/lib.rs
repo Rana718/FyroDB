@@ -173,7 +173,7 @@ pub fn configure_allocator() {
          .ok()
          .and_then(|v| v.parse::<i64>().ok())
          .filter(|&v| v >= 0)
-         .unwrap_or(0);
+         .unwrap_or(20);
       unsafe {
          // mi_option_eager_commit = 3: 0 (don't eagerly commit segments)
          mi_option_set(3, 0);

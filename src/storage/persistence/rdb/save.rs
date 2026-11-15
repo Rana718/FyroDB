@@ -33,8 +33,15 @@ fn write_record(w: &mut impl Write, key: &str, val: &StoreValue) -> io::Result<(
       FyroDB::Set(s) => {
          head(w, TYPE_SET)?;
          write_u32(w, s.len() as u32)?;
+         let mut int_buf = [0u8; 20];
          for member in s.iter() {
-            write_bytes(w, member.to_string().as_bytes())?;
+            match member {
+               crate::storage::value::SetMemberRef::String(sm) => write_bytes(w, sm.as_bytes())?,
+               crate::storage::value::SetMemberRef::Integer(n) => {
+                  let s = crate::utils::int_format::write_i64_to(&mut int_buf, n);
+                  write_bytes(w, s.as_bytes())?;
+               }
+            }
          }
          Ok(())
       }

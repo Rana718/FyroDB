@@ -19,6 +19,27 @@ pub fn dispatch(conn: &mut Conn<'_>, parts: &[&str]) {
 
    let cmd = parts[0].as_bytes();
 
+   if conn.auth_required.is_some() && !conn.authenticated {
+      if cmd_eq(cmd, b"AUTH") {
+         handle_dispatch_auth(conn, parts);
+         return;
+      }
+      if cmd_eq(cmd, b"QUIT") {
+         resp::write_ok(&mut conn.parser.wbuf);
+         return;
+      }
+      conn
+         .parser
+         .wbuf
+         .extend_from_slice(b"-NOAUTH Authentication required.\r\n");
+      return;
+   }
+
+   if cmd_eq(cmd, b"AUTH") {
+      handle_dispatch_auth(conn, parts);
+      return;
+   }
+
    match &conn.mode {
       ConnMode::Normal | ConnMode::Transaction(_) => {
          match cmd.first().map(|b| b.to_ascii_uppercase()) {
@@ -426,6 +447,29 @@ fn capture_command_mutation(conn: &mut Conn, parts: &[&str]) {
       for index in pos + 1..pos + 1 + n {
          capture(conn, index);
       }
+   }
+}
+
+fn handle_dispatch_auth(conn: &mut Conn<'_>, parts: &[&str]) {
+   if parts.len() == 2 || parts.len() == 3 {
+      let pass = if parts.len() == 3 { parts[2] } else { parts[1] };
+      if let Some(expected) = conn.auth_required {
+         if crate::handler::conn::fast_path::constant_time_eq(pass.as_bytes(), expected.as_bytes()) {
+            conn.authenticated = true;
+            conn.parser.wbuf.extend_from_slice(b"+OK\r\n");
+         } else {
+            conn.authenticated = false;
+            conn
+               .parser
+               .wbuf
+               .extend_from_slice(b"-WRONGPASS invalid username-password pair\r\n");
+         }
+      } else {
+         conn.authenticated = true;
+         conn.parser.wbuf.extend_from_slice(b"+OK\r\n");
+      }
+   } else {
+      resp::write_wrong_args(&mut conn.parser.wbuf, "auth");
    }
 }
 

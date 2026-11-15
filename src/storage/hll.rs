@@ -16,6 +16,14 @@ impl Default for HllData {
    }
 }
 
+static RECIP_2_POW: std::sync::LazyLock<[f64; 64]> = std::sync::LazyLock::new(|| {
+   let mut table = [0.0f64; 64];
+   for i in 0..64 {
+      table[i] = 1.0 / (1u64 << i) as f64;
+   }
+   table
+});
+
 impl HllData {
    pub fn new() -> Self {
       Self {
@@ -63,8 +71,9 @@ impl HllData {
    pub fn count(&self) -> u64 {
       let mut sum = 0.0f64;
       let mut zeros = 0u32;
+      let recip = &*RECIP_2_POW;
       for &reg in &self.registers {
-         sum += 1.0 / (1u64 << reg) as f64;
+         sum += recip[(reg as usize).min(63)];
          if reg == 0 {
             zeros += 1;
          }
@@ -105,17 +114,13 @@ fn hll_hash(data: &[u8]) -> u64 {
    h
 }
 
-#[inline]
-fn leading_zeros_after(mut w: u64) -> u8 {
+#[inline(always)]
+fn leading_zeros_after(w: u64) -> u8 {
    if w == 0 {
-      return 50;
+      50
+   } else {
+      (w.trailing_zeros() as u8).min(50)
    }
-   let mut count = 0u8;
-   while w & 1 == 0 && count < 50 {
-      count += 1;
-      w >>= 1;
-   }
-   count
 }
 
 impl Store {

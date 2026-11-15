@@ -1,6 +1,22 @@
 use crate::storage::store::Store;
 use crate::storage::value::{FyroDB, SmallStr, StoreValue};
 
+#[inline]
+pub fn count_ones_fast(slice: &[u8]) -> usize {
+   let (prefix, words, suffix) = unsafe { slice.align_to::<u64>() };
+   let mut count: usize = 0;
+   for &b in prefix {
+      count += b.count_ones() as usize;
+   }
+   for &w in words {
+      count += w.count_ones() as usize;
+   }
+   for &b in suffix {
+      count += b.count_ones() as usize;
+   }
+   count
+}
+
 impl Store {
    pub fn setbit(&self, key: &str, offset: u64, value: bool) -> Result<u8, &'static str> {
       let byte_idx = (offset / 8) as usize;
@@ -136,10 +152,7 @@ impl Store {
                      (bytes[s_byte] & mask).count_ones() as usize
                   } else {
                      let head = (bytes[s_byte] & (0xFF_u8 >> (s_idx % 8))).count_ones() as usize;
-                     let mid: usize = bytes[s_byte + 1..e_byte]
-                        .iter()
-                        .map(|b| b.count_ones() as usize)
-                        .sum();
+                     let mid: usize = count_ones_fast(&bytes[s_byte + 1..e_byte]);
                      let tail =
                         (bytes[e_byte] & (0xFF_u8 << (7 - e_idx % 8))).count_ones() as usize;
                      head + mid + tail
@@ -160,10 +173,7 @@ impl Store {
                   if s_idx > e_idx {
                      return Ok(0);
                   }
-                  let count = bytes[s_idx..=e_idx]
-                     .iter()
-                     .map(|b| b.count_ones() as usize)
-                     .sum();
+                  let count = count_ones_fast(&bytes[s_idx..=e_idx]);
                   Ok(count)
                }
             }

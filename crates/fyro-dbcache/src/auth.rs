@@ -278,14 +278,49 @@ fn hmac_sha256(key: &[u8], parts: &[&[u8]]) -> [u8; 32] {
 }
 
 fn pbkdf2_sha256(password: &[u8], salt: &[u8], iterations: u32) -> [u8; 32] {
-   // SHA-256 output equals the derived key length, so exactly one block runs.
-   let mut first = Vec::with_capacity(salt.len() + 4);
-   first.extend_from_slice(salt);
-   first.extend_from_slice(&1u32.to_be_bytes());
-   let mut previous = hmac_sha256(password, &[&first]);
+   const BLOCK: usize = 64;
+   let mut normalized = [0u8; BLOCK];
+   if password.len() > BLOCK {
+      normalized[..32].copy_from_slice(&sha256(password));
+   } else {
+      normalized[..password.len()].copy_from_slice(password);
+   }
+
+   let mut inner_pad = [0x36u8; BLOCK];
+   let mut outer_pad = [0x5cu8; BLOCK];
+   for index in 0..BLOCK {
+      inner_pad[index] ^= normalized[index];
+      outer_pad[index] ^= normalized[index];
+   }
+
+   let mut first = [0u8; 64];
+   let salt_len = salt.len().min(60);
+   first[..salt_len].copy_from_slice(&salt[..salt_len]);
+   first[salt_len..salt_len + 4].copy_from_slice(&1u32.to_be_bytes());
+
+   let mut inner = Sha256::new();
+   inner.update(inner_pad);
+   inner.update(&first[..salt_len + 4]);
+   let inner_hash = inner.finalize();
+
+   let mut outer = Sha256::new();
+   outer.update(outer_pad);
+   outer.update(inner_hash);
+   let mut previous = [0u8; 32];
+   previous.copy_from_slice(&outer.finalize());
+
    let mut derived = previous;
    for _ in 1..iterations {
-      previous = hmac_sha256(password, &[&previous]);
+      let mut inner = Sha256::new();
+      inner.update(inner_pad);
+      inner.update(&previous);
+      let inner_hash = inner.finalize();
+
+      let mut outer = Sha256::new();
+      outer.update(outer_pad);
+      outer.update(inner_hash);
+      previous.copy_from_slice(&outer.finalize());
+
       for index in 0..32 {
          derived[index] ^= previous[index];
       }
@@ -302,11 +337,11 @@ fn xor32(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
 }
 
 fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
-   if left.len() != right.len() {
-      return false;
-   }
-   let mut diff = 0u8;
-   for (a, b) in left.iter().zip(right) {
+   let max_len = left.len().max(right.len());
+   let mut diff = (left.len() ^ right.len()) as u8;
+   for i in 0..max_len {
+      let a = if i < left.len() { left[i] } else { 0 };
+      let b = if i < right.len() { right[i] } else { 0 };
       diff |= a ^ b;
    }
    diff == 0

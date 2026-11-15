@@ -24,19 +24,21 @@ impl TtlCounters {
 
    #[inline(always)]
    pub(super) fn stripe(&self) -> usize {
-      #[cfg(target_os = "linux")]
-      {
-         let cpu = unsafe { libc::sched_getcpu() };
-         if cpu < 0 {
-            0
-         } else {
-            cpu as usize % self.adds.len()
+      thread_local! {
+         static STRIPE_IDX: std::cell::Cell<usize> = const { std::cell::Cell::new(usize::MAX) };
+      }
+      STRIPE_IDX.with(|cell| {
+         let mut idx = cell.get();
+         if idx == usize::MAX {
+            #[cfg(target_os = "linux")]
+            let cpu = unsafe { libc::sched_getcpu() };
+            #[cfg(not(target_os = "linux"))]
+            let cpu = 0;
+            idx = if cpu < 0 { 0 } else { cpu as usize };
+            cell.set(idx);
          }
-      }
-      #[cfg(not(target_os = "linux"))]
-      {
-         0
-      }
+         idx & (self.adds.len() - 1)
+      })
    }
 
    #[inline]

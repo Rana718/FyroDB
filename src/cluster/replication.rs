@@ -306,7 +306,7 @@ pub struct MutationLog {
 /// vs 11.6 ns for a mutex and 78 vs 16 M ops/s under contention. Critical
 /// sections here are memcpy-shaped (no syscalls, no allocation), so
 /// spinning with a yield fallback is the right primitive.
-pub(crate) struct SpinMutex<T> {
+pub struct SpinMutex<T> {
    state: AtomicU64,
    data: std::cell::UnsafeCell<T>,
 }
@@ -315,14 +315,14 @@ unsafe impl<T: Send> Sync for SpinMutex<T> {}
 unsafe impl<T: Send> Send for SpinMutex<T> {}
 
 impl<T> SpinMutex<T> {
-   pub(crate) fn new(data: T) -> Self {
+   pub fn new(data: T) -> Self {
       SpinMutex {
          state: AtomicU64::new(0),
          data: std::cell::UnsafeCell::new(data),
       }
    }
    #[inline]
-   pub(crate) fn lock(&self) -> SpinGuard<'_, T> {
+   pub fn lock(&self) -> SpinGuard<'_, T> {
       let mut backoff = 1u32;
       loop {
          if self
@@ -332,19 +332,22 @@ impl<T> SpinMutex<T> {
          {
             return SpinGuard { lock: self };
          }
-         for _ in 0..backoff {
-            std::hint::spin_loop();
-         }
-         if backoff < 64 {
-            backoff <<= 1;
-         } else {
-            std::thread::yield_now();
+         while self.state.load(Ordering::Relaxed) != 0 {
+            for _ in 0..backoff {
+               std::hint::spin_loop();
+            }
+            if backoff < 64 {
+               backoff <<= 1;
+            } else {
+               std::thread::yield_now();
+               backoff = 1;
+            }
          }
       }
    }
 }
 
-pub(crate) struct SpinGuard<'a, T: 'a> {
+pub struct SpinGuard<'a, T: 'a> {
    lock: &'a SpinMutex<T>,
 }
 

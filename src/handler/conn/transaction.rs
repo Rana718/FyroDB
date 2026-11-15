@@ -150,7 +150,6 @@ pub(super) fn handle(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
          tx.active = false;
          tx.executing = true;
          conn.mode = ConnMode::Transaction(tx);
-         conn.hint_n = 0;
          for parts in queue {
             let raw: Vec<_> = parts.iter().map(|p| (p.as_ptr(), p.len())).collect();
             if parts[0].eq_ignore_ascii_case(b"UNWATCH") {

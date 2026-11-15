@@ -51,8 +51,8 @@ impl BlockRegistry {
          let mut map = self.keys[key_shard(k)].lock();
          let list = map.entry(k.clone()).or_default();
          if !list.iter().any(|w| w.uid == waiter.uid) {
+            self.waiting.fetch_add(1, Ordering::SeqCst);
             list.push(waiter.clone());
-            self.waiting.fetch_add(1, Ordering::Relaxed);
          }
       }
    }
@@ -63,9 +63,10 @@ impl BlockRegistry {
          if let Some(list) = map.get_mut(k) {
             let before = list.len();
             list.retain(|w| w.uid != uid);
-            self
-               .waiting
-               .fetch_sub(before - list.len(), Ordering::Relaxed);
+            let diff = before - list.len();
+            if diff > 0 {
+               self.waiting.fetch_sub(diff, Ordering::SeqCst);
+            }
             if list.is_empty() {
                map.remove(k);
             }
@@ -77,7 +78,7 @@ impl BlockRegistry {
    /// first (each worker retries in wake order).
    #[inline]
    pub fn signal(&self, key: &str) {
-      if self.waiting.load(Ordering::Relaxed) == 0 {
+      if self.waiting.load(Ordering::SeqCst) == 0 {
          return;
       }
       self.signal_slow(key);

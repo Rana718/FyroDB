@@ -136,10 +136,31 @@ impl ZSetData {
 
    #[inline]
    fn rank_of(&self, ci: usize, ei: usize) -> usize {
-      self.chunks[..ci].iter().map(Vec::len).sum::<usize>() + ei
+      if ci >= self.chunks.len() {
+         return self.len;
+      }
+      if ci > self.chunks.len() / 2 {
+         let tail_len: usize = self.chunks[ci + 1..].iter().map(Vec::len).sum();
+         self.len.saturating_sub(tail_len + (self.chunks[ci].len().saturating_sub(ei)))
+      } else {
+         self.chunks[..ci].iter().map(Vec::len).sum::<usize>() + ei
+      }
    }
 
    fn locate_rank(&self, mut r: usize) -> (usize, usize) {
+      if r >= self.len {
+         return (self.chunks.len(), 0);
+      }
+      if r > self.len / 2 {
+         let mut remaining = self.len - r;
+         for (ci, c) in self.chunks.iter().enumerate().rev() {
+            if remaining <= c.len() {
+               return (ci, c.len() - remaining);
+            }
+            remaining -= c.len();
+         }
+         return (0, 0);
+      }
       for (ci, c) in self.chunks.iter().enumerate() {
          if r < c.len() {
             return (ci, r);

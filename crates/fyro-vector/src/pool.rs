@@ -27,7 +27,6 @@ pub struct Pool {
    sleepers: AtomicUsize,
 }
 
-const SPIN: std::time::Duration = std::time::Duration::from_micros(30);
 
 static CONFIG: Mutex<Option<(usize, Option<Vec<usize>>)>> = Mutex::new(None);
 static GLOBAL: OnceLock<Arc<Pool>> = OnceLock::new();
@@ -178,20 +177,13 @@ impl Pool {
             self.run(job);
             continue;
          }
-         let start = std::time::Instant::now();
-         let mut i = 0u32;
-         loop {
-            if !self.tickets.is_empty() {
-               break;
-            }
-            if self.queued.load(Ordering::Acquire) != 0 {
+         let mut spins = 0u32;
+         while spins < 1024 {
+            if !self.tickets.is_empty() || self.queued.load(Ordering::Acquire) != 0 {
                break;
             }
             std::hint::spin_loop();
-            i = i.wrapping_add(1);
-            if i.is_multiple_of(64) && start.elapsed() >= SPIN {
-               break;
-            }
+            spins += 1;
          }
          // Dekker against the push side (SeqCst on both sides): either the
          // push observed our sleeper registration (and notifies) or we
