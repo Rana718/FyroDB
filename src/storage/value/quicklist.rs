@@ -19,8 +19,12 @@ fn as_str(b: &[u8]) -> &str {
 impl Chunk {
    fn new() -> Self {
       Self {
-         data: Vec::new(),
-         offs: vec![0],
+         data: Vec::with_capacity(512),
+         offs: {
+            let mut o = Vec::with_capacity(32);
+            o.push(0);
+            o
+         },
          head: 0,
       }
    }

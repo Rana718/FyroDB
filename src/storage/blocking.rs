@@ -15,7 +15,7 @@ pub struct Waiter {
    pub uid: u64,
 }
 
-const KEY_SHARDS: usize = 16;
+const KEY_SHARDS: usize = 64;
 
 fn key_shard(key: &str) -> usize {
    // foldhash-free cheap mixer: sharding only needs to spread, not hash

@@ -645,6 +645,23 @@ fn make_tcp_listener(addr: SocketAddr) -> TcpListener {
    socket.set_reuse_address(true).unwrap();
    socket.set_reuse_port(true).unwrap();
    socket.set_nonblocking(true).unwrap();
+   #[cfg(target_os = "linux")]
+   {
+      // W. Richard Stevens (UNP Vol. 1 Ch. 16): TCP_DEFER_ACCEPT delays waking worker threads
+      // until actual client payload data arrives, completely eliminating idle connection wakeups.
+      #[allow(unsafe_code)]
+      unsafe {
+         use std::os::fd::AsRawFd;
+         let val: libc::c_int = 1;
+         let _ = libc::setsockopt(
+            socket.as_raw_fd(),
+            libc::IPPROTO_TCP,
+            libc::TCP_DEFER_ACCEPT,
+            &val as *const _ as *const libc::c_void,
+            std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+         );
+      }
+   }
    socket.bind(&addr.into()).unwrap();
    socket.listen(8192).unwrap();
    TcpListener::from_std(std::net::TcpListener::from(socket))
