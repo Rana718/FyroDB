@@ -59,20 +59,25 @@ fn copy_medium_payload(destination: &mut [u8], source: &[u8]) {
 }
 
 #[cfg(target_arch = "x86_64")]
+#[allow(dead_code)]
 static HAS_AVX: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 #[cfg(target_arch = "x86_64")]
+#[allow(dead_code)]
 static AVX_INIT: std::sync::Once = std::sync::Once::new();
 
-#[inline(never)]
+#[inline(always)]
 fn copy_large_payload(destination: &mut [u8], source: &[u8]) {
-   assert_eq!(destination.len(), source.len());
-   #[cfg(target_arch = "x86_64")]
+   #[cfg(all(target_arch = "x86_64", target_feature = "avx"))]
+   {
+      unsafe { copy_streaming_payload(destination, source) };
+      return;
+   }
+   #[cfg(all(target_arch = "x86_64", not(target_feature = "avx")))]
    {
       AVX_INIT.call_once(|| {
          HAS_AVX.store(std::is_x86_feature_detected!("avx"), std::sync::atomic::Ordering::Relaxed);
       });
       if source.len() >= 8192 && HAS_AVX.load(std::sync::atomic::Ordering::Relaxed) {
-         // The helper fences streaming stores before the caller can reuse the destination.
          unsafe { copy_streaming_payload(destination, source) };
          return;
       }
@@ -83,28 +88,64 @@ fn copy_large_payload(destination: &mut [u8], source: &[u8]) {
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx")]
 unsafe fn copy_streaming_payload(destination: &mut [u8], source: &[u8]) {
-   use std::arch::x86_64::{_mm256_loadu_si256, _mm256_storeu_si256};
+   use std::arch::x86_64::{
+      _mm256_loadu_si256, _mm256_storeu_si256, _mm256_stream_si256, _mm_prefetch, _mm_sfence,
+      _MM_HINT_T0,
+   };
    unsafe {
       let dst = destination.as_mut_ptr();
       let src = source.as_ptr();
       let len = source.len();
-      let mut at = 0;
-      // 256-byte AVX unroll keeping hot cached lines in L1/L2 (Gjengset Ch. 10)
-      while at + 256 <= len {
-         for offset in [0, 32, 64, 96, 128, 160, 192, 224] {
-            let value = _mm256_loadu_si256(src.add(at + offset).cast());
-            _mm256_storeu_si256(dst.add(at + offset).cast(), value);
+      // For buffers exceeding L1 data cache (>= 32KB), non-temporal streaming stores
+      // write directly to memory via Write-Combining buffers, eliminating the Read-For-Ownership (RFO)
+      // bus read penalty and leaving L1/L2 caches warm (Drepper Sec 6.2; Hyde Ch. 4).
+      // Peeling align_prefix guarantees dst is strictly 32-byte aligned on 100% of allocations.
+      if len >= 32768 {
+         let align_prefix = ((32 - (dst as usize & 31)) & 31).min(len);
+         if align_prefix > 0 {
+            std::ptr::copy_nonoverlapping(src, dst, align_prefix);
          }
-         at += 256;
-      }
-      while at + 64 <= len {
-         for offset in [0, 32] {
-            let value = _mm256_loadu_si256(src.add(at + offset).cast());
-            _mm256_storeu_si256(dst.add(at + offset).cast(), value);
+         let mut at = align_prefix;
+         let stream_end = len - ((len - at) & 31);
+         while at + 256 <= stream_end {
+            _mm_prefetch(src.add(at + 256).cast(), _MM_HINT_T0);
+            _mm_prefetch(src.add(at + 320).cast(), _MM_HINT_T0);
+            _mm_prefetch(src.add(at + 384).cast(), _MM_HINT_T0);
+            _mm_prefetch(src.add(at + 448).cast(), _MM_HINT_T0);
+            for offset in [0, 32, 64, 96, 128, 160, 192, 224] {
+               let value = _mm256_loadu_si256(src.add(at + offset).cast());
+               _mm256_stream_si256(dst.add(at + offset).cast(), value);
+            }
+            at += 256;
          }
-         at += 64;
+         while at < stream_end {
+            let value = _mm256_loadu_si256(src.add(at).cast());
+            _mm256_stream_si256(dst.add(at).cast(), value);
+            at += 32;
+         }
+         _mm_sfence();
+         if at < len {
+            std::ptr::copy_nonoverlapping(src.add(at), dst.add(at), len - at);
+         }
+      } else {
+         // 256-byte AVX unroll keeping hot cached lines in L1/L2 (Gjengset Ch. 10)
+         let mut at = 0;
+         while at + 256 <= len {
+            for offset in [0, 32, 64, 96, 128, 160, 192, 224] {
+               let value = _mm256_loadu_si256(src.add(at + offset).cast());
+               _mm256_storeu_si256(dst.add(at + offset).cast(), value);
+            }
+            at += 256;
+         }
+         while at + 32 <= len {
+            let value = _mm256_loadu_si256(src.add(at).cast());
+            _mm256_storeu_si256(dst.add(at).cast(), value);
+            at += 32;
+         }
+         if at < len {
+            std::ptr::copy_nonoverlapping(src.add(at), dst.add(at), len - at);
+         }
       }
-      std::ptr::copy_nonoverlapping(src.add(at), dst.add(at), len - at);
    }
 }
 
@@ -270,6 +311,7 @@ impl SmallStr {
    }
 
    #[inline(always)]
+   #[allow(dead_code)]
    pub(crate) fn overwrite_bytes_streaming(&mut self, bytes: &[u8]) {
       if bytes.len() >= 8192
          && self.len == Tag::Heap
@@ -524,7 +566,16 @@ impl SmallStr {
          }
       } else {
          let len = bytes.len();
-         let ptr = Box::into_raw(bytes.to_vec().into_boxed_slice()) as *mut u8;
+         let mut v = Vec::with_capacity(len);
+         unsafe {
+            v.set_len(len);
+            if len >= 8192 {
+               copy_large_payload(&mut v, bytes);
+            } else {
+               v.copy_from_slice(bytes);
+            }
+         }
+         let ptr = Box::into_raw(v.into_boxed_slice()) as *mut u8;
          let mut data = [0u8; SMALL_STR_CAP];
          data[..8].copy_from_slice(&(ptr as usize).to_ne_bytes());
          Self::store_heap_len(&mut data, len);

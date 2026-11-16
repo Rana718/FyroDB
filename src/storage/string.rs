@@ -277,21 +277,24 @@ impl Store {
          let e = unsafe { &*p };
          let seq1 = e.state.load(std::sync::atomic::Ordering::Acquire);
          let expected = ((hash as u32 as u64) << 32) | customhash::STATE_OCCUPIED;
-         // Optimistic lock-free Seqlock read for uncontended occupied values (both inline and heap):
+         // Optimistic lock-free Seqlock read for uncontended occupied inline values:
          // completely eliminates atomic RMW CAS write stalls and cache line invalidations on readers.
+         // Heap values take e.read() below to ensure concurrent size changes do not deallocate heap buffers.
          if (seq1 & (0xFFFF_FFFF_0000_0000 | customhash::STATE_OCCUPIED | customhash::STATE_LOCK)) == expected
             && e.key.eq_bytes(key)
          {
             let val = unsafe { (*e.value.get()).assume_init_ref() };
             if val.expires_ms == 0 || !val.is_expired() {
                if let crate::storage::value::FyroDB::String(s) = &val.value {
-                  let start = out.len();
-                  s.write_resp(out);
-                  let seq2 = e.state.load(std::sync::atomic::Ordering::Acquire);
-                  if seq1 == seq2 {
-                     return true;
+                  if s.is_inline() {
+                     let start = out.len();
+                     s.write_resp(out);
+                     let seq2 = e.state.load(std::sync::atomic::Ordering::Acquire);
+                     if seq1 == seq2 {
+                        return true;
+                     }
+                     out.truncate(start);
                   }
-                  out.truncate(start);
                }
             }
          }
@@ -493,9 +496,15 @@ impl Store {
          if e.key.eq_bytes(key) {
             let old_expires;
             let mut current = e.state.load(std::sync::atomic::Ordering::Relaxed);
+            let mut backoff = 1u32;
             for _ in 0..32 {
                while current & customhash::STATE_LOCK != 0 {
-                  std::hint::spin_loop();
+                  for _ in 0..backoff {
+                     std::hint::spin_loop();
+                  }
+                  if backoff < 64 {
+                     backoff <<= 1;
+                  }
                   current = e.state.load(std::sync::atomic::Ordering::Relaxed);
                }
                if (current & customhash::STATE_OCCUPIED) == 0 {
@@ -536,7 +545,12 @@ impl Store {
                   }
                   Err(observed) => {
                      current = observed;
-                     std::hint::spin_loop();
+                     for _ in 0..backoff {
+                        std::hint::spin_loop();
+                     }
+                     if backoff < 64 {
+                        backoff <<= 1;
+                     }
                   }
                }
             }

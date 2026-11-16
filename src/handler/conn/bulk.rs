@@ -38,6 +38,24 @@ fn owner_slot(
 }
 
 #[inline(always)]
+fn owner_slot_16(
+   entries: &[*const ()],
+   seen: &[u16; 32],
+   pointer: *const (),
+) -> (usize, Option<usize>) {
+   let hash = ((pointer as usize >> 3) as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+   let mut slot = (hash as usize) & 31;
+   while seen[slot] != 0 {
+      let previous = usize::from(seen[slot] - 1);
+      if entries[previous] == pointer {
+         return (slot, Some(previous));
+      }
+      slot = (slot + 1) & 31;
+   }
+   (slot, None)
+}
+
+#[inline(always)]
 fn header(length: usize, out: &mut [u8; 24]) -> usize {
    // Item 13: Direct fast-path for small to medium bulk lengths (<10, <100, <1000)
    if length < 10 {
@@ -121,15 +139,43 @@ fn send_batch<W: Write>(
    } else {
       EAGER_DRAIN_CALLS_MIN
    };
-   let mut slices = [IoSlice::new(&[]); BATCH * 3 + 1];
-   let slice_count = values.len() * 3 + 1;
-   slices[0] = IoSlice::new(&buffered[*offset..]);
-   for (i, value) in values.iter().enumerate() {
-      slices[i * 3 + 1] = IoSlice::new(&headers[i][..usize::from(lengths[i])]);
-      slices[i * 3 + 2] = IoSlice::new(value);
-      slices[i * 3 + 3] = IoSlice::new(b"\r\n");
+   let written = if values.len() <= 16 {
+      let mut slices = [IoSlice::new(&[]); 16 * 3 + 1];
+      let mut slice_idx = 0;
+      if prefix > 0 {
+         slices[slice_idx] = IoSlice::new(&buffered[*offset..]);
+         slice_idx += 1;
+      }
+      for (i, value) in values.iter().enumerate() {
+         slices[slice_idx] = IoSlice::new(&headers[i][..usize::from(lengths[i])]);
+         slices[slice_idx + 1] = IoSlice::new(value);
+         slices[slice_idx + 2] = IoSlice::new(b"\r\n");
+         slice_idx += 3;
+      }
+      write_vectored_bounded(writer, &mut slices[..slice_idx], max_calls)
+   } else {
+      let mut slices = [IoSlice::new(&[]); BATCH * 3 + 1];
+      let mut slice_idx = 0;
+      if prefix > 0 {
+         slices[slice_idx] = IoSlice::new(&buffered[*offset..]);
+         slice_idx += 1;
+      }
+      for (i, value) in values.iter().enumerate() {
+         slices[slice_idx] = IoSlice::new(&headers[i][..usize::from(lengths[i])]);
+         slices[slice_idx + 1] = IoSlice::new(value);
+         slices[slice_idx + 2] = IoSlice::new(b"\r\n");
+         slice_idx += 3;
+      }
+      write_vectored_bounded(writer, &mut slices[..slice_idx], max_calls)
+   };
+   if written == total {
+      buffered.clear();
+      *offset = 0;
+      if buffered.capacity() > RETAINED_WRITE_BUFFER {
+         buffered.shrink_to(RETAINED_WRITE_BUFFER);
+      }
+      return;
    }
-   let written = write_vectored_bounded(writer, &mut slices[..slice_count], max_calls);
    let mut remaining = if written >= prefix {
       buffered.clear();
       *offset = 0;
@@ -227,6 +273,63 @@ pub(super) unsafe fn try_stream_get_run(
    let count = keys.len();
    if count == 0 || count > BATCH || hashes.len() != count || entries.len() != count {
       return false;
+   }
+   if count <= 16 {
+      let mut reads: [Option<customhash::EntryReadGuard<'_, StoreValue>>; 16] =
+         [const { None }; 16];
+      let mut lengths = [0u16; 16];
+      let mut seen = [0u16; 32];
+      for i in 0..count {
+         let (slot, previous) = owner_slot_16(entries, &seen, entries[i]);
+         if let Some(previous) = previous {
+            if hashes[i] != hashes[previous] || keys[i] != keys[previous] {
+               return false;
+            }
+            lengths[i] = previous as u16;
+            continue;
+         }
+         let Some(entry) = (unsafe { entries[i].cast::<customhash::Entry<StoreValue>>().as_ref() })
+         else {
+            return false;
+         };
+         let expected = ((hashes[i] as u32 as u64) << 32) | customhash::STATE_OCCUPIED;
+         if entry.state.load(Ordering::Relaxed)
+            & (customhash::STATE_MATCH_MASK & !customhash::STATE_LOCK)
+            != expected
+            || !entry.key.eq_bytes(keys[i])
+         {
+            return false;
+         }
+         let Some(read) = entry.read() else {
+            return false;
+         };
+         if read.is_expired() || !matches!(read.value, FyroDB::String(_)) {
+            return false;
+         }
+         reads[i] = Some(read);
+         lengths[i] = i as u16;
+         seen[slot] = (i + 1) as u16;
+      }
+      drop(epoch.take());
+      let mut headers = [[0u8; 24]; 16];
+      let mut values: [&[u8]; 16] = [&[]; 16];
+      for i in 0..count {
+         let read = reads[usize::from(lengths[i])].as_ref().unwrap();
+         let FyroDB::String(value) = &read.value else {
+            unreachable!()
+         };
+         values[i] = value.as_bytes();
+         lengths[i] = header(values[i].len(), &mut headers[i]) as u16;
+      }
+      send_batch(
+         &mut conn.stream,
+         &mut conn.parser.wbuf,
+         &mut conn.write_offset,
+         &headers[..count],
+         &lengths[..count],
+         &values[..count],
+      );
+      return true;
    }
    let mut reads: [Option<customhash::EntryReadGuard<'_, StoreValue>>; BATCH] =
       [const { None }; BATCH];

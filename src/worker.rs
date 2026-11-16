@@ -148,11 +148,11 @@ pub fn run_worker(
                            #[cfg(target_os = "linux")]
                            {
                               let _ = sock_ref.set_tcp_quickack(true);
-                              // Kerrisk Ch. 61 & Stevens UNP Ch. 7: 4MB send / 1MB recv socket buffers allow
-                              // full 4MB pipelined batches (16x262KB / 4x1MB) to stream zero-copy in a single
+                              // Kerrisk Ch. 61 & Stevens UNP Ch. 7: 8MB send / 8MB recv socket buffers allow
+                              // full pipelined batches (16x262KB / 4x1MB) to stream zero-copy in a single
                               // write_vectored pass without partial WouldBlock and buffer copy fallback.
-                              let _ = sock_ref.set_send_buffer_size(4 * 1024 * 1024);
-                              let _ = sock_ref.set_recv_buffer_size(1024 * 1024);
+                              let _ = sock_ref.set_send_buffer_size(8 * 1024 * 1024);
+                              let _ = sock_ref.set_recv_buffer_size(8 * 1024 * 1024);
                            }
                         }
                         #[cfg(feature = "unix-sockets")]
@@ -656,6 +656,13 @@ fn make_tcp_listener(addr: SocketAddr, _worker_index: usize) -> TcpListener {
             &val as *const _ as *const libc::c_void,
             std::mem::size_of::<libc::c_int>() as libc::socklen_t,
          );
+      }
+      #[cfg(target_os = "linux")]
+      {
+         // Stevens UNP Vol 1 Ch. 7.5: SO_RCVBUF on listener socket before listen()
+         // ensures window scaling option in SYN/ACK advertises full 8MB receive window.
+         let _ = socket.set_send_buffer_size(8 * 1024 * 1024);
+         let _ = socket.set_recv_buffer_size(8 * 1024 * 1024);
       }
    }
    socket.bind(&addr.into()).unwrap();

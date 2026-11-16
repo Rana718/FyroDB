@@ -244,29 +244,18 @@ fn get_direct_send(
    let total = hl + payload.len() + 2;
 
    let mut written = 0;
-   let slices = [
+   let mut slices = [
       IoSlice::new(&hdr[..hl]),
       IoSlice::new(payload),
       IoSlice::new(b"\r\n"),
    ];
+   let mut pending = &mut slices[..];
    // Items 10 & 11: Eager drain loop for large GETs - loop while socket accepts writes.
-   for _ in 0..8 {
-      let mut active = [IoSlice::new(&[]); 3];
-      let mut count = 0;
-      let mut pos = written;
-      for s in &slices {
-         if pos >= s.len() {
-            pos -= s.len();
-         } else {
-            active[count] = IoSlice::new(&s[pos..]);
-            count += 1;
-            pos = 0;
-         }
-      }
-      if count == 0 {
+   for _ in 0..16 {
+      if pending.is_empty() {
          break;
       }
-      match conn.stream.write_vectored(&active[..count]) {
+      match conn.stream.write_vectored(pending) {
          Ok(0) => break,
          Ok(n) => {
             written += n;
@@ -274,6 +263,7 @@ fn get_direct_send(
                self_parser_wbuf_clear(conn);
                return true;
             }
+            IoSlice::advance_slices(&mut pending, n);
          }
          Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
          Err(_) => break,
@@ -449,27 +439,26 @@ fn dispatch_get_batch<const STREAM_IO: bool>(
    } else {
       read_epoch
    };
-   #[cfg(not(feature = "io-uring"))]
-   let mut read_epoch = read_epoch;
-   if read_epoch.is_some() {
-      conn.store.probe_and_prefetch_entries(
-         &tables[..count],
-         &hashes[..count],
-         &mut entries[..count],
-      );
-   } else {
-      conn.store.probe_and_prefetch_entries_write(
-         &tables[..count],
-         &hashes[..count],
-         &mut entries[..count],
-      );
-   }
+   conn.store.probe_and_prefetch_entries(
+      &tables[..count],
+      &hashes[..count],
+      &mut entries[..count],
+   );
    let first_payload_len = if let Some(epoch) = read_epoch.as_ref() {
       unsafe { store.string_payload_len_epoch(hashes[0], entries[0], epoch) }
    } else {
       // Below READ_EPOCH_MIN: peek the first entry under its own guard so
       // large-value pipelines still reach the zero-copy stream path.
       unsafe { store.string_payload_len_unguarded(hashes[0], entries[0]) }
+   };
+   #[cfg(not(feature = "io-uring"))]
+   let mut read_epoch = if read_epoch.is_none()
+      && read_only
+      && (count >= READ_EPOCH_MIN || first_payload_len >= super::bulk::MIN_STREAM_BYTES)
+   {
+      store.data.try_read_epoch()
+   } else {
+      read_epoch
    };
    let prefetch_payloads = (24..=8192).contains(&first_payload_len)
       && (first_payload_len <= 1024 || store.worker_capacity() == 1);
@@ -711,17 +700,7 @@ fn dispatch_set_batch<const PREFETCH: usize, const STREAMING: bool>(
                      let old_expires = val.expires_ms;
                      val.expires_ms = 0;
                      if let crate::storage::value::FyroDB::String(ref mut s) = val.value {
-                        if STREAMING
-                           && val_bytes.len() >= 8192
-                           && count > 1
-                           && end == i + 1
-                           && !hashes[..i].contains(&hashes[i])
-                           && !hashes[end..count].contains(&hashes[i])
-                        {
-                           s.overwrite_bytes_streaming(val_bytes);
-                        } else {
-                           s.overwrite_bytes(val_bytes);
-                        }
+                        s.overwrite_bytes(val_bytes);
                      } else {
                         val.value = crate::storage::value::FyroDB::String(
                            crate::storage::value::SmallStr::from_slice(val_bytes),

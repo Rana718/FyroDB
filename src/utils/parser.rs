@@ -12,6 +12,8 @@ pub struct RespParser {
    /// Set when the last parse consumed an empty inline line (Redis skips
    /// bare CRLF lines instead of erroring).
    inline_skipped: bool,
+   /// Earliest filled byte offset required before the in-flight command can complete.
+   pub min_needed: usize,
 }
 
 struct Partial {
@@ -42,7 +44,7 @@ const MAX_PREALLOC_PARTS: usize = 1024;
 /// instead of re-parsing from the start on every read.
 const RESUME_THRESHOLD: usize = 64;
 
-/// Parse a 1–6 digit length (the digits of a `$<len>\r\n` prefix) at `p`,
+/// Parse a 1–8 digit length (the digits of a `$<len>\r\n` prefix) at `p`,
 /// returning the value and the width of the digits plus CRLF. The caller
 /// guarantees `avail` readable bytes; anything else falls back to the generic
 /// parser.
@@ -107,8 +109,9 @@ pub fn parse_len_le4(p: *const u8, avail: usize) -> Option<(usize, usize)> {
    if !d6.is_ascii_digit() || avail < 8 {
       return None;
    }
-   if unsafe { *p.add(6) } == b'\r' && unsafe { *p.add(7) } == b'\n' {
-      return Some((
+   let d7 = unsafe { *p.add(6) };
+   if d7 == b'\r' {
+      return (unsafe { *p.add(7) } == b'\n').then_some((
          ((d1 - b'0') as usize) * 100000
             + ((d2 - b'0') as usize) * 10000
             + ((d3 - b'0') as usize) * 1000
@@ -116,6 +119,38 @@ pub fn parse_len_le4(p: *const u8, avail: usize) -> Option<(usize, usize)> {
             + ((d5 - b'0') as usize) * 10
             + (d6 - b'0') as usize,
          8,
+      ));
+   }
+   if !d7.is_ascii_digit() || avail < 9 {
+      return None;
+   }
+   let d8 = unsafe { *p.add(7) };
+   if d8 == b'\r' {
+      return (unsafe { *p.add(8) } == b'\n').then_some((
+         ((d1 - b'0') as usize) * 1000000
+            + ((d2 - b'0') as usize) * 100000
+            + ((d3 - b'0') as usize) * 10000
+            + ((d4 - b'0') as usize) * 1000
+            + ((d5 - b'0') as usize) * 100
+            + ((d6 - b'0') as usize) * 10
+            + (d7 - b'0') as usize,
+         9,
+      ));
+   }
+   if !d8.is_ascii_digit() || avail < 10 {
+      return None;
+   }
+   if unsafe { *p.add(8) } == b'\r' && unsafe { *p.add(9) } == b'\n' {
+      return Some((
+         ((d1 - b'0') as usize) * 10000000
+            + ((d2 - b'0') as usize) * 1000000
+            + ((d3 - b'0') as usize) * 100000
+            + ((d4 - b'0') as usize) * 10000
+            + ((d5 - b'0') as usize) * 1000
+            + ((d6 - b'0') as usize) * 100
+            + ((d7 - b'0') as usize) * 10
+            + (d8 - b'0') as usize,
+         10,
       ));
    }
    None
@@ -141,6 +176,7 @@ impl RespParser {
          parts_raw: Vec::new(),
          partial: None,
          inline_skipped: false,
+         min_needed: 0,
       }
    }
 
@@ -165,7 +201,12 @@ impl RespParser {
          self.filled -= self.pos;
          self.pos = 0;
       }
-      if self.rbuf.capacity() - self.filled < 16 * 1024 {
+      if self.min_needed > self.filled {
+         let needed = self.min_needed - self.filled;
+         if self.rbuf.capacity() - self.filled < needed {
+            self.rbuf.reserve(needed);
+         }
+      } else if self.rbuf.capacity() - self.filled < 16 * 1024 {
          let additional = self.rbuf.capacity().max(Self::IDLE_READ_BUFFER);
          self.rbuf.reserve(additional);
       }
@@ -224,6 +265,7 @@ impl RespParser {
 
       let total_len = key_offset + key_len + 2;
       if avail < total_len {
+         self.min_needed = self.pos + total_len;
          return Some(ParseResult::Incomplete);
       }
       if unsafe { std::ptr::read_unaligned(buf.add(total_len - 2) as *const u16) } != CRLF {
@@ -240,6 +282,7 @@ impl RespParser {
          self.parts_raw.set_len(2);
       }
       self.pos += total_len;
+      self.min_needed = 0;
       Some(ParseResult::Complete)
    }
 
@@ -294,12 +337,8 @@ impl RespParser {
       let key_offset = 14 + key_hdr;
 
       let p_val_header = key_offset + key_len + 2;
-      if avail < p_val_header + 7 {
-         return if avail < p_val_header {
-            Some(ParseResult::Incomplete)
-         } else {
-            None
-         };
+      if avail < p_val_header + 4 {
+         return Some(ParseResult::Incomplete);
       }
       if unsafe { std::ptr::read_unaligned(buf.add(p_val_header - 2) as *const u16) } != CRLF {
          return None;
@@ -307,12 +346,21 @@ impl RespParser {
       if unsafe { *buf.add(p_val_header) } != b'$' {
          return None;
       }
-      let (val_len, val_hdr) =
-         unsafe { parse_len_le4(buf.add(p_val_header + 1), avail - (p_val_header + 1)) }?;
+      let (val_len, val_hdr) = match unsafe { parse_len_le4(buf.add(p_val_header + 1), avail - (p_val_header + 1)) } {
+         Some(r) => r,
+         None => {
+            return if avail < p_val_header + 12 {
+               Some(ParseResult::Incomplete)
+            } else {
+               None
+            };
+         }
+      };
       let val_offset = p_val_header + 1 + val_hdr;
 
       let total_len = val_offset + val_len + 2;
       if avail < total_len {
+         self.min_needed = self.pos + total_len;
          return Some(ParseResult::Incomplete);
       }
       if unsafe { std::ptr::read_unaligned(buf.add(total_len - 2) as *const u16) } != CRLF {
@@ -330,6 +378,7 @@ impl RespParser {
          self.parts_raw.set_len(3);
       }
       self.pos += total_len;
+      self.min_needed = 0;
       Some(ParseResult::Complete)
    }
 
@@ -357,7 +406,7 @@ impl RespParser {
       let key_offset = 14 + key_hdr;
 
       let p_val_header = key_offset + key_len + 2;
-      if avail < p_val_header + 7 {
+      if avail < p_val_header + 4 {
          return None;
       }
       if unsafe { std::ptr::read_unaligned(buf.add(p_val_header - 2) as *const u16) } != CRLF {
@@ -372,6 +421,7 @@ impl RespParser {
 
       let total_len = val_offset + val_len + 2;
       if avail < total_len {
+         self.min_needed = self.pos + total_len;
          return None;
       }
       if unsafe { std::ptr::read_unaligned(buf.add(total_len - 2) as *const u16) } != CRLF {
@@ -379,6 +429,7 @@ impl RespParser {
       }
 
       self.pos += total_len;
+      self.min_needed = 0;
       Some(unsafe {
          (
             (buf.add(key_offset), key_len),
@@ -607,6 +658,7 @@ impl RespParser {
 
       let total_len = val_offset + val_len + 2;
       if avail < total_len {
+         self.min_needed = self.pos + total_len;
          return None;
       }
       if unsafe { std::ptr::read_unaligned(buf.add(total_len - 2) as *const u16) } != CRLF {
@@ -727,6 +779,7 @@ impl RespParser {
 
       let total_len = key_offset + key_len + 2;
       if avail < total_len {
+         self.min_needed = self.pos + total_len;
          return Some(ParseResult::Incomplete);
       }
       if unsafe { std::ptr::read_unaligned(buf.add(total_len - 2) as *const u16) } != CRLF {
@@ -743,6 +796,7 @@ impl RespParser {
          self.parts_raw.set_len(2);
       }
       self.pos += total_len;
+      self.min_needed = 0;
       Some(ParseResult::Complete)
    }
 
@@ -1403,11 +1457,18 @@ impl RespParser {
    pub fn parse_one(&mut self) -> ParseResult {
       self.parts_raw.clear();
       if self.partial.is_some() {
-         return self.resume();
+         let res = self.resume();
+         if matches!(res, ParseResult::Complete) {
+            self.min_needed = 0;
+         }
+         return res;
       }
 
       loop {
          let parsed = self.parse_one_inner();
+         if matches!(parsed, ParseResult::Complete) {
+            self.min_needed = 0;
+         }
          // Empty inline lines (bare \r\n) are consumed and skipped, so the
          // loop re-enters the parser for the following command.
          if self.inline_skipped {
@@ -1589,6 +1650,7 @@ impl RespParser {
       }
       let len = parse_usize(&self.rbuf[bs + 1..be], MAX_BULK_BYTES).ok_or(())?;
       if self.filled - self.pos < len + 2 {
+         self.min_needed = self.pos + len + 2;
          return Ok(None);
       }
       if self.rbuf.get(self.pos + len) != Some(&b'\r')
@@ -1598,6 +1660,7 @@ impl RespParser {
       }
       let ptr = unsafe { self.rbuf.as_ptr().add(self.pos) };
       self.pos += len + 2;
+      self.min_needed = 0;
       Ok(Some((ptr, len)))
    }
 
@@ -1656,6 +1719,7 @@ impl RespParser {
          self.parts_raw.clear();
          self.filled = 0;
          self.pos = 0;
+         self.min_needed = 0;
          self.rbuf.truncate(Self::IDLE_READ_BUFFER);
          // Gjengset Ch. 13: Retain capacity up to 4MB so active large-payload pipelines (e.g. 4x1MB)
          // do not trigger realloc/madvise thrashing on every request boundary.
@@ -1734,7 +1798,7 @@ fn parse_usize(s: &[u8], max: usize) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
-   use super::{ParseResult, RespParser};
+   use super::{parse_len_le4, ParseResult, RespParser};
 
    fn feed(parser: &mut RespParser, bytes: &[u8]) {
       let mut offset = 0;
@@ -1959,5 +2023,22 @@ mod tests {
       let mut parser = RespParser::new();
       feed(&mut parser, b"*2\r\n$3\r\nGET\r\n$1\r\nxZZ\r\n");
       assert!(matches!(parser.parse_one(), ParseResult::Error));
+   }
+
+   #[test]
+   fn parse_len_le4_supports_large_payloads_up_to_eight_digits() {
+      for (input, expected) in [
+         (b"5\r\n" as &[u8], Some((5, 3))),
+         (b"64\r\n", Some((64, 4))),
+         (b"256\r\n", Some((256, 5))),
+         (b"4096\r\n", Some((4096, 6))),
+         (b"65536\r\n", Some((65536, 7))),
+         (b"262144\r\n", Some((262144, 8))),
+         (b"1048576\r\n", Some((1048576, 9))),
+         (b"16777216\r\n", Some((16777216, 10))),
+         (b"99999999\r\n", Some((99999999, 10))),
+      ] {
+         assert_eq!(parse_len_le4(input.as_ptr(), input.len()), expected);
+      }
    }
 }

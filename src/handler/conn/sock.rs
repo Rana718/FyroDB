@@ -1,9 +1,9 @@
 use super::*;
 
 impl<'a> Conn<'a> {
-   /// Item 10: Scaled read-ahead window allows deep pipelined streams and
-   /// large bulk frames (up to 256KB) to be ingested without pipeline chopping.
-   const MAX_READ_AHEAD: usize = 256 * 1024;
+   /// Scaled read-ahead window allows deep pipelined streams and
+   /// large bulk frames (up to 2MB) to be ingested without pipeline chopping.
+   const MAX_READ_AHEAD: usize = 2 * 1024 * 1024;
 
    #[inline]
    fn recv_raw(&self, ptr: *mut u8, len: usize) -> io::Result<usize> {
@@ -38,9 +38,19 @@ impl<'a> Conn<'a> {
          self.parser.did_fill(n);
          if !raw_only
             && self.parser.pending() >= Self::MAX_READ_AHEAD
+            && self.parser.filled >= self.parser.min_needed
             && !self.process_buffered_inner::<true>()
          {
             return false;
+         }
+         // Stevens UNP Vol 1 Ch 16 & Kerrisk TLPI Ch 63:
+         // For large frames or pipelined bursts (n >= 8192 or min_needed > filled),
+         // continue draining non-blockingly until WouldBlock or MAX_READ_AHEAD
+         // to avoid breaking pipelined batches into fragmented epoll cycles.
+         if (self.parser.min_needed > 0 && self.parser.filled < self.parser.min_needed)
+            || (n >= 8192 && self.parser.pending() < Self::MAX_READ_AHEAD)
+         {
+            continue;
          }
          if n < cap {
             break;
