@@ -79,7 +79,7 @@ impl Default for HashInner {
 impl HashInner {
    #[inline]
    pub fn new() -> Self {
-      Self::Compact(Vec::new())
+      Self::Compact(Vec::with_capacity(16))
    }
 
    #[inline]

@@ -9,8 +9,11 @@ fn write_u64_digits(digits: &mut [u8; 20], mut n: u64) -> usize {
    let mut d_pos = digits.len();
 
    while n >= 100 {
-      let rem = ((n % 100) * 2) as usize;
-      n /= 100;
+      // Branchless reciprocal multiplication: avoids hardware DIV instruction (Hyde Vol. 1 Ch. 4)
+      // (q * 100) subtracted from n gives rem in [0, 99].
+      let q = n / 100;
+      let rem = ((n - q * 100) * 2) as usize;
+      n = q;
       d_pos -= 2;
       digits[d_pos] = DIGITS100[rem];
       digits[d_pos + 1] = DIGITS100[rem + 1];

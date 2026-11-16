@@ -72,11 +72,16 @@ impl HllData {
       let mut sum = 0.0f64;
       let mut zeros = 0u32;
       let recip = &*RECIP_2_POW;
-      for &reg in &self.registers {
-         sum += recip[(reg as usize).min(63)];
-         if reg == 0 {
-            zeros += 1;
-         }
+      let chunks = self.registers.chunks_exact(4);
+      for chunk in chunks {
+         sum += recip[(chunk[0] as usize).min(63)]
+            + recip[(chunk[1] as usize).min(63)]
+            + recip[(chunk[2] as usize).min(63)]
+            + recip[(chunk[3] as usize).min(63)];
+         zeros += (chunk[0] == 0) as u32
+            + (chunk[1] == 0) as u32
+            + (chunk[2] == 0) as u32
+            + (chunk[3] == 0) as u32;
       }
       let m = HLL_REGISTERS as f64;
       let alpha = 0.7213 / (1.0 + 1.079 / m);

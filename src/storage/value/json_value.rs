@@ -13,13 +13,15 @@ pub enum JsonValue {
 #[inline]
 fn write_json_string(out: &mut String, value: &str) {
    out.push('"');
+   let bytes = value.as_bytes();
+   if !bytes.contains(&b'"') && !bytes.contains(&b'\\') {
+      out.push_str(value);
+      out.push('"');
+      return;
+   }
    let mut start = 0;
-   for (idx, byte) in value.bytes().enumerate() {
-      let escaped = match byte {
-         b'\\' | b'"' => Some(byte),
-         _ => None,
-      };
-      if let Some(byte) = escaped {
+   for (idx, &byte) in bytes.iter().enumerate() {
+      if byte == b'\\' || byte == b'"' {
          out.push_str(&value[start..idx]);
          out.push('\\');
          out.push(byte as char);
@@ -43,7 +45,7 @@ impl JsonValue {
    }
 
    pub fn to_resp_string(&self) -> String {
-      let mut out = String::new();
+      let mut out = String::with_capacity(64);
       self.write_json(&mut out);
       out
    }
@@ -54,8 +56,8 @@ impl JsonValue {
          Self::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
          Self::Number(n) => {
             if *n == (*n as i64) as f64 {
-               use std::fmt::Write;
-               let _ = write!(out, "{}", *n as i64);
+               let mut buf = [0u8; 20];
+               out.push_str(crate::utils::int_format::write_i64_to(&mut buf, *n as i64));
             } else {
                use std::fmt::Write;
                let _ = write!(out, "{}", n);

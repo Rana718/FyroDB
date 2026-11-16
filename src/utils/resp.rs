@@ -251,6 +251,27 @@ pub fn write_bulk_bytes(out: &mut Vec<u8>, s: &[u8]) {
       write_medium_bulk(out, s);
       return;
    }
+   if len < 100_000 {
+      let old_len = out.len();
+      let digits = 5;
+      let header = digits + 3;
+      let total = header + len + 2;
+      if out.capacity() - old_len < total {
+         reserve_resp(out, total);
+      }
+      unsafe {
+         let p = out.as_mut_ptr().add(old_len);
+         *p = b'$';
+         let mut buf = [0u8; 20];
+         let num = crate::utils::int_format::write_usize_to(&mut buf, len);
+         std::ptr::copy_nonoverlapping(num.as_ptr(), p.add(1), digits);
+         p.add(digits + 1).cast::<u16>().write_unaligned(CRLF_U16);
+         std::ptr::copy_nonoverlapping(s.as_ptr(), p.add(header), len);
+         p.add(header + len).cast::<u16>().write_unaligned(CRLF_U16);
+         out.set_len(old_len + total);
+      }
+      return;
+   }
    out.reserve(1 + 10 + 2 + len + 2);
    out.push(b'$');
    write_usize(out, s.len());

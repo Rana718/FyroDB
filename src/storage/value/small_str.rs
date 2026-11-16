@@ -91,14 +91,15 @@ unsafe fn copy_streaming_payload(destination: &mut [u8], source: &[u8]) {
       let head = dst.align_offset(64);
       std::ptr::copy_nonoverlapping(src, dst, head);
       let mut at = head;
-      while at + 128 <= len {
-         for offset in [0, 32, 64, 96] {
+      // 256-byte unroll for non-temporal streaming writes directly to DRAM (Gregg Ch. 7, Hyde Ch. 3)
+      while at + 256 <= len {
+         for offset in [0, 32, 64, 96, 128, 160, 192, 224] {
             let value = _mm256_loadu_si256(src.add(at + offset).cast());
             _mm256_stream_si256(dst.add(at + offset).cast(), value);
          }
-         at += 128;
+         at += 256;
       }
-      if at + 64 <= len {
+      while at + 64 <= len {
          for offset in [0, 32] {
             let value = _mm256_loadu_si256(src.add(at + offset).cast());
             _mm256_stream_si256(dst.add(at + offset).cast(), value);

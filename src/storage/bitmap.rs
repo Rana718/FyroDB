@@ -8,7 +8,15 @@ pub fn count_ones_fast(slice: &[u8]) -> usize {
    for &b in prefix {
       count += b.count_ones() as usize;
    }
-   for &w in words {
+   // Unroll 4x 64-bit word popcounts for instruction-level parallelism (Randall Hyde Vol. 1 Ch. 8)
+   let mut chunks = words.chunks_exact(4);
+   for chunk in chunks.by_ref() {
+      count += chunk[0].count_ones() as usize
+         + chunk[1].count_ones() as usize
+         + chunk[2].count_ones() as usize
+         + chunk[3].count_ones() as usize;
+   }
+   for &w in chunks.remainder() {
       count += w.count_ones() as usize;
    }
    for &b in suffix {

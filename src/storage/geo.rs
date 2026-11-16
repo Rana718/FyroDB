@@ -348,14 +348,21 @@ fn encode_geohash_string(bits: u64) -> String {
    result
 }
 
+#[inline(always)]
 fn haversine(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
+   if (lat1 - lat2).abs() < 1e-12 && (lon1 - lon2).abs() < 1e-12 {
+      return 0.0;
+   }
    const EARTH_RADIUS: f64 = 6372797.560856;
-   let lat1_r = lat1 * PI / 180.0;
-   let lat2_r = lat2 * PI / 180.0;
-   let dlat = (lat2 - lat1) * PI / 180.0;
-   let dlon = (lon2 - lon1) * PI / 180.0;
+   const DEG_TO_RAD: f64 = PI / 180.0;
+   let lat1_r = lat1 * DEG_TO_RAD;
+   let lat2_r = lat2 * DEG_TO_RAD;
+   let dlat = (lat2 - lat1) * DEG_TO_RAD;
+   let dlon = (lon2 - lon1) * DEG_TO_RAD;
 
-   let a = (dlat / 2.0).sin().powi(2) + lat1_r.cos() * lat2_r.cos() * (dlon / 2.0).sin().powi(2);
+   let sin_half_dlat = (dlat * 0.5).sin();
+   let sin_half_dlon = (dlon * 0.5).sin();
+   let a = sin_half_dlat * sin_half_dlat + lat1_r.cos() * lat2_r.cos() * sin_half_dlon * sin_half_dlon;
    let c = 2.0 * a.sqrt().asin();
    EARTH_RADIUS * c
 }
