@@ -392,14 +392,13 @@ impl RespParser {
       &mut self,
       buf: *const u8,
       avail: usize,
-   ) -> Option<(RawSlice, RawSlice)> {
+   ) -> Option<(RawSlice, RawSlice, u64)> {
       const H_SET_LOWER: u64 = u64::from_ne_bytes(*b"$3\r\nset\r");
       const LF_DOLLAR: u16 = u16::from_ne_bytes(*b"\n$");
       const CRLF: u16 = u16::from_ne_bytes(*b"\r\n");
       const T3_DOLLAR6: u64 = u64::from_ne_bytes(*b"*3\r\n$6\r\n");
       const EXP_UPPER: u64 = u64::from_ne_bytes(*b"EXPIRE\r\n");
       const EXP_LOWER: u64 = u64::from_ne_bytes(*b"expire\r\n");
-      const TTL_60: u64 = u64::from_ne_bytes(*b"$2\r\n60\r\n");
 
       if avail < 48 {
          return None;
@@ -432,7 +431,7 @@ impl RespParser {
       let val_offset = p_val_header + 1 + val_hdr;
 
       let set_len = val_offset + val_len + 2;
-      if avail < set_len + 16 + 4 + key_len + 2 + 8 {
+      if avail < set_len + 16 + 4 + key_len + 2 + 5 {
          return None;
       }
       if unsafe { std::ptr::read_unaligned(buf.add(set_len - 2) as *const u16) } != CRLF {
@@ -466,16 +465,34 @@ impl RespParser {
          return None;
       }
       let ttl_start = post_k + 2;
-      if unsafe { std::ptr::read_unaligned(exp_buf.add(ttl_start) as *const u64) } != TTL_60 {
+      let exp_rem = avail - set_len - ttl_start;
+      if exp_rem < 4 || unsafe { *exp_buf.add(ttl_start) } != b'$' {
          return None;
       }
-      let exp_len = ttl_start + 8;
+      let (ttl_len, ttl_hdr) = unsafe { parse_len_le4(exp_buf.add(ttl_start + 1), exp_rem - 1) }?;
+      let ttl_val_offset = ttl_start + 1 + ttl_hdr;
+      if exp_rem < 1 + ttl_hdr + ttl_len + 2 {
+         return None;
+      }
+      if unsafe { std::ptr::read_unaligned(exp_buf.add(ttl_val_offset + ttl_len) as *const u16) } != CRLF {
+         return None;
+      }
+      let ttl_bytes = unsafe { std::slice::from_raw_parts(exp_buf.add(ttl_val_offset), ttl_len) };
+      let mut ttl_secs: u64 = 0;
+      for &b in ttl_bytes {
+         if !b.is_ascii_digit() {
+            return None;
+         }
+         ttl_secs = ttl_secs.checked_mul(10)?.checked_add((b - b'0') as u64)?;
+      }
+      let exp_len = ttl_val_offset + ttl_len + 2;
       self.pos += set_len + exp_len;
 
       Some(unsafe {
          (
             (buf.add(key_offset), key_len),
             (buf.add(val_offset), val_len),
+            ttl_secs,
          )
       })
    }
@@ -1639,13 +1656,15 @@ impl RespParser {
          self.parts_raw.clear();
          self.filled = 0;
          self.pos = 0;
-         if self.rbuf.len() > 512 * 1024 {
-            self.rbuf.truncate(Self::IDLE_READ_BUFFER);
-            self.rbuf.shrink_to(Self::IDLE_READ_BUFFER);
+         self.rbuf.truncate(Self::IDLE_READ_BUFFER);
+         // Item 3: Keep retained capacity up to 1MB-2MB so large-payload benchmarks don't trigger
+         // allocator realloc/free cycles on every request boundary.
+         if self.rbuf.capacity() > 2 * 1024 * 1024 {
+            self.rbuf.shrink_to(1024 * 1024);
          }
       }
-      if self.wbuf.is_empty() && self.wbuf.capacity() > 256 * 1024 {
-         self.wbuf.shrink_to(128 * 1024);
+      if self.wbuf.is_empty() && self.wbuf.capacity() > 2 * 1024 * 1024 {
+         self.wbuf.shrink_to(1024 * 1024);
       }
    }
 

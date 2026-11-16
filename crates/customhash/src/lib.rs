@@ -179,7 +179,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
       }
    }
 
-   pub const DEFAULT_SHARDS: usize = 128;
+   pub const DEFAULT_SHARDS: usize = 512;
 
    pub fn new() -> Self {
       Self::with_shards(Self::DEFAULT_SHARDS)

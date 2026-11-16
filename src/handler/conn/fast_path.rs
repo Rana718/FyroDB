@@ -243,30 +243,59 @@ fn get_direct_send(
    let hl = hl + 2;
    let total = hl + payload.len() + 2;
 
-   let n = match conn.stream.write_vectored(&[
+   let mut written = 0;
+   let slices = [
       IoSlice::new(&hdr[..hl]),
       IoSlice::new(payload),
       IoSlice::new(b"\r\n"),
-   ]) {
-      Ok(n) => n,
-      Err(_) => return false,
-   };
-   if n >= total {
+   ];
+   // Items 10 & 11: Eager drain loop for large GETs - loop while socket accepts writes.
+   for _ in 0..8 {
+      let mut active = [IoSlice::new(&[]); 3];
+      let mut count = 0;
+      let mut pos = written;
+      for s in &slices {
+         if pos >= s.len() {
+            pos -= s.len();
+         } else {
+            active[count] = IoSlice::new(&s[pos..]);
+            count += 1;
+            pos = 0;
+         }
+      }
+      if count == 0 {
+         break;
+      }
+      match conn.stream.write_vectored(&active[..count]) {
+         Ok(0) => break,
+         Ok(n) => {
+            written += n;
+            if written >= total {
+               self_parser_wbuf_clear(conn);
+               return true;
+            }
+         }
+         Err(_) => break,
+      }
+   }
+
+   if written >= total {
       self_parser_wbuf_clear(conn);
       return true;
    }
-   // Partial write: the unsent remainder moves into wbuf (write_offset 0).
-   let mut rem = Vec::with_capacity(total - n);
-   let mut pos = n;
+
+   // Partial write: reuse existing wbuf allocation (write_offset 0) instead of allocating fresh Vec.
+   conn.parser.wbuf.clear();
+   conn.parser.wbuf.reserve(total - written);
+   let mut pos = written;
    for src in [&hdr[..hl], payload, b"\r\n" as &[u8]] {
       if pos >= src.len() {
          pos -= src.len();
          continue;
       }
-      rem.extend_from_slice(&src[pos..]);
+      conn.parser.wbuf.extend_from_slice(&src[pos..]);
       pos = 0;
    }
-   conn.parser.wbuf = rem;
    conn.write_offset = 0;
    true
 }
@@ -545,9 +574,8 @@ pub(super) fn dispatch_set_run(
       dispatch_set_one(conn, first_key, first_val);
       return;
    }
-   if conn.store.worker_capacity() > 1 && first_val.1 <= 256 {
-      dispatch_set_batch::<64, false>(conn, first_key, first_val);
-   } else if first_val.1 >= 8192 {
+   // Item 33: Align batch size with 256 to prevent premature partial socket flushes.
+   if first_val.1 >= 8192 {
       dispatch_set_batch::<256, true>(conn, first_key, first_val);
    } else {
       dispatch_set_batch::<256, false>(conn, first_key, first_val);
@@ -1711,8 +1739,9 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
          if raw.len() == 3 {
             let bytes = unsafe { part_bytes(raw[2]) };
             conn.store.set_string_auto_bytes(key.as_bytes(), hint, entry, bytes, 0);
+            // Item 31: Omit second hash probe for replication/AOF record.
             if conn.store.has_replication() {
-               conn.store.record_current_value(key);
+               conn.store.record_live_string(key.as_bytes(), bytes, 0);
             }
             conn.parser.wbuf.extend_from_slice(b"+OK\r\n");
             return;

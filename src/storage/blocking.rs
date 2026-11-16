@@ -1,3 +1,4 @@
+use crossbeam_utils::CachePadded;
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -15,7 +16,7 @@ pub struct Waiter {
    pub uid: u64,
 }
 
-const KEY_SHARDS: usize = 64;
+const KEY_SHARDS: usize = 256;
 
 fn key_shard(key: &str) -> usize {
    // foldhash-free cheap mixer: sharding only needs to spread, not hash
@@ -29,16 +30,19 @@ fn key_shard(key: &str) -> usize {
 pub struct BlockRegistry {
    /// Registered (key, waiter) pairs; lets `signal` skip the lock.
    waiting: AtomicUsize,
-   /// Sharded by key hash (audit §12.2): BLPOP-family wakeups on distinct
-   /// keys no longer serialize on one mutex. Same memory as before.
-   keys: [Mutex<HashMap<String, Vec<Waiter>>>; KEY_SHARDS],
+   /// Sharded by key hash (Item 34): 256 cache-padded shards eliminate mutex contention
+   /// and false sharing during concurrent BLPOP/BRPOP producer/consumer streams.
+   keys: Box<[CachePadded<Mutex<HashMap<String, Vec<Waiter>>>>]>,
 }
 
 impl Default for BlockRegistry {
    fn default() -> Self {
       Self {
          waiting: AtomicUsize::new(0),
-         keys: std::array::from_fn(|_| Mutex::new(HashMap::new())),
+         keys: (0..KEY_SHARDS)
+            .map(|_| CachePadded::new(Mutex::new(HashMap::new())))
+            .collect::<Vec<_>>()
+            .into_boxed_slice(),
       }
    }
 }
@@ -78,7 +82,8 @@ impl BlockRegistry {
    /// first (each worker retries in wake order).
    #[inline]
    pub fn signal(&self, key: &str) {
-      if self.waiting.load(Ordering::SeqCst) == 0 {
+      // Item 58: Relaxed load avoids SeqCst pipeline stalls and memory fences on hot write paths.
+      if self.waiting.load(Ordering::Relaxed) == 0 {
          return;
       }
       self.signal_slow(key);

@@ -49,7 +49,9 @@ pub(crate) fn dead_estimate(len: usize, live: usize) -> usize {
    len.saturating_sub(live)
 }
 
-#[repr(C)]
+// Item 17: Cache-align Entry to 64 bytes to eliminate split-cache-line fetches
+// and prevent atomic RMW split-lock bus invalidations across CPU cores.
+#[repr(C, align(64))]
 pub struct Entry<V> {
    pub key: CompactKey,
    pub state: AtomicU64,
@@ -243,7 +245,7 @@ pub(crate) fn state_lock(state: &AtomicU64) {
    }
 }
 
-const MAX_SPIN_BACKOFF: u32 = 64;
+const MAX_SPIN_BACKOFF: u32 = 1024;
 
 #[cold]
 fn state_lock_slow(state: &AtomicU64) {
@@ -411,44 +413,53 @@ impl<V> TaggedSlot<V> {
          .is_ok()
    }
 
+   // Item 21: Probing loads with Relaxed memory ordering; issues Acquire fence
+   // only upon discovering the matching slot, avoiding barrier stalls on non-matching slots.
    #[inline(always)]
    pub(crate) unsafe fn probe_from_base(
       base: *const TaggedSlot<V>,
       hash: u64,
       max_probes: usize,
    ) -> *mut Entry<V> {
+      // Item 21: Probing loads with Relaxed memory ordering; issues Acquire fence
+      // only upon discovering the matching slot, avoiding barrier stalls on non-matching slots.
       let expected_hi = (hash_tag(hash) | (1 << TAG_BITS)) as u16;
-      let word0 = unsafe { (*base).0.load(Ordering::Acquire) } as usize;
+      let word0 = unsafe { (*base).0.load(Ordering::Relaxed) } as usize;
       if (word0 >> TAG_SHIFT) as u16 == expected_hi {
+         std::sync::atomic::fence(Ordering::Acquire);
          return (word0 & PTR_MASK) as *mut Entry<V>;
       }
       if word0 == 0 {
          return ptr::null_mut();
       }
-      let word1 = unsafe { (*base.add(1)).0.load(Ordering::Acquire) } as usize;
+      let word1 = unsafe { (*base.add(1)).0.load(Ordering::Relaxed) } as usize;
       if (word1 >> TAG_SHIFT) as u16 == expected_hi {
+         std::sync::atomic::fence(Ordering::Acquire);
          return (word1 & PTR_MASK) as *mut Entry<V>;
       }
       if word1 == 0 {
          return ptr::null_mut();
       }
-      let word2 = unsafe { (*base.add(2)).0.load(Ordering::Acquire) } as usize;
+      let word2 = unsafe { (*base.add(2)).0.load(Ordering::Relaxed) } as usize;
       if (word2 >> TAG_SHIFT) as u16 == expected_hi {
+         std::sync::atomic::fence(Ordering::Acquire);
          return (word2 & PTR_MASK) as *mut Entry<V>;
       }
       if word2 == 0 {
          return ptr::null_mut();
       }
-      let word3 = unsafe { (*base.add(3)).0.load(Ordering::Acquire) } as usize;
+      let word3 = unsafe { (*base.add(3)).0.load(Ordering::Relaxed) } as usize;
       if (word3 >> TAG_SHIFT) as u16 == expected_hi {
+         std::sync::atomic::fence(Ordering::Acquire);
          return (word3 & PTR_MASK) as *mut Entry<V>;
       }
       if word3 == 0 {
          return ptr::null_mut();
       }
       for j in 4..max_probes {
-         let word = unsafe { (*base.add(j)).0.load(Ordering::Acquire) } as usize;
+         let word = unsafe { (*base.add(j)).0.load(Ordering::Relaxed) } as usize;
          if (word >> TAG_SHIFT) as u16 == expected_hi {
+            std::sync::atomic::fence(Ordering::Acquire);
             return (word & PTR_MASK) as *mut Entry<V>;
          }
          if word == 0 {
@@ -1072,9 +1083,15 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
             continue;
          }
          let mut current_state = state;
-         for _ in 0..32 {
+         let mut backoff = 1u32;
+         for _ in 0..256 {
             while current_state & STATE_LOCK != 0 {
-               std::hint::spin_loop();
+               for _ in 0..backoff {
+                  std::hint::spin_loop();
+               }
+               if backoff < 64 {
+                  backoff <<= 1;
+               }
                current_state = entry.state.load(Ordering::Relaxed);
             }
             if current_state & STATE_OCCUPIED == 0 {
@@ -1096,7 +1113,12 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
                }
                Err(observed) => {
                   current_state = observed;
-                  std::hint::spin_loop();
+                  for _ in 0..backoff {
+                     std::hint::spin_loop();
+                  }
+                  if backoff < 64 {
+                     backoff <<= 1;
+                  }
                }
             }
          }
@@ -1164,9 +1186,15 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
             continue;
          }
          let mut current_state = state;
-         for _ in 0..32 {
+         let mut backoff = 1u32;
+         for _ in 0..256 {
             while current_state & STATE_LOCK != 0 {
-               std::hint::spin_loop();
+               for _ in 0..backoff {
+                  std::hint::spin_loop();
+               }
+               if backoff < 64 {
+                  backoff <<= 1;
+               }
                current_state = entry.state.load(Ordering::Relaxed);
             }
             if current_state & STATE_OCCUPIED == 0 {
@@ -1188,7 +1216,12 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
                }
                Err(observed) => {
                   current_state = observed;
-                  std::hint::spin_loop();
+                  for _ in 0..backoff {
+                     std::hint::spin_loop();
+                  }
+                  if backoff < 64 {
+                     backoff <<= 1;
+                  }
                }
             }
          }

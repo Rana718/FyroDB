@@ -56,6 +56,27 @@ impl Store {
    /// Bytes-key twin of `record_current_value` (audit S-2): the captured
    /// record carries the raw key bytes; non-UTF-8 keys skip the PG-proxy
    /// invalidation (that cache's key domain is UTF-8).
+   // Item 31: Avoid second hash table lookup on replication/AOF record for live string writes.
+   pub fn record_live_string(&self, key: &[u8], bytes: &[u8], expires_ms: u64) {
+      let mut encoded: Option<Vec<u8>> = None;
+      if crate::storage::persistence::aof::enabled() || self.replication.is_some() {
+         encoded = Some(crate::storage::rdb::encode_string_value(bytes, expires_ms));
+      }
+      if let Some(aof) = crate::storage::persistence::aof::get() {
+         aof.record_encoded_bytes(key, encoded.as_deref());
+      }
+      let Some(log) = &self.replication else { return };
+      let slot = crate::cluster::hash_slot(key);
+      let Some(enc) = encoded else { return };
+      let expire_at_ms = (expires_ms != 0).then_some(expires_ms);
+      let _ = log.append(crate::cluster::MutationRecord::replace(
+         slot,
+         key.to_vec(),
+         enc,
+         expire_at_ms,
+      ));
+   }
+
    pub fn record_current_value_bytes(&self, key: &[u8]) {
       let mut encoded: Option<Vec<u8>> = None;
       let mut expire_at_ms: Option<u64> = None;

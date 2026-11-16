@@ -16,13 +16,17 @@ impl Default for HllData {
    }
 }
 
-static RECIP_2_POW: std::sync::LazyLock<[f64; 64]> = std::sync::LazyLock::new(|| {
+const RECIP_2_POW: [f64; 64] = {
    let mut table = [0.0f64; 64];
-   for i in 0..64 {
-      table[i] = 1.0 / (1u64 << i) as f64;
+   let mut i = 0;
+   let mut val = 1.0f64;
+   while i < 64 {
+      table[i] = val;
+      val *= 0.5f64;
+      i += 1;
    }
    table
-});
+};
 
 impl HllData {
    pub fn new() -> Self {
@@ -69,20 +73,23 @@ impl HllData {
    }
 
    pub fn count(&self) -> u64 {
-      let mut sum = 0.0f64;
+      let mut sum0 = 0.0f64;
+      let mut sum1 = 0.0f64;
+      let mut sum2 = 0.0f64;
+      let mut sum3 = 0.0f64;
       let mut zeros = 0u32;
-      let recip = &*RECIP_2_POW;
       let chunks = self.registers.chunks_exact(4);
       for chunk in chunks {
-         sum += recip[(chunk[0] as usize).min(63)]
-            + recip[(chunk[1] as usize).min(63)]
-            + recip[(chunk[2] as usize).min(63)]
-            + recip[(chunk[3] as usize).min(63)];
+         sum0 += RECIP_2_POW[(chunk[0] as usize).min(63)];
+         sum1 += RECIP_2_POW[(chunk[1] as usize).min(63)];
+         sum2 += RECIP_2_POW[(chunk[2] as usize).min(63)];
+         sum3 += RECIP_2_POW[(chunk[3] as usize).min(63)];
          zeros += (chunk[0] == 0) as u32
             + (chunk[1] == 0) as u32
             + (chunk[2] == 0) as u32
             + (chunk[3] == 0) as u32;
       }
+      let sum = (sum0 + sum1) + (sum2 + sum3);
       let m = HLL_REGISTERS as f64;
       let alpha = 0.7213 / (1.0 + 1.079 / m);
       let raw = alpha * m * m / sum;
@@ -97,6 +104,23 @@ impl HllData {
    }
 
    pub fn merge(&mut self, other: &HllData) {
+      #[cfg(target_arch = "x86_64")]
+      {
+         if std::is_x86_feature_detected!("avx2") {
+            unsafe {
+               use std::arch::x86_64::{_mm256_loadu_si256, _mm256_max_epu8, _mm256_storeu_si256};
+               let dst = self.registers.as_mut_ptr();
+               let src = other.registers.as_ptr();
+               for i in (0..HLL_REGISTERS).step_by(32) {
+                  let v1 = _mm256_loadu_si256(dst.add(i).cast());
+                  let v2 = _mm256_loadu_si256(src.add(i).cast());
+                  let max = _mm256_max_epu8(v1, v2);
+                  _mm256_storeu_si256(dst.add(i).cast(), max);
+               }
+               return;
+            }
+         }
+      }
       for i in 0..HLL_REGISTERS {
          if other.registers[i] > self.registers[i] {
             self.registers[i] = other.registers[i];

@@ -20,7 +20,7 @@ use format::*;
 use index::*;
 pub use load::{decode_single_value, load, load_strict};
 pub use meta::*;
-pub use save::{background_save_loop, encode_single_value, save};
+pub use save::{background_save_loop, encode_single_value, encode_string_value, save};
 use stream::*;
 
 #[cfg(test)]

@@ -39,6 +39,19 @@ pub fn write_u64_to(digits: &mut [u8; 20], n: u64) -> &str {
 }
 
 #[inline(always)]
+pub fn write_i64_into(out: &mut [u8; 23], n: i64) -> usize {
+   let mut digits = [0u8; 20];
+   let mut d_pos = write_u64_digits(&mut digits, n.unsigned_abs());
+   if n < 0 {
+      d_pos -= 1;
+      digits[d_pos] = b'-';
+   }
+   let len = 20 - d_pos;
+   out[..len].copy_from_slice(&digits[d_pos..]);
+   len
+}
+
+#[inline(always)]
 pub fn write_usize_to(digits: &mut [u8; 20], n: usize) -> &str {
    write_u64_to(digits, n as u64)
 }

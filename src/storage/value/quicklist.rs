@@ -1,3 +1,4 @@
+use super::small_str::SmallStr;
 use std::collections::VecDeque;
 
 const CHUNK_ENTRIES: usize = 128;
@@ -26,6 +27,20 @@ impl Chunk {
             o
          },
          head: 0,
+      }
+   }
+
+   fn new_front(gap: usize) -> Self {
+      let slots = FRONT_SLOTS;
+      let initial_gap = gap.max(256);
+      let mut data = Vec::with_capacity(initial_gap + 512);
+      data.resize(initial_gap, 0);
+      let mut offs = Vec::with_capacity(slots + 32);
+      offs.resize(slots + 1, initial_gap as u32);
+      Self {
+         data,
+         offs,
+         head: slots,
       }
    }
 
@@ -247,32 +262,55 @@ impl QuickList {
          Some(c) if !c.full_front() => {}
          Some(c) => {
             c.seal();
-            self.chunks.push_front(Chunk::new());
+            self.chunks.push_front(Chunk::new_front(s.len()));
          }
-         None => self.chunks.push_front(Chunk::new()),
+         None => self.chunks.push_front(Chunk::new_front(s.len())),
       }
       self.chunks.front_mut().expect("chunk").push_front(s);
       self.len += 1;
    }
 
+   // Items 44 & 45: Avoid chunk deallocation/reallocation churn and provide zero-copy SmallStr pops.
    pub fn pop_front_with<R>(&mut self, f: impl FnOnce(&str) -> R) -> Option<R> {
-      let c = self.chunks.front_mut()?;
-      let r = c.pop_front_with(f);
-      self.len -= 1;
-      if c.len() == 0 {
-         self.chunks.pop_front();
+      let (r, empty) = {
+         let c = self.chunks.front_mut()?;
+         let r = c.pop_front_with(f);
+         self.len -= 1;
+         (r, c.len() == 0)
+      };
+      if empty {
+         if self.chunks.len() > 1 {
+            self.chunks.pop_front();
+         } else if let Some(c) = self.chunks.front_mut() {
+            c.reset();
+         }
       }
       Some(r)
    }
 
    pub fn pop_back_with<R>(&mut self, f: impl FnOnce(&str) -> R) -> Option<R> {
-      let c = self.chunks.back_mut()?;
-      let r = c.pop_back_with(f);
-      self.len -= 1;
-      if c.len() == 0 {
-         self.chunks.pop_back();
+      let (r, empty) = {
+         let c = self.chunks.back_mut()?;
+         let r = c.pop_back_with(f);
+         self.len -= 1;
+         (r, c.len() == 0)
+      };
+      if empty {
+         if self.chunks.len() > 1 {
+            self.chunks.pop_back();
+         } else if let Some(c) = self.chunks.back_mut() {
+            c.reset();
+         }
       }
       Some(r)
+   }
+
+   pub fn pop_front_small(&mut self) -> Option<SmallStr> {
+      self.pop_front_with(SmallStr::new)
+   }
+
+   pub fn pop_back_small(&mut self) -> Option<SmallStr> {
+      self.pop_back_with(SmallStr::new)
    }
 
    pub fn pop_front(&mut self) -> Option<String> {

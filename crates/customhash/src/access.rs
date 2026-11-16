@@ -1,5 +1,5 @@
 use crossbeam_utils::CachePadded;
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
@@ -15,19 +15,18 @@ struct ReadState {
 thread_local! {
    static READING: Cell<u64> = const { Cell::new(0) };
    static WRITING: Cell<LocalWrite> = const { Cell::new((0, 0)) };
-   static OTHER_WRITES: RefCell<Vec<LocalWrite>> = const { RefCell::new(Vec::new()) };
+   // Item 22: Fixed inline stack avoids RefCell borrow checks and heap Vec allocations.
+   static OTHER_WRITES: Cell<[LocalWrite; 4]> = const { Cell::new([(0, 0); 4]) };
    static WRITE_MARKER: Cell<usize> = const { Cell::new(0) };
 }
 
-/// Writer-admission stripes. One (thread, map) pair always lands on the
-/// same stripe, so a thread's nested writes share a stripe and each thread
-/// has a stable slot; with W active writers the RMWs spread over W cache
-/// lines instead of contending on one.
-const WRITE_STRIPES: usize = 16;
+/// Writer-admission stripes (scaled to 64 to eliminate pigeonhole stripe collisions across cores).
+const WRITE_STRIPES: usize = 64;
 
 pub(crate) struct Access {
    readers: CachePadded<ReadState>,
    writers: Box<[CachePadded<AtomicUsize>]>,
+   active_writers: CachePadded<AtomicU64>,
 }
 
 #[must_use]
@@ -57,6 +56,7 @@ impl Access {
             id,
          }),
          writers,
+         active_writers: CachePadded::new(AtomicU64::new(0)),
       }
    }
 
@@ -88,23 +88,16 @@ impl Access {
       if READING.get() != 0 {
          return None;
       }
-      // Quick fast path: if any writer stripe is active, bail out immediately
-      // with relaxed loads before executing the SeqCst memory barrier.
-      for stripe in self.writers.iter() {
-         if stripe.load(Ordering::Relaxed) != 0 {
-            return None;
-         }
+      // Check active writers bitmask with in-cache relaxed load (1 cycle, 0 bus lock)
+      if self.active_writers.load(Ordering::Relaxed) != 0 {
+         return None;
       }
-      // The reader registers before checking every writer stripe, and the
-      // writer registers before checking the reader count: the SeqCst RMW
-      // plus check form the same Dekker handshake as before, spread across
-      // stripes — whichever side registers second observes the other.
+      // The reader registers before re-checking stripes: the SeqCst RMW
+      // plus check form the Dekker handshake — whichever side registers second observes the other.
       self.readers.count.fetch_add(1, Ordering::SeqCst);
-      for stripe in self.writers.iter() {
-         if stripe.load(Ordering::SeqCst) != 0 {
-            self.readers.count.fetch_sub(1, Ordering::Release);
-            return None;
-         }
+      if self.active_writers.load(Ordering::SeqCst) != 0 {
+         self.readers.count.fetch_sub(1, Ordering::Release);
+         return None;
       }
       READING.set(self.readers.id);
       Some(ReadEpochGuard {
@@ -118,31 +111,47 @@ impl Access {
       let current = WRITING.get();
       if current.0 == self.readers.id {
          WRITING.set((current.0, current.1 + 1));
-      } else if !OTHER_WRITES.with(|writes| {
-         let mut writes = writes.borrow_mut();
-         if let Some(slot) = writes.iter_mut().find(|slot| slot.0 == self.readers.id) {
-            slot.1 += 1;
-            true
-         } else {
-            false
-         }
-      }) {
-         assert!(!self.reading(), "mutation inside a protected read batch");
-         let stripe = &self.writers[self.write_stripe()];
-         stripe.fetch_add(1, Ordering::SeqCst);
-         let mut spins = 0;
-         while self.readers.count.load(Ordering::SeqCst) != 0 {
-            if spins < 64 {
-               spins += 1;
-               std::hint::spin_loop();
-            } else {
-               std::thread::yield_now();
+      } else {
+         let mut nested = false;
+         let mut others = OTHER_WRITES.get();
+         for slot in others.iter_mut() {
+            if slot.0 == self.readers.id {
+               slot.1 += 1;
+               nested = true;
+               break;
             }
          }
-         if current.0 != 0 {
-            OTHER_WRITES.with(|writes| writes.borrow_mut().push(current));
+         if nested {
+            OTHER_WRITES.set(others);
+         } else {
+            assert!(!self.reading(), "mutation inside a protected read batch");
+            // Stripe-isolated write admission: each core updates its own cache line exclusively.
+            let stripe_idx = self.write_stripe();
+            let stripe = &self.writers[stripe_idx];
+            stripe.fetch_add(1, Ordering::SeqCst);
+            self.active_writers.fetch_or(1u64 << (stripe_idx % 64), Ordering::SeqCst);
+            let mut spins = 0;
+            // TTAS with pause backoff: check relaxed in-cache before forcing SeqCst bus sync
+            while self.readers.count.load(Ordering::Relaxed) != 0 || self.readers.count.load(Ordering::SeqCst) != 0 {
+               if spins < 1024 {
+                  spins += 1;
+                  std::hint::spin_loop();
+               } else {
+                  std::thread::yield_now();
+                  spins = 0;
+               }
+            }
+            if current.0 != 0 {
+               for slot in others.iter_mut() {
+                  if slot.0 == 0 {
+                     *slot = current;
+                     break;
+                  }
+               }
+               OTHER_WRITES.set(others);
+            }
+            WRITING.set((self.readers.id, 1));
          }
-         WRITING.set((self.readers.id, 1));
       }
       WriteEpochGuard {
          access: self,
@@ -168,31 +177,41 @@ impl Drop for WriteEpochGuard<'_> {
             WRITING.set((current.0, current.1 - 1));
             false
          } else {
-            let previous = OTHER_WRITES.with(|writes| writes.borrow_mut().pop());
-            WRITING.set(previous.unwrap_or((0, 0)));
+            let mut others = OTHER_WRITES.get();
+            let mut previous = (0, 0);
+            for i in (0..others.len()).rev() {
+               if others[i].0 != 0 {
+                  previous = others[i];
+                  others[i] = (0, 0);
+                  break;
+               }
+            }
+            OTHER_WRITES.set(others);
+            WRITING.set(previous);
             true
          }
       } else {
-         OTHER_WRITES.with(|writes| {
-            let mut writes = writes.borrow_mut();
-            let index = writes
-               .iter()
-               .position(|slot| slot.0 == self.access.readers.id)
-               .expect("write epoch guard missing");
-            writes[index].1 -= 1;
-            if writes[index].1 == 0 {
-               writes.swap_remove(index);
-               true
-            } else {
-               false
+         let mut others = OTHER_WRITES.get();
+         let mut is_last = false;
+         for slot in others.iter_mut() {
+            if slot.0 == self.access.readers.id {
+               slot.1 -= 1;
+               if slot.1 == 0 {
+                  *slot = (0, 0);
+                  is_last = true;
+               }
+               break;
             }
-         })
+         }
+         OTHER_WRITES.set(others);
+         is_last
       };
       if last {
-         // The stripe index is deterministic per (thread, map), so the
-         // releasing store lands on the same line the acquire RMW used.
-         let stripe = &self.access.writers[self.access.write_stripe()];
-         stripe.fetch_sub(1, Ordering::Release);
+         let stripe_idx = self.access.write_stripe();
+         let stripe = &self.access.writers[stripe_idx];
+         if stripe.fetch_sub(1, Ordering::SeqCst) == 1 {
+            self.access.active_writers.fetch_and(!(1u64 << (stripe_idx % 64)), Ordering::SeqCst);
+         }
       }
    }
 }

@@ -8,14 +8,19 @@ pub fn count_ones_fast(slice: &[u8]) -> usize {
    for &b in prefix {
       count += b.count_ones() as usize;
    }
-   // Unroll 4x 64-bit word popcounts for instruction-level parallelism (Randall Hyde Vol. 1 Ch. 8)
+   // Unroll 4x independent 64-bit word popcount accumulators for instruction-level parallelism
+   let mut c0: usize = 0;
+   let mut c1: usize = 0;
+   let mut c2: usize = 0;
+   let mut c3: usize = 0;
    let mut chunks = words.chunks_exact(4);
    for chunk in chunks.by_ref() {
-      count += chunk[0].count_ones() as usize
-         + chunk[1].count_ones() as usize
-         + chunk[2].count_ones() as usize
-         + chunk[3].count_ones() as usize;
+      c0 += chunk[0].count_ones() as usize;
+      c1 += chunk[1].count_ones() as usize;
+      c2 += chunk[2].count_ones() as usize;
+      c3 += chunk[3].count_ones() as usize;
    }
+   count += (c0 + c1) + (c2 + c3);
    for &w in chunks.remainder() {
       count += w.count_ones() as usize;
    }
@@ -27,16 +32,20 @@ pub fn count_ones_fast(slice: &[u8]) -> usize {
 
 impl Store {
    pub fn setbit(&self, key: &str, offset: u64, value: bool) -> Result<u8, &'static str> {
+      self.setbit_bytes(key.as_bytes(), offset, value)
+   }
+
+   pub fn setbit_bytes(&self, key: &[u8], offset: u64, value: bool) -> Result<u8, &'static str> {
       let byte_idx = (offset / 8) as usize;
       let bit_idx = 7 - (offset % 8) as u8;
 
-      let result = self.data.update_with(key, |val| {
+      let result = self.data.update_with_hinted_bytes(key, None, |val| {
          if val.is_expired() {
-            let mut bytes = vec![0u8; byte_idx + 1];
+            let mut s = SmallStr::zeroed(byte_idx + 1);
             if value {
-               bytes[byte_idx] |= 1 << bit_idx;
+               s.as_bytes_mut()[byte_idx] |= 1 << bit_idx;
             }
-            val.value = FyroDB::String(SmallStr::from_bytes(bytes));
+            val.value = FyroDB::String(s);
             val.expires_ms = 0;
             return Ok(0u8);
          }
@@ -59,30 +68,25 @@ impl Store {
       match result {
          Some(r) => r,
          None => {
-            // Absent-key fallback. The create MUST be insert-if-absent:
-            // with 8 threads SETBITting different bits of a brand-new
-            // byte, an unconditional insert would let each creator
-            // overwrite the others' bits (battery 2 H3 lost-update).
+            // Absent-key fallback using SmallStr::zeroed (Item 50).
             loop {
-               let mut bytes = vec![0u8; byte_idx + 1];
+               let mut s = SmallStr::zeroed(byte_idx + 1);
                if value {
-                  bytes[byte_idx] |= 1 << bit_idx;
+                  s.as_bytes_mut()[byte_idx] |= 1 << bit_idx;
                }
                if self
                   .data
-                  .insert_if_absent_str(key, StoreValue::string_small(SmallStr::from_bytes(bytes)))
+                  .insert_if_absent_bytes_hinted(key, None, StoreValue::string_small(s))
                {
                   return Ok(0);
                }
-               // Lost the create race: the key exists now — retry the
-               // in-place update against it (the INCR pattern).
-               let retry = self.data.update_with(key, |val| {
+               let retry = self.data.update_with_hinted_bytes(key, None, |val| {
                   if val.is_expired() {
-                     let mut fresh = vec![0u8; byte_idx + 1];
+                     let mut fresh = SmallStr::zeroed(byte_idx + 1);
                      if value {
-                        fresh[byte_idx] |= 1 << bit_idx;
+                        fresh.as_bytes_mut()[byte_idx] |= 1 << bit_idx;
                      }
-                     val.value = FyroDB::String(SmallStr::from_bytes(fresh));
+                     val.value = FyroDB::String(fresh);
                      val.expires_ms = 0;
                      return Ok(0u8);
                   }
@@ -104,7 +108,6 @@ impl Store {
                if let Some(r) = retry {
                   return r;
                }
-               // Key vanished between insert and update — re-create.
             }
          }
       }
@@ -283,24 +286,35 @@ impl Store {
 
    pub fn bitop(&self, op: BitOp, dest: &str, keys: &[&str]) -> Result<usize, &'static str> {
       let mut max_len = 0usize;
-      let mut buffers: Vec<Vec<u8>> = Vec::with_capacity(keys.len());
-
+      let _guard = customhash::pin();
+      let mut refs = Vec::with_capacity(keys.len());
       for &k in keys {
-         match self.data.get_ref(k) {
-            None => buffers.push(vec![]),
-            Some(e) if e.is_expired() => buffers.push(vec![]),
-            Some(e) => match e.value.as_string() {
-               Some(s) => {
-                  let b = s.as_bytes().to_vec();
-                  max_len = max_len.max(b.len());
-                  buffers.push(b);
-               }
-               None => return Err("WRONGTYPE"),
-            },
+         let r = self.data.get_ref_pinned(k, &_guard);
+         if let Some(ref e) = r {
+            if e.is_expired() {
+               refs.push(None);
+            } else if e.value.as_string().is_none() {
+               return Err("WRONGTYPE");
+            } else {
+               refs.push(r);
+            }
+         } else {
+            refs.push(None);
          }
       }
 
-      if buffers.is_empty() {
+      let mut slices: Vec<&[u8]> = Vec::with_capacity(keys.len());
+      for r in &refs {
+         if let Some(e) = r {
+            let b = e.value.as_string().unwrap().as_bytes();
+            max_len = max_len.max(b.len());
+            slices.push(b);
+         } else {
+            slices.push(&[][..]);
+         }
+      }
+
+      if slices.is_empty() {
          self.data.insert_str(dest, StoreValue::string_str(""));
          return Ok(0);
       }
@@ -309,38 +323,71 @@ impl Store {
 
       match op {
          BitOp::And => {
-            result = vec![0xFF; max_len];
-            for buf in &buffers {
-               for i in 0..max_len {
-                  let b = if i < buf.len() { buf[i] } else { 0 };
-                  result[i] &= b;
+            result.fill(0xFF);
+            for buf in &slices {
+               let common = buf.len().min(max_len);
+               let (r_words, r_tail) = result[..common].split_at_mut(common & !7);
+               let (b_words, b_tail) = buf[..common].split_at(common & !7);
+               for (r, b) in r_words.chunks_exact_mut(8).zip(b_words.chunks_exact(8)) {
+                  let rw = u64::from_ne_bytes(r.try_into().unwrap());
+                  let bw = u64::from_ne_bytes(b.try_into().unwrap());
+                  r.copy_from_slice(&(rw & bw).to_ne_bytes());
+               }
+               for (r, b) in r_tail.iter_mut().zip(b_tail.iter()) {
+                  *r &= *b;
+               }
+               if common < max_len {
+                  result[common..].fill(0);
                }
             }
          }
          BitOp::Or => {
-            for buf in &buffers {
-               for i in 0..buf.len() {
-                  result[i] |= buf[i];
+            for buf in &slices {
+               let common = buf.len().min(max_len);
+               let (r_words, r_tail) = result[..common].split_at_mut(common & !7);
+               let (b_words, b_tail) = buf[..common].split_at(common & !7);
+               for (r, b) in r_words.chunks_exact_mut(8).zip(b_words.chunks_exact(8)) {
+                  let rw = u64::from_ne_bytes(r.try_into().unwrap());
+                  let bw = u64::from_ne_bytes(b.try_into().unwrap());
+                  r.copy_from_slice(&(rw | bw).to_ne_bytes());
+               }
+               for (r, b) in r_tail.iter_mut().zip(b_tail.iter()) {
+                  *r |= *b;
                }
             }
          }
          BitOp::Xor => {
-            for buf in &buffers {
-               for i in 0..buf.len() {
-                  result[i] ^= buf[i];
+            for buf in &slices {
+               let common = buf.len().min(max_len);
+               let (r_words, r_tail) = result[..common].split_at_mut(common & !7);
+               let (b_words, b_tail) = buf[..common].split_at(common & !7);
+               for (r, b) in r_words.chunks_exact_mut(8).zip(b_words.chunks_exact(8)) {
+                  let rw = u64::from_ne_bytes(r.try_into().unwrap());
+                  let bw = u64::from_ne_bytes(b.try_into().unwrap());
+                  r.copy_from_slice(&(rw ^ bw).to_ne_bytes());
+               }
+               for (r, b) in r_tail.iter_mut().zip(b_tail.iter()) {
+                  *r ^= *b;
                }
             }
          }
          BitOp::Not => {
-            if buffers.len() != 1 {
+            if slices.len() != 1 {
                return Err("BITOP NOT requires one source key");
             }
-            for i in 0..max_len {
-               result[i] = if i < buffers[0].len() {
-                  !buffers[0][i]
-               } else {
-                  0xFF
-               };
+            let buf = slices[0];
+            let common = buf.len().min(max_len);
+            let (r_words, r_tail) = result[..common].split_at_mut(common & !7);
+            let (b_words, b_tail) = buf[..common].split_at(common & !7);
+            for (r, b) in r_words.chunks_exact_mut(8).zip(b_words.chunks_exact(8)) {
+               let bw = u64::from_ne_bytes(b.try_into().unwrap());
+               r.copy_from_slice(&(!bw).to_ne_bytes());
+            }
+            for (r, b) in r_tail.iter_mut().zip(b_tail.iter()) {
+               *r = !*b;
+            }
+            if common < max_len {
+               result[common..].fill(0xFF);
             }
          }
       }

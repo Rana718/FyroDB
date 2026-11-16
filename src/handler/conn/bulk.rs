@@ -37,13 +37,38 @@ fn owner_slot(
    (slot, None)
 }
 
+#[inline(always)]
 fn header(length: usize, out: &mut [u8; 24]) -> usize {
-   let mut digits = [0u8; 20];
-   let number = crate::utils::resp::format_usize_digits(length, &mut digits);
-   out[0] = b'$';
-   out[1..1 + number.len()].copy_from_slice(number);
-   out[1 + number.len()..3 + number.len()].copy_from_slice(b"\r\n");
-   number.len() + 3
+   // Item 13: Direct fast-path for small to medium bulk lengths (<10, <100, <1000)
+   if length < 10 {
+      out[0] = b'$';
+      out[1] = b'0' + length as u8;
+      out[2] = b'\r';
+      out[3] = b'\n';
+      4
+   } else if length < 100 {
+      out[0] = b'$';
+      out[1] = b'0' + (length / 10) as u8;
+      out[2] = b'0' + (length % 10) as u8;
+      out[3] = b'\r';
+      out[4] = b'\n';
+      5
+   } else if length < 1000 {
+      out[0] = b'$';
+      out[1] = b'0' + (length / 100) as u8;
+      out[2] = b'0' + ((length / 10) % 10) as u8;
+      out[3] = b'0' + (length % 10) as u8;
+      out[4] = b'\r';
+      out[5] = b'\n';
+      6
+   } else {
+      let mut digits = [0u8; 20];
+      let number = crate::utils::resp::format_usize_digits(length, &mut digits);
+      out[0] = b'$';
+      out[1..1 + number.len()].copy_from_slice(number);
+      out[1 + number.len()..3 + number.len()].copy_from_slice(b"\r\n");
+      number.len() + 3
+   }
 }
 
 #[inline]
@@ -90,20 +115,21 @@ fn send_batch<W: Write>(
       })
       .expect("reply length overflow");
    let prefix = buffered.len() - *offset;
-   let written = loop {
-      let mut slices = [IoSlice::new(&[]); BATCH * 3 + 1];
-      slices[0] = IoSlice::new(&buffered[*offset..]);
-      for (i, value) in values.iter().enumerate() {
-         slices[i * 3 + 1] = IoSlice::new(&headers[i][..usize::from(lengths[i])]);
-         slices[i * 3 + 2] = IoSlice::new(value);
-         slices[i * 3 + 3] = IoSlice::new(b"\r\n");
-      }
-      match writer.write_vectored(&slices[..values.len() * 3 + 1]) {
-         Ok(n) => break n,
-         Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-         Err(_) => break 0,
-      }
+   let total = prefix.saturating_add(body_bytes);
+   let max_calls = if total >= DIRECT_SEND_MIN {
+      eager_drain_calls(total)
+   } else {
+      EAGER_DRAIN_CALLS_MIN
    };
+   let mut slices = [IoSlice::new(&[]); BATCH * 3 + 1];
+   let slice_count = values.len() * 3 + 1;
+   slices[0] = IoSlice::new(&buffered[*offset..]);
+   for (i, value) in values.iter().enumerate() {
+      slices[i * 3 + 1] = IoSlice::new(&headers[i][..usize::from(lengths[i])]);
+      slices[i * 3 + 2] = IoSlice::new(value);
+      slices[i * 3 + 3] = IoSlice::new(b"\r\n");
+   }
+   let written = write_vectored_bounded(writer, &mut slices[..slice_count], max_calls);
    let mut remaining = if written >= prefix {
       buffered.clear();
       *offset = 0;

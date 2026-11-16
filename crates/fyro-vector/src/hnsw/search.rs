@@ -10,12 +10,14 @@ const PARALLEL_SCAN_MIN: usize = 4096;
 /// Queries one batched exact pass serves at most.
 const FLAT_BATCH_MAX: usize = 32;
 
+// Item 66: Lock-free flat scan result slot with Release/Acquire synchronization (no Mutex).
 pub(crate) struct FlatReq {
    q: Vec<f32>,
    k: usize,
    ready: AtomicBool,
-   result: Mutex<Option<Vec<(f32, usize)>>>,
+   result: std::cell::UnsafeCell<Option<Vec<(f32, usize)>>>,
 }
+unsafe impl Sync for FlatReq {}
 
 // Lock-free MPSC: CAS winner does the scan, others spin-yield on their ready flag.
 pub(crate) struct FlatBatch {
@@ -50,6 +52,46 @@ impl HnswGraph {
 
    /// Re-scores approximate candidates using exact vectors from `fetch(id)`.
    /// Returns the best `k` sorted by metric distance.
+   // Item 64: Monomorphized generic closures for zero-allocation vector reranking.
+   pub fn rerank_fast<F>(
+      &self,
+      q: &[f32],
+      cands: Vec<(f32, usize)>,
+      k: usize,
+      mut fetch: F,
+   ) -> Vec<(f32, usize)>
+   where
+      F: FnMut(usize, &mut [f32]) -> bool,
+   {
+      let mut scratch = vec![0.0f32; q.len()];
+      self.rerank_by_fn(cands, k, |id| {
+         if fetch(id, &mut scratch) {
+            Some(crate::distance::distance(self.metric, q, &scratch))
+         } else {
+            None
+         }
+      })
+   }
+
+   #[inline]
+   pub fn rerank_by_fn<F>(
+      &self,
+      cands: Vec<(f32, usize)>,
+      k: usize,
+      mut score: F,
+   ) -> Vec<(f32, usize)>
+   where
+      F: FnMut(usize) -> Option<f32>,
+   {
+      let mut out: Vec<(f32, usize)> = cands
+         .into_iter()
+         .filter_map(|(_, id)| score(id).map(|d| (d, id)))
+         .collect();
+      out.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
+      out.truncate(k);
+      out
+   }
+
    pub fn rerank(
       &self,
       q: &[f32],
@@ -69,13 +111,7 @@ impl HnswGraph {
       k: usize,
       score: &dyn Fn(usize) -> Option<f32>,
    ) -> Vec<(f32, usize)> {
-      let mut out: Vec<(f32, usize)> = cands
-         .into_iter()
-         .filter_map(|(_, id)| score(id).map(|d| (d, id)))
-         .collect();
-      out.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
-      out.truncate(k);
-      out
+      self.rerank_by_fn(cands, k, score)
    }
 
    /// Filtered graph search: traverses unfiltered graph while collecting only
@@ -360,12 +396,12 @@ impl HnswGraph {
          q: q.to_vec(),
          k,
          ready: AtomicBool::new(false),
-         result: Mutex::new(None),
+         result: std::cell::UnsafeCell::new(None),
       });
       self.flat.queue.push(Arc::clone(&req));
       loop {
          if req.ready.load(Ordering::Acquire) {
-            return req.result.lock().take().unwrap_or_default();
+            return unsafe { (*req.result.get()).take().unwrap_or_default() };
          }
          // Try to become the scanner.
          if self
@@ -384,7 +420,7 @@ impl HnswGraph {
             if batch.is_empty() {
                self.flat.scanning.store(false, Ordering::Release);
                if req.ready.load(Ordering::Acquire) {
-                  return req.result.lock().take().unwrap_or_default();
+                  return unsafe { (*req.result.get()).take().unwrap_or_default() };
                }
                std::hint::spin_loop();
                continue;
@@ -394,7 +430,9 @@ impl HnswGraph {
                self.exact_batch(&g, &batch)
             };
             for (r, res) in batch.iter().zip(results) {
-               *r.result.lock() = Some(res);
+               unsafe {
+                  *r.result.get() = Some(res);
+               }
                r.ready.store(true, Ordering::Release);
             }
             self.flat.scanning.store(false, Ordering::Release);
@@ -404,7 +442,7 @@ impl HnswGraph {
                for _ in 0..32 {
                   std::hint::spin_loop();
                   if req.ready.load(Ordering::Acquire) {
-                     return req.result.lock().take().unwrap_or_default();
+                     return unsafe { (*req.result.get()).take().unwrap_or_default() };
                   }
                }
                std::thread::yield_now();

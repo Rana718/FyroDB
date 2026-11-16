@@ -517,8 +517,11 @@ impl ReplicationCoordinator {
 
    /// Retention across shards: evict the globally-oldest records while
    /// over the record-count or byte budget.
+   // Item 57: Batch prune records per shard in chunks up to 32 instead of
+   // acquiring O(N*M) locks per single popped record.
    fn trim_if_over_budget(&self) {
-      loop {
+      let mut batch_count = 0;
+      while batch_count < 256 {
          if self.total_len.load(Ordering::Relaxed) <= self.capacity
             && self.total_bytes.load(Ordering::Relaxed) <= MAX_LOG_BYTES
          {
@@ -540,12 +543,28 @@ impl ReplicationCoordinator {
          };
          let Some((shard, _)) = oldest else { return };
          let mut log = shard.lock();
-         let Some(old) = log.records.pop_front() else { continue };
-         let bytes = record_memory_bytes(&old);
-         log.bytes = log.bytes.saturating_sub(bytes);
+         let mut pruned_records = 0usize;
+         let mut pruned_bytes = 0usize;
+         while pruned_records < 32 {
+            if self.total_len.load(Ordering::Relaxed).saturating_sub(pruned_records) <= self.capacity
+               && self.total_bytes.load(Ordering::Relaxed).saturating_sub(pruned_bytes) <= MAX_LOG_BYTES
+            {
+               break;
+            }
+            let Some(old) = log.records.pop_front() else { break };
+            let bytes = record_memory_bytes(&old);
+            log.bytes = log.bytes.saturating_sub(bytes);
+            pruned_bytes += bytes;
+            pruned_records += 1;
+         }
          drop(log);
-         self.total_len.fetch_sub(1, Ordering::Relaxed);
-         self.total_bytes.fetch_sub(bytes, Ordering::Relaxed);
+         if pruned_records > 0 {
+            self.total_len.fetch_sub(pruned_records, Ordering::Relaxed);
+            self.total_bytes.fetch_sub(pruned_bytes, Ordering::Relaxed);
+            batch_count += pruned_records;
+         } else {
+            break;
+         }
       }
    }
 

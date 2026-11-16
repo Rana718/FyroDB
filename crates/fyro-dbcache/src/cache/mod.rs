@@ -44,8 +44,12 @@ struct L1Entry {
    result: Arc<crate::row::DbResultSet>,
 }
 
+// Item 63: UnsafeCell thread-local L1 cache eliminates dynamic borrow flag overhead.
+struct L1Storage(std::cell::UnsafeCell<[Option<L1Entry>; 256]>);
+unsafe impl Sync for L1Storage {}
+
 thread_local! {
-   static L1_CACHE: std::cell::RefCell<[Option<L1Entry>; 256]> = const { std::cell::RefCell::new([const { None }; 256]) };
+   static L1_CACHE: L1Storage = const { L1Storage(std::cell::UnsafeCell::new([const { None }; 256])) };
    static HIT_BATCH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 
@@ -303,8 +307,8 @@ impl DbCacheManager {
       let is_local = self.storage.is_local();
       if is_local
          && let Some(cached) = L1_CACHE.with(|c| {
-            let b = c.borrow();
-            if let Some(slot) = &b[idx]
+            let slot = unsafe { &*c.0.get() };
+            if let Some(slot) = &slot[idx]
                && slot.manager_id == mgr_id
                && slot.epoch == epoch
                && slot.fp == fingerprint
@@ -348,13 +352,15 @@ impl DbCacheManager {
       }
       record_hit(&self.metrics);
       L1_CACHE.with(|c| {
-         c.borrow_mut()[idx] = Some(L1Entry {
-            manager_id: mgr_id,
-            epoch,
-            fp: fingerprint,
-            result: Arc::clone(&entry.result),
-            entry: Arc::clone(&entry),
-         });
+         unsafe {
+            (*c.0.get())[idx] = Some(L1Entry {
+               manager_id: mgr_id,
+               epoch,
+               fp: fingerprint,
+               result: Arc::clone(&entry.result),
+               entry: Arc::clone(&entry),
+            });
+         }
       });
       Some(entry)
    }
@@ -371,8 +377,8 @@ impl DbCacheManager {
       let is_local = self.storage.is_local();
       if is_local
          && let Some(res) = L1_CACHE.with(|c| {
-            let b = c.borrow();
-            if let Some(slot) = &b[idx]
+            let slot = unsafe { &*c.0.get() };
+            if let Some(slot) = &slot[idx]
                && slot.manager_id == mgr_id
                && slot.epoch == epoch
                && slot.fp == fingerprint
@@ -741,21 +747,28 @@ impl DbCacheManager {
       })
    }
 
+   // Item 67: Atomic load for done state avoids locking mutex on already-filled cache entries.
    pub fn wait_for_fill(&self, key: &str) -> bool {
       let idx = inflight_shard_idx(key);
       let slot = self.inflight[idx].lock().get(key).cloned();
       let Some(slot) = slot else {
          return false;
       };
-      let mut done = slot.done.lock();
-      if *done {
+      if slot.done.load(Ordering::Acquire) {
          return true;
       }
       self.metrics.coalesced_waits.fetch_add(1, Ordering::Relaxed);
-      slot
-         .cond
-         .wait_for(&mut done, Duration::from_millis(FILL_WAIT_MS));
-      *done
+      let mut lock = slot.lock.lock();
+      while !slot.done.load(Ordering::Acquire) {
+         if slot
+            .cond
+            .wait_for(&mut lock, Duration::from_millis(FILL_WAIT_MS))
+            .timed_out()
+         {
+            break;
+         }
+      }
+      slot.done.load(Ordering::Acquire)
    }
 
    // --------------------------------------------------------------- stats

@@ -10,8 +10,8 @@ pub use list::ListValue;
 pub use quicklist::QuickList;
 pub type ListInner = ListValue;
 pub use json_value::JsonValue;
-pub(crate) use small_str::SMALL_STR_CAP;
 pub use small_str::SmallStr;
+pub(crate) use small_str::SMALL_STR_CAP;
 pub use zset_data::{ZEntry, ZSetData};
 
 use foldhash::{HashMap, HashSet};
@@ -193,7 +193,11 @@ pub struct StoreValue {
    pub expires_ms: u64,
 }
 
-static UNIX_MS_CACHE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+// Item 37: 64-byte cache line alignment eliminates false sharing in .bss section on timer ticks.
+#[repr(align(64))]
+struct PaddedAtomicU64(std::sync::atomic::AtomicU64);
+
+static UNIX_MS_CACHE: PaddedAtomicU64 = PaddedAtomicU64(std::sync::atomic::AtomicU64::new(0));
 
 #[inline(always)]
 pub fn now_ms() -> u64 {
@@ -210,8 +214,8 @@ pub fn tick_clock() {
    // on a value change so the line stays read-shared for ~99.9% of ticks
    // instead of bouncing exclusive ownership every iteration.
    let now = now_ms();
-   if UNIX_MS_CACHE.load(std::sync::atomic::Ordering::Relaxed) != now {
-      UNIX_MS_CACHE.store(now, std::sync::atomic::Ordering::Relaxed);
+   if UNIX_MS_CACHE.0.load(std::sync::atomic::Ordering::Relaxed) != now {
+      UNIX_MS_CACHE.0.store(now, std::sync::atomic::Ordering::Relaxed);
    }
 }
 
@@ -255,7 +259,7 @@ pub fn expiry_from_unix_secs(unix_secs: u64) -> Option<u64> {
 
 #[inline(always)]
 pub fn approx_now_ms() -> u64 {
-   let cached = UNIX_MS_CACHE.load(std::sync::atomic::Ordering::Relaxed);
+   let cached = UNIX_MS_CACHE.0.load(std::sync::atomic::Ordering::Relaxed);
    if cached == 0 { now_ms() } else { cached }
 }
 
@@ -419,4 +423,4 @@ impl StoreValue {
 const _: () = assert!(std::mem::size_of::<SmallStr>() == 24);
 const _: () = assert!(std::mem::size_of::<FyroDB>() == 24);
 const _: () = assert!(std::mem::size_of::<StoreValue>() == 32);
-const _: () = assert!(customhash::entry_size::<StoreValue>() == 56);
+const _: () = assert!(customhash::entry_size::<StoreValue>() == 64);

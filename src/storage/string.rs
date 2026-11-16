@@ -275,8 +275,27 @@ impl Store {
    ) -> bool {
       if !p.is_null() {
          let e = unsafe { &*p };
-         let state = e.state.load(std::sync::atomic::Ordering::Relaxed);
+         let seq1 = e.state.load(std::sync::atomic::Ordering::Acquire);
          let expected = ((hash as u32 as u64) << 32) | customhash::STATE_OCCUPIED;
+         // Optimistic lock-free Seqlock read for uncontended occupied values (both inline and heap):
+         // completely eliminates atomic RMW CAS write stalls and cache line invalidations on readers.
+         if (seq1 & (0xFFFF_FFFF_0000_0000 | customhash::STATE_OCCUPIED | customhash::STATE_LOCK)) == expected
+            && e.key.eq_bytes(key)
+         {
+            let val = unsafe { (*e.value.get()).assume_init_ref() };
+            if val.expires_ms == 0 || !val.is_expired() {
+               if let crate::storage::value::FyroDB::String(s) = &val.value {
+                  let start = out.len();
+                  s.write_resp(out);
+                  let seq2 = e.state.load(std::sync::atomic::Ordering::Acquire);
+                  if seq1 == seq2 {
+                     return true;
+                  }
+                  out.truncate(start);
+               }
+            }
+         }
+         let state = seq1;
          if (state & (0xFFFF_FFFF_0000_0000 | customhash::STATE_OCCUPIED)) == expected
             && e.key.eq_bytes(key)
          {
@@ -579,7 +598,8 @@ impl Store {
          }
       }
       let _pin = customhash::pin();
-      let _write_epoch = self.data.write_epoch();
+      // Item 19: probe_or_insert_fast_bytes already enters write_epoch internally.
+      // Omit redundant nested write_epoch here.
       match self.data.probe_or_insert_fast_bytes(hash, key, || StoreValue {
          value: crate::storage::value::FyroDB::String(SmallStr::from_slice(value)),
          expires_ms,
@@ -1026,6 +1046,41 @@ impl Store {
       self.int_op_hinted_bytes(key, None, 1)
    }
 
+   #[inline(always)]
+   fn parse_i64_bytes(bytes: &[u8]) -> Option<i64> {
+      if bytes.is_empty() {
+         return None;
+      }
+      let (neg, digits) = if bytes[0] == b'-' {
+         (true, &bytes[1..])
+      } else if bytes[0] == b'+' {
+         (false, &bytes[1..])
+      } else {
+         (false, bytes)
+      };
+      if digits.is_empty() {
+         return None;
+      }
+      let mut n: u64 = 0;
+      for &b in digits {
+         if !b.is_ascii_digit() {
+            return None;
+         }
+         n = n.checked_mul(10)?.checked_add((b - b'0') as u64)?;
+      }
+      if neg {
+         if n > (i64::MAX as u64 + 1) {
+            return None;
+         }
+         Some((n as i64).wrapping_neg())
+      } else {
+         if n > i64::MAX as u64 {
+            return None;
+         }
+         Some(n as i64)
+      }
+   }
+
    fn int_op_hinted(&self, key: &str, hash: Option<u64>, delta: i64) -> Result<i64, &'static str> {
       self.int_op_hinted_bytes(key.as_bytes(), hash, delta)
    }
@@ -1037,19 +1092,16 @@ impl Store {
       hash: Option<u64>,
       delta: i64,
    ) -> Result<i64, &'static str> {
+      // Item 40: Fast zero-copy integer parsing and formatting for INCR/DECR.
       loop {
          let result = self
             .data
             .update_with_hinted_bytes(key, hash, |val| match val.value.as_string() {
                Some(s) => {
-                  let n = match s
-                     .try_as_str()
-                     .ok()
-                     .and_then(|s| s.parse::<i64>().ok())
-                     .ok_or(())
-                  {
-                     Ok(n) => n,
-                     Err(_) => return Err("value is not an integer or out of range"),
+                  let bytes = s.as_bytes();
+                  let n = match Self::parse_i64_bytes(bytes) {
+                     Some(n) => n,
+                     None => return Err("value is not an integer or out of range"),
                   };
                   let Some(new) = n.checked_add(delta) else {
                      return Err("increment or decrement would overflow");

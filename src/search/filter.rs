@@ -34,6 +34,7 @@ pub struct Posting {
 }
 
 impl Posting {
+   #[allow(dead_code)]
    fn tf_of(&self, doc: u32) -> Option<u16> {
       self.docs.binary_search(&doc).ok().map(|i| self.tf[i])
    }
@@ -326,12 +327,19 @@ impl FilterIndex {
             let idf = (1.0 + (n - df + 0.5) / (df + 0.5)).ln();
             let avgdl = (self.len_sum.get(fi).copied().unwrap_or(0) as f32 / n).max(1.0);
             let lens = self.doc_len.get(fi);
+            let p_docs = &p.docs;
+            let p_tf = &p.tf;
+            let mut p_idx = 0usize;
             for (s, &d) in scores.iter_mut().zip(docs) {
-               let Some(tf) = p.tf_of(d) else { continue };
-               let tf = tf as f32;
-               let dl = lens.and_then(|l| l.get(d as usize)).copied().unwrap_or(0) as f32;
-               *s += idf * tf * (BM25_K1 + 1.0)
-                  / (tf + BM25_K1 * (1.0 - BM25_B + BM25_B * dl / avgdl));
+               while p_idx < p_docs.len() && p_docs[p_idx] < d {
+                  p_idx += 1;
+               }
+               if p_idx < p_docs.len() && p_docs[p_idx] == d {
+                  let tf = p_tf[p_idx] as f32;
+                  let dl = lens.and_then(|l| l.get(d as usize)).copied().unwrap_or(0) as f32;
+                  *s += idf * tf * (BM25_K1 + 1.0)
+                     / (tf + BM25_K1 * (1.0 - BM25_B + BM25_B * dl / avgdl));
+               }
             }
          }
       }

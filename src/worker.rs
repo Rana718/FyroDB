@@ -41,7 +41,7 @@ pub fn run_worker(
    let mut listener = make_listener(port, bind, worker_index);
 
    let mut poll = Poll::new().unwrap();
-   let mut events = Events::with_capacity(512);
+   let mut events = Events::with_capacity(1024);
 
    poll
       .registry()
@@ -91,7 +91,7 @@ pub fn run_worker(
          return;
       }
 
-      let timeout = if let Some(window) = busy_window
+      let mut timeout = if let Some(window) = busy_window
          && last_active.elapsed() < window
       {
          Some(std::time::Duration::ZERO)
@@ -105,7 +105,14 @@ pub fn run_worker(
          timeout
       };
 
-      match poll.poll(&mut events, timeout) {
+      if !notifier.fanout.is_empty() || !notifier.pending.is_empty() {
+         timeout = Some(std::time::Duration::ZERO);
+      }
+      notifier.in_poll.store(true, Ordering::SeqCst);
+      let poll_res = poll.poll(&mut events, timeout);
+      notifier.in_poll.store(false, Ordering::SeqCst);
+
+      match poll_res {
          Ok(_) => {}
          Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
          Err(_) => continue,
@@ -118,6 +125,8 @@ pub fn run_worker(
 
       for event in events.iter() {
          match event.token() {
+            // Stevens UNP Vol 1 Ch 16 & Mio docs: Edge-triggered accept loop MUST drain until WouldBlock
+            // to prevent stranding pending burst connections in the kernel listen backlog.
             LISTENER_TOKEN => loop {
                match listener.accept() {
                   Ok(mut stream) => {
@@ -625,7 +634,7 @@ fn make_unix_listener(path: &str, _worker_index: usize) -> UnixListener {
    UnixListener::from_std(clone)
 }
 
-fn make_listener(port: u16, bind: &str, _worker_index: usize) -> Listener {
+fn make_listener(port: u16, bind: &str, worker_index: usize) -> Listener {
    #[cfg(not(feature = "unix-sockets"))]
    if bind.starts_with("unix:") || bind.starts_with("unix://") {
       panic!("Unix socket support is disabled; enable with feature 'unix-sockets'");
@@ -633,14 +642,14 @@ fn make_listener(port: u16, bind: &str, _worker_index: usize) -> Listener {
 
    #[cfg(feature = "unix-sockets")]
    if let Some(path) = parse_unix_path(bind) {
-      return Listener::Unix(make_unix_listener(path, _worker_index));
+      return Listener::Unix(make_unix_listener(path, worker_index));
    }
 
    let addr: SocketAddr = format!("{}:{}", bind, port).parse().unwrap();
-   Listener::Tcp(make_tcp_listener(addr))
+   Listener::Tcp(make_tcp_listener(addr, worker_index))
 }
 
-fn make_tcp_listener(addr: SocketAddr) -> TcpListener {
+fn make_tcp_listener(addr: SocketAddr, _worker_index: usize) -> TcpListener {
    let socket = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP)).unwrap();
    socket.set_reuse_address(true).unwrap();
    socket.set_reuse_port(true).unwrap();

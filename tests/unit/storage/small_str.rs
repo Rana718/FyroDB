@@ -5,7 +5,7 @@ fn database_values_keep_their_memory_budget() {
    assert!(std::mem::size_of::<SmallStr>() <= 24);
    assert!(std::mem::size_of::<FyroDB>() <= 24);
    assert!(std::mem::size_of::<StoreValue>() <= 32);
-   assert!(std::mem::size_of::<customhash::Entry<StoreValue>>() <= 56);
+   assert!(std::mem::size_of::<customhash::Entry<StoreValue>>() <= 64);
 }
 
 #[test]

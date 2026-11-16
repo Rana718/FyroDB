@@ -1,20 +1,23 @@
 use super::*;
 
-fn write_record(w: &mut impl Write, key: &str, val: &StoreValue) -> io::Result<()> {
+fn write_record<W: Write>(w: &mut W, key: &str, val: &StoreValue) -> io::Result<()> {
    let ttl_ms = val.expires_ms;
-   let head = |w: &mut dyn Write, ty: u8| -> io::Result<()> {
-      w.write_all(&[ty])?;
-      w.write_all(&ttl_ms.to_le_bytes())?;
-      w.write_all(&(key.len() as u32).to_le_bytes())?;
+   // Item 61: Buffered contiguous header + monomorphized static dispatch (no dyn Write).
+   let write_head = |w: &mut W, ty: u8| -> io::Result<()> {
+      let mut head_buf = [0u8; 13];
+      head_buf[0] = ty;
+      head_buf[1..9].copy_from_slice(&ttl_ms.to_le_bytes());
+      head_buf[9..13].copy_from_slice(&(key.len() as u32).to_le_bytes());
+      w.write_all(&head_buf)?;
       w.write_all(key.as_bytes())
    };
    match &val.value {
       FyroDB::String(s) => {
-         head(w, TYPE_STRING)?;
+         write_head(w, TYPE_STRING)?;
          write_bytes(w, s.as_bytes())
       }
       FyroDB::Hash(h) => {
-         head(w, TYPE_HASH)?;
+         write_head(w, TYPE_HASH)?;
          write_u32(w, h.len() as u32)?;
          for (f, v) in h.iter() {
             write_bytes(w, f.as_bytes())?;
@@ -23,7 +26,7 @@ fn write_record(w: &mut impl Write, key: &str, val: &StoreValue) -> io::Result<(
          Ok(())
       }
       FyroDB::List(l) => {
-         head(w, TYPE_LIST)?;
+         write_head(w, TYPE_LIST)?;
          write_u32(w, l.len() as u32)?;
          for item in l.iter() {
             write_bytes(w, item.as_bytes())?;
@@ -31,7 +34,7 @@ fn write_record(w: &mut impl Write, key: &str, val: &StoreValue) -> io::Result<(
          Ok(())
       }
       FyroDB::Set(s) => {
-         head(w, TYPE_SET)?;
+         write_head(w, TYPE_SET)?;
          write_u32(w, s.len() as u32)?;
          let mut int_buf = [0u8; 20];
          for member in s.iter() {
@@ -46,7 +49,7 @@ fn write_record(w: &mut impl Write, key: &str, val: &StoreValue) -> io::Result<(
          Ok(())
       }
       FyroDB::ZSet(z) => {
-         head(w, TYPE_ZSET)?;
+         write_head(w, TYPE_ZSET)?;
          write_u32(w, z.len() as u32)?;
          for entry in z.iter() {
             write_bytes(w, entry.member.as_bytes())?;
@@ -55,11 +58,11 @@ fn write_record(w: &mut impl Write, key: &str, val: &StoreValue) -> io::Result<(
          Ok(())
       }
       FyroDB::Json(j) => {
-         head(w, TYPE_JSON)?;
+         write_head(w, TYPE_JSON)?;
          write_bytes(w, j.as_bytes())
       }
       FyroDB::Stream(s) => {
-         head(w, TYPE_STREAM2)?;
+         write_head(w, TYPE_STREAM2)?;
          write_stream(w, s)
       }
    }
@@ -142,6 +145,14 @@ pub fn save(store: &Store, path: &str) -> io::Result<()> {
       eprintln!("[aof] rewrite after snapshot failed: {e}");
    }
    Ok(())
+}
+
+pub fn encode_string_value(bytes: &[u8], expires_ms: u64) -> Vec<u8> {
+   let mut out = Vec::with_capacity(13 + bytes.len());
+   let _ = write_u64(&mut out, expires_ms);
+   let _ = write_u8(&mut out, TYPE_STRING);
+   let _ = write_bytes(&mut out, bytes);
+   out
 }
 
 /// Encode/decode one StoreValue using the same bounded representation as RDB.

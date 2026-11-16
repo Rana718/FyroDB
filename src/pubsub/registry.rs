@@ -303,15 +303,22 @@ impl ChannelShard {
    }
 }
 
+#[derive(Clone)]
 struct PatternEntry {
    pattern: Arc<str>,
    slots: SmallVec<[Arc<SubSlot>; 1]>,
 }
+#[derive(Clone)]
 struct PatternIndex {
    buckets: [Vec<PatternEntry>; 256],
    wildcard: Vec<PatternEntry>,
    generation: u64,
    total: usize,
+}
+impl Default for PatternIndex {
+   fn default() -> Self {
+      Self::new()
+   }
 }
 impl PatternIndex {
    fn new() -> Self {
@@ -394,7 +401,8 @@ impl PatternIndex {
 
 pub struct PubSub {
    shards: Box<[ChannelShard]>,
-   patterns: parking_lot::RwLock<Option<Box<PatternIndex>>>,
+   pattern_mu: parking_lot::Mutex<()>,
+   patterns: arc_swap::ArcSwapOption<PatternIndex>,
    pattern_count: AtomicUsize,
    hasher: RandomState,
 }
@@ -410,7 +418,8 @@ impl PubSub {
             .map(|_| ChannelShard::new())
             .collect::<Vec<_>>()
             .into_boxed_slice(),
-         patterns: parking_lot::RwLock::new(None),
+         pattern_mu: parking_lot::Mutex::new(()),
+         patterns: arc_swap::ArcSwapOption::new(None),
          pattern_count: AtomicUsize::new(0),
          hasher: RandomState::default(),
       }
@@ -431,19 +440,25 @@ impl PubSub {
       self.psubscribe_shared(pattern, slot);
    }
    pub(crate) fn psubscribe_shared(&self, pattern: &str, slot: Arc<SubSlot>) -> Arc<str> {
-      let mut guard = self.patterns.write();
-      let index = guard.get_or_insert_with(|| Box::new(PatternIndex::new()));
+      let _guard = self.pattern_mu.lock();
+      let current = self.patterns.load_full();
+      let mut index = current.as_deref().cloned().unwrap_or_default();
       let name = index.add(pattern, slot);
       self.pattern_count.store(index.total, Ordering::Release);
+      self.patterns.store(Some(Arc::new(index)));
       name
    }
    pub fn punsubscribe(&self, pattern: &str, slot: &Arc<SubSlot>) {
-      let mut guard = self.patterns.write();
-      if let Some(index) = guard.as_deref_mut() {
+      let _guard = self.pattern_mu.lock();
+      let current = self.patterns.load_full();
+      if let Some(curr) = current {
+         let mut index = (*curr).clone();
          index.remove(pattern, slot);
          self.pattern_count.store(index.total, Ordering::Release);
          if index.total == 0 {
-            *guard = None;
+            self.patterns.store(None);
+         } else {
+            self.patterns.store(Some(Arc::new(index)));
          }
       }
    }
@@ -468,8 +483,9 @@ impl PubSub {
       if self.pattern_count.load(Ordering::Relaxed) == 0 {
          return shard.publish(channel, || encode_batch(channel, messages));
       }
-      let patterns = self.patterns.read();
-      let Some(patterns) = patterns.as_deref() else {
+      // Item 56: RCU-style atomic pointer load eliminates lock contention in pattern matching.
+      let patterns = self.patterns.load();
+      let Some(patterns) = patterns.as_ref() else {
          return shard.publish(channel, || encode_batch(channel, messages));
       };
       let matching = patterns.matching(channel);

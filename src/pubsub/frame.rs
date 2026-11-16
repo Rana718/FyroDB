@@ -19,14 +19,29 @@ thread_local! {
    static BATCH_CACHE: RefCell<Option<CachedBatch>> = const { RefCell::new(None) };
 }
 
-#[inline]
-fn int_len(mut value: usize) -> usize {
-   let mut digits = 1;
-   while value >= 10 {
-      value /= 10;
-      digits += 1;
+#[inline(always)]
+fn int_len(value: usize) -> usize {
+   if value < 10 {
+      1
+   } else if value < 100 {
+      2
+   } else if value < 1_000 {
+      3
+   } else if value < 10_000 {
+      4
+   } else if value < 100_000 {
+      5
+   } else if value < 1_000_000 {
+      6
+   } else if value < 10_000_000 {
+      7
+   } else if value < 100_000_000 {
+      8
+   } else if value < 1_000_000_000 {
+      9
+   } else {
+      10 + (value >= 10_000_000_000) as usize
    }
-   digits
 }
 
 #[inline]

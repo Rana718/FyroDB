@@ -452,11 +452,25 @@ impl SetInner {
       }
    }
 
+   // Item 51: Fast linear scan for small compact sets (<= 8 items) avoiding binary search branching.
    #[inline]
    pub fn contains(&self, member: &str) -> bool {
       match self {
-         Self::Integers(v) => canonical_i64(member).is_some_and(|n| v.binary_search(&n).is_ok()),
-         Self::Compact(v) => v.binary_search_by(|m| m.as_str().cmp(member)).is_ok(),
+         Self::Integers(v) => canonical_i64(member).is_some_and(|n| {
+            if v.len() <= 8 {
+               v.contains(&n)
+            } else {
+               v.binary_search(&n).is_ok()
+            }
+         }),
+         Self::Compact(v) => {
+            let m_bytes = member.as_bytes();
+            if v.len() <= 8 {
+               v.iter().any(|m| m.as_bytes() == m_bytes)
+            } else {
+               v.binary_search_by(|m| m.as_str().cmp(member)).is_ok()
+            }
+         }
          Self::Full(s) => s.contains(member),
       }
    }
@@ -572,19 +586,20 @@ impl std::fmt::Display for SetMemberRef<'_> {
    }
 }
 
-#[inline]
+#[inline(always)]
 pub fn canonical_i64(value: &str) -> Option<i64> {
    let bytes = value.as_bytes();
    if bytes.is_empty() {
       return None;
    }
-   if bytes[0] == b'0' && bytes.len() > 1 {
+   let b0 = bytes[0];
+   if (b0 < b'0' || b0 > b'9') && b0 != b'-' {
       return None;
    }
-   if bytes.len() >= 2 && bytes[0] == b'-' && bytes[1] == b'0' {
+   if b0 == b'0' && bytes.len() > 1 {
       return None;
    }
-   if bytes[0] == b'+' {
+   if bytes.len() >= 2 && b0 == b'-' && bytes[1] == b'0' {
       return None;
    }
    value.parse::<i64>().ok()

@@ -166,14 +166,14 @@ pub fn configure_allocator() {
       unsafe extern "C" {
          fn mi_option_set(option: i32, value: i64);
       }
-      // Audit M-7: immediate purge keeps RSS tight but page-refaults on
-      // regrowth; deployments sensitive to tail latency can raise the
-      // delay without touching the RSS-default behavior.
+      // Audit Item 34: 3,000ms decay avoids MADV_DONTNEED page-fault storms on
+      // high-throughput large-payload (65KB–1MB) bursts while still returning
+      // unused memory to the OS on sustained idle (Gregg, Systems Performance 2nd Ed Ch. 7).
       let purge_delay_ms = std::env::var("FYRODB_MALLOC_PURGE_DELAY_MS")
          .ok()
          .and_then(|v| v.parse::<i64>().ok())
          .filter(|&v| v >= 0)
-         .unwrap_or(20);
+         .unwrap_or(3_000);
       unsafe {
          // mi_option_eager_commit = 3: 0 (don't eagerly commit segments)
          mi_option_set(3, 0);

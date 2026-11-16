@@ -1,9 +1,9 @@
 use super::*;
 
 impl<'a> Conn<'a> {
-   /// Parse between reads once this much unparsed input has accumulated, so a
-   /// deep pipeline cannot drag the read buffer up to the whole pipeline size.
-   const MAX_READ_AHEAD: usize = 64 * 1024;
+   /// Item 10: Scaled read-ahead window allows deep pipelined streams and
+   /// large bulk frames (up to 256KB) to be ingested without pipeline chopping.
+   const MAX_READ_AHEAD: usize = 256 * 1024;
 
    #[inline]
    fn recv_raw(&self, ptr: *mut u8, len: usize) -> io::Result<usize> {
@@ -258,8 +258,9 @@ impl<'a> Conn<'a> {
                }
             }
             Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-               // Only compact if write_offset has advanced past a threshold to avoid memmove churn.
-               if self.write_offset > 512 * 1024 && self.write_offset > self.parser.wbuf.len() / 2 {
+               // Item 8: Avoid memmove compaction thrashing on large partial buffers.
+               let remaining = self.parser.wbuf.len().saturating_sub(self.write_offset);
+               if self.write_offset > 512 * 1024 && (remaining <= 64 * 1024 || self.write_offset > (self.parser.wbuf.len() * 3) / 4) {
                   self.parser.wbuf.drain(..self.write_offset);
                   self.write_offset = 0;
                }

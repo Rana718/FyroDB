@@ -99,29 +99,57 @@ const CRLF_U16: u16 = u16::from_ne_bytes(*b"\r\n");
 #[inline(always)]
 pub fn format_usize_digits(mut n: usize, buf: &mut [u8]) -> &[u8] {
    if n == 0 {
-      buf[0] = b'0';
-      return &buf[..1];
+      let last = buf.len() - 1;
+      buf[last] = b'0';
+      return &buf[last..];
    }
    let mut i = buf.len();
-   while n > 0 {
+   while n >= 100 {
+      let q = n / 100;
+      let rem = ((n - q * 100) * 2) as usize;
+      n = q;
+      i -= 2;
+      buf[i] = crate::utils::int_format::DIGITS100[rem];
+      buf[i + 1] = crate::utils::int_format::DIGITS100[rem + 1];
+   }
+   if n >= 10 {
+      let rem = (n * 2) as usize;
+      i -= 2;
+      buf[i] = crate::utils::int_format::DIGITS100[rem];
+      buf[i + 1] = crate::utils::int_format::DIGITS100[rem + 1];
+   } else {
       i -= 1;
-      buf[i] = b'0' + (n % 10) as u8;
-      n /= 10;
+      buf[i] = b'0' + n as u8;
    }
    &buf[i..]
 }
 
 #[inline(always)]
 pub(crate) fn format_u64_digits(mut n: u64, buf: &mut [u8]) -> &[u8] {
-   let mut i = buf.len();
-   loop {
-      i -= 1;
-      buf[i] = b'0' + (n % 10) as u8;
-      n /= 10;
-      if n == 0 {
-         return &buf[i..];
-      }
+   if n == 0 {
+      let last = buf.len() - 1;
+      buf[last] = b'0';
+      return &buf[last..];
    }
+   let mut i = buf.len();
+   while n >= 100 {
+      let q = n / 100;
+      let rem = ((n - q * 100) * 2) as usize;
+      n = q;
+      i -= 2;
+      buf[i] = crate::utils::int_format::DIGITS100[rem];
+      buf[i + 1] = crate::utils::int_format::DIGITS100[rem + 1];
+   }
+   if n >= 10 {
+      let rem = (n * 2) as usize;
+      i -= 2;
+      buf[i] = crate::utils::int_format::DIGITS100[rem];
+      buf[i + 1] = crate::utils::int_format::DIGITS100[rem + 1];
+   } else {
+      i -= 1;
+      buf[i] = b'0' + n as u8;
+   }
+   &buf[i..]
 }
 
 /// # Safety

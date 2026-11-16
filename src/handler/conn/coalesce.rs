@@ -127,14 +127,15 @@ pub(super) fn dispatch_set_expire_pair(
    }
    conn.parser.wbuf.extend_from_slice(b"+OK\r\n:1\r\n");
 
-   let exp_60 = crate::storage::value::expiry_from_secs(60).unwrap();
+   // Items 29 & 30: Parse arbitrary integer TTL seconds and coalesce SET+EXPIRE pairs.
    for _ in 0..128 {
       let avail = conn.parser.filled - conn.parser.pos;
       if avail < 48 {
          break;
       }
       let buf = unsafe { conn.parser.rbuf.as_ptr().add(conn.parser.pos) };
-      if let Some((k_slice, v_slice)) = conn.parser.try_fast_set_expire_pair_at(buf, avail) {
+      if let Some((k_slice, v_slice, ttl_secs)) = conn.parser.try_fast_set_expire_pair_at(buf, avail) {
+         let exp_ms = crate::storage::value::expiry_from_secs(ttl_secs).unwrap_or(0);
          let (hint, entry) = conn.hint_for(k_slice);
          let out = &mut conn.parser.wbuf;
          let Some(k_str) = part_str(out, k_slice) else {
@@ -145,7 +146,7 @@ pub(super) fn dispatch_set_expire_pair(
          };
          conn
             .store
-            .set_string_auto(k_str, hint, entry, v_str, exp_60);
+            .set_string_auto(k_str, hint, entry, v_str, exp_ms);
          if conn.store.has_replication() {
             conn.store.record_current_value(k_str);
          }

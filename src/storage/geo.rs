@@ -285,12 +285,20 @@ pub struct GeoResult {
 
 #[inline(always)]
 fn spread26(mut x: u64) -> u64 {
-   x = (x | (x << 16)) & 0x0000_FFFF_0000_FFFF;
-   x = (x | (x << 8)) & 0x00FF_00FF_00FF_00FF;
-   x = (x | (x << 4)) & 0x0F0F_0F0F_0F0F_0F0F;
-   x = (x | (x << 2)) & 0x3333_3333_3333_3333;
-   x = (x | (x << 1)) & 0x5555_5555_5555_5555;
-   x
+   // Item 41: Hardware BMI2 PDEP executes 26-bit Morton spread in 1 clock cycle.
+   #[cfg(all(target_arch = "x86_64", target_feature = "bmi2"))]
+   unsafe {
+      core::arch::x86_64::_pdep_u64(x, 0x5555_5555_5555_5555)
+   }
+   #[cfg(not(all(target_arch = "x86_64", target_feature = "bmi2")))]
+   {
+      x = (x | (x << 16)) & 0x0000_FFFF_0000_FFFF;
+      x = (x | (x << 8)) & 0x00FF_00FF_00FF_00FF;
+      x = (x | (x << 4)) & 0x0F0F_0F0F_0F0F_0F0F;
+      x = (x | (x << 2)) & 0x3333_3333_3333_3333;
+      x = (x | (x << 1)) & 0x5555_5555_5555_5555;
+      x
+   }
 }
 
 pub(crate) fn geohash_encode(lon: f64, lat: f64) -> u64 {
@@ -309,30 +317,36 @@ pub(crate) fn geohash_encode(lon: f64, lat: f64) -> u64 {
    (spread26(ilon) << 1) | spread26(ilat)
 }
 
+// Item 42: Hardware BMI2 PEXT unpacks interleaved Morton coordinates in 2 CPU instructions
+// replacing the 52-iteration scalar while loop and 52 floating-point divisions.
+#[inline(always)]
 fn geohash_decode(bits: u64) -> (f64, f64) {
-   let mut lon_range = (-180.0f64, 180.0f64);
-   let mut lat_range = (-85.05112878f64, 85.05112878f64);
+   const LAT_MIN: f64 = -85.05112878;
+   const LAT_RANGE: f64 = 85.05112878 * 2.0;
+   const LON_MIN: f64 = -180.0;
+   const LON_RANGE: f64 = 360.0;
+   const SCALE: f64 = (1u64 << 26) as f64;
 
-   for i in 0..52 {
-      let bit = (bits >> (51 - i)) & 1;
-      if i % 2 == 0 {
-         let mid = (lon_range.0 + lon_range.1) / 2.0;
-         if bit == 1 {
-            lon_range.0 = mid;
-         } else {
-            lon_range.1 = mid;
-         }
-      } else {
-         let mid = (lat_range.0 + lat_range.1) / 2.0;
-         if bit == 1 {
-            lat_range.0 = mid;
-         } else {
-            lat_range.1 = mid;
-         }
+   #[cfg(all(target_arch = "x86_64", target_feature = "bmi2"))]
+   let (ilon, ilat) = unsafe {
+      (
+         core::arch::x86_64::_pext_u64(bits >> 1, 0x5555_5555_5555_5555),
+         core::arch::x86_64::_pext_u64(bits, 0x5555_5555_5555_5555),
+      )
+   };
+   #[cfg(not(all(target_arch = "x86_64", target_feature = "bmi2")))]
+   let (ilon, ilat) = {
+      let mut ilon = 0u64;
+      let mut ilat = 0u64;
+      for i in 0..26 {
+         ilon |= ((bits >> (2 * i + 1)) & 1) << i;
+         ilat |= ((bits >> (2 * i)) & 1) << i;
       }
-   }
-   let lon = (lon_range.0 + lon_range.1) / 2.0;
-   let lat = (lat_range.0 + lat_range.1) / 2.0;
+      (ilon, ilat)
+   };
+
+   let lon = LON_MIN + (ilon as f64 + 0.5) * (LON_RANGE / SCALE);
+   let lat = LAT_MIN + (ilat as f64 + 0.5) * (LAT_RANGE / SCALE);
    (lon, lat)
 }
 

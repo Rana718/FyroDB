@@ -83,30 +83,27 @@ fn copy_large_payload(destination: &mut [u8], source: &[u8]) {
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx")]
 unsafe fn copy_streaming_payload(destination: &mut [u8], source: &[u8]) {
-   use std::arch::x86_64::{_mm_sfence, _mm256_loadu_si256, _mm256_stream_si256};
+   use std::arch::x86_64::{_mm256_loadu_si256, _mm256_storeu_si256};
    unsafe {
       let dst = destination.as_mut_ptr();
       let src = source.as_ptr();
       let len = source.len();
-      let head = dst.align_offset(64);
-      std::ptr::copy_nonoverlapping(src, dst, head);
-      let mut at = head;
-      // 256-byte unroll for non-temporal streaming writes directly to DRAM (Gregg Ch. 7, Hyde Ch. 3)
+      let mut at = 0;
+      // 256-byte AVX unroll keeping hot cached lines in L1/L2 (Gjengset Ch. 10)
       while at + 256 <= len {
          for offset in [0, 32, 64, 96, 128, 160, 192, 224] {
             let value = _mm256_loadu_si256(src.add(at + offset).cast());
-            _mm256_stream_si256(dst.add(at + offset).cast(), value);
+            _mm256_storeu_si256(dst.add(at + offset).cast(), value);
          }
          at += 256;
       }
       while at + 64 <= len {
          for offset in [0, 32] {
             let value = _mm256_loadu_si256(src.add(at + offset).cast());
-            _mm256_stream_si256(dst.add(at + offset).cast(), value);
+            _mm256_storeu_si256(dst.add(at + offset).cast(), value);
          }
          at += 64;
       }
-      _mm_sfence();
       std::ptr::copy_nonoverlapping(src.add(at), dst.add(at), len - at);
    }
 }
@@ -132,8 +129,12 @@ impl SmallStr {
    /// digits, so this allocates only when the digits exceed SMALL_STR_CAP.
    #[inline]
    pub fn from_int(n: i64) -> Self {
-      let mut buf = [0u8; 20];
-      Self::new(crate::utils::int_format::write_i64_to(&mut buf, n))
+      let mut data = [0u8; SMALL_STR_CAP];
+      let len = crate::utils::int_format::write_i64_into(&mut data, n);
+      Self {
+         data,
+         len: Tag::inline(len),
+      }
    }
 
    #[inline]
@@ -192,6 +193,11 @@ impl SmallStr {
       } else {
          Self::read_heap_len(&self.data)
       }
+   }
+
+   #[inline(always)]
+   pub fn is_inline(&self) -> bool {
+      self.len != Tag::Heap
    }
 
    #[inline]
@@ -524,6 +530,18 @@ impl SmallStr {
             data,
             len: Tag::Heap,
          }
+      }
+   }
+
+   #[inline]
+   pub fn zeroed(len: usize) -> Self {
+      if len <= SMALL_STR_CAP {
+         Self {
+            data: [0u8; SMALL_STR_CAP],
+            len: Tag::inline(len),
+         }
+      } else {
+         Self::from_bytes(vec![0u8; len])
       }
    }
 
