@@ -128,8 +128,10 @@ impl Access {
             // Stripe-isolated write admission: each core updates its own cache line exclusively.
             let stripe_idx = self.write_stripe();
             let stripe = &self.writers[stripe_idx];
-            stripe.fetch_add(1, Ordering::SeqCst);
-            self.active_writers.fetch_or(1u64 << (stripe_idx % 64), Ordering::SeqCst);
+            let prev = stripe.fetch_add(1, Ordering::SeqCst);
+            if prev == 0 {
+               self.active_writers.fetch_or(1u64 << (stripe_idx % 64), Ordering::SeqCst);
+            }
             let mut spins = 0;
             // TTAS with pause backoff: check relaxed in-cache before forcing SeqCst bus sync
             while self.readers.count.load(Ordering::Relaxed) != 0 || self.readers.count.load(Ordering::SeqCst) != 0 {

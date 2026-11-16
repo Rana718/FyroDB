@@ -7,12 +7,12 @@ pub(super) const MIN_STREAM_BYTES: usize = 1024;
 /// entry bytes; also the epoch-less stream gate for sub-READ_EPOCH_MIN batches.
 pub(super) const DIRECT_SEND_MIN: usize = 32 * 1024;
 const BATCH: usize = 256;
-/// Eager-drain bounds: one call per 256 KB of reply, floored at 4 and
-/// capped at 256 — enough to drain deep large batches without spinning
-/// against a stalled reader.
-const EAGER_DRAIN_CALLS_MIN: usize = 4;
+/// Eager-drain bounds: floored at 32 calls and scaled by 64KB per call,
+/// capped at 256 — ensures full pipelined batches (16x64KB / 4x262KB / 1x1MB)
+/// drain zero-copy without falling back to wbuf payload memcpy when socket is writable.
+const EAGER_DRAIN_CALLS_MIN: usize = 32;
 const EAGER_DRAIN_CALLS_MAX: usize = 256;
-const EAGER_DRAIN_BYTES_PER_CALL: usize = 256 * 1024;
+const EAGER_DRAIN_BYTES_PER_CALL: usize = 64 * 1024;
 
 #[inline]
 fn eager_drain_calls(total_bytes: usize) -> usize {
@@ -107,6 +107,7 @@ fn write_vectored_bounded<W: Write>(
             IoSlice::advance_slices(&mut pending, n);
          }
          Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+         Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
          Err(_) => break,
       }
    }
@@ -141,6 +142,20 @@ fn send_batch<W: Write>(
    };
    let written = if values.len() <= 16 {
       let mut slices = [IoSlice::new(&[]); 16 * 3 + 1];
+      let mut slice_idx = 0;
+      if prefix > 0 {
+         slices[slice_idx] = IoSlice::new(&buffered[*offset..]);
+         slice_idx += 1;
+      }
+      for (i, value) in values.iter().enumerate() {
+         slices[slice_idx] = IoSlice::new(&headers[i][..usize::from(lengths[i])]);
+         slices[slice_idx + 1] = IoSlice::new(value);
+         slices[slice_idx + 2] = IoSlice::new(b"\r\n");
+         slice_idx += 3;
+      }
+      write_vectored_bounded(writer, &mut slices[..slice_idx], max_calls)
+   } else if values.len() <= 32 {
+      let mut slices = [IoSlice::new(&[]); 32 * 3 + 1];
       let mut slice_idx = 0;
       if prefix > 0 {
          slices[slice_idx] = IoSlice::new(&buffered[*offset..]);
@@ -273,6 +288,52 @@ pub(super) unsafe fn try_stream_get_run(
    let count = keys.len();
    if count == 0 || count > BATCH || hashes.len() != count || entries.len() != count {
       return false;
+   }
+   // Epoch-guarded fast path: when global read_epoch is active, all entries are immutable
+   // under EBR without per-entry atomic lock acquisitions or owner-slot hashing (Herlihy Ch. 7).
+   if epoch.is_some() && count <= 32 {
+      let mut headers = [[0u8; 24]; 32];
+      let mut values: [&[u8]; 32] = [&[]; 32];
+      let mut lengths = [0u16; 32];
+      let mut valid = true;
+      for i in 0..count {
+         let Some(entry) = (unsafe { entries[i].cast::<customhash::Entry<StoreValue>>().as_ref() })
+         else {
+            valid = false;
+            break;
+         };
+         let expected = ((hashes[i] as u32 as u64) << 32) | customhash::STATE_OCCUPIED;
+         if entry.state.load(Ordering::Relaxed)
+            & (customhash::STATE_MATCH_MASK & !customhash::STATE_LOCK)
+            != expected
+            || !entry.key.eq_bytes(keys[i])
+         {
+            valid = false;
+            break;
+         }
+         let val = unsafe { (*entry.value.get()).assume_init_ref() };
+         if val.expires_ms != 0 && val.is_expired() {
+            valid = false;
+            break;
+         }
+         let FyroDB::String(value) = &val.value else {
+            valid = false;
+            break;
+         };
+         values[i] = value.as_bytes();
+         lengths[i] = header(values[i].len(), &mut headers[i]) as u16;
+      }
+      if valid {
+         send_batch(
+            &mut conn.stream,
+            &mut conn.parser.wbuf,
+            &mut conn.write_offset,
+            &headers[..count],
+            &lengths[..count],
+            &values[..count],
+         );
+         return true;
+      }
    }
    if count <= 16 {
       let mut reads: [Option<customhash::EntryReadGuard<'_, StoreValue>>; 16] =

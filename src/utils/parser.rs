@@ -207,8 +207,13 @@ impl RespParser {
             self.rbuf.reserve(needed);
          }
       } else if self.rbuf.capacity() - self.filled < 16 * 1024 {
-         let additional = self.rbuf.capacity().max(Self::IDLE_READ_BUFFER);
-         self.rbuf.reserve(additional);
+         const TARGET_CAP: usize = 1280 * 1024;
+         if self.rbuf.capacity() < TARGET_CAP {
+            let additional = (TARGET_CAP - self.rbuf.capacity()).max(Self::IDLE_READ_BUFFER);
+            self.rbuf.reserve(additional);
+         } else {
+            self.rbuf.reserve(Self::IDLE_READ_BUFFER);
+         }
       }
    }
 
@@ -1721,14 +1726,14 @@ impl RespParser {
          self.pos = 0;
          self.min_needed = 0;
          self.rbuf.truncate(Self::IDLE_READ_BUFFER);
-         // Gjengset Ch. 13: Retain capacity up to 4MB so active large-payload pipelines (e.g. 4x1MB)
-         // do not trigger realloc/madvise thrashing on every request boundary.
-         if self.rbuf.capacity() > 4 * 1024 * 1024 {
-            self.rbuf.shrink_to(2 * 1024 * 1024);
+         // Retain capacity up to 1280KB for 1MB+framed pipelines without realloc/madvise thrashing
+         // while preventing bloated 4MB multi-megabyte RSS retention across idle/steady conns.
+         if self.rbuf.capacity() > 1280 * 1024 {
+            self.rbuf.shrink_to(1280 * 1024);
          }
       }
-      if self.wbuf.is_empty() && self.wbuf.capacity() > 4 * 1024 * 1024 {
-         self.wbuf.shrink_to(2 * 1024 * 1024);
+      if self.wbuf.is_empty() && self.wbuf.capacity() > 1280 * 1024 {
+         self.wbuf.shrink_to(64 * 1024);
       }
    }
 

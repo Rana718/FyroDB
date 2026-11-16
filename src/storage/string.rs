@@ -497,17 +497,17 @@ impl Store {
             let old_expires;
             let mut current = e.state.load(std::sync::atomic::Ordering::Relaxed);
             let mut backoff = 1u32;
-            for _ in 0..32 {
+            for _ in 0..512 {
                while current & customhash::STATE_LOCK != 0 {
                   for _ in 0..backoff {
                      std::hint::spin_loop();
                   }
-                  if backoff < 64 {
+                  if backoff < 128 {
                      backoff <<= 1;
                   }
                   current = e.state.load(std::sync::atomic::Ordering::Relaxed);
                }
-               if (current & customhash::STATE_OCCUPIED) == 0 {
+               if (current & customhash::STATE_OCCUPIED) == 0 || !e.key.eq_bytes(key) {
                   break;
                }
                let locked = customhash::bump_seq(current) | customhash::STATE_LOCK;
@@ -548,7 +548,7 @@ impl Store {
                      for _ in 0..backoff {
                         std::hint::spin_loop();
                      }
-                     if backoff < 64 {
+                     if backoff < 128 {
                         backoff <<= 1;
                      }
                   }
@@ -612,8 +612,12 @@ impl Store {
          }
       }
       let _pin = customhash::pin();
-      // Item 19: probe_or_insert_fast_bytes already enters write_epoch internally.
-      // Omit redundant nested write_epoch here.
+      if let Some(entry) = self.data.probe_entry_fast_bytes(key, hash, idx) {
+         unsafe {
+            self.set_string_fast_entry_bytes(key, hash, entry, value, expires_ms);
+         }
+         return;
+      }
       match self.data.probe_or_insert_fast_bytes(hash, key, || StoreValue {
          value: crate::storage::value::FyroDB::String(SmallStr::from_slice(value)),
          expires_ms,

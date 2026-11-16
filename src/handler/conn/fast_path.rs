@@ -193,7 +193,7 @@ fn get_direct_send(
    conn: &mut Conn<'_>,
    key: &[u8],
    hint: Option<u64>,
-   _entry_hint: *const (),
+   entry_hint: *const (),
 ) -> bool {
    use std::io::IoSlice;
 
@@ -208,9 +208,13 @@ fn get_direct_send(
       Some(h) => (h, store.data.shard_of(h)),
       None => store.data.locate_bytes(key),
    };
-   let entry = match store.data.probe_entry_fast_bytes(key, h, idx) {
-      Some(e) => e,
-      None => return false,
+   let entry = if !entry_hint.is_null() {
+      entry_hint.cast::<customhash::Entry<crate::storage::value::StoreValue>>()
+   } else {
+      match store.data.probe_entry_fast_bytes(key, h, idx) {
+         Some(e) => e,
+         None => return false,
+      }
    };
    let e = unsafe { &*entry };
    let state = e.state.load(std::sync::atomic::Ordering::Relaxed);
@@ -251,7 +255,7 @@ fn get_direct_send(
    ];
    let mut pending = &mut slices[..];
    // Items 10 & 11: Eager drain loop for large GETs - loop while socket accepts writes.
-   for _ in 0..16 {
+   for _ in 0..32 {
       if pending.is_empty() {
          break;
       }
@@ -419,7 +423,7 @@ fn dispatch_get_batch<const STREAM_IO: bool>(
       return;
    }
    let store = conn.store;
-   let read_epoch = if read_only && count >= READ_EPOCH_MIN {
+   let read_epoch = if read_only && (count >= 4 || count >= READ_EPOCH_MIN) {
       store.data.try_read_epoch()
    } else {
       None
@@ -434,7 +438,7 @@ fn dispatch_get_batch<const STREAM_IO: bool>(
    // A writer registered elsewhere can make the first epoch attempt fail;
    // the slot prefetch just took microseconds, so retry once before
    // committing the whole batch to per-entry read guards.
-   let read_epoch = if read_epoch.is_none() && read_only && count >= READ_EPOCH_MIN {
+   let read_epoch = if read_epoch.is_none() && read_only && (count >= 4 || count >= READ_EPOCH_MIN) {
       store.data.try_read_epoch()
    } else {
       read_epoch
@@ -566,24 +570,23 @@ pub(super) fn dispatch_set_run(
    }
    // Item 33: Align batch size with 256 to prevent premature partial socket flushes.
    if first_val.1 >= 8192 {
-      dispatch_set_batch::<256, true>(conn, first_key, first_val);
+      dispatch_set_batch::<64, true>(conn, first_key, first_val);
    } else {
       dispatch_set_batch::<256, false>(conn, first_key, first_val);
    }
 }
 
 #[inline(never)]
-fn dispatch_set_batch<const PREFETCH: usize, const STREAMING: bool>(
+fn dispatch_set_batch<const BATCH: usize, const STREAMING: bool>(
    conn: &mut Conn<'_>,
    first_key: (*const u8, usize),
    first_val: (*const u8, usize),
 ) {
-   const BATCH: usize = 256;
    let mut keys: [&[u8]; BATCH] = [&[]; BATCH];
    let mut vals: [(*const u8, usize); BATCH] = [(std::ptr::null(), 0); BATCH];
    let mut hashes = [0u64; BATCH];
    let mut tables = [std::ptr::null(); BATCH];
-   let mut entries = [std::ptr::null(); PREFETCH];
+   let mut entries = [std::ptr::null(); BATCH];
 
    let k0_bytes = unsafe { std::slice::from_raw_parts(first_key.0, first_key.1) };
    keys[0] = k0_bytes;
@@ -627,14 +630,8 @@ fn dispatch_set_batch<const PREFETCH: usize, const STREAMING: bool>(
    }
 
    let store = conn.store;
-   if PREFETCH < BATCH {
-      // Tiled updates request write ownership for entries, not bucket pointers.
-      store.prefetch_slots(&keys[..count], &mut hashes[..count], &mut tables[..count]);
-   } else {
-      store.prefetch_slots_write(&keys[..count], &mut hashes[..count], &mut tables[..count]);
-   }
-   let mut base = 0;
-   let mut prefetched = count.min(PREFETCH);
+   store.prefetch_slots_write(&keys[..count], &mut hashes[..count], &mut tables[..count]);
+   let prefetched = count.min(BATCH);
    store.probe_and_prefetch_entries_write(
       &tables[..prefetched],
       &hashes[..prefetched],
@@ -647,22 +644,12 @@ fn dispatch_set_batch<const PREFETCH: usize, const STREAMING: bool>(
    let old_len = out.len();
    let mut i = 0;
    while i < count {
-      if i >= prefetched {
-         base = i;
-         prefetched = (i + PREFETCH).min(count);
-         store.probe_and_prefetch_entries_write(
-            &tables[i..prefetched],
-            &hashes[i..prefetched],
-            &mut entries[..prefetched - i],
-         );
-      }
-      let local = i - base;
       let mut end = i + 1;
       while end < count && keys[end] == keys[i] {
          end += 1;
       }
 
-      let p = entries[local];
+      let p = entries[i];
       let mut updated = false;
       if !p.is_null() && !conn.store.has_replication() {
          let e = unsafe { &*p.cast::<customhash::Entry<crate::storage::value::StoreValue>>() };
@@ -674,17 +661,17 @@ fn dispatch_set_batch<const PREFETCH: usize, const STREAMING: bool>(
             let last_val = vals[end - 1];
             let val_bytes = unsafe { std::slice::from_raw_parts(last_val.0, last_val.1) };
             let mut backoff = 1u32;
-            for _ in 0..32 {
+            for _ in 0..512 {
                while current & customhash::STATE_LOCK != 0 {
                   for _ in 0..backoff {
                      std::hint::spin_loop();
                   }
-                  if backoff < 64 {
+                  if backoff < 128 {
                      backoff <<= 1;
                   }
                   current = e.state.load(std::sync::atomic::Ordering::Relaxed);
                }
-               if (current & customhash::STATE_OCCUPIED) == 0 {
+               if (current & customhash::STATE_OCCUPIED) == 0 || !e.key.eq_bytes(keys[i]) {
                   break;
                }
                let locked = customhash::bump_seq(current) | customhash::STATE_LOCK;
@@ -719,7 +706,7 @@ fn dispatch_set_batch<const PREFETCH: usize, const STREAMING: bool>(
                      for _ in 0..backoff {
                         std::hint::spin_loop();
                      }
-                     if backoff < 64 {
+                     if backoff < 128 {
                         backoff <<= 1;
                      }
                   }
@@ -734,7 +721,7 @@ fn dispatch_set_batch<const PREFETCH: usize, const STREAMING: bool>(
             // overwrite through the same fast paths.
             let key_bytes = keys[k];
             let val_bytes = unsafe { std::slice::from_raw_parts(vals[k].0, vals[k].1) };
-            if entries[local].is_null() && !conn.store.has_replication() {
+            if entries[k].is_null() && !conn.store.has_replication() {
                let written = unsafe {
                   store.data.insert_slot_fast_located_pinned_bytes(
                      hashes[k],
@@ -755,7 +742,7 @@ fn dispatch_set_batch<const PREFETCH: usize, const STREAMING: bool>(
             } else {
                conn
                   .store
-                  .set_string_auto_bytes(key_bytes, Some(hashes[k]), entries[local], val_bytes, 0);
+                  .set_string_auto_bytes(key_bytes, Some(hashes[k]), entries[k], val_bytes, 0);
                if conn.store.has_replication() {
                   conn.store.record_current_value_bytes(key_bytes);
                }
