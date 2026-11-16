@@ -31,6 +31,7 @@ impl<'a> Conn<'a> {
          let n = match self.recv_raw(ptr, cap) {
             Ok(0) => return false,
             Ok(n) => n,
+            Err(ref e) if e.kind() == io::ErrorKind::Interrupted => continue,
             Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => break,
             Err(_) => return false,
          };
@@ -208,7 +209,13 @@ impl<'a> Conn<'a> {
    }
 
    fn retained_write_capacity(&self) -> usize {
-      if self.parser.rbuf.capacity() <= RETAINED_WRITE_BUFFER {
+      if self.parser.wbuf.capacity() > 4 * 1024 * 1024 {
+         4 * 1024 * 1024
+      } else if self.parser.wbuf.capacity() > RETAINED_WRITE_BUFFER * 2 {
+         // Gjengset Ch. 13: Retain capacity up to 4MB for large-payload pipelines (e.g. 4x1MB)
+         // preventing realloc/free cycles on pipelined GET request boundaries.
+         self.parser.wbuf.capacity()
+      } else if self.parser.rbuf.capacity() <= RETAINED_WRITE_BUFFER {
          RETAINED_WRITE_BUFFER * 2
       } else {
          RETAINED_WRITE_BUFFER
@@ -257,6 +264,7 @@ impl<'a> Conn<'a> {
                   return true;
                }
             }
+            Err(ref e) if e.kind() == io::ErrorKind::Interrupted => continue,
             Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
                // Item 8: Avoid memmove compaction thrashing on large partial buffers.
                let remaining = self.parser.wbuf.len().saturating_sub(self.write_offset);

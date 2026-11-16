@@ -284,7 +284,7 @@ pub struct GeoResult {
 }
 
 #[inline(always)]
-fn spread26(mut x: u64) -> u64 {
+fn spread26(x: u64) -> u64 {
    // Item 41: Hardware BMI2 PDEP executes 26-bit Morton spread in 1 clock cycle.
    #[cfg(all(target_arch = "x86_64", target_feature = "bmi2"))]
    unsafe {
@@ -292,6 +292,7 @@ fn spread26(mut x: u64) -> u64 {
    }
    #[cfg(not(all(target_arch = "x86_64", target_feature = "bmi2")))]
    {
+      let mut x = x;
       x = (x | (x << 16)) & 0x0000_FFFF_0000_FFFF;
       x = (x | (x << 8)) & 0x00FF_00FF_00FF_00FF;
       x = (x | (x << 4)) & 0x0F0F_0F0F_0F0F_0F0F;

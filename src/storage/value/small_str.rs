@@ -259,6 +259,8 @@ impl SmallStr {
             destination[len - 32..len].copy_from_slice(&s[len - 32..len]);
          } else if (65..=256).contains(&len) {
             copy_medium_payload(destination, s);
+         } else if len >= 8192 {
+            copy_large_payload(destination, s);
          } else {
             destination.copy_from_slice(s);
          }
@@ -609,6 +611,28 @@ impl Clone for SmallStr {
          }
       } else {
          Self::from_slice(self.as_bytes())
+      }
+   }
+
+   #[inline]
+   fn clone_from(&mut self, source: &Self) {
+      if source.len != Tag::Heap {
+         if self.len == Tag::Heap {
+            let ptr_val = unsafe { std::ptr::read_unaligned(self.data.as_ptr().cast::<*mut u8>()) };
+            let len_val = Self::read_heap_len(&self.data);
+            unsafe {
+               drop(Box::from_raw(std::ptr::slice_from_raw_parts_mut(
+                  ptr_val, len_val,
+               )));
+            }
+         }
+         self.data = source.data;
+         self.len = source.len;
+      } else if self.len == Tag::Heap && Self::read_heap_len(&self.data) == source.len() {
+         // Both are heap-allocated and have identical lengths: overwrite in-place without reallocation (Gjengset Ch. 13)
+         self.as_bytes_mut().copy_from_slice(source.as_bytes());
+      } else {
+         *self = source.clone();
       }
    }
 }

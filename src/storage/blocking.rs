@@ -82,8 +82,9 @@ impl BlockRegistry {
    /// first (each worker retries in wake order).
    #[inline]
    pub fn signal(&self, key: &str) {
-      // Item 58: Relaxed load avoids SeqCst pipeline stalls and memory fences on hot write paths.
-      if self.waiting.load(Ordering::Relaxed) == 0 {
+      // Kerrisk Ch. 30 & Troutwine Ch. 6: Acquire load synchronizes with registration fetch_add
+      // without extra clock cycles on x86-64 while preventing lost-wakeups under reordering.
+      if self.waiting.load(Ordering::Acquire) == 0 {
          return;
       }
       self.signal_slow(key);

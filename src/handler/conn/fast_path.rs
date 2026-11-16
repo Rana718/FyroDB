@@ -275,6 +275,7 @@ fn get_direct_send(
                return true;
             }
          }
+         Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
          Err(_) => break,
       }
    }
@@ -559,7 +560,7 @@ fn dispatch_set_one(
    conn.store
       .set_string_auto_bytes(key, hint, entry, bytes, 0);
    if conn.store.has_replication() {
-      conn.store.record_current_value_bytes(key);
+      conn.store.record_live_string(key, bytes, 0);
    }
    out.extend_from_slice(b"+OK\r\n");
 }

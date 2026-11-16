@@ -166,9 +166,9 @@ pub fn configure_allocator() {
       unsafe extern "C" {
          fn mi_option_set(option: i32, value: i64);
       }
-      // Audit Item 34: 3,000ms decay avoids MADV_DONTNEED page-fault storms on
-      // high-throughput large-payload (65KB–1MB) bursts while still returning
-      // unused memory to the OS on sustained idle (Gregg, Systems Performance 2nd Ed Ch. 7).
+      // Gregg, Systems Performance 2nd Ed Ch. 7 (p. 320): 3,000ms decay avoids MADV_DONTNEED
+      // syscall page-fault storms on multi-million ops/sec bursts (Pub/Sub, LPUSH/RPOP, pipelining)
+      // while returning unused memory to the OS on sustained idle or background purge.
       let purge_delay_ms = std::env::var("FYRODB_MALLOC_PURGE_DELAY_MS")
          .ok()
          .and_then(|v| v.parse::<i64>().ok())

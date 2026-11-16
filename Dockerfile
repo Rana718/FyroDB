@@ -47,9 +47,10 @@ ENV FYRODB_MAX_CLIENTS=10000
 ENV FYRODB_RDB_PATH=/data/fyrodb.rdb
 ENV FYRODB_RDB_INTERVAL=300
 
-# mimalloc eagerly decommits pages — no special runtime config needed.
-# Set MIMALLOC_PURGE_DELAY=0 for immediate purge (default is 1000ms in v3).
-ENV MIMALLOC_PURGE_DELAY=0
+# mimalloc decommits unused pages with a 3,000ms delay to prevent
+# MADV_DONTNEED page-fault storms on high-throughput bursts (Gregg Ch. 7).
+ENV MIMALLOC_PURGE_DELAY=3000
+ENV FYRODB_MALLOC_PURGE_DELAY_MS=3000
 
 EXPOSE 8000
 

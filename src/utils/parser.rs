@@ -1657,14 +1657,14 @@ impl RespParser {
          self.filled = 0;
          self.pos = 0;
          self.rbuf.truncate(Self::IDLE_READ_BUFFER);
-         // Item 3: Keep retained capacity up to 1MB-2MB so large-payload benchmarks don't trigger
-         // allocator realloc/free cycles on every request boundary.
-         if self.rbuf.capacity() > 2 * 1024 * 1024 {
-            self.rbuf.shrink_to(1024 * 1024);
+         // Gjengset Ch. 13: Retain capacity up to 4MB so active large-payload pipelines (e.g. 4x1MB)
+         // do not trigger realloc/madvise thrashing on every request boundary.
+         if self.rbuf.capacity() > 4 * 1024 * 1024 {
+            self.rbuf.shrink_to(2 * 1024 * 1024);
          }
       }
-      if self.wbuf.is_empty() && self.wbuf.capacity() > 2 * 1024 * 1024 {
-         self.wbuf.shrink_to(1024 * 1024);
+      if self.wbuf.is_empty() && self.wbuf.capacity() > 4 * 1024 * 1024 {
+         self.wbuf.shrink_to(2 * 1024 * 1024);
       }
    }
 
