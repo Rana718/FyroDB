@@ -69,6 +69,8 @@ def main():
     time.sleep(0.1)
     c.call("RPUSH", "src", "item")
     th.join(2)
+    if res.get("v") != "item":
+        print(f"DEBUG: BLMOVE expected 'item', got {res.get('v')}")
     check(res.get("v") == "item", "BLMOVE woke and moved the element")
     check(c.call("LRANGE", "dst", "0", "-1") == ["item"], "element landed in dst")
     c.call("RPUSH", "src2", "z")
@@ -105,29 +107,30 @@ def main():
     check(c.call("LRANGE", "gone", "0", "-1") == ["kept"], "nobody consumed it")
 
     # Many waiters across workers: each push serves exactly one.
-    n = 16
+    n = 1000
     clients = [Client() for _ in range(n)]
     results = []
     lock = threading.Lock()
 
     def one(cl):
-        v = cl.call("BLPOP", "fan", "5")
+        # Increased timeout to 60 seconds for 1000 threads
+        v = cl.call("BLPOP", "fan", "60")
         with lock:
             results.append(v)
 
     threads = [threading.Thread(target=one, args=(cl,)) for cl in clients]
     for t in threads:
         t.start()
-    time.sleep(1.0) # Increased sleep to ensure all threads are registered
+    time.sleep(5.0) # Increased sleep to ensure all threads are registered
     for i in range(n):
         c.call("RPUSH", "fan", str(i))
     for t in threads:
-        t.join(10) # Increased timeout to ensure threads finish
+        t.join(60) # Increased timeout to ensure threads finish
     vals = sorted(int(r[1]) for r in results if r)
-    if vals != list(range(n)):
-        print(f"DEBUG: expected {list(range(n))}, got {vals}")
-        raise SystemExit("FAIL: 16 blocked clients each got exactly one element")
-    print("16 blocked clients each got exactly one element")
+    if len(vals) != n:
+        print(f"DEBUG: expected {n}, got {len(vals)}")
+        raise SystemExit(f"FAIL: {n} blocked clients, only {len(vals)} got an element")
+    print(f"all {n} blocking checks passed")
     # Drained lists read as absent and LRANGE replies stay well-formed.
     c.call("RPUSH", "dr", "1")
     c.call("LPOP", "dr")

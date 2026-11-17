@@ -1,6 +1,6 @@
 use crossbeam_utils::CachePadded;
 use parking_lot::Mutex;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 /// Delivers a retry to the worker that owns a parked connection.
@@ -15,7 +15,23 @@ pub struct Waiter {
    pub uid: u64,
 }
 
-type WaiterBucket = CachePadded<Mutex<HashMap<String, Vec<Waiter>>>>;
+#[derive(Clone)]
+struct WaiterList {
+    waiters: Vec<Waiter>,
+    uids: HashSet<u64>,
+}
+
+impl Default for WaiterList {
+    fn default() -> Self {
+        Self {
+            waiters: Vec::new(),
+            uids: HashSet::new(),
+        }
+    }
+}
+
+// Granular locking: Shard -> HashMap -> Key -> Waiters list (Mutex with fast lookup)
+type WaiterBucket = CachePadded<Mutex<HashMap<String, Arc<Mutex<WaiterList>>>>>;
 const KEY_SHARDS: usize = 256;
 
 fn key_shard(key: &str) -> usize {
@@ -46,33 +62,61 @@ impl Default for BlockRegistry {
 impl BlockRegistry {
    pub fn register(&self, keys: &[String], waiter: &Waiter) {
       for k in keys {
-         let mut map = self.keys[key_shard(k)].lock();
-         let list = map.entry(k.clone()).or_default();
-         if !list.iter().any(|w| w.uid == waiter.uid) {
-            list.push(waiter.clone());
+         let shard = &self.keys[key_shard(k)];
+         
+         let waiter_list = {
+            let map = shard.lock();
+            map.get(k).cloned()
+         };
+
+         let waiter_list = match waiter_list {
+            Some(list) => list,
+            None => {
+               let mut map = shard.lock();
+               map.entry(k.clone()).or_insert_with(|| Arc::new(Mutex::new(WaiterList::default()))).clone()
+            }
+         };
+
+         let mut list = waiter_list.lock();
+         if list.uids.insert(waiter.uid) {
+            list.waiters.push(waiter.clone());
          }
       }
    }
 
    pub fn unregister(&self, keys: &[String], uid: u64) {
       for k in keys {
-         let mut map = self.keys[key_shard(k)].lock();
-         if let Some(list) = map.get_mut(k) {
-            list.retain(|w| w.uid != uid);
-            if list.is_empty() {
-               map.remove(k);
+         let shard = &self.keys[key_shard(k)];
+         let waiter_list = {
+            let map = shard.lock();
+            map.get(k).cloned()
+         };
+
+         if let Some(list) = waiter_list {
+            let mut list = list.lock();
+            if list.uids.remove(&uid) {
+               list.waiters.retain(|w| w.uid != uid);
             }
          }
       }
    }
 
-   /// A write made `key` possibly satisfiable: wake its waiters, oldest
-   /// first (each worker retries in wake order).
+   /// A write made `key` possibly satisfiable: wake ONE waiter, oldest
+   /// first (the signaled waiter retries).
    #[inline]
    pub fn signal(&self, key: &str) {
-      let map = self.keys[key_shard(key)].lock();
-      if let Some(list) = map.get(key) {
-         for w in list {
+      let shard = &self.keys[key_shard(key)];
+      let waiter_list = {
+         let map = shard.lock();
+         map.get(key).cloned()
+      };
+
+      if let Some(list) = waiter_list {
+         let w = {
+            let list = list.lock();
+            list.waiters.first().cloned()
+         };
+         if let Some(w) = w {
             w.wake.wake_retry(w.token, w.uid);
          }
       }
@@ -82,7 +126,9 @@ impl BlockRegistry {
       let mut uids: Vec<u64> = Vec::new();
       for shard in &self.keys {
          let map = shard.lock();
-         uids.extend(map.values().flatten().map(|w| w.uid));
+         for list in map.values() {
+             uids.extend(list.lock().uids.iter());
+         }
       }
       uids.sort_unstable();
       uids.dedup();
