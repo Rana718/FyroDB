@@ -70,6 +70,22 @@ jobs:
       - name: Run Verus
         run: task verus
 
+  e2e-integration:
+    name: E2E Integration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Docker Image
+        run: docker build -t fyrodb-test .
+      - name: Run Docker Container
+        run: docker run -d -p 8000:8000 --name fyrodb-container fyrodb-test
+      - name: Install dependencies
+        run: pip install redis
+      - name: Run E2E Stress Test
+        run: python3 scripts/e2e_stress_test.py
+      - name: Stop Container
+        run: docker stop fyrodb-container
+
   benchmark-validation:
     name: Benchmark client validation
     runs-on: ubuntu-latest
