@@ -78,6 +78,7 @@ impl HllData {
       let mut sum2 = 0.0f64;
       let mut sum3 = 0.0f64;
       let mut zeros = 0u32;
+      #[allow(clippy::chunks_exact_to_as_chunks)]
       let chunks = self.registers.chunks_exact(4);
       for chunk in chunks {
          sum0 += RECIP_2_POW[(chunk[0] as usize).min(63)];
@@ -264,41 +265,9 @@ impl Store {
       }
    }
 
-   pub fn pfcount(&self, keys: &[&str]) -> Result<u64, &'static str> {
-      if keys.len() == 1 {
-         match self.data.get_ref(keys[0]) {
-            None => Ok(0),
-            Some(e) if e.is_expired() => Ok(0),
-            Some(e) => match e.value.as_string() {
-               Some(s) => {
-                  let hll = decode_hll(s.as_bytes());
-                  Ok(hll.count())
-               }
-               None => Err("WRONGTYPE"),
-            },
-         }
-      } else {
-         let mut merged = HllData::new();
-         for &k in keys {
-            match self.data.get_ref(k) {
-               None => {}
-               Some(e) if e.is_expired() => {}
-               Some(e) => match e.value.as_string() {
-                  Some(s) => {
-                     let hll = decode_hll(s.as_bytes());
-                     merged.merge(&hll);
-                  }
-                  None => return Err("WRONGTYPE"),
-               },
-            }
-         }
-         Ok(merged.count())
-      }
-   }
-
-   pub fn pfmerge(&self, dest: &str, sources: &[&str]) -> Result<(), &'static str> {
+   fn merge_hll_keys(&self, keys: &[&str]) -> Result<HllData, &'static str> {
       let mut merged = HllData::new();
-      for &k in sources {
+      for &k in keys {
          match self.data.get_ref(k) {
             None => {}
             Some(e) if e.is_expired() => {}
@@ -311,6 +280,26 @@ impl Store {
             },
          }
       }
+      Ok(merged)
+   }
+
+   pub fn pfcount(&self, keys: &[&str]) -> Result<u64, &'static str> {
+      if keys.len() == 1 {
+         match self.data.get_ref(keys[0]) {
+            None => Ok(0),
+            Some(e) if e.is_expired() => Ok(0),
+            Some(e) => match e.value.as_string() {
+               Some(s) => Ok(decode_hll(s.as_bytes()).count()),
+               None => Err("WRONGTYPE"),
+            },
+         }
+      } else {
+         Ok(self.merge_hll_keys(keys)?.count())
+      }
+   }
+
+   pub fn pfmerge(&self, dest: &str, sources: &[&str]) -> Result<(), &'static str> {
+      let merged = self.merge_hll_keys(sources)?;
       let encoded = encode_hll(&merged);
       self
          .data

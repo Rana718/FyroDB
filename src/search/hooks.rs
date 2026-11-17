@@ -128,8 +128,7 @@ impl IndexDirty {
 
 #[derive(Default)]
 pub struct SearchHooks {
-   /// Audit continue §4: per-KV-write hook reads use an ArcSwap snapshot
-   /// (E3: guard load ≈393 M reads/s vs RwLock ≈9-15 M/s).
+   /// Lock-free ArcSwap snapshot of active index hooks.
    indexes: ArcSwap<Vec<Arc<IndexDirty>>>,
    active: AtomicBool,
    /// Shared observer flag; this hook controls the index bit.
@@ -181,7 +180,12 @@ impl SearchHooks {
    }
 
    pub fn get(&self, name: &str) -> Option<Arc<IndexDirty>> {
-      self.indexes.load_full().iter().find(|d| d.def.name == name).cloned()
+      self
+         .indexes
+         .load_full()
+         .iter()
+         .find(|d| d.def.name == name)
+         .cloned()
    }
 
    pub fn is_active(&self) -> bool {
@@ -194,8 +198,6 @@ pub struct HookObserver(pub Arc<SearchHooks>);
 
 impl customhash::WriteObserver for HookObserver {
    fn on_write(&self, key: &str) {
-      // Audit continue §4: per-KV-write hook — ArcSwap guard load with no
-      // refcount, iterating the snapshot without a lock.
       for d in self.0.indexes.load().iter() {
          if d.def.matches_key(key) {
             d.mark(key);

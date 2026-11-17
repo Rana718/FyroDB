@@ -44,15 +44,26 @@ impl JsonValue {
       }
    }
 
-   // Item 47: Pre-estimate required JSON serialization buffer capacity to avoid reallocations.
    pub fn estimated_size(&self) -> usize {
       match self {
          Self::Null => 4,
-         Self::Bool(b) => if *b { 4 } else { 5 },
+         Self::Bool(b) => {
+            if *b {
+               4
+            } else {
+               5
+            }
+         }
          Self::Number(_) => 16,
          Self::String(s) => s.len() + 2,
          Self::Array(arr) => 2 + arr.iter().map(Self::estimated_size).sum::<usize>() + arr.len(),
-         Self::Object(obj) => 2 + obj.iter().map(|(k, v)| k.len() + 3 + v.estimated_size()).sum::<usize>() + obj.len(),
+         Self::Object(obj) => {
+            2 + obj
+               .iter()
+               .map(|(k, v)| k.len() + 3 + v.estimated_size())
+               .sum::<usize>()
+               + obj.len()
+         }
       }
    }
 

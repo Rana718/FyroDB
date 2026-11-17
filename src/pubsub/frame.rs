@@ -51,19 +51,9 @@ fn bulk_len(bytes: usize) -> usize {
       .expect("pub/sub frame length overflow")
 }
 
-#[inline]
+#[inline(always)]
 fn header(value: usize, out: &mut [u8; 24]) -> usize {
-   out[0] = b'$';
-   if value < 10 {
-      out[1] = b'0' + value as u8;
-      out[2..4].copy_from_slice(b"\r\n");
-      return 4;
-   }
-   let mut digits = [0; 20];
-   let number = crate::utils::resp::format_usize_digits(value, &mut digits);
-   out[1..1 + number.len()].copy_from_slice(number);
-   out[1 + number.len()..3 + number.len()].copy_from_slice(b"\r\n");
-   number.len() + 3
+   crate::utils::resp::format_bulk_header(value, out)
 }
 
 #[inline]

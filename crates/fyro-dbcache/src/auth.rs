@@ -313,7 +313,7 @@ fn pbkdf2_sha256(password: &[u8], salt: &[u8], iterations: u32) -> [u8; 32] {
    for _ in 1..iterations {
       let mut inner = Sha256::new();
       inner.update(inner_pad);
-      inner.update(&previous);
+      inner.update(previous);
       let inner_hash = inner.finalize();
 
       let mut outer = Sha256::new();

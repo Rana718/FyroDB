@@ -1,24 +1,17 @@
 use crossbeam_queue::SegQueue;
+use parking_lot::{Condvar, Mutex};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use parking_lot::{Condvar, Mutex};
 use std::sync::{Arc, OnceLock};
 
 type Job = Box<dyn FnOnce() + Send + 'static>;
 
-/// Audit V-4: the two-priority queues were a `VecDeque` pair behind one
-/// std Mutex — every worker contended on that mutex per job once the
-/// ticket queue emptied. Both queues are now lock-free `SegQueue`s; the
-/// Condvar stays for sleep/wake only.
+/// Thread pool with lock-free priority queues and condvar parking.
 pub struct Pool {
    tickets: SegQueue<Job>,
    high: SegQueue<Job>,
    low: SegQueue<Job>,
-   /// Condvar pairing gate: held only while a worker sleeps. The
-   /// push-side SeqCst queued-add + sleeper read versus the worker's
-   /// sleeper add + queued re-read form a Dekker handshake, so a push
-   /// either observes the sleeper (and notifies) or the worker observes
-   /// the queued job (and never sleeps); the wait timeout bounds the rest.
+   /// Condvar pairing gate for sleeping workers.
    sleep_gate: Mutex<()>,
    cv: Condvar,
    threads: usize,
@@ -26,7 +19,6 @@ pub struct Pool {
    queued: AtomicUsize,
    sleepers: AtomicUsize,
 }
-
 
 static CONFIG: Mutex<Option<(usize, Option<Vec<usize>>)>> = Mutex::new(None);
 static GLOBAL: OnceLock<Arc<Pool>> = OnceLock::new();
@@ -185,9 +177,7 @@ impl Pool {
             std::hint::spin_loop();
             spins += 1;
          }
-         // Dekker against the push side (SeqCst on both sides): either the
-         // push observed our sleeper registration (and notifies) or we
-         // observe its queued increment (and never sleep).
+         // Dekker synchronization against push side to avoid lost wakes.
          self.sleepers.fetch_add(1, Ordering::SeqCst);
          let queued = self.queued.load(Ordering::SeqCst);
          if queued != 0 {

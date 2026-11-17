@@ -64,6 +64,10 @@ pprof = { version = "0.15", optional = true, default-features = false, features 
 [dev-dependencies]
 loom = "0.7.3"
 
+[[test]]
+name = "verus_safety_invariants"
+path = "tests/verus_safety_invariants.rs"
+
 [[bin]]
 name = "fyro_db"
 path = "src/main.rs"

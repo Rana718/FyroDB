@@ -1,7 +1,6 @@
 use crate::DistanceMetric;
 use crate::kernels as simd;
 
-// Item 65: Fast hardware reciprocal square root using _mm_rsqrt_ss with Newton-Raphson refinement.
 #[inline(always)]
 pub fn fast_rsqrt(x: f32) -> f32 {
    if x <= 0.0 {

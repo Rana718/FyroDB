@@ -142,30 +142,21 @@ pub fn hrandfield(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
       _ => return resp::write_wrong_args(out, "hrandfield"),
    };
 
+   let write_empty = |out: &mut Vec<u8>| {
+      if parts.len() == 2 {
+         resp::write_nil(out);
+      } else {
+         resp::write_array_header(out, 0);
+      }
+   };
+
    match store.data.get_ref(key) {
-      None => {
-         if parts.len() == 2 {
-            resp::write_nil(out);
-         } else {
-            resp::write_array_header(out, 0);
-         }
-      }
-      Some(e) if e.is_expired() => {
-         if parts.len() == 2 {
-            resp::write_nil(out);
-         } else {
-            resp::write_array_header(out, 0);
-         }
-      }
+      None => write_empty(out),
+      Some(e) if e.is_expired() => write_empty(out),
       Some(e) => match e.value.as_hash() {
          Some(h) => {
             if h.is_empty() {
-               if parts.len() == 2 {
-                  resp::write_nil(out);
-               } else {
-                  resp::write_array_header(out, 0);
-               }
-               return;
+               return write_empty(out);
             }
             if parts.len() == 2 {
                if let Some((f, _)) = h.iter().next() {
@@ -247,45 +238,35 @@ pub fn hscan(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
       i += 1;
    }
 
-   match store.data.get_ref(key) {
-      None => {
-         out.extend_from_slice(b"*2\r\n");
-         resp::write_bulk(out, "0");
-         resp::write_array_header(out, 0);
-      }
-      Some(e) if e.is_expired() => {
-         out.extend_from_slice(b"*2\r\n");
-         resp::write_bulk(out, "0");
-         resp::write_array_header(out, 0);
-      }
-      Some(e) => match e.value.as_hash() {
-         Some(h) => {
-            if pattern.is_none() {
-               out.extend_from_slice(b"*2\r\n");
-               resp::write_bulk(out, "0");
-               resp::write_array_header(out, h.len() * 2);
-               for (f, v) in h.iter() {
-                  resp::write_bulk(out, f);
-                  resp::write_bulk(out, v);
-               }
-               return;
-            }
-            let pairs: Vec<(
-               &crate::storage::value::SmallStr,
-               &crate::storage::value::SmallStr,
-            )> = h
-               .iter()
-               .filter(|(k, _)| pattern.is_none_or(|p| crate::utils::util::glob_match(p, k)))
-               .collect();
-            out.extend_from_slice(b"*2\r\n");
-            resp::write_bulk(out, "0");
-            resp::write_array_header(out, pairs.len() * 2);
-            for (f, v) in pairs {
+   let Some(e) = store.data.get_ref(key) else {
+      return resp::write_scan_cursor_header(out, "0", 0);
+   };
+   if e.is_expired() {
+      return resp::write_scan_cursor_header(out, "0", 0);
+   }
+   match e.value.as_hash() {
+      Some(h) => {
+         if pattern.is_none() {
+            resp::write_scan_cursor_header(out, "0", h.len() * 2);
+            for (f, v) in h.iter() {
                resp::write_bulk(out, f);
                resp::write_bulk(out, v);
             }
+            return;
          }
-         None => resp::write_wrong_type(out),
-      },
+         let pairs: Vec<(
+            &crate::storage::value::SmallStr,
+            &crate::storage::value::SmallStr,
+         )> = h
+            .iter()
+            .filter(|(k, _)| pattern.is_none_or(|p| crate::utils::util::glob_match(p, k)))
+            .collect();
+         resp::write_scan_cursor_header(out, "0", pairs.len() * 2);
+         for (f, v) in pairs {
+            resp::write_bulk(out, f);
+            resp::write_bulk(out, v);
+         }
+      }
+      None => resp::write_wrong_type(out),
    }
 }

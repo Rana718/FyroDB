@@ -44,7 +44,6 @@ struct L1Entry {
    result: Arc<crate::row::DbResultSet>,
 }
 
-// Item 63: UnsafeCell thread-local L1 cache eliminates dynamic borrow flag overhead.
 struct L1Storage(std::cell::UnsafeCell<[Option<L1Entry>; 256]>);
 unsafe impl Sync for L1Storage {}
 
@@ -351,16 +350,14 @@ impl DbCacheManager {
          return None;
       }
       record_hit(&self.metrics);
-      L1_CACHE.with(|c| {
-         unsafe {
-            (*c.0.get())[idx] = Some(L1Entry {
-               manager_id: mgr_id,
-               epoch,
-               fp: fingerprint,
-               result: Arc::clone(&entry.result),
-               entry: Arc::clone(&entry),
-            });
-         }
+      L1_CACHE.with(|c| unsafe {
+         (*c.0.get())[idx] = Some(L1Entry {
+            manager_id: mgr_id,
+            epoch,
+            fp: fingerprint,
+            result: Arc::clone(&entry.result),
+            entry: Arc::clone(&entry),
+         });
       });
       Some(entry)
    }
@@ -747,7 +744,6 @@ impl DbCacheManager {
       })
    }
 
-   // Item 67: Atomic load for done state avoids locking mutex on already-filled cache entries.
    pub fn wait_for_fill(&self, key: &str) -> bool {
       let idx = inflight_shard_idx(key);
       let slot = self.inflight[idx].lock().get(key).cloned();

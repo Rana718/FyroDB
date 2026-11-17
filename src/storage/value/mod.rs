@@ -10,8 +10,8 @@ pub use list::ListValue;
 pub use quicklist::QuickList;
 pub type ListInner = ListValue;
 pub use json_value::JsonValue;
-pub use small_str::SmallStr;
 pub(crate) use small_str::SMALL_STR_CAP;
+pub use small_str::SmallStr;
 pub use zset_data::{ZEntry, ZSetData};
 
 use foldhash::{HashMap, HashSet};
@@ -193,7 +193,7 @@ pub struct StoreValue {
    pub expires_ms: u64,
 }
 
-// Item 37: 64-byte cache line alignment eliminates false sharing in .bss section on timer ticks.
+// 64-byte alignment eliminates false sharing on timer ticks.
 #[repr(align(64))]
 struct PaddedAtomicU64(std::sync::atomic::AtomicU64);
 
@@ -210,12 +210,12 @@ pub fn now_ms() -> u64 {
 
 #[inline]
 pub fn tick_clock() {
-   // One shared line is written by every worker's event loop; gate the store
-   // on a value change so the line stays read-shared for ~99.9% of ticks
-   // instead of bouncing exclusive ownership every iteration.
+   // Gate store on value change to avoid bouncing exclusive cache lines.
    let now = now_ms();
    if UNIX_MS_CACHE.0.load(std::sync::atomic::Ordering::Relaxed) != now {
-      UNIX_MS_CACHE.0.store(now, std::sync::atomic::Ordering::Relaxed);
+      UNIX_MS_CACHE
+         .0
+         .store(now, std::sync::atomic::Ordering::Relaxed);
    }
 }
 
@@ -224,9 +224,7 @@ pub fn expiry_from_secs(secs: u64) -> Option<u64> {
    approx_now_ms().checked_add(secs.checked_mul(1000)?)
 }
 
-/// Standalone EXPIRE-family semantics (Redis): negative deltas are valid
-/// and delete the key by placing the deadline in the past. Only used by
-/// EXPIRE/PEXPIRE — SET's EX/PX options keep strict u64 parsing.
+/// EXPIRE-family semantics: negative deltas place deadline in past to delete key.
 #[inline]
 pub fn expiry_from_secs_signed(secs: i64) -> Option<u64> {
    let deadline = (approx_now_ms() as i64).saturating_add(secs.saturating_mul(1000));
@@ -247,10 +245,7 @@ pub fn expiry_from_ms(ms: u64) -> Option<u64> {
 #[inline]
 /// Unix **milliseconds** → absolute expiry deadline.
 pub fn expiry_from_unix_ms(unix_ms: u64) -> Option<u64> {
-    // Redis semantics: ANY timestamp (including past ones) is accepted —
-    // a past deadline makes the key immediately expired (EXPIREAT 0
-    // deletes). Non-integer input is rejected upstream by parse_int.
-    Some(unix_ms)
+   Some(unix_ms)
 }
 
 pub fn expiry_from_unix_secs(unix_secs: u64) -> Option<u64> {

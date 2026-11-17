@@ -3,3 +3,6 @@ linker = "clang"
 rustflags = ["-C", "link-arg=-fuse-ld=lld"]
 [build]
 jobs = 12
+
+[alias]
+verus = "test --test verus_safety_invariants"

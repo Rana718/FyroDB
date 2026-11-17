@@ -13,15 +13,15 @@ pub fn count_ones_fast(slice: &[u8]) -> usize {
    let mut c1: usize = 0;
    let mut c2: usize = 0;
    let mut c3: usize = 0;
-   let mut chunks = words.chunks_exact(4);
-   for chunk in chunks.by_ref() {
+   let (chunks, remainder) = words.as_chunks::<4>();
+   for chunk in chunks {
       c0 += chunk[0].count_ones() as usize;
       c1 += chunk[1].count_ones() as usize;
       c2 += chunk[2].count_ones() as usize;
       c3 += chunk[3].count_ones() as usize;
    }
    count += (c0 + c1) + (c2 + c3);
-   for &w in chunks.remainder() {
+   for &w in remainder {
       count += w.count_ones() as usize;
    }
    for &b in suffix {
@@ -39,7 +39,7 @@ impl Store {
       let byte_idx = (offset / 8) as usize;
       let bit_idx = 7 - (offset % 8) as u8;
 
-      let result = self.data.update_with_hinted_bytes(key, None, |val| {
+      let mut apply_bit = |val: &mut StoreValue| {
          if val.is_expired() {
             let mut s = SmallStr::zeroed(byte_idx + 1);
             if value {
@@ -63,52 +63,31 @@ impl Store {
             }
             None => Err("WRONGTYPE"),
          }
-      });
+      };
 
-      match result {
-         Some(r) => r,
-         None => {
-            // Absent-key fallback using SmallStr::zeroed (Item 50).
-            loop {
-               let mut s = SmallStr::zeroed(byte_idx + 1);
-               if value {
-                  s.as_bytes_mut()[byte_idx] |= 1 << bit_idx;
-               }
-               if self
-                  .data
-                  .insert_if_absent_bytes_hinted(key, None, StoreValue::string_small(s))
-               {
-                  return Ok(0);
-               }
-               let retry = self.data.update_with_hinted_bytes(key, None, |val| {
-                  if val.is_expired() {
-                     let mut fresh = SmallStr::zeroed(byte_idx + 1);
-                     if value {
-                        fresh.as_bytes_mut()[byte_idx] |= 1 << bit_idx;
-                     }
-                     val.value = FyroDB::String(fresh);
-                     val.expires_ms = 0;
-                     return Ok(0u8);
-                  }
-                  match val.value.as_string_mut() {
-                     Some(s) => {
-                        s.ensure_len(byte_idx + 1);
-                        let bytes = s.as_bytes_mut();
-                        let old = (bytes[byte_idx] >> bit_idx) & 1;
-                        if value {
-                           bytes[byte_idx] |= 1 << bit_idx;
-                        } else {
-                           bytes[byte_idx] &= !(1 << bit_idx);
-                        }
-                        Ok(old)
-                     }
-                     None => Err("WRONGTYPE"),
-                  }
-               });
-               if let Some(r) = retry {
-                  return r;
-               }
-            }
+      if let Some(r) = self
+         .data
+         .update_with_hinted_bytes(key, None, &mut apply_bit)
+      {
+         return r;
+      }
+
+      loop {
+         let mut s = SmallStr::zeroed(byte_idx + 1);
+         if value {
+            s.as_bytes_mut()[byte_idx] |= 1 << bit_idx;
+         }
+         if self
+            .data
+            .insert_if_absent_bytes_hinted(key, None, StoreValue::string_small(s))
+         {
+            return Ok(0);
+         }
+         if let Some(r) = self
+            .data
+            .update_with_hinted_bytes(key, None, &mut apply_bit)
+         {
+            return r;
          }
       }
    }
@@ -328,9 +307,14 @@ impl Store {
                let common = buf.len().min(max_len);
                let (r_words, r_tail) = result[..common].split_at_mut(common & !7);
                let (b_words, b_tail) = buf[..common].split_at(common & !7);
-               for (r, b) in r_words.chunks_exact_mut(8).zip(b_words.chunks_exact(8)) {
-                  let rw = u64::from_ne_bytes(r.try_into().unwrap());
-                  let bw = u64::from_ne_bytes(b.try_into().unwrap());
+               for (r, b) in r_words
+                  .as_chunks_mut::<8>()
+                  .0
+                  .iter_mut()
+                  .zip(b_words.as_chunks::<8>().0.iter())
+               {
+                  let rw = u64::from_ne_bytes(*r);
+                  let bw = u64::from_ne_bytes(*b);
                   r.copy_from_slice(&(rw & bw).to_ne_bytes());
                }
                for (r, b) in r_tail.iter_mut().zip(b_tail.iter()) {
@@ -346,9 +330,14 @@ impl Store {
                let common = buf.len().min(max_len);
                let (r_words, r_tail) = result[..common].split_at_mut(common & !7);
                let (b_words, b_tail) = buf[..common].split_at(common & !7);
-               for (r, b) in r_words.chunks_exact_mut(8).zip(b_words.chunks_exact(8)) {
-                  let rw = u64::from_ne_bytes(r.try_into().unwrap());
-                  let bw = u64::from_ne_bytes(b.try_into().unwrap());
+               for (r, b) in r_words
+                  .as_chunks_mut::<8>()
+                  .0
+                  .iter_mut()
+                  .zip(b_words.as_chunks::<8>().0.iter())
+               {
+                  let rw = u64::from_ne_bytes(*r);
+                  let bw = u64::from_ne_bytes(*b);
                   r.copy_from_slice(&(rw | bw).to_ne_bytes());
                }
                for (r, b) in r_tail.iter_mut().zip(b_tail.iter()) {
@@ -361,9 +350,14 @@ impl Store {
                let common = buf.len().min(max_len);
                let (r_words, r_tail) = result[..common].split_at_mut(common & !7);
                let (b_words, b_tail) = buf[..common].split_at(common & !7);
-               for (r, b) in r_words.chunks_exact_mut(8).zip(b_words.chunks_exact(8)) {
-                  let rw = u64::from_ne_bytes(r.try_into().unwrap());
-                  let bw = u64::from_ne_bytes(b.try_into().unwrap());
+               for (r, b) in r_words
+                  .as_chunks_mut::<8>()
+                  .0
+                  .iter_mut()
+                  .zip(b_words.as_chunks::<8>().0.iter())
+               {
+                  let rw = u64::from_ne_bytes(*r);
+                  let bw = u64::from_ne_bytes(*b);
                   r.copy_from_slice(&(rw ^ bw).to_ne_bytes());
                }
                for (r, b) in r_tail.iter_mut().zip(b_tail.iter()) {
@@ -379,8 +373,13 @@ impl Store {
             let common = buf.len().min(max_len);
             let (r_words, r_tail) = result[..common].split_at_mut(common & !7);
             let (b_words, b_tail) = buf[..common].split_at(common & !7);
-            for (r, b) in r_words.chunks_exact_mut(8).zip(b_words.chunks_exact(8)) {
-               let bw = u64::from_ne_bytes(b.try_into().unwrap());
+            for (r, b) in r_words
+               .as_chunks_mut::<8>()
+               .0
+               .iter_mut()
+               .zip(b_words.as_chunks::<8>().0.iter())
+            {
+               let bw = u64::from_ne_bytes(*b);
                r.copy_from_slice(&(!bw).to_ne_bytes());
             }
             for (r, b) in r_tail.iter_mut().zip(b_tail.iter()) {

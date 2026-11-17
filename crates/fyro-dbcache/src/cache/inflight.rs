@@ -5,7 +5,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub(super) const FILL_WAIT_MS: u64 = 50;
-// Item 67: 64-shard striping reduces lock contention under concurrent cache fill stampedes.
 pub(super) const INFLIGHT_SHARDS: usize = 64;
 
 pub(super) type InflightShard = Mutex<HashMap<String, Arc<FillWait>, FixedState>>;

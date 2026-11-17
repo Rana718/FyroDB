@@ -16,6 +16,7 @@ pub struct Waiter {
    pub uid: u64,
 }
 
+type WaiterBucket = CachePadded<Mutex<HashMap<String, Vec<Waiter>>>>;
 const KEY_SHARDS: usize = 256;
 
 fn key_shard(key: &str) -> usize {
@@ -30,9 +31,8 @@ fn key_shard(key: &str) -> usize {
 pub struct BlockRegistry {
    /// Registered (key, waiter) pairs; lets `signal` skip the lock.
    waiting: AtomicUsize,
-   /// Sharded by key hash (Item 34): 256 cache-padded shards eliminate mutex contention
-   /// and false sharing during concurrent BLPOP/BRPOP producer/consumer streams.
-   keys: Box<[CachePadded<Mutex<HashMap<String, Vec<Waiter>>>>]>,
+   /// 256 cache-padded shards to eliminate contention during concurrent blocking ops.
+   keys: Box<[WaiterBucket]>,
 }
 
 impl Default for BlockRegistry {
@@ -82,8 +82,6 @@ impl BlockRegistry {
    /// first (each worker retries in wake order).
    #[inline]
    pub fn signal(&self, key: &str) {
-      // Kerrisk Ch. 30 & Troutwine Ch. 6: Acquire load synchronizes with registration fetch_add
-      // without extra clock cycles on x86-64 while preventing lost-wakeups under reordering.
       if self.waiting.load(Ordering::Acquire) == 0 {
          return;
       }

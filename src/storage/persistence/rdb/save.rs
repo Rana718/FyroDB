@@ -2,7 +2,6 @@ use super::*;
 
 fn write_record<W: Write>(w: &mut W, key: &str, val: &StoreValue) -> io::Result<()> {
    let ttl_ms = val.expires_ms;
-   // Item 61: Buffered contiguous header + monomorphized static dispatch (no dyn Write).
    let write_head = |w: &mut W, ty: u8| -> io::Result<()> {
       let mut head_buf = [0u8; 13];
       head_buf[0] = ty;

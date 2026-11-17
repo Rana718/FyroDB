@@ -54,22 +54,17 @@ impl Store {
       key: &str,
       members: &[&str],
    ) -> Result<Vec<Option<(f64, f64)>>, &'static str> {
-      match self.data.get_ref(key) {
-         None => Ok(vec![None; members.len()]),
-         Some(e) if e.is_expired() => Ok(vec![None; members.len()]),
-         Some(e) => match e.value.as_zset() {
-            Some(z) => Ok(members
-               .iter()
-               .map(|m| {
-                  z.get_score(m).map(|score| {
-                     let bits = score.to_bits();
-                     geohash_decode(bits)
-                  })
+      self.with_zset_ref(key, vec![None; members.len()], |z| {
+         members
+            .iter()
+            .map(|m| {
+               z.get_score(m).map(|score| {
+                  let bits = score.to_bits();
+                  geohash_decode(bits)
                })
-               .collect()),
-            None => Err("WRONGTYPE"),
-         },
-      }
+            })
+            .collect()
+      })
    }
 
    pub fn geodist(
@@ -79,46 +74,34 @@ impl Store {
       member2: &str,
       unit: GeoUnit,
    ) -> Result<Option<f64>, &'static str> {
-      match self.data.get_ref(key) {
-         None => Ok(None),
-         Some(e) if e.is_expired() => Ok(None),
-         Some(e) => match e.value.as_zset() {
-            Some(z) => {
-               let s1 = match z.get_score(member1) {
-                  Some(s) => s,
-                  None => return Ok(None),
-               };
-               let s2 = match z.get_score(member2) {
-                  Some(s) => s,
-                  None => return Ok(None),
-               };
-               let (lon1, lat1) = geohash_decode(s1.to_bits());
-               let (lon2, lat2) = geohash_decode(s2.to_bits());
-               let dist = haversine(lat1, lon1, lat2, lon2);
-               Ok(Some(unit.from_meters(dist)))
-            }
-            None => Err("WRONGTYPE"),
-         },
-      }
+      self.with_zset_ref(key, None, |z| {
+         let s1 = match z.get_score(member1) {
+            Some(s) => s,
+            None => return None,
+         };
+         let s2 = match z.get_score(member2) {
+            Some(s) => s,
+            None => return None,
+         };
+         let (lon1, lat1) = geohash_decode(s1.to_bits());
+         let (lon2, lat2) = geohash_decode(s2.to_bits());
+         let dist = haversine(lat1, lon1, lat2, lon2);
+         Some(unit.from_meters(dist))
+      })
    }
 
    pub fn geohash(&self, key: &str, members: &[&str]) -> Result<Vec<Option<String>>, &'static str> {
-      match self.data.get_ref(key) {
-         None => Ok(vec![None; members.len()]),
-         Some(e) if e.is_expired() => Ok(vec![None; members.len()]),
-         Some(e) => match e.value.as_zset() {
-            Some(z) => Ok(members
-               .iter()
-               .map(|m| {
-                  z.get_score(m).map(|score| {
-                     let bits = score.to_bits();
-                     encode_geohash_string(bits)
-                  })
+      self.with_zset_ref(key, vec![None; members.len()], |z| {
+         members
+            .iter()
+            .map(|m| {
+               z.get_score(m).map(|score| {
+                  let bits = score.to_bits();
+                  encode_geohash_string(bits)
                })
-               .collect()),
-            None => Err("WRONGTYPE"),
-         },
-      }
+            })
+            .collect()
+      })
    }
 
    pub fn geosearch(
@@ -137,56 +120,49 @@ impl Store {
          }
       };
 
-      match self.data.get_ref(key) {
-         None => Ok(vec![]),
-         Some(e) if e.is_expired() => Ok(vec![]),
-         Some(e) => match e.value.as_zset() {
-            Some(z) => {
-               let mut results: Vec<GeoResult> = Vec::new();
-               for entry in z.iter() {
-                  let (lon, lat) = geohash_decode(entry.score.to_bits());
-                  let dist = haversine(clat, clon, lat, lon);
-                  let in_range = match &query.shape {
-                     GeoShape::Radius(r, unit) => dist <= unit.to_meters(*r),
-                     GeoShape::Box(w, h, unit) => {
-                        let half_w = unit.to_meters(*w) / 2.0;
-                        let half_h = unit.to_meters(*h) / 2.0;
-                        let dx = haversine(clat, clon, clat, lon);
-                        let dy = haversine(clat, clon, lat, clon);
-                        dx <= half_w && dy <= half_h
-                     }
-                  };
-                  if in_range {
-                     results.push(GeoResult {
-                        member: entry.member.to_string(),
-                        dist,
-                        lon,
-                        lat,
-                        hash: entry.score.to_bits(),
-                     });
-                  }
+      self.with_zset_ref(key, vec![], |z| {
+         let mut results: Vec<GeoResult> = Vec::new();
+         for entry in z.iter() {
+            let (lon, lat) = geohash_decode(entry.score.to_bits());
+            let dist = haversine(clat, clon, lat, lon);
+            let in_range = match &query.shape {
+               GeoShape::Radius(r, unit) => dist <= unit.to_meters(*r),
+               GeoShape::Box(w, h, unit) => {
+                  let half_w = unit.to_meters(*w) / 2.0;
+                  let half_h = unit.to_meters(*h) / 2.0;
+                  let dx = haversine(clat, clon, clat, lon);
+                  let dy = haversine(clat, clon, lat, clon);
+                  dx <= half_w && dy <= half_h
                }
-               if query.asc {
-                  results.sort_by(|a, b| {
-                     a.dist
-                        .partial_cmp(&b.dist)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                  });
-               } else {
-                  results.sort_by(|a, b| {
-                     b.dist
-                        .partial_cmp(&a.dist)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                  });
-               }
-               if query.count > 0 && results.len() > query.count {
-                  results.truncate(query.count);
-               }
-               Ok(results)
+            };
+            if in_range {
+               results.push(GeoResult {
+                  member: entry.member.to_string(),
+                  dist,
+                  lon,
+                  lat,
+                  hash: entry.score.to_bits(),
+               });
             }
-            None => Err("WRONGTYPE"),
-         },
-      }
+         }
+         if query.asc {
+            results.sort_by(|a, b| {
+               a.dist
+                  .partial_cmp(&b.dist)
+                  .unwrap_or(std::cmp::Ordering::Equal)
+            });
+         } else {
+            results.sort_by(|a, b| {
+               b.dist
+                  .partial_cmp(&a.dist)
+                  .unwrap_or(std::cmp::Ordering::Equal)
+            });
+         }
+         if query.count > 0 && results.len() > query.count {
+            results.truncate(query.count);
+         }
+         results
+      })
    }
 
    pub fn geosearchstore(
@@ -285,7 +261,6 @@ pub struct GeoResult {
 
 #[inline(always)]
 fn spread26(x: u64) -> u64 {
-   // Item 41: Hardware BMI2 PDEP executes 26-bit Morton spread in 1 clock cycle.
    #[cfg(all(target_arch = "x86_64", target_feature = "bmi2"))]
    unsafe {
       core::arch::x86_64::_pdep_u64(x, 0x5555_5555_5555_5555)
@@ -318,8 +293,6 @@ pub(crate) fn geohash_encode(lon: f64, lat: f64) -> u64 {
    (spread26(ilon) << 1) | spread26(ilat)
 }
 
-// Item 42: Hardware BMI2 PEXT unpacks interleaved Morton coordinates in 2 CPU instructions
-// replacing the 52-iteration scalar while loop and 52 floating-point divisions.
 #[inline(always)]
 fn geohash_decode(bits: u64) -> (f64, f64) {
    const LAT_MIN: f64 = -85.05112878;
@@ -377,7 +350,8 @@ fn haversine(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
 
    let sin_half_dlat = (dlat * 0.5).sin();
    let sin_half_dlon = (dlon * 0.5).sin();
-   let a = sin_half_dlat * sin_half_dlat + lat1_r.cos() * lat2_r.cos() * sin_half_dlon * sin_half_dlon;
+   let a =
+      sin_half_dlat * sin_half_dlat + lat1_r.cos() * lat2_r.cos() * sin_half_dlon * sin_half_dlon;
    let c = 2.0 * a.sqrt().asin();
    EARTH_RADIUS * c
 }

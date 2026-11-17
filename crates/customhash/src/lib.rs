@@ -102,10 +102,7 @@ pub struct CustomMap<V> {
    observing_ptr: *const Flag,
    snap_active: AtomicBool,
    snap: std::sync::Arc<snap::SnapCtl<V>>,
-   /// Net insert/remove count, kept exact by the same bump calls that
-   /// update shard live counters: `is_full` reads one shared line instead
-   /// of scanning every shard, which mattered whenever a key ceiling was
-   /// configured. Reset exactly by `clear`.
+   /// Net insert/remove count across all shards.
    approx: CachePadded<AtomicUsize>,
 }
 
@@ -642,7 +639,12 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
    /// Bytes-key twin of the probe chain (audit S-2): probes by tag and
    /// validates the full key bytes.
    #[inline(always)]
-   pub fn probe_entry_fast_bytes(&self, key: &[u8], hash: u64, idx: usize) -> Option<*const Entry<V>> {
+   pub fn probe_entry_fast_bytes(
+      &self,
+      key: &[u8],
+      hash: u64,
+      idx: usize,
+   ) -> Option<*const Entry<V>> {
       let sf = unsafe { &*self.shard_fast.as_ptr().add(idx) };
       let (slots, mask) = sf.layout();
       let base = unsafe { slots.add((hash as usize) & mask) };
@@ -1142,13 +1144,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
    }
 
    #[inline(always)]
-   pub(crate) fn set_located_pinned_bytes(
-      &self,
-      key: &[u8],
-      h: u64,
-      idx: usize,
-      value: V,
-   ) -> bool {
+   pub(crate) fn set_located_pinned_bytes(&self, key: &[u8], h: u64, idx: usize, value: V) -> bool {
       let _write_epoch = self.write_epoch();
       let shard = unsafe { self.shards.get_unchecked(idx) };
       let is_new = shard.set_key_with_overwrite_bytes(key, h, value, true);
@@ -1559,9 +1555,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
       }
    }
 
-   /// One relaxed load; trivially false with no limit configured. The
-   /// approximate counter is exact (same bump events that drive the shard
-   /// live counters), so no re-check fallback is needed.
+   /// Returns true if the map has reached its configured key limit.
    #[inline(always)]
    pub fn is_full(&self) -> bool {
       self.max_keys != usize::MAX && self.approx.load(Ordering::Relaxed) >= self.max_keys
@@ -1745,12 +1739,9 @@ mod tests {
             let map = Arc::clone(&map);
             scope.spawn(move || {
                for _ in 0..20_000 {
-                  // update-then-create-if-missing, the INCR pattern
                   if map.update_with("counter", |v: &mut i64| *v += 1).is_none() {
                      let created = map.insert_if_absent("counter".into(), 1);
                      if !created {
-                        // Lost the create race; the increment still
-                        // must happen via a retried update.
                         let mut spins = 0;
                         while map.update_with("counter", |v| *v += 1).is_none() {
                            spins += 1;

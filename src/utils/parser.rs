@@ -44,12 +44,12 @@ const MAX_PREALLOC_PARTS: usize = 1024;
 /// instead of re-parsing from the start on every read.
 const RESUME_THRESHOLD: usize = 64;
 
-/// Parse a 1–8 digit length (the digits of a `$<len>\r\n` prefix) at `p`,
-/// returning the value and the width of the digits plus CRLF. The caller
-/// guarantees `avail` readable bytes; anything else falls back to the generic
-/// parser.
+/// Parse a 1–8 digit length at `p`, returning the value and consumed byte width.
+///
+/// # Safety
+/// `p` must point to at least `avail` readable bytes.
 #[inline(always)]
-pub fn parse_len_le4(p: *const u8, avail: usize) -> Option<(usize, usize)> {
+pub unsafe fn parse_len_le4(p: *const u8, avail: usize) -> Option<(usize, usize)> {
    if avail < 3 {
       return None;
    }
@@ -217,9 +217,7 @@ impl RespParser {
       }
    }
 
-   /// Spare capacity for a socket read. The region is uninitialised; the
-   /// caller must publish exactly the bytes the kernel filled with
-   /// [`did_fill`](Self::did_fill).
+   /// Spare capacity for socket read, published via `did_fill`.
    #[inline]
    pub fn read_spare(&mut self) -> (*mut u8, usize) {
       self.make_room();
@@ -351,16 +349,17 @@ impl RespParser {
       if unsafe { *buf.add(p_val_header) } != b'$' {
          return None;
       }
-      let (val_len, val_hdr) = match unsafe { parse_len_le4(buf.add(p_val_header + 1), avail - (p_val_header + 1)) } {
-         Some(r) => r,
-         None => {
-            return if avail < p_val_header + 12 {
-               Some(ParseResult::Incomplete)
-            } else {
-               None
-            };
-         }
-      };
+      let (val_len, val_hdr) =
+         match unsafe { parse_len_le4(buf.add(p_val_header + 1), avail - (p_val_header + 1)) } {
+            Some(r) => r,
+            None => {
+               return if avail < p_val_header + 12 {
+                  Some(ParseResult::Incomplete)
+               } else {
+                  None
+               };
+            }
+         };
       let val_offset = p_val_header + 1 + val_hdr;
 
       let total_len = val_offset + val_len + 2;
@@ -494,7 +493,6 @@ impl RespParser {
          return None;
       }
 
-      // Check EXPIRE command
       let exp_buf = unsafe { buf.add(set_len) };
       let w0 = unsafe { std::ptr::read_unaligned(exp_buf as *const u64) };
       if w0 != T3_DOLLAR6 {
@@ -530,7 +528,9 @@ impl RespParser {
       if exp_rem < 1 + ttl_hdr + ttl_len + 2 {
          return None;
       }
-      if unsafe { std::ptr::read_unaligned(exp_buf.add(ttl_val_offset + ttl_len) as *const u16) } != CRLF {
+      if unsafe { std::ptr::read_unaligned(exp_buf.add(ttl_val_offset + ttl_len) as *const u16) }
+         != CRLF
+      {
          return None;
       }
       let ttl_bytes = unsafe { std::slice::from_raw_parts(exp_buf.add(ttl_val_offset), ttl_len) };
@@ -979,7 +979,6 @@ impl RespParser {
       }
       let cmd_ptr = unsafe { buf.add(8) };
 
-      // Parse element 2
       let p2 = unsafe { buf.add(c1_total) };
       if unsafe { *p2 } != b'$' {
          return None;
@@ -1012,7 +1011,6 @@ impl RespParser {
       }
       let e2_ptr = unsafe { buf.add(e2_data_offset) };
 
-      // Parse element 3
       let p3 = unsafe { buf.add(e2_total) };
       if unsafe { *p3 } != b'$' {
          return None;
@@ -1045,7 +1043,6 @@ impl RespParser {
       }
       let e3_ptr = unsafe { buf.add(e3_data_offset) };
 
-      // Parse element 4
       let p4 = unsafe { buf.add(e3_total) };
       if unsafe { *p4 } != b'$' {
          return None;
@@ -1118,7 +1115,6 @@ impl RespParser {
       }
       let cmd_ptr = unsafe { buf.add(8) };
 
-      // Parse element 2
       let p2 = unsafe { buf.add(c1_total) };
       if unsafe { *p2 } != b'$' {
          return None;
@@ -1151,7 +1147,6 @@ impl RespParser {
       }
       let e2_ptr = unsafe { buf.add(e2_data_offset) };
 
-      // Parse element 3
       let p3 = unsafe { buf.add(e2_total) };
       if unsafe { *p3 } != b'$' {
          return None;
@@ -1184,7 +1179,6 @@ impl RespParser {
       }
       let e3_ptr = unsafe { buf.add(e3_data_offset) };
 
-      // Parse element 4
       let p4 = unsafe { buf.add(e3_total) };
       if unsafe { *p4 } != b'$' {
          return None;
@@ -1217,7 +1211,6 @@ impl RespParser {
       }
       let e4_ptr = unsafe { buf.add(e4_data_offset) };
 
-      // Parse element 5
       let p5 = unsafe { buf.add(e4_total) };
       if unsafe { *p5 } != b'$' {
          return None;
@@ -1571,9 +1564,7 @@ impl RespParser {
          let mut tokens = 0usize;
          let mut i = s;
          while i < e {
-            while i < e
-               && (self.rbuf[i] == b' ' || self.rbuf[i] == b'\t')
-            {
+            while i < e && (self.rbuf[i] == b' ' || self.rbuf[i] == b'\t') {
                i += 1;
             }
             if i >= e {
@@ -1599,9 +1590,7 @@ impl RespParser {
          let base = unsafe { self.rbuf.as_ptr().add(s) };
          i = s;
          while i < e {
-            while i < e
-               && (self.rbuf[i] == b' ' || self.rbuf[i] == b'\t')
-            {
+            while i < e && (self.rbuf[i] == b' ' || self.rbuf[i] == b'\t') {
                i += 1;
             }
             if i >= e {
@@ -1611,7 +1600,9 @@ impl RespParser {
             while i < e && self.rbuf[i] != b' ' && self.rbuf[i] != b'\t' {
                i += 1;
             }
-            self.parts_raw.push((unsafe { base.add(tok_start - s) }, i - tok_start));
+            self
+               .parts_raw
+               .push((unsafe { base.add(tok_start - s) }, i - tok_start));
          }
          self.pos = e + 2;
          return ParseResult::Complete;
@@ -1803,7 +1794,7 @@ fn parse_usize(s: &[u8], max: usize) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
-   use super::{parse_len_le4, ParseResult, RespParser};
+   use super::{ParseResult, RespParser, parse_len_le4};
 
    fn feed(parser: &mut RespParser, bytes: &[u8]) {
       let mut offset = 0;
@@ -2043,7 +2034,10 @@ mod tests {
          (b"16777216\r\n", Some((16777216, 10))),
          (b"99999999\r\n", Some((99999999, 10))),
       ] {
-         assert_eq!(parse_len_le4(input.as_ptr(), input.len()), expected);
+         assert_eq!(
+            unsafe { parse_len_le4(input.as_ptr(), input.len()) },
+            expected
+         );
       }
    }
 }

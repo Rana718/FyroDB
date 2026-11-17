@@ -15,7 +15,6 @@ struct ReadState {
 thread_local! {
    static READING: Cell<u64> = const { Cell::new(0) };
    static WRITING: Cell<LocalWrite> = const { Cell::new((0, 0)) };
-   // Item 22: Fixed inline stack avoids RefCell borrow checks and heap Vec allocations.
    static OTHER_WRITES: Cell<[LocalWrite; 4]> = const { Cell::new([(0, 0); 4]) };
    static WRITE_MARKER: Cell<usize> = const { Cell::new(0) };
 }
@@ -26,7 +25,7 @@ const WRITE_STRIPES: usize = 64;
 pub(crate) struct Access {
    readers: CachePadded<ReadState>,
    writers: Box<[CachePadded<AtomicUsize>]>,
-   active_writers: CachePadded<AtomicU64>,
+   active_writers: CachePadded<AtomicUsize>,
 }
 
 #[must_use]
@@ -56,7 +55,7 @@ impl Access {
             id,
          }),
          writers,
-         active_writers: CachePadded::new(AtomicU64::new(0)),
+         active_writers: CachePadded::new(AtomicUsize::new(0)),
       }
    }
 
@@ -65,9 +64,7 @@ impl Access {
       READING.get() == self.readers.id
    }
 
-   /// Deterministic per (thread, map) stripe: nested writes on one map
-   /// always hit the same slot without per-thread lookup tables. The
-   /// marker is one cold counter fetch per thread.
+   /// Deterministic per (thread, map) stripe.
    #[inline(always)]
    fn write_stripe(&self) -> usize {
       let marker = WRITE_MARKER.with(|m| {
@@ -88,12 +85,10 @@ impl Access {
       if READING.get() != 0 {
          return None;
       }
-      // Check active writers bitmask with in-cache relaxed load (1 cycle, 0 bus lock)
       if self.active_writers.load(Ordering::Relaxed) != 0 {
          return None;
       }
-      // The reader registers before re-checking stripes: the SeqCst RMW
-      // plus check form the Dekker handshake — whichever side registers second observes the other.
+      // Dekker handshake against writer registration.
       self.readers.count.fetch_add(1, Ordering::SeqCst);
       if self.active_writers.load(Ordering::SeqCst) != 0 {
          self.readers.count.fetch_sub(1, Ordering::Release);
@@ -128,13 +123,13 @@ impl Access {
             // Stripe-isolated write admission: each core updates its own cache line exclusively.
             let stripe_idx = self.write_stripe();
             let stripe = &self.writers[stripe_idx];
-            let prev = stripe.fetch_add(1, Ordering::SeqCst);
-            if prev == 0 {
-               self.active_writers.fetch_or(1u64 << (stripe_idx % 64), Ordering::SeqCst);
-            }
+            stripe.fetch_add(1, Ordering::SeqCst);
+            self.active_writers.fetch_add(1, Ordering::SeqCst);
             let mut spins = 0;
             // TTAS with pause backoff: check relaxed in-cache before forcing SeqCst bus sync
-            while self.readers.count.load(Ordering::Relaxed) != 0 || self.readers.count.load(Ordering::SeqCst) != 0 {
+            while self.readers.count.load(Ordering::Relaxed) != 0
+               || self.readers.count.load(Ordering::SeqCst) != 0
+            {
                if spins < 1024 {
                   spins += 1;
                   std::hint::spin_loop();
@@ -211,9 +206,8 @@ impl Drop for WriteEpochGuard<'_> {
       if last {
          let stripe_idx = self.access.write_stripe();
          let stripe = &self.access.writers[stripe_idx];
-         if stripe.fetch_sub(1, Ordering::SeqCst) == 1 {
-            self.access.active_writers.fetch_and(!(1u64 << (stripe_idx % 64)), Ordering::SeqCst);
-         }
+         stripe.fetch_sub(1, Ordering::SeqCst);
+         self.access.active_writers.fetch_sub(1, Ordering::SeqCst);
       }
    }
 }

@@ -4,8 +4,8 @@ use mio::Waker;
 use parking_lot::Mutex;
 use smallvec::SmallVec;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 #[path = "signal.rs"]
 mod signal;
@@ -118,23 +118,21 @@ impl WorkerNotifier {
       self.worker_index
    }
 
+   #[allow(clippy::collapsible_if)]
    #[inline]
    pub fn notify(&self, token: usize) {
       self.pending.push(token);
-      if !signal::arm(&self.wake_pending) {
-         if self.in_poll.load(Ordering::Relaxed) {
-            let _ = self.waker.wake();
-         }
+      if !signal::arm(&self.wake_pending) && self.in_poll.load(Ordering::Relaxed) {
+         let _ = self.waker.wake();
       }
    }
 
+   #[allow(clippy::collapsible_if)]
    #[inline]
    pub fn complete(&self, completion: Completion) {
       self.completions.push(completion);
-      if !signal::arm(&self.completion_pending) {
-         if self.in_poll.load(Ordering::Relaxed) {
-            let _ = self.waker.wake();
-         }
+      if !signal::arm(&self.completion_pending) && self.in_poll.load(Ordering::Relaxed) {
+         let _ = self.waker.wake();
       }
    }
 
@@ -150,6 +148,7 @@ impl WorkerNotifier {
       }
    }
 
+   #[allow(clippy::collapsible_if)]
    #[inline]
    pub fn notify_fanout(&self, entry: FanEntry) {
       let charge = entry.charge();
@@ -166,11 +165,8 @@ impl WorkerNotifier {
          return;
       }
       self.fanout.push(entry);
-      // Items 9 & 20: Avoid kernel eventfd syscall write when target worker is active in userspace loop
-      if !signal::arm(&self.fanout_pending) {
-         if self.in_poll.load(Ordering::Relaxed) {
-            let _ = self.waker.wake();
-         }
+      if !signal::arm(&self.fanout_pending) && self.in_poll.load(Ordering::Relaxed) {
+         let _ = self.waker.wake();
       }
    }
 
@@ -186,9 +182,7 @@ impl WorkerNotifier {
    ) -> usize {
       let mut seen = 0usize;
       let mut bytes = 0usize;
-      // Publishers and this drainer RMW the same `fanout_bytes` line; fold
-      // the consumer's charges into one release per drain instead of one
-      // RMW per entry.
+      // Fold freed byte charges into one atomic release per drain.
       let mut freed = 0usize;
       macro_rules! settle_return {
          () => {

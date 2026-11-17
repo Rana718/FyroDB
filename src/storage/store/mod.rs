@@ -1,8 +1,8 @@
 use super::value::StoreValue;
 use crossbeam_utils::CachePadded;
 use customhash::CustomMap;
-use std::sync::Arc;
 use parking_lot::Mutex;
+use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
@@ -157,18 +157,17 @@ impl Store {
    pub fn with_script<R>(&self, sha1: &str, f: impl FnOnce(&str) -> R) -> Option<R> {
       let mut buf = [0u8; 40];
       let norm = crate::scripting::normalize_sha1(sha1, &mut buf);
-      // Per-thread snapshot: in steady state an EVALSHA pays zero atomics
-      // (one epoch compare + one pointer compare); the shared RwLock is
-      // taken only on epoch change or first use.
+      // Per-thread snapshot to avoid RwLock contention in steady-state EVALSHA.
       let mut f = Some(f);
       let fast = SCRIPT_TL.try_with(|cell| {
          let mut slot = cell.try_borrow_mut().ok()?;
          let epoch = self.script_epoch.load(std::sync::atomic::Ordering::Acquire);
-         if let Some((cached_epoch, key, script)) = slot.as_ref() {
-            if *cached_epoch == epoch && key.as_str() == norm {
-               let script = Arc::clone(script);
-               return Some((f.take().unwrap())(script.as_ref()));
-            }
+         if let Some((cached_epoch, key, script)) = slot.as_ref()
+            && *cached_epoch == epoch
+            && key.as_str() == norm
+         {
+            let script = Arc::clone(script);
+            return Some((f.take().unwrap())(script.as_ref()));
          }
          let script = {
             let read = self.script_cache.read();
@@ -196,16 +195,15 @@ impl Store {
       SCRIPT_TL.with(|cell| {
          let mut slot = cell.borrow_mut();
          let epoch = self.script_epoch.load(std::sync::atomic::Ordering::Acquire);
-         if let Some((cached_epoch, key, _)) = slot.as_ref() {
-            if *cached_epoch == epoch && key.as_str() == norm {
-               return true;
-            }
+         if let Some((cached_epoch, key, _)) = slot.as_ref()
+            && *cached_epoch == epoch
+            && key.as_str() == norm
+         {
+            return true;
          }
          let read = self.script_cache.read();
          let hit = read.contains_key(norm);
-         if hit
-            && let Some(script) = read.get(norm).map(Arc::clone)
-         {
+         if hit && let Some(script) = read.get(norm).map(Arc::clone) {
             *slot = Some((epoch, norm.to_owned(), script));
          }
          hit

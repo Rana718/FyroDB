@@ -154,7 +154,9 @@ impl ZSetData {
       }
       if ci > self.chunks.len() / 2 {
          let tail_len: usize = self.chunks[ci + 1..].iter().map(Vec::len).sum();
-         self.len.saturating_sub(tail_len + (self.chunks[ci].len().saturating_sub(ei)))
+         self
+            .len
+            .saturating_sub(tail_len + (self.chunks[ci].len().saturating_sub(ei)))
       } else {
          self.chunks[..ci].iter().map(Vec::len).sum::<usize>() + ei
       }
@@ -221,9 +223,13 @@ impl ZSetData {
                return None;
             }
             if self.chunks.len() == 1 {
-               self.chunks[0].iter().find(|e| e.member.as_bytes() == m_bytes).map(|e| e.score)
+               self.chunks[0]
+                  .iter()
+                  .find(|e| e.member.as_bytes() == m_bytes)
+                  .map(|e| e.score)
             } else {
-               self.chunks
+               self
+                  .chunks
                   .iter()
                   .flatten()
                   .find(|e| e.member.as_bytes() == m_bytes)
@@ -240,7 +246,10 @@ impl ZSetData {
             return None;
          }
          if self.chunks.len() == 1 {
-            return self.chunks[0].iter().position(|e| e.member.as_bytes() == m_bytes).map(|ei| (0, ei));
+            return self.chunks[0]
+               .iter()
+               .position(|e| e.member.as_bytes() == m_bytes)
+               .map(|ei| (0, ei));
          }
          for (ci, c) in self.chunks.iter().enumerate() {
             if let Some(ei) = c.iter().position(|e| e.member.as_bytes() == m_bytes) {

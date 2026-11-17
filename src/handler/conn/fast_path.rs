@@ -167,8 +167,6 @@ pub(super) fn cmd_id(cmd: &[u8]) -> CmdId {
 #[inline(always)]
 fn dispatch_get_one(conn: &mut Conn<'_>, key_part: (*const u8, usize)) {
    let (hint, entry) = conn.hint_for(key_part);
-   // Audit §6.2: large values send directly from the entry bytes while
-   // holding the read guard — no wbuf payload memcpy.
    let key = unsafe { part_bytes(key_part) };
    if get_direct_send(conn, key, hint, entry) {
       return;
@@ -178,17 +176,11 @@ fn dispatch_get_one(conn: &mut Conn<'_>, key_part: (*const u8, usize)) {
    if out.capacity().saturating_sub(out.len()) < needed {
       out.reserve(needed.max(out.capacity()));
    }
-   // Audit S-2: bytes-native key — binary keys GET identically.
    if !conn.store.get_to_buf_auto_bytes(key, hint, entry, out) {
       out.extend_from_slice(b"$-1\r\n");
    }
 }
 
-/// Audit §6.2: single large GET sent straight from the entry bytes under
-/// the read guard via `write_vectored` — kills the wbuf payload memcpy.
-/// Falls back to `false` (the caller's wbuf path) for anything the fast
-/// shape does not cover: pending unsent wbuf bytes, small values,
-/// non-strings, misses, expired keys.
 fn get_direct_send(
    conn: &mut Conn<'_>,
    key: &[u8],
@@ -197,7 +189,6 @@ fn get_direct_send(
 ) -> bool {
    use std::io::IoSlice;
 
-   // Reply ordering: only safe when nothing unsent is queued ahead of us.
    if conn.write_offset < conn.parser.wbuf.len() {
       return false;
    }
@@ -231,20 +222,15 @@ fn get_direct_send(
       }
       return false;
    }
-   let Some(s) = val.value.as_string() else { return false };
+   let Some(s) = val.value.as_string() else {
+      return false;
+   };
    let payload = s.as_bytes();
    if payload.len() < super::bulk::DIRECT_SEND_MIN {
       return false;
    }
-   let mut d20 = [0u8; 20];
-   let digits = crate::utils::int_format::write_usize_to(&mut d20, payload.len());
    let mut hdr = [0u8; 24];
-   hdr[0] = b'$';
-   hdr[1..1 + digits.len()].copy_from_slice(digits.as_bytes());
-   let hl = 1 + digits.len();
-   hdr[hl] = b'\r';
-   hdr[hl + 1] = b'\n';
-   let hl = hl + 2;
+   let hl = crate::utils::resp::format_bulk_header(payload.len(), &mut hdr);
    let total = hl + payload.len() + 2;
 
    let mut written = 0;
@@ -254,7 +240,6 @@ fn get_direct_send(
       IoSlice::new(b"\r\n"),
    ];
    let mut pending = &mut slices[..];
-   // Items 10 & 11: Eager drain loop for large GETs - loop while socket accepts writes.
    for _ in 0..32 {
       if pending.is_empty() {
          break;
@@ -279,7 +264,6 @@ fn get_direct_send(
       return true;
    }
 
-   // Partial write: reuse existing wbuf allocation (write_offset 0) instead of allocating fresh Vec.
    conn.parser.wbuf.clear();
    conn.parser.wbuf.reserve(total - written);
    let mut pos = written;
@@ -301,9 +285,6 @@ fn self_parser_wbuf_clear(conn: &mut Conn<'_>) {
    conn.write_offset = 0;
 }
 
-/// Pointer-identity first: two raw slices into the same read buffer with
-/// equal length are equal without a memcmp; only differing pointers pay
-/// the content compare.
 #[inline(always)]
 fn same_parts(a: &[u8], b: &[u8]) -> bool {
    a.len() == b.len() && (std::ptr::eq(a.as_ptr(), b.as_ptr()) || a == b)
@@ -327,22 +308,15 @@ fn dispatch_repeated_get<const STREAM_IO: bool>(conn: &mut Conn<'_>, key: &[u8],
    let out = &mut conn.parser.wbuf;
    let start = out.len();
    if !conn.store.get_to_buf_hinted_bytes(key, None, out) {
-      // Audit S-2: binary keys are valid — a miss is a nil reply.
       out.extend_from_slice(b"$-1\r\n");
    }
    let reply_len = out.len() - start;
    #[cfg(not(feature = "io-uring"))]
-   if STREAM_IO
-      && conn.store.worker_capacity() > 1
-      && reply_len >= super::bulk::MIN_STREAM_BYTES
-   {
+   if STREAM_IO && conn.store.worker_capacity() > 1 && reply_len >= super::bulk::MIN_STREAM_BYTES {
       super::bulk::send_repeated(&mut conn.stream, out, &mut conn.write_offset, start, count);
       return;
    }
-   // Audit §4.4 & Herlihy Ch. 7: buffer the replicated reply up to the ceiling.
-   // Past the cap, repeat into wbuf in batches up to REPEAT_REPLY_CAP
-   // using the already formatted reply slice instead of redundantly re-probing the hash table.
-   if reply_len.saturating_mul(count as usize) <= REPEAT_REPLY_CAP {
+   if reply_len.saturating_mul(count) <= REPEAT_REPLY_CAP {
       crate::utils::resp::repeat_reply(out, start, count);
    } else {
       let single_reply = out[start..].to_vec();
@@ -359,7 +333,6 @@ fn dispatch_repeated_get<const STREAM_IO: bool>(conn: &mut Conn<'_>, key: &[u8],
    }
 }
 
-/// Ceiling for the buffered repeated-GET reply (audit §4.4).
 const REPEAT_REPLY_CAP: usize = 16 * 1024 * 1024;
 
 #[inline(never)]
@@ -435,24 +408,19 @@ fn dispatch_get_batch<const STREAM_IO: bool>(
    conn
       .store
       .prefetch_slots(&keys[..count], &mut hashes[..count], &mut tables[..count]);
-   // A writer registered elsewhere can make the first epoch attempt fail;
-   // the slot prefetch just took microseconds, so retry once before
-   // committing the whole batch to per-entry read guards.
-   let read_epoch = if read_epoch.is_none() && read_only && (count >= 4 || count >= READ_EPOCH_MIN) {
+   // Retry read epoch once before falling back to per-entry guards.
+   let read_epoch = if read_epoch.is_none() && read_only && (count >= 4 || count >= READ_EPOCH_MIN)
+   {
       store.data.try_read_epoch()
    } else {
       read_epoch
    };
-   conn.store.probe_and_prefetch_entries(
-      &tables[..count],
-      &hashes[..count],
-      &mut entries[..count],
-   );
+   conn
+      .store
+      .probe_and_prefetch_entries(&tables[..count], &hashes[..count], &mut entries[..count]);
    let first_payload_len = if let Some(epoch) = read_epoch.as_ref() {
       unsafe { store.string_payload_len_epoch(hashes[0], entries[0], epoch) }
    } else {
-      // Below READ_EPOCH_MIN: peek the first entry under its own guard so
-      // large-value pipelines still reach the zero-copy stream path.
       unsafe { store.string_payload_len_unguarded(hashes[0], entries[0]) }
    };
    #[cfg(not(feature = "io-uring"))]
@@ -495,13 +463,9 @@ fn dispatch_get_batch<const STREAM_IO: bool>(
    }
    let mut i = 0;
    while i < count {
-      // Bound wbuf growth (OOM hardening): a deep batch of large replies
-      // accumulated per connection OOM'd the process (16 conns x P16 x
-      // 1MB = ~4 GB of pending wbuf). Flush to the socket when the batch
-      // buffer exceeds the cap; do_write appends are order-preserving.
       if conn.parser.wbuf.len() >= GET_BATCH_FLUSH_BYTES {
          if !conn.do_write() {
-            return; // connection dead — outer loop handles cleanup
+            return;
          }
       }
       if prefetch_payloads
@@ -516,16 +480,25 @@ fn dispatch_get_batch<const STREAM_IO: bool>(
       }
       let run_len = end - i;
       let start_offset = conn.parser.wbuf.len();
-      // process_buffered's epoch guard protects the prefetched entry.
       let found = unsafe {
          if let Some(epoch) = &read_epoch {
-            store.get_to_buf_epoch_entry_bytes(keys[i], hashes[i], entries[i].cast(), epoch, &mut conn.parser.wbuf)
+            store.get_to_buf_epoch_entry_bytes(
+               keys[i],
+               hashes[i],
+               entries[i].cast(),
+               epoch,
+               &mut conn.parser.wbuf,
+            )
          } else {
-            store.get_to_buf_fast_entry_bytes(keys[i], hashes[i], entries[i].cast(), &mut conn.parser.wbuf)
+            store.get_to_buf_fast_entry_bytes(
+               keys[i],
+               hashes[i],
+               entries[i].cast(),
+               &mut conn.parser.wbuf,
+            )
          }
       };
       if !found {
-         // Audit S-2: binary keys are valid keys — a miss is a nil reply.
          conn.parser.wbuf.extend_from_slice(b"$-1\r\n");
       }
       if run_len > 1 {
@@ -535,7 +508,6 @@ fn dispatch_get_batch<const STREAM_IO: bool>(
    }
 }
 
-/// Audit OOM hardening: wbuf flush threshold for large batch GET replies.
 const GET_BATCH_FLUSH_BYTES: usize = 8 * 1024 * 1024;
 
 #[inline(always)]
@@ -546,12 +518,9 @@ fn dispatch_set_one(
 ) {
    let (hint, entry) = conn.hint_for(key_part);
    let out = &mut conn.parser.wbuf;
-   // Audit S-2: bytes-native key and value — binary keys and payloads
-   // take the same fast in-place overwrite.
    let key = unsafe { part_bytes(key_part) };
    let bytes = unsafe { part_bytes(value_part) };
-   conn.store
-      .set_string_auto_bytes(key, hint, entry, bytes, 0);
+   conn.store.set_string_auto_bytes(key, hint, entry, bytes, 0);
    if conn.store.has_replication() {
       conn.store.record_live_string(key, bytes, 0);
    }
@@ -568,7 +537,6 @@ pub(super) fn dispatch_set_run(
       dispatch_set_one(conn, first_key, first_val);
       return;
    }
-   // Item 33: Align batch size with 256 to prevent premature partial socket flushes.
    if first_val.1 >= 8192 {
       dispatch_set_batch::<64, true>(conn, first_key, first_val);
    } else {
@@ -717,8 +685,6 @@ fn dispatch_set_batch<const BATCH: usize, const STREAMING: bool>(
 
       if !updated {
          for k in i..end {
-            // Audit S-2: keys are bytes-native — binary keys insert and
-            // overwrite through the same fast paths.
             let key_bytes = keys[k];
             let val_bytes = unsafe { std::slice::from_raw_parts(vals[k].0, vals[k].1) };
             if entries[k].is_null() && !conn.store.has_replication() {
@@ -740,9 +706,13 @@ fn dispatch_set_batch<const BATCH: usize, const STREAMING: bool>(
                   store.set_string_fast_bytes(key_bytes, hashes[k], val_bytes);
                }
             } else {
-               conn
-                  .store
-                  .set_string_auto_bytes(key_bytes, Some(hashes[k]), entries[k], val_bytes, 0);
+               conn.store.set_string_auto_bytes(
+                  key_bytes,
+                  Some(hashes[k]),
+                  entries[k],
+                  val_bytes,
+                  0,
+               );
                if conn.store.has_replication() {
                   conn.store.record_current_value_bytes(key_bytes);
                }
@@ -751,8 +721,6 @@ fn dispatch_set_batch<const BATCH: usize, const STREAMING: bool>(
       }
       i = end;
    }
-   // S-2: keys are bytes-native, so the batch cannot fail on encoding —
-   // every command replies +OK (matching the sequential SET semantics).
    unsafe {
       out.set_len(old_len + count * 5);
       std::ptr::copy_nonoverlapping(OK_BLOCK.as_ptr(), out.as_mut_ptr().add(old_len), count * 5);
@@ -1173,7 +1141,6 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
             return;
          }
          CmdId::Del if raw.len() == 2 => {
-            // Audit S-2: bytes-native key.
             let key = unsafe { part_bytes(raw[1]) };
             crate::utils::resp::write_boolean(&mut conn.parser.wbuf, conn.store.del_bytes(key));
             return;
@@ -1217,7 +1184,6 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
          }
          CmdId::Incr if raw.len() == 2 => {
             let out = &mut conn.parser.wbuf;
-            // Audit S-2: bytes-native key.
             let key = unsafe { part_bytes(raw[1]) };
             match conn.store.incr_bytes(key) {
                Ok(n) => {
@@ -1235,10 +1201,10 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
             let Some(key) = part_str(out, raw[1]) else {
                return;
             };
-            // Pop into per-connection scratch so the RESP reply is built
-            // after the entry lock is released (shorter critical section
-            // for contended shared-queue keys).
-            let popped = match conn.store.pop_one_to_scratch(key, true, &mut conn.pop_scratch) {
+            let popped = match conn
+               .store
+               .pop_one_to_scratch(key, true, &mut conn.pop_scratch)
+            {
                Ok(popped) => popped,
                Err(_) => {
                   crate::utils::resp::write_wrong_type(out);
@@ -1260,7 +1226,10 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
             let Some(key) = part_str(out, raw[1]) else {
                return;
             };
-            let popped = match conn.store.pop_one_to_scratch(key, false, &mut conn.pop_scratch) {
+            let popped = match conn
+               .store
+               .pop_one_to_scratch(key, false, &mut conn.pop_scratch)
+            {
                Ok(popped) => popped,
                Err(_) => {
                   crate::utils::resp::write_wrong_type(out);
@@ -1405,7 +1374,6 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
          }
          CmdId::Expire if raw.len() == 3 => {
             let out = &mut conn.parser.wbuf;
-            // Audit S-2: bytes-native key.
             let key = unsafe { part_bytes(raw[1]) };
             let Some(secs) = part_str(out, raw[2]) else {
                return;
@@ -1705,8 +1673,9 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
          };
          if raw.len() == 3 {
             let bytes = unsafe { part_bytes(raw[2]) };
-            conn.store.set_string_auto_bytes(key.as_bytes(), hint, entry, bytes, 0);
-            // Item 31: Omit second hash probe for replication/AOF record.
+            conn
+               .store
+               .set_string_auto_bytes(key.as_bytes(), hint, entry, bytes, 0);
             if conn.store.has_replication() {
                conn.store.record_live_string(key.as_bytes(), bytes, 0);
             }
@@ -1726,7 +1695,6 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
          return;
       }
       CmdId::Del if raw.len() == 2 => {
-         // Audit S-2: bytes-native key.
          let key = unsafe { part_bytes(raw[1]) };
          if conn.store.del_bytes(key) {
             conn.parser.wbuf.extend_from_slice(b":1\r\n");
@@ -1829,7 +1797,10 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
             }
          };
          if popped {
-            crate::utils::resp::write_bulk_bytes(&mut conn.parser.wbuf, conn.pop_scratch.as_bytes());
+            crate::utils::resp::write_bulk_bytes(
+               &mut conn.parser.wbuf,
+               conn.pop_scratch.as_bytes(),
+            );
             if store.has_replication() {
                store.record_current_value(key);
             }
@@ -1852,7 +1823,10 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
             }
          };
          if popped {
-            crate::utils::resp::write_bulk_bytes(&mut conn.parser.wbuf, conn.pop_scratch.as_bytes());
+            crate::utils::resp::write_bulk_bytes(
+               &mut conn.parser.wbuf,
+               conn.pop_scratch.as_bytes(),
+            );
             if store.has_replication() {
                store.record_current_value(key);
             }

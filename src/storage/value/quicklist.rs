@@ -270,7 +270,6 @@ impl QuickList {
       self.len += 1;
    }
 
-   // Items 44 & 45: Avoid chunk deallocation/reallocation churn and provide zero-copy SmallStr pops.
    pub fn pop_front_with<R>(&mut self, f: impl FnOnce(&str) -> R) -> Option<R> {
       let (r, empty) = {
          let c = self.chunks.front_mut()?;

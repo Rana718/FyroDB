@@ -75,22 +75,14 @@ pub fn set(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
       });
 
       match result {
-         Some((true, old_val)) => {
+         Some((did_set, old_val)) => {
             if get {
                match old_val {
                   Some(s) => s.write_resp(out),
                   None => resp::write_nil(out),
                }
-            } else {
+            } else if did_set {
                resp::write_ok(out);
-            }
-         }
-         Some((false, old_val)) => {
-            if get {
-               match old_val {
-                  Some(s) => s.write_resp(out),
-                  None => resp::write_nil(out),
-               }
             } else {
                resp::write_nil(out);
             }
@@ -129,20 +121,29 @@ pub fn setnx(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
    }
 }
 
-pub fn setex(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
-   let [_, key, secs, value] = parts else {
-      return resp::write_wrong_args(out, "setex");
-   };
-   let s = parse_int!(out, secs, u64);
-   if s == 0 {
-      return resp::write_err(out, "invalid expire time in 'setex' command");
-   }
-   let Some(exp) = expiry_from_secs(s) else {
-      return resp::write_err(out, "invalid expire time in 'setex' command");
+#[inline]
+fn set_with_expiry(
+   store: &Store,
+   out: &mut Vec<u8>,
+   cmd: &'static str,
+   key: &str,
+   time_str: &str,
+   value: &str,
+   calc_expiry: fn(u64) -> Option<u64>,
+) {
+   let t = parse_int!(out, time_str, u64);
+   let exp = if t != 0 { calc_expiry(t) } else { None };
+   let Some(expires_ms) = exp else {
+      let err_msg = if cmd == "setex" {
+         "invalid expire time in 'setex' command"
+      } else {
+         "invalid expire time in 'psetex' command"
+      };
+      return resp::write_err(out, err_msg);
    };
    let sv = StoreValue {
       value: crate::storage::value::FyroDB::String(SmallStr::new(value)),
-      expires_ms: exp,
+      expires_ms,
    };
    match store.try_set_value(key, sv) {
       Ok(_) => resp::write_ok(out),
@@ -150,24 +151,19 @@ pub fn setex(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
    }
 }
 
-pub fn psetex(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
-   let [_, key, ms, value] = parts else {
-      return resp::write_wrong_args(out, "psetex");
-   };
-   let m = parse_int!(out, ms, u64);
-   if m == 0 {
-      return resp::write_err(out, "invalid expire time in 'psetex' command");
+pub fn setex(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
+   match parts {
+      [_, key, secs, value] => {
+         set_with_expiry(store, out, "setex", key, secs, value, expiry_from_secs)
+      }
+      _ => resp::write_wrong_args(out, "setex"),
    }
-   let Some(exp) = expiry_from_ms(m) else {
-      return resp::write_err(out, "invalid expire time in 'psetex' command");
-   };
-   let sv = StoreValue {
-      value: crate::storage::value::FyroDB::String(SmallStr::new(value)),
-      expires_ms: exp,
-   };
-   match store.try_set_value(key, sv) {
-      Ok(_) => resp::write_ok(out),
-      Err(e) => resp::write_err(out, &e.to_string()),
+}
+
+pub fn psetex(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
+   match parts {
+      [_, key, ms, value] => set_with_expiry(store, out, "psetex", key, ms, value, expiry_from_ms),
+      _ => resp::write_wrong_args(out, "psetex"),
    }
 }
 
@@ -313,13 +309,9 @@ pub fn mget(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
    match parts {
       [_, keys @ ..] if !keys.is_empty() => {
          const STACK_KEYS: usize = 64;
-         /// Batch threshold for admitting a map read epoch: at this size
-         /// skipping the per-key read-guard RMWs outweighs the admission.
          const EPOCH_MIN: usize = 8;
          let n = keys.len();
          if n > STACK_KEYS {
-            // Large MGET: keep the simple per-key path rather than growing
-            // stack batches; the per-key cost is identical to before.
             out.reserve(n * 32);
             resp::write_array_header(out, n);
             for &k in keys.iter() {
@@ -351,8 +343,7 @@ pub fn mget(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
          if read_epoch.is_some() {
             store.probe_and_prefetch_entries(&tables[..n], &hashes[..n], &mut entries[..n]);
          } else {
-            store
-               .probe_and_prefetch_entries_write(&tables[..n], &hashes[..n], &mut entries[..n]);
+            store.probe_and_prefetch_entries_write(&tables[..n], &hashes[..n], &mut entries[..n]);
          }
          for (i, &k) in keys.iter().enumerate() {
             let found = if let Some(epoch) = &read_epoch {

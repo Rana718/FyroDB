@@ -163,6 +163,44 @@ pub fn zrevrange(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
    wt!(out, store.zrevrange_to_buf(key, s, e, withscores, out));
 }
 
+#[inline]
+fn parse_rangebyscore_options(
+   rest: &[&str],
+   withscores: &mut bool,
+   offset: &mut usize,
+   count: &mut usize,
+   out: &mut Vec<u8>,
+) -> bool {
+   let mut i = 0;
+   while i < rest.len() {
+      if rest[i].eq_ignore_ascii_case("WITHSCORES") {
+         *withscores = true;
+      } else if rest[i].eq_ignore_ascii_case("LIMIT") {
+         if i + 2 >= rest.len() {
+            resp::write_err(out, "syntax error");
+            return false;
+         }
+         match rest[i + 1].parse::<usize>() {
+            Ok(v) => *offset = v,
+            Err(_) => {
+               resp::write_err(out, "value is not an integer or out of range");
+               return false;
+            }
+         }
+         match rest[i + 2].parse::<usize>() {
+            Ok(v) => *count = v,
+            Err(_) => {
+               resp::write_err(out, "value is not an integer or out of range");
+               return false;
+            }
+         }
+         i += 2;
+      }
+      i += 1;
+   }
+   true
+}
+
 pub fn zrangebyscore(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
    let [_, key, min, max, rest @ ..] = parts else {
       return resp::write_wrong_args(out, "zrangebyscore");
@@ -172,19 +210,8 @@ pub fn zrangebyscore(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
    let mut withscores = false;
    let mut offset = 0usize;
    let mut count = 0usize;
-   let mut i = 0;
-   while i < rest.len() {
-      if rest[i].eq_ignore_ascii_case("WITHSCORES") {
-         withscores = true;
-      } else if rest[i].eq_ignore_ascii_case("LIMIT") {
-         if i + 2 >= rest.len() {
-            return resp::write_err(out, "syntax error");
-         }
-         offset = parse_int!(out, rest[i + 1], usize);
-         count = parse_int!(out, rest[i + 2], usize);
-         i += 2;
-      }
-      i += 1;
+   if !parse_rangebyscore_options(rest, &mut withscores, &mut offset, &mut count, out) {
+      return;
    }
    let items = wt!(out, store.zrangebyscore(key, mn, mx, offset, count));
    write_zset_result(out, &items, withscores);
@@ -199,48 +226,35 @@ pub fn zrevrangebyscore(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
    let mut withscores = false;
    let mut offset = 0usize;
    let mut count = 0usize;
-   let mut i = 0;
-   while i < rest.len() {
-      if rest[i].eq_ignore_ascii_case("WITHSCORES") {
-         withscores = true;
-      } else if rest[i].eq_ignore_ascii_case("LIMIT") {
-         if i + 2 >= rest.len() {
-            return resp::write_err(out, "syntax error");
-         }
-         offset = parse_int!(out, rest[i + 1], usize);
-         count = parse_int!(out, rest[i + 2], usize);
-         i += 2;
-      }
-      i += 1;
+   if !parse_rangebyscore_options(rest, &mut withscores, &mut offset, &mut count, out) {
+      return;
    }
    let items = wt!(out, store.zrevrangebyscore(key, mx, mn, offset, count));
    write_zset_result(out, &items, withscores);
 }
 
-pub fn zpopmin(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
+fn zpop_impl<F>(parts: &[&str], store: &Store, out: &mut Vec<u8>, cmd: &'static str, f: F)
+where
+   F: FnOnce(&Store, &str, usize) -> Result<Vec<(String, f64)>, &'static str>,
+{
    let (key, count) = match parts {
       [_, key] => (*key, 1usize),
       [_, key, cnt] => {
          let c = parse_int!(out, cnt, usize);
          (*key, c)
       }
-      _ => return resp::write_wrong_args(out, "zpopmin"),
+      _ => return resp::write_wrong_args(out, cmd),
    };
-   let items = wt!(out, store.zpopmin(key, count));
+   let items = wt!(out, f(store, key, count));
    write_zset_result(out, &items, true);
 }
 
+pub fn zpopmin(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
+   zpop_impl(parts, store, out, "zpopmin", Store::zpopmin);
+}
+
 pub fn zpopmax(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
-   let (key, count) = match parts {
-      [_, key] => (*key, 1usize),
-      [_, key, cnt] => {
-         let c = parse_int!(out, cnt, usize);
-         (*key, c)
-      }
-      _ => return resp::write_wrong_args(out, "zpopmax"),
-   };
-   let items = wt!(out, store.zpopmax(key, count));
-   write_zset_result(out, &items, true);
+   zpop_impl(parts, store, out, "zpopmax", Store::zpopmax);
 }
 
 pub fn zunionstore(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
@@ -496,36 +510,26 @@ pub fn zscan(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
       i += 1;
    }
 
-   match store.data.get_ref(key) {
-      None => {
-         out.extend_from_slice(b"*2\r\n");
-         resp::write_bulk(out, "0");
-         resp::write_array_header(out, 0);
-      }
-      Some(e) if e.is_expired() => {
-         out.extend_from_slice(b"*2\r\n");
-         resp::write_bulk(out, "0");
-         resp::write_array_header(out, 0);
-      }
-      Some(e) => match e.value.as_zset() {
-         Some(z) => {
-            let pairs: Vec<(&crate::storage::value::SmallStr, f64)> = z
-               .iter()
-               .map(|e| (&e.member, e.score))
-               .filter(|(m, _)| {
-                  pattern.is_none_or(|p| crate::utils::util::glob_match(p, m.as_str()))
-               })
-               .collect();
-            out.extend_from_slice(b"*2\r\n");
-            resp::write_bulk(out, "0");
-            resp::write_array_header(out, pairs.len() * 2);
-            for (m, s) in pairs {
-               resp::write_bulk(out, m);
-               resp::write_float(out, s);
-            }
+   let Some(e) = store.data.get_ref(key) else {
+      return resp::write_scan_cursor_header(out, "0", 0);
+   };
+   if e.is_expired() {
+      return resp::write_scan_cursor_header(out, "0", 0);
+   }
+   match e.value.as_zset() {
+      Some(z) => {
+         let pairs: Vec<(&crate::storage::value::SmallStr, f64)> = z
+            .iter()
+            .map(|e| (&e.member, e.score))
+            .filter(|(m, _)| pattern.is_none_or(|p| crate::utils::util::glob_match(p, m.as_str())))
+            .collect();
+         resp::write_scan_cursor_header(out, "0", pairs.len() * 2);
+         for (m, s) in pairs {
+            resp::write_bulk(out, m);
+            resp::write_float(out, s);
          }
-         None => resp::write_wrong_type(out),
-      },
+      }
+      None => resp::write_wrong_type(out),
    }
 }
 

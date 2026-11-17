@@ -43,10 +43,7 @@ impl<'a> Conn<'a> {
          {
             return false;
          }
-         // Stevens UNP Vol 1 Ch 16 & Kerrisk TLPI Ch 63:
-         // For large frames or pipelined bursts (n >= 8192 or min_needed > filled),
-         // continue draining non-blockingly until WouldBlock or MAX_READ_AHEAD
-         // to avoid breaking pipelined batches into fragmented epoll cycles.
+         // For large frames or pipelined bursts, continue draining non-blockingly.
          if (self.parser.min_needed > 0 && self.parser.filled < self.parser.min_needed)
             || (n >= 8192 && self.parser.pending() < Self::MAX_READ_AHEAD)
          {
@@ -274,9 +271,12 @@ impl<'a> Conn<'a> {
             }
             Err(ref e) if e.kind() == io::ErrorKind::Interrupted => continue,
             Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-               // Item 8: Avoid memmove compaction thrashing on large partial buffers.
+               // Avoid memmove compaction thrashing on large partial buffers.
                let remaining = self.parser.wbuf.len().saturating_sub(self.write_offset);
-               if self.write_offset > 512 * 1024 && (remaining <= 64 * 1024 || self.write_offset > (self.parser.wbuf.len() * 3) / 4) {
+               if self.write_offset > 512 * 1024
+                  && (remaining <= 64 * 1024
+                     || self.write_offset > (self.parser.wbuf.len() * 3) / 4)
+               {
                   self.parser.wbuf.drain(..self.write_offset);
                   self.write_offset = 0;
                }

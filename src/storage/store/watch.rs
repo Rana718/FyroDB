@@ -1,16 +1,14 @@
 use super::Store;
 use crate::search::hooks::HookObserver;
 use crate::storage::value::now_ms;
+use arc_swap::ArcSwap;
 use customhash::WriteObserver;
 use foldhash::HashMap;
-use arc_swap::ArcSwap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub(super) struct WatchRegistry {
-   /// Audit continue §4: per-KV-write reads when watchers exist go through
-   /// an ArcSwap guard load (E3: ~393 M reads/s vs ~9-15 M/s RwLock).
-   /// Watch/unwatch are rare copy-on-write publishes.
+   /// ArcSwap snapshot of watched keys for lock-free read on writes.
    keys: ArcSwap<HashMap<String, Arc<AtomicU64>>>,
    observing: Arc<customhash::Flag>,
 }
@@ -32,8 +30,7 @@ impl WatchedKey {
 
 impl Drop for WatchedKey {
    fn drop(&mut self) {
-      // Copy-on-write publish (unwatch is rare); strong_count == 2 means
-      // only this WatchedKey and the map still hold the version.
+      // Copy-on-write publish if this was the last watcher for the key.
       let mut keys = self.registry.keys.load_full();
       if Arc::strong_count(&self.version) == 2 {
          let map = Arc::make_mut(&mut keys);

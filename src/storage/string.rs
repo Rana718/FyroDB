@@ -152,7 +152,9 @@ impl Store {
          value: crate::storage::value::FyroDB::String(SmallStr::from_slice(value)),
          expires_ms,
       };
-      self.data.set_bytes_hinted_pinned(key, Some(hash), store_val);
+      self
+         .data
+         .set_bytes_hinted_pinned(key, Some(hash), store_val);
       if expires_ms != 0 {
          self.add_ttl();
       }
@@ -263,7 +265,6 @@ impl Store {
    }
 
    /// # Safety
-   ///
    /// `p` must be null or point to a valid `Entry<StoreValue>`.
    #[inline(always)]
    pub unsafe fn get_to_buf_fast_entry_bytes(
@@ -277,25 +278,22 @@ impl Store {
          let e = unsafe { &*p };
          let seq1 = e.state.load(std::sync::atomic::Ordering::Acquire);
          let expected = ((hash as u32 as u64) << 32) | customhash::STATE_OCCUPIED;
-         // Optimistic lock-free Seqlock read for uncontended occupied inline values:
-         // completely eliminates atomic RMW CAS write stalls and cache line invalidations on readers.
-         // Heap values take e.read() below to ensure concurrent size changes do not deallocate heap buffers.
-         if (seq1 & (0xFFFF_FFFF_0000_0000 | customhash::STATE_OCCUPIED | customhash::STATE_LOCK)) == expected
+         if (seq1 & (0xFFFF_FFFF_0000_0000 | customhash::STATE_OCCUPIED | customhash::STATE_LOCK))
+            == expected
             && e.key.eq_bytes(key)
          {
             let val = unsafe { (*e.value.get()).assume_init_ref() };
-            if val.expires_ms == 0 || !val.is_expired() {
-               if let crate::storage::value::FyroDB::String(s) = &val.value {
-                  if s.is_inline() {
-                     let start = out.len();
-                     s.write_resp(out);
-                     let seq2 = e.state.load(std::sync::atomic::Ordering::Acquire);
-                     if seq1 == seq2 {
-                        return true;
-                     }
-                     out.truncate(start);
-                  }
+            if (val.expires_ms == 0 || !val.is_expired())
+               && let crate::storage::value::FyroDB::String(s) = &val.value
+               && s.is_inline()
+            {
+               let start = out.len();
+               s.write_resp(out);
+               let seq2 = e.state.load(std::sync::atomic::Ordering::Acquire);
+               if seq1 == seq2 {
+                  return true;
                }
+               out.truncate(start);
             }
          }
          let state = seq1;
@@ -356,9 +354,6 @@ impl Store {
          .map_or(0, SmallStr::len)
    }
 
-   /// First-entry payload peek without a global read epoch (batches below
-   /// READ_EPOCH_MIN): validates the prefetched pointer, then reads under
-   /// the entry's own guard — the same contract as the no-epoch GET path.
    /// # Safety
    /// Pointer must be pinned/current (EBR guard covers the caller).
    #[inline(always)]
@@ -446,7 +441,6 @@ impl Store {
    }
 
    /// # Safety
-   ///
    /// `p` must be null or point to a valid `Entry<StoreValue>`.
    #[inline(always)]
    pub unsafe fn get_to_buf_fast_entry(
@@ -460,7 +454,6 @@ impl Store {
    }
 
    /// # Safety
-   ///
    /// `p` must be null or point to a valid `Entry<StoreValue>`.
    #[inline(always)]
    pub unsafe fn set_string_fast_entry(
@@ -471,15 +464,12 @@ impl Store {
       value: &str,
       expires_ms: u64,
    ) {
-      unsafe { self.set_string_fast_entry_bytes(key.as_bytes(), hash, p, value.as_bytes(), expires_ms) }
+      unsafe {
+         self.set_string_fast_entry_bytes(key.as_bytes(), hash, p, value.as_bytes(), expires_ms)
+      }
    }
 
-   /// Bytes-native twin of `set_string_fast_entry`: no value UTF-8 scan on
-   /// the caller side, and the old/new TTL transition is counter-adjusted
-   /// so the active-expiry scan cadence does not drift upward.
-   ///
    /// # Safety
-   ///
    /// `p` must be null or point to a valid `Entry<StoreValue>`.
    #[inline(always)]
    pub unsafe fn set_string_fast_entry_bytes(
@@ -532,10 +522,6 @@ impl Store {
                      }
                      customhash::unlock_write(&e.state, locked, true);
                      self.data.touched_bytes(key);
-                     // Adjust the TTL counters for the transition under the
-                     // same lock the mutation used; previously a TTL'd key
-                     // overwritten without TTL only ever over-counted, and
-                     // a TTL'd key re-TTL'd double-counted until a scan.
                      if old_expires == 0 && expires_ms != 0 {
                         self.add_ttl();
                      } else if old_expires != 0 && expires_ms == 0 {
@@ -568,12 +554,15 @@ impl Store {
       value: &str,
       expires_ms: u64,
    ) {
-      self.set_string_auto_bytes(key.as_bytes(), hash_hint, entry_hint, value.as_bytes(), expires_ms)
+      self.set_string_auto_bytes(
+         key.as_bytes(),
+         hash_hint,
+         entry_hint,
+         value.as_bytes(),
+         expires_ms,
+      )
    }
 
-   /// Bytes-native `set_string_auto`: identical semantics without a caller
-   /// value UTF-8 scan; binary payloads keep the fast in-place path, and
-   /// the key is bytes-native (audit S-2) so binary keys take this path.
    #[inline(always)]
    pub fn set_string_auto_bytes(
       &self,
@@ -618,10 +607,12 @@ impl Store {
          }
          return;
       }
-      match self.data.probe_or_insert_fast_bytes(hash, key, || StoreValue {
-         value: crate::storage::value::FyroDB::String(SmallStr::from_slice(value)),
-         expires_ms,
-      }) {
+      match self
+         .data
+         .probe_or_insert_fast_bytes(hash, key, || StoreValue {
+            value: crate::storage::value::FyroDB::String(SmallStr::from_slice(value)),
+            expires_ms,
+         }) {
          customhash::FastSet::Existing(entry) => unsafe {
             self.set_string_fast_entry_bytes(key, hash, entry, value, expires_ms);
          },
@@ -680,9 +671,6 @@ impl Store {
                return true;
             }
          }
-         // The probe found the entry but the guard attempt failed (a writer
-         // held the lock). One yielding retry avoids a full re-probe while
-         // keeping the absent-key path untouched.
          std::hint::spin_loop();
          unsafe {
             if self.get_to_buf_fast_entry(key, hash, entry, out) {
@@ -693,8 +681,6 @@ impl Store {
       self.get_to_buf_fallback(key, hash, out)
    }
 
-   /// Bytes-key twin of `get_to_buf_auto` (audit S-2): binary keys take
-   /// the same hint/probe/serialize chain with no UTF-8 gate.
    pub fn get_to_buf_auto_bytes(
       &self,
       key: &[u8],
@@ -1110,34 +1096,33 @@ impl Store {
       hash: Option<u64>,
       delta: i64,
    ) -> Result<i64, &'static str> {
-      // Item 40: Fast zero-copy integer parsing and formatting for INCR/DECR.
       loop {
-         let result = self
-            .data
-            .update_with_hinted_bytes(key, hash, |val| match val.value.as_string() {
-               Some(s) => {
-                  let bytes = s.as_bytes();
-                  let n = match Self::parse_i64_bytes(bytes) {
-                     Some(n) => n,
-                     None => return Err("value is not an integer or out of range"),
-                  };
-                  let Some(new) = n.checked_add(delta) else {
-                     return Err("increment or decrement would overflow");
-                  };
-                  val.value = crate::storage::value::FyroDB::String(SmallStr::from_int(new));
-                  Ok(new)
-               }
-               None => Err("WRONGTYPE"),
-            });
+         let result =
+            self
+               .data
+               .update_with_hinted_bytes(key, hash, |val| match val.value.as_string() {
+                  Some(s) => {
+                     let bytes = s.as_bytes();
+                     let n = match Self::parse_i64_bytes(bytes) {
+                        Some(n) => n,
+                        None => return Err("value is not an integer or out of range"),
+                     };
+                     let Some(new) = n.checked_add(delta) else {
+                        return Err("increment or decrement would overflow");
+                     };
+                     val.value = crate::storage::value::FyroDB::String(SmallStr::from_int(new));
+                     Ok(new)
+                  }
+                  None => Err("WRONGTYPE"),
+               });
          if let Some(r) = result {
             return r;
          }
-         // Absent: lock-free create. Losing the insert race just means the
-         // key now exists, so the loop retries the in-place update.
-         if self
-            .data
-            .insert_if_absent_bytes_hinted(key, hash, StoreValue::string_small(SmallStr::from_int(delta)))
-         {
+         if self.data.insert_if_absent_bytes_hinted(
+            key,
+            hash,
+            StoreValue::string_small(SmallStr::from_int(delta)),
+         ) {
             return Ok(delta);
          }
       }
@@ -1197,6 +1182,18 @@ impl Store {
    }
 }
 
+#[inline]
+fn extract_lcs_bytes(entry: Option<&StoreValue>) -> Result<&[u8], &'static str> {
+   match entry {
+      None => Ok(&[][..]),
+      Some(e) if e.is_expired() => Ok(&[][..]),
+      Some(e) => match e.value.as_string() {
+         Some(s) => Ok(s.as_bytes()),
+         None => Err("WRONGTYPE"),
+      },
+   }
+}
+
 impl Store {
    pub fn lcs(&self, key1: &str, key2: &str) -> Result<String, &'static str> {
       String::from_utf8(self.lcs_bytes(key1, key2)?).map_err(|_| "LCS result is not UTF-8")
@@ -1206,22 +1203,8 @@ impl Store {
       let ref1 = self.data.get_ref(key1);
       let ref2 = self.data.get_ref(key2);
 
-      let s1 = match ref1.as_deref() {
-         None => &[][..],
-         Some(e) if e.is_expired() => &[][..],
-         Some(e) => match e.value.as_string() {
-            Some(s) => s.as_bytes(),
-            None => return Err("WRONGTYPE"),
-         },
-      };
-      let s2 = match ref2.as_deref() {
-         None => &[][..],
-         Some(e) if e.is_expired() => &[][..],
-         Some(e) => match e.value.as_string() {
-            Some(s) => s.as_bytes(),
-            None => return Err("WRONGTYPE"),
-         },
-      };
+      let s1 = extract_lcs_bytes(ref1.as_deref())?;
+      let s2 = extract_lcs_bytes(ref2.as_deref())?;
 
       let mut result = Vec::new();
       hirschberg(s1, s2, &mut result);
@@ -1232,22 +1215,8 @@ impl Store {
       let ref1 = self.data.get_ref(key1);
       let ref2 = self.data.get_ref(key2);
 
-      let s1 = match ref1.as_deref() {
-         None => &[][..],
-         Some(e) if e.is_expired() => &[][..],
-         Some(e) => match e.value.as_string() {
-            Some(s) => s.as_bytes(),
-            None => return Err("WRONGTYPE"),
-         },
-      };
-      let s2 = match ref2.as_deref() {
-         None => &[][..],
-         Some(e) if e.is_expired() => &[][..],
-         Some(e) => match e.value.as_string() {
-            Some(s) => s.as_bytes(),
-            None => return Err("WRONGTYPE"),
-         },
-      };
+      let s1 = extract_lcs_bytes(ref1.as_deref())?;
+      let s2 = extract_lcs_bytes(ref2.as_deref())?;
 
       let b1 = s1;
       let b2 = s2;

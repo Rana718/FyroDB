@@ -16,9 +16,7 @@ thread_local! {
 pub(super) struct Isolation {
    slots: Box<[CachePadded<RawRwLock>]>,
    writer: Mutex<()>,
-   /// Audit M-10: exclusive admissions stall every worker slot (EVAL /
-   /// EXEC / WATCH atomicity); surfaced via INFO so operators can see the
-   /// throughput cliff the architecture doc documents.
+   /// Total exclusive-admission acquisitions (EVAL / EXEC / WATCH).
    exclusive_total: AtomicU64,
 }
 
@@ -106,11 +104,10 @@ impl super::Store {
       self.isolation.slots.len() - 1
    }
 
-   /// Total exclusive-admission acquisitions (EVAL/EXEC/WATCH): each one
-   /// stalls every worker slot. INFO surfaces this so the documented
-   /// atomic-command throughput cliff is observable in production.
+   /// Total exclusive-admission acquisitions (EVAL / EXEC / WATCH).
    pub fn isolation_exclusive_total(&self) -> u64 {
-      self.isolation
+      self
+         .isolation
          .exclusive_total
          .load(std::sync::atomic::Ordering::Relaxed)
    }

@@ -3,90 +3,39 @@ use crate::storage::value::{FyroDB, StoreValue};
 use std::io::IoSlice;
 
 pub(super) const MIN_STREAM_BYTES: usize = 1024;
-/// Above this payload the wbuf double-copy loses to streaming from the
-/// entry bytes; also the epoch-less stream gate for sub-READ_EPOCH_MIN batches.
 pub(super) const DIRECT_SEND_MIN: usize = 32 * 1024;
 const BATCH: usize = 256;
-/// Eager-drain bounds: floored at 32 calls and scaled by 64KB per call,
-/// capped at 256 — ensures full pipelined batches (16x64KB / 4x262KB / 1x1MB)
-/// drain zero-copy without falling back to wbuf payload memcpy when socket is writable.
 const EAGER_DRAIN_CALLS_MIN: usize = 32;
 const EAGER_DRAIN_CALLS_MAX: usize = 256;
 const EAGER_DRAIN_BYTES_PER_CALL: usize = 64 * 1024;
 
 #[inline]
 fn eager_drain_calls(total_bytes: usize) -> usize {
-   (total_bytes / EAGER_DRAIN_BYTES_PER_CALL + EAGER_DRAIN_CALLS_MIN)
-      .min(EAGER_DRAIN_CALLS_MAX)
-}
-
-fn owner_slot(
-   entries: &[*const ()],
-   seen: &[u16; BATCH * 2],
-   pointer: *const (),
-) -> (usize, Option<usize>) {
-   let hash = ((pointer as usize >> 3) as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
-   let mut slot = (hash >> (64 - (BATCH * 2).trailing_zeros())) as usize;
-   while seen[slot] != 0 {
-      let previous = usize::from(seen[slot] - 1);
-      if entries[previous] == pointer {
-         return (slot, Some(previous));
-      }
-      slot = (slot + 1) & (BATCH * 2 - 1);
-   }
-   (slot, None)
+   (total_bytes / EAGER_DRAIN_BYTES_PER_CALL + EAGER_DRAIN_CALLS_MIN).min(EAGER_DRAIN_CALLS_MAX)
 }
 
 #[inline(always)]
-fn owner_slot_16(
+fn owner_slot<const SEEN_LEN: usize>(
    entries: &[*const ()],
-   seen: &[u16; 32],
+   seen: &[u16; SEEN_LEN],
    pointer: *const (),
 ) -> (usize, Option<usize>) {
    let hash = ((pointer as usize >> 3) as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
-   let mut slot = (hash as usize) & 31;
+   let mut slot = (hash >> (64 - SEEN_LEN.trailing_zeros())) as usize;
+   let mask = SEEN_LEN - 1;
    while seen[slot] != 0 {
       let previous = usize::from(seen[slot] - 1);
       if entries[previous] == pointer {
          return (slot, Some(previous));
       }
-      slot = (slot + 1) & 31;
+      slot = (slot + 1) & mask;
    }
    (slot, None)
 }
 
 #[inline(always)]
 fn header(length: usize, out: &mut [u8; 24]) -> usize {
-   // Item 13: Direct fast-path for small to medium bulk lengths (<10, <100, <1000)
-   if length < 10 {
-      out[0] = b'$';
-      out[1] = b'0' + length as u8;
-      out[2] = b'\r';
-      out[3] = b'\n';
-      4
-   } else if length < 100 {
-      out[0] = b'$';
-      out[1] = b'0' + (length / 10) as u8;
-      out[2] = b'0' + (length % 10) as u8;
-      out[3] = b'\r';
-      out[4] = b'\n';
-      5
-   } else if length < 1000 {
-      out[0] = b'$';
-      out[1] = b'0' + (length / 100) as u8;
-      out[2] = b'0' + ((length / 10) % 10) as u8;
-      out[3] = b'0' + (length % 10) as u8;
-      out[4] = b'\r';
-      out[5] = b'\n';
-      6
-   } else {
-      let mut digits = [0u8; 20];
-      let number = crate::utils::resp::format_usize_digits(length, &mut digits);
-      out[0] = b'$';
-      out[1..1 + number.len()].copy_from_slice(number);
-      out[1 + number.len()..3 + number.len()].copy_from_slice(b"\r\n");
-      number.len() + 3
-   }
+   crate::utils::resp::format_bulk_header(length, out)
 }
 
 #[inline]
@@ -140,47 +89,44 @@ fn send_batch<W: Write>(
    } else {
       EAGER_DRAIN_CALLS_MIN
    };
-   let written = if values.len() <= 16 {
-      let mut slices = [IoSlice::new(&[]); 16 * 3 + 1];
-      let mut slice_idx = 0;
-      if prefix > 0 {
-         slices[slice_idx] = IoSlice::new(&buffered[*offset..]);
-         slice_idx += 1;
+   #[inline(always)]
+   fn fill_slices<'a>(
+      slices: &mut [IoSlice<'a>],
+      prefix: Option<&'a [u8]>,
+      headers: &'a [[u8; 24]],
+      lengths: &[u16],
+      values: &[&'a [u8]],
+   ) -> usize {
+      let mut idx = 0;
+      if let Some(p) = prefix {
+         slices[idx] = IoSlice::new(p);
+         idx += 1;
       }
       for (i, value) in values.iter().enumerate() {
-         slices[slice_idx] = IoSlice::new(&headers[i][..usize::from(lengths[i])]);
-         slices[slice_idx + 1] = IoSlice::new(value);
-         slices[slice_idx + 2] = IoSlice::new(b"\r\n");
-         slice_idx += 3;
+         slices[idx] = IoSlice::new(&headers[i][..usize::from(lengths[i])]);
+         slices[idx + 1] = IoSlice::new(value);
+         slices[idx + 2] = IoSlice::new(b"\r\n");
+         idx += 3;
       }
+      idx
+   }
+
+   let prefix_slice = if prefix > 0 {
+      Some(&buffered[*offset..])
+   } else {
+      None
+   };
+   let written = if values.len() <= 16 {
+      let mut slices = [IoSlice::new(&[]); 16 * 3 + 1];
+      let slice_idx = fill_slices(&mut slices, prefix_slice, headers, lengths, values);
       write_vectored_bounded(writer, &mut slices[..slice_idx], max_calls)
    } else if values.len() <= 32 {
       let mut slices = [IoSlice::new(&[]); 32 * 3 + 1];
-      let mut slice_idx = 0;
-      if prefix > 0 {
-         slices[slice_idx] = IoSlice::new(&buffered[*offset..]);
-         slice_idx += 1;
-      }
-      for (i, value) in values.iter().enumerate() {
-         slices[slice_idx] = IoSlice::new(&headers[i][..usize::from(lengths[i])]);
-         slices[slice_idx + 1] = IoSlice::new(value);
-         slices[slice_idx + 2] = IoSlice::new(b"\r\n");
-         slice_idx += 3;
-      }
+      let slice_idx = fill_slices(&mut slices, prefix_slice, headers, lengths, values);
       write_vectored_bounded(writer, &mut slices[..slice_idx], max_calls)
    } else {
       let mut slices = [IoSlice::new(&[]); BATCH * 3 + 1];
-      let mut slice_idx = 0;
-      if prefix > 0 {
-         slices[slice_idx] = IoSlice::new(&buffered[*offset..]);
-         slice_idx += 1;
-      }
-      for (i, value) in values.iter().enumerate() {
-         slices[slice_idx] = IoSlice::new(&headers[i][..usize::from(lengths[i])]);
-         slices[slice_idx + 1] = IoSlice::new(value);
-         slices[slice_idx + 2] = IoSlice::new(b"\r\n");
-         slice_idx += 3;
-      }
+      let slice_idx = fill_slices(&mut slices, prefix_slice, headers, lengths, values);
       write_vectored_bounded(writer, &mut slices[..slice_idx], max_calls)
    };
    if written == total {
@@ -273,10 +219,7 @@ pub(super) fn send_repeated<W: Write>(
 }
 
 /// # Safety
-/// Entries must stay pinned (EBR guard covers the whole call). Each
-/// pointer is re-validated against the tagged state + key before use, so
-/// the global read epoch is optional — absent it, per-entry guards alone
-/// protect the payloads.
+/// Entries must stay pinned for duration of call (covered by EBR guard).
 #[inline(never)]
 pub(super) unsafe fn try_stream_get_run(
    conn: &mut Conn<'_>,
@@ -289,8 +232,6 @@ pub(super) unsafe fn try_stream_get_run(
    if count == 0 || count > BATCH || hashes.len() != count || entries.len() != count {
       return false;
    }
-   // Epoch-guarded fast path: when global read_epoch is active, all entries are immutable
-   // under EBR without per-entry atomic lock acquisitions or owner-slot hashing (Herlihy Ch. 7).
    if epoch.is_some() && count <= 32 {
       let mut headers = [[0u8; 24]; 32];
       let mut values: [&[u8]; 32] = [&[]; 32];
@@ -335,13 +276,21 @@ pub(super) unsafe fn try_stream_get_run(
          return true;
       }
    }
-   if count <= 16 {
-      let mut reads: [Option<customhash::EntryReadGuard<'_, StoreValue>>; 16] =
-         [const { None }; 16];
-      let mut lengths = [0u16; 16];
-      let mut seen = [0u16; 32];
+   #[inline(always)]
+   unsafe fn stream_get_with_reads<const CAP: usize, const SEEN_CAP: usize>(
+      conn: &mut Conn<'_>,
+      epoch: &mut Option<customhash::ReadEpochGuard<'_>>,
+      entries: &[*const ()],
+      hashes: &[u64],
+      keys: &[&[u8]],
+      count: usize,
+   ) -> bool {
+      let mut reads: [Option<customhash::EntryReadGuard<'_, StoreValue>>; CAP] =
+         [const { None }; CAP];
+      let mut lengths = [0u16; CAP];
+      let mut seen = [0u16; SEEN_CAP];
       for i in 0..count {
-         let (slot, previous) = owner_slot_16(entries, &seen, entries[i]);
+         let (slot, previous) = owner_slot(entries, &seen, entries[i]);
          if let Some(previous) = previous {
             if hashes[i] != hashes[previous] || keys[i] != keys[previous] {
                return false;
@@ -372,8 +321,8 @@ pub(super) unsafe fn try_stream_get_run(
          seen[slot] = (i + 1) as u16;
       }
       drop(epoch.take());
-      let mut headers = [[0u8; 24]; 16];
-      let mut values: [&[u8]; 16] = [&[]; 16];
+      let mut headers = [[0u8; 24]; CAP];
+      let mut values: [&[u8]; CAP] = [&[]; CAP];
       for i in 0..count {
          let read = reads[usize::from(lengths[i])].as_ref().unwrap();
          let FyroDB::String(value) = &read.value else {
@@ -390,65 +339,15 @@ pub(super) unsafe fn try_stream_get_run(
          &lengths[..count],
          &values[..count],
       );
-      return true;
+      true
    }
-   let mut reads: [Option<customhash::EntryReadGuard<'_, StoreValue>>; BATCH] =
-      [const { None }; BATCH];
-   // Owner indexes become header lengths after all guards are acquired.
-   let mut lengths = [0u16; BATCH];
-   let mut seen = [0u16; BATCH * 2];
-   for i in 0..count {
-      let (slot, previous) = owner_slot(entries, &seen, entries[i]);
-      if let Some(previous) = previous {
-         if hashes[i] != hashes[previous] || keys[i] != keys[previous] {
-            return false;
-         }
-         lengths[i] = previous as u16;
-         continue;
-      }
-      let Some(entry) = (unsafe { entries[i].cast::<customhash::Entry<StoreValue>>().as_ref() })
-      else {
-         return false;
-      };
-      let expected = ((hashes[i] as u32 as u64) << 32) | customhash::STATE_OCCUPIED;
-      if entry.state.load(Ordering::Relaxed)
-         & (customhash::STATE_MATCH_MASK & !customhash::STATE_LOCK)
-         != expected
-         || !entry.key.eq_bytes(keys[i])
-      {
-         return false;
-      }
-      let Some(read) = entry.read() else {
-         return false;
-      };
-      if read.is_expired() || !matches!(read.value, FyroDB::String(_)) {
-         return false;
-      }
-      reads[i] = Some(read);
-      lengths[i] = i as u16;
-      seen[slot] = (i + 1) as u16;
+
+   if count <= 16 {
+      return unsafe { stream_get_with_reads::<16, 32>(conn, epoch, entries, hashes, keys, count) };
    }
-   // Entry guards keep payloads immutable after releasing the global epoch.
-   drop(epoch.take());
-   let mut headers = [[0u8; 24]; BATCH];
-   let mut values: [&[u8]; BATCH] = [&[]; BATCH];
-   for i in 0..count {
-      let read = reads[usize::from(lengths[i])].as_ref().unwrap();
-      let FyroDB::String(value) = &read.value else {
-         unreachable!()
-      };
-      values[i] = value.as_bytes();
-      lengths[i] = header(values[i].len(), &mut headers[i]) as u16;
+   unsafe {
+      stream_get_with_reads::<BATCH, { BATCH * 2 }>(conn, epoch, entries, hashes, keys, count)
    }
-   send_batch(
-      &mut conn.stream,
-      &mut conn.parser.wbuf,
-      &mut conn.write_offset,
-      &headers[..count],
-      &lengths[..count],
-      &values[..count],
-   );
-   true
 }
 
 #[cfg(test)]

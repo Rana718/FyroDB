@@ -1,9 +1,9 @@
 use super::Slot;
+use parking_lot::Mutex;
 use std::collections::VecDeque;
 use std::io::{Read, Write};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use parking_lot::Mutex;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MutationKind {
@@ -300,12 +300,7 @@ pub struct MutationLog {
    records: VecDeque<Arc<MutationRecord>>,
 }
 
-/// Audit continue §4 (E1/E2): the per-thread log shards are uncontended
-/// (this thread appends; only the rare budget trim locks them
-/// cross-thread), where a TTAS spin with yield fallback measures 6.2 ns
-/// vs 11.6 ns for a mutex and 78 vs 16 M ops/s under contention. Critical
-/// sections here are memcpy-shaped (no syscalls, no allocation), so
-/// spinning with a yield fallback is the right primitive.
+/// Lightweight spinlock with yield fallback for uncontended per-thread logging.
 pub struct SpinMutex<T> {
    state: AtomicU64,
    data: std::cell::UnsafeCell<T>,
@@ -375,14 +370,7 @@ impl<T> Drop for SpinGuard<'_, T> {
 
 #[derive(Clone)]
 pub struct ReplicationCoordinator {
-   /// Audit 3.2-D: per-thread log shards with offset windows replace the
-   /// global `Mutex<MutationLog>` — the last global mutex on the write
-   /// path when replication is enabled. Offsets are carved in windows
-   /// from one atomic counter (disjoint, strictly increasing), each
-   /// shard's records are contiguous within its windows, and replay
-   /// merges shards by offset like the AOF `merged()` ordering.
    shards: Arc<SpinMutex<Vec<Arc<SpinMutex<MutationLog>>>>>,
-   /// window allocator (rounds up in OFFSET_WINDOW steps)
    offset_counter: Arc<AtomicU64>,
    /// exactly the last handed-out offset; `next_offset()` derives from it
    last_assigned: Arc<AtomicU64>,
@@ -449,13 +437,14 @@ impl ReplicationCoordinator {
 
    /// This thread's shard for *this* coordinator, registering it on first
    /// use (cold).
+   #[allow(clippy::collapsible_if)]
    fn shard(&self) -> Arc<SpinMutex<MutationLog>> {
       let identity = self as *const Self as usize;
       LOG_SHARD.with(|slot| {
-         if let Some((owner, shard)) = slot.borrow().as_ref() {
-            if *owner == identity {
-               return Arc::clone(shard);
-            }
+         if let Some((owner, shard)) = slot.borrow().as_ref()
+            && *owner == identity
+         {
+            return Arc::clone(shard);
          }
          let shard = Arc::new(SpinMutex::new(MutationLog::new(self.capacity)));
          self.shards.lock().push(Arc::clone(&shard));
@@ -464,13 +453,7 @@ impl ReplicationCoordinator {
       })
    }
 
-   /// Global offset allocation in per-thread windows: one fetch_add per
-   /// OFFSET_WINDOW appends instead of one contended RMW per append. A
-   /// cached window is valid only while the global counter still sits at
-   /// its end — journal restores and other sequential allocators advance
-   /// the counter directly and invalidate stale windows (the Dekker-style
-   /// check makes a duplicate handout impossible: any counter movement
-   /// between refill and use forces a fresh refill).
+   /// Windowed offset allocation to reduce atomic contention.
    fn alloc_offset(&self) -> u64 {
       OFFSET_WINDOW_STATE.with(|cell| {
          let (next, end) = cell.get();
@@ -478,7 +461,9 @@ impl ReplicationCoordinator {
             cell.set((next + 1, end));
             return next;
          }
-         let base = self.offset_counter.fetch_add(OFFSET_WINDOW, Ordering::AcqRel);
+         let base = self
+            .offset_counter
+            .fetch_add(OFFSET_WINDOW, Ordering::AcqRel);
          cell.set((base + 1, base + OFFSET_WINDOW));
          base
       })
@@ -492,9 +477,7 @@ impl ReplicationCoordinator {
 
    pub fn append(&self, mut record: MutationRecord) -> Result<u64, LogError> {
       record.offset = self.alloc_offset();
-      self
-         .last_assigned
-         .store(record.offset, Ordering::Release);
+      self.last_assigned.store(record.offset, Ordering::Release);
 
       if let Some(journal) = self.journal.lock().as_mut() {
          write_journal_entry(journal, &record);
@@ -515,10 +498,7 @@ impl ReplicationCoordinator {
       Ok(record.offset)
    }
 
-   /// Retention across shards: evict the globally-oldest records while
-   /// over the record-count or byte budget.
-   // Item 57: Batch prune records per shard in chunks up to 32 instead of
-   // acquiring O(N*M) locks per single popped record.
+   /// Evict oldest records across shards when over capacity or budget.
    fn trim_if_over_budget(&self) {
       let mut batch_count = 0;
       while batch_count < 256 {
@@ -534,7 +514,7 @@ impl ReplicationCoordinator {
                let log = shard.lock();
                if let Some(front) = log.records.front() {
                   let front = front.offset;
-                  if oldest.as_ref().map_or(true, |(_, off)| front < *off) {
+                  if oldest.as_ref().is_none_or(|(_, off)| front < *off) {
                      oldest = Some((Arc::clone(shard), front));
                   }
                }
@@ -546,12 +526,22 @@ impl ReplicationCoordinator {
          let mut pruned_records = 0usize;
          let mut pruned_bytes = 0usize;
          while pruned_records < 32 {
-            if self.total_len.load(Ordering::Relaxed).saturating_sub(pruned_records) <= self.capacity
-               && self.total_bytes.load(Ordering::Relaxed).saturating_sub(pruned_bytes) <= MAX_LOG_BYTES
+            if self
+               .total_len
+               .load(Ordering::Relaxed)
+               .saturating_sub(pruned_records)
+               <= self.capacity
+               && self
+                  .total_bytes
+                  .load(Ordering::Relaxed)
+                  .saturating_sub(pruned_bytes)
+                  <= MAX_LOG_BYTES
             {
                break;
             }
-            let Some(old) = log.records.pop_front() else { break };
+            let Some(old) = log.records.pop_front() else {
+               break;
+            };
             let bytes = record_memory_bytes(&old);
             log.bytes = log.bytes.saturating_sub(bytes);
             pruned_bytes += bytes;
@@ -597,7 +587,7 @@ impl ReplicationCoordinator {
          let mut best: Option<usize> = None;
          for (i, tail) in tails.iter().enumerate() {
             if heads[i] < tail.len()
-               && best.map_or(true, |b: usize| tail[heads[i]].offset < tail[heads[b]].offset)
+               && best.is_none_or(|b: usize| tail[heads[i]].offset < tail[heads[b]].offset)
             {
                best = Some(i);
             }
@@ -614,7 +604,9 @@ impl ReplicationCoordinator {
          let shards = self.shards.lock();
          for shard in shards.iter() {
             let log = shard.lock();
-            let Some(front) = log.records.front() else { continue };
+            let Some(front) = log.records.front() else {
+               continue;
+            };
             let first = front.offset;
             if offset < first {
                continue;
@@ -728,9 +720,7 @@ impl ReplicationCoordinator {
          }
       }
       if !restored.is_empty() {
-         // Sharded appends can interleave journal file order versus offset
-         // order; restore in original offset order so the reassigned
-         // sequential offsets preserve the recorded mutation order.
+         // Restore in original offset order to preserve mutation sequencing.
          restored.sort_by_key(|record| record.offset);
          let shard = self.shard();
          for mut record in restored {

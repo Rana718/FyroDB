@@ -30,6 +30,12 @@ tasks:
       desc: Release build
       cmds:
          - cargo build --release --bin {{.BINARY}}
+   verus:
+      desc: Run Verus formal invariant testcase validations and protocol proofs
+      cmds:
+         - cargo test --test verus_safety_invariants -- --nocapture {{.CLI_ARGS}}
+         - sh -c 'if [ -x "$HOME/tools/verus/verus" ]; then for f in proofs/verus/*.rs; do "$HOME/tools/verus/verus" --crate-type=lib "$f" || exit 1; done; fi'
+
    verify:proofs:
       desc: Verify the formal concurrency-protocol proofs (Verus; needs VERUS_BIN, dev-only)
       cmds:

@@ -1,7 +1,7 @@
 use arc_swap::ArcSwap;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use parking_lot::Mutex;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use super::{FailureReport, FailureTracker};
@@ -9,17 +9,9 @@ use super::{FailureReport, FailureTracker};
 #[derive(Clone)]
 pub struct ClusterState {
    failures: Arc<Mutex<FailureTracker>>,
-   /// Audit continue §4 (E3): the per-command topology/routing reads were
-   /// std `RwLock<Arc<T>>` read+clone (8.9 M reads/s in the experiment);
-   /// `ArcSwap` load_full reaches 13.7 M/s and load-guard 279 M/s. Writers
-   /// publish both together; a load sees one consistent generation.
    topology: Arc<ArcSwap<super::Topology>>,
    routing: Arc<ArcSwap<super::RoutingTable>>,
-   /// Enables snapshot revalidation with one relaxed load instead of the
-   /// RwLock + Arc clone per command.
    version: Arc<AtomicU64>,
-   /// Audit continue §4: read per routed command during migration windows
-   /// — ArcSwap guard loads instead of a mutex (E3 pattern).
    migrations: Arc<ArcSwap<std::collections::HashMap<u16, String>>>,
    imports: Arc<ArcSwap<std::collections::HashMap<u16, String>>>,
    has_imports: Arc<AtomicBool>,
@@ -58,9 +50,7 @@ impl ClusterState {
    }
 
    pub fn topology_and_routing_arc(&self) -> (Arc<super::Topology>, Arc<super::RoutingTable>) {
-      // Two independent loads: a concurrent install can interleave, but
-      // each Arc is internally consistent and the version check in
-      // `topology_if_newer` gates command routing.
+      // Independent atomic loads; each Arc is internally consistent.
       let topology = self.topology.load_full();
       let routing = self.routing.load_full();
       (topology, routing)
@@ -198,9 +188,6 @@ impl ClusterState {
    }
 
    pub fn replace_topology(&self, topology: super::Topology) -> bool {
-      // Epoch monotonicity replaces the RwLock's mutual exclusion: concurrent
-      // publishers are serialized by the cluster transport loop, and a stale
-      // epoch loses its store race by version check on the next read.
       let current = self.topology.load_full();
       if topology.epoch <= current.epoch || !topology.is_valid() {
          return false;

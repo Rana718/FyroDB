@@ -452,7 +452,6 @@ impl SetInner {
       }
    }
 
-   // Item 51: Fast linear scan for small compact sets (<= 8 items) avoiding binary search branching.
    #[inline]
    pub fn contains(&self, member: &str) -> bool {
       match self {
@@ -593,7 +592,7 @@ pub fn canonical_i64(value: &str) -> Option<i64> {
       return None;
    }
    let b0 = bytes[0];
-   if (b0 < b'0' || b0 > b'9') && b0 != b'-' {
+   if !b0.is_ascii_digit() && b0 != b'-' {
       return None;
    }
    if b0 == b'0' && bytes.len() > 1 {

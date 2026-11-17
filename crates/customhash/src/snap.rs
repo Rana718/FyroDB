@@ -1,7 +1,7 @@
 use crate::shard::{Entry, STATE_OCCUPIED, STATE_SNAP};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use parking_lot::RwLock;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 pub type SnapSink<V> = Arc<dyn Fn(&str, &V) + Send + Sync>;
 

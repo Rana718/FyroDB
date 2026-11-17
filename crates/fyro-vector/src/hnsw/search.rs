@@ -10,7 +10,6 @@ const PARALLEL_SCAN_MIN: usize = 4096;
 /// Queries one batched exact pass serves at most.
 const FLAT_BATCH_MAX: usize = 32;
 
-// Item 66: Lock-free flat scan result slot with Release/Acquire synchronization (no Mutex).
 pub(crate) struct FlatReq {
    q: Vec<f32>,
    k: usize,
@@ -51,8 +50,6 @@ impl HnswGraph {
    }
 
    /// Re-scores approximate candidates using exact vectors from `fetch(id)`.
-   /// Returns the best `k` sorted by metric distance.
-   // Item 64: Monomorphized generic closures for zero-allocation vector reranking.
    pub fn rerank_fast<F>(
       &self,
       q: &[f32],

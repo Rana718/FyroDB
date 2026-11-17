@@ -118,9 +118,7 @@ pub struct Conn<'a> {
    pub uid: u64,
    /// Set while the current command waits off-worker or on a key.
    pub park: Option<park::Parked>,
-   /// Reusable scratch for commands that move an element out of a locked
-   /// value before serializing it (pops), keeping the RESP reply build
-   /// outside the entry critical section.
+   /// Reusable scratch for element pops to build RESP replies outside entry lock.
    pub(crate) pop_scratch: String,
    pub(crate) prefetch: Option<Box<prefetch::PrefetchState>>,
    topology_cache: Option<(

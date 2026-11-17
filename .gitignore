@@ -12,4 +12,6 @@ bench/fyrodb-test
 AUDIT.md
 continue_audit.md
 performance_audit.md
-books
+booksprotection.json
+dev_protection.json
+audit_peromfnces_books.md

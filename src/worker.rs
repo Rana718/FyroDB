@@ -51,16 +51,12 @@ pub fn run_worker(
    let waker = Arc::new(Waker::new(poll.registry(), WAKER_TOKEN).unwrap());
    let notifier = WorkerNotifier::new(waker, worker_index);
 
-   // A Conn is large; a fixed 4096-slot reservation is a sizeable idle
-   // allocation. Grow with actual connections.
    let mut conns: Vec<Option<Conn>> = Vec::new();
    let mut next_token: usize = 1;
    let mut free: Vec<usize> = Vec::new();
    let mut dirty: Vec<usize> = Vec::with_capacity(32);
    let mut sub_dirty: Vec<usize> = Vec::with_capacity(16);
    let mut fanout_scratch: Vec<crate::pubsub::FanEntry> = Vec::new();
-   // Generation-stamped marks: one u32 store per touched connection instead
-   // of filling the whole table each fanout cycle.
    let mut fanout_seen: Vec<u32> = Vec::new();
    let mut fanout_gen: u32 = 0;
    let mut completions: Vec<crate::pubsub::Completion> = Vec::new();
@@ -125,8 +121,7 @@ pub fn run_worker(
 
       for event in events.iter() {
          match event.token() {
-            // Stevens UNP Vol 1 Ch 16 & Mio docs: Edge-triggered accept loop MUST drain until WouldBlock
-            // to prevent stranding pending burst connections in the kernel listen backlog.
+            // Edge-triggered accept loop must drain until WouldBlock.
             LISTENER_TOKEN => loop {
                match listener.accept() {
                   Ok(mut stream) => {
@@ -148,9 +143,7 @@ pub fn run_worker(
                            #[cfg(target_os = "linux")]
                            {
                               let _ = sock_ref.set_tcp_quickack(true);
-                              // Kerrisk Ch. 61 & Stevens UNP Ch. 7: 8MB send / 8MB recv socket buffers allow
-                              // full pipelined batches (16x262KB / 4x1MB) to stream zero-copy in a single
-                              // write_vectored pass without partial WouldBlock and buffer copy fallback.
+                              // 8MB socket buffers allow large pipelined batches to stream zero-copy.
                               let _ = sock_ref.set_send_buffer_size(8 * 1024 * 1024);
                               let _ = sock_ref.set_recv_buffer_size(8 * 1024 * 1024);
                            }
@@ -643,8 +636,7 @@ fn make_tcp_listener(addr: SocketAddr, _worker_index: usize) -> TcpListener {
    socket.set_nonblocking(true).unwrap();
    #[cfg(target_os = "linux")]
    {
-      // W. Richard Stevens (UNP Vol. 1 Ch. 16): TCP_DEFER_ACCEPT delays waking worker threads
-      // until actual client payload data arrives, completely eliminating idle connection wakeups.
+      // TCP_DEFER_ACCEPT delays wakeup until payload arrives.
       #[allow(unsafe_code)]
       unsafe {
          use std::os::fd::AsRawFd;
@@ -659,8 +651,7 @@ fn make_tcp_listener(addr: SocketAddr, _worker_index: usize) -> TcpListener {
       }
       #[cfg(target_os = "linux")]
       {
-         // Stevens UNP Vol 1 Ch. 7.5: SO_RCVBUF on listener socket before listen()
-         // ensures window scaling option in SYN/ACK advertises full 8MB receive window.
+         // Set socket buffer sizes before listen() for SYN/ACK window scaling.
          let _ = socket.set_send_buffer_size(8 * 1024 * 1024);
          let _ = socket.set_recv_buffer_size(8 * 1024 * 1024);
       }

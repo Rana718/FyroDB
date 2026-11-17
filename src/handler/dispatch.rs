@@ -454,7 +454,8 @@ fn handle_dispatch_auth(conn: &mut Conn<'_>, parts: &[&str]) {
    if parts.len() == 2 || parts.len() == 3 {
       let pass = if parts.len() == 3 { parts[2] } else { parts[1] };
       if let Some(expected) = conn.auth_required {
-         if crate::handler::conn::fast_path::constant_time_eq(pass.as_bytes(), expected.as_bytes()) {
+         if crate::handler::conn::fast_path::constant_time_eq(pass.as_bytes(), expected.as_bytes())
+         {
             conn.authenticated = true;
             conn.parser.wbuf.extend_from_slice(b"+OK\r\n");
          } else {

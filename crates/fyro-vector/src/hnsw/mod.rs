@@ -143,10 +143,7 @@ pub(crate) struct Inner {
    pay: usize,
    /// u32 words per level-0 block (multiple of 16: whole cache lines).
    stride: usize,
-   /// Chunked node arena (audit V-1a): one `Box<[Line]>` per chunk of
-   /// `nodes_per_chunk` nodes. Growth appends a chunk instead of
-   /// realloc-and-copying the whole arena under the write lock, which
-   /// stalled every concurrent search; `base()` adds one divide per node.
+   /// Chunked node arena to allow incremental growth without full realloc.
    blocks: Vec<Box<[Line]>>,
    /// nodes per arena chunk (>= 1)
    nodes_per_chunk: usize,
@@ -192,7 +189,9 @@ impl Inner {
       let needed = n.div_ceil(self.nodes_per_chunk);
       let chunk_lines = self.nodes_per_chunk * (self.stride / 16);
       while self.blocks.len() < needed {
-         self.blocks.push((0..chunk_lines).map(|_| Line::zero()).collect());
+         self
+            .blocks
+            .push((0..chunk_lines).map(|_| Line::zero()).collect());
       }
    }
 
@@ -421,7 +420,6 @@ pub struct HnswGraph {
    quant: Quant,
    rot: Option<quant::Rotation>,
    /// RaBitQ centroids; replaced only while the graph is empty.
-   /// Audit continue §4: read per quantized encode (E3 ArcSwap pattern).
    book: ArcSwap<quant::Codebook>,
    m: usize,
    m0: usize,
@@ -1329,10 +1327,7 @@ impl HnswGraph {
          if by_batch || by_milestone {
             self.last_shrink.store(count, Ordering::Relaxed);
             let mut g = self.inner.write();
-            // Shrink with slack instead of exact fit: an exact-fit shrink
-            // discards the reserved headroom, forcing the next incremental
-            // insert to realloc-and-copy the whole block arena under the
-            // write lock (all searches stall for the copy).
+            // Shrink with headroom to avoid immediate realloc on next insert.
             let slack_target = (count * 3 / 2).max(1024).next_power_of_two();
             let keep_chunks = slack_target.div_ceil(g.nodes_per_chunk);
             if g.blocks.len() > keep_chunks {

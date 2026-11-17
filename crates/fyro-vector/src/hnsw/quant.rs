@@ -331,9 +331,7 @@ pub(crate) enum QEnc {
 }
 
 thread_local! {
-    // Audit V-3: query-encoding buffers recycle through per-thread
-    // free lists (returned by QEnc's Drop), so the quantized search
-    // path stops allocating a fresh Vec per search.
+    // Per-thread query-encoding buffer free lists to avoid allocations.
     static INT8_FREE: std::cell::RefCell<Vec<Vec<i8>>> = const { std::cell::RefCell::new(Vec::new()) };
     static RQ_FREE: std::cell::RefCell<Vec<Vec<(RqPlanes, f32)>>> = const { std::cell::RefCell::new(Vec::new()) };
     static F32_FREE: std::cell::RefCell<Vec<Vec<f32>>> = const { std::cell::RefCell::new(Vec::new()) };
@@ -379,7 +377,10 @@ pub(crate) fn encode_query(
          let scale = if maxabs > 0.0 { maxabs / 127.0 } else { 1.0 };
          let mut codes = take_int8_buf();
          codes.clear();
-         codes.extend(v.iter().map(|&x| (x / scale).round().clamp(-127.0, 127.0) as i8));
+         codes.extend(
+            v.iter()
+               .map(|&x| (x / scale).round().clamp(-127.0, 127.0) as i8),
+         );
          let sq: i64 = codes.iter().map(|&c| c as i64 * c as i64).sum();
          QEnc::Int8 {
             codes,
@@ -412,9 +413,7 @@ pub(crate) fn encode_query(
 
 impl Drop for QEnc {
    fn drop(&mut self) {
-      // Return the encode buffers to this thread's free lists; buffers
-      // dying on another thread (brute-batch results crossing threads)
-      // just deallocate as before.
+      // Return encode buffers to thread-local free lists.
       match self {
          QEnc::Int8 { codes, .. } => {
             let mut codes = std::mem::take(codes);

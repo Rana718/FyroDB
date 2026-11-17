@@ -106,14 +106,14 @@ pub fn format_usize_digits(mut n: usize, buf: &mut [u8]) -> &[u8] {
    let mut i = buf.len();
    while n >= 100 {
       let q = n / 100;
-      let rem = ((n - q * 100) * 2) as usize;
+      let rem = (n - q * 100) * 2;
       n = q;
       i -= 2;
       buf[i] = crate::utils::int_format::DIGITS100[rem];
       buf[i + 1] = crate::utils::int_format::DIGITS100[rem + 1];
    }
    if n >= 10 {
-      let rem = (n * 2) as usize;
+      let rem = n * 2;
       i -= 2;
       buf[i] = crate::utils::int_format::DIGITS100[rem];
       buf[i + 1] = crate::utils::int_format::DIGITS100[rem + 1];
@@ -122,39 +122,47 @@ pub fn format_usize_digits(mut n: usize, buf: &mut [u8]) -> &[u8] {
       buf[i] = b'0' + n as u8;
    }
    &buf[i..]
+}
+
+/// Formats a RESP bulk string header `$len\r\n` into the provided 24-byte buffer,
+/// returning the number of bytes written.
+#[inline(always)]
+pub fn format_bulk_header(len: usize, out: &mut [u8; 24]) -> usize {
+   out[0] = b'$';
+   if len < 10 {
+      out[1] = b'0' + len as u8;
+      out[2] = b'\r';
+      out[3] = b'\n';
+      4
+   } else if len < 100 {
+      out[1] = b'0' + (len / 10) as u8;
+      out[2] = b'0' + (len % 10) as u8;
+      out[3] = b'\r';
+      out[4] = b'\n';
+      5
+   } else if len < 1000 {
+      out[1] = b'0' + (len / 100) as u8;
+      out[2] = b'0' + ((len / 10) % 10) as u8;
+      out[3] = b'0' + (len % 10) as u8;
+      out[4] = b'\r';
+      out[5] = b'\n';
+      6
+   } else {
+      let mut digits = [0u8; 20];
+      let number = format_usize_digits(len, &mut digits);
+      out[1..1 + number.len()].copy_from_slice(number);
+      out[1 + number.len()..3 + number.len()].copy_from_slice(b"\r\n");
+      number.len() + 3
+   }
 }
 
 #[inline(always)]
-pub(crate) fn format_u64_digits(mut n: u64, buf: &mut [u8]) -> &[u8] {
-   if n == 0 {
-      let last = buf.len() - 1;
-      buf[last] = b'0';
-      return &buf[last..];
-   }
-   let mut i = buf.len();
-   while n >= 100 {
-      let q = n / 100;
-      let rem = ((n - q * 100) * 2) as usize;
-      n = q;
-      i -= 2;
-      buf[i] = crate::utils::int_format::DIGITS100[rem];
-      buf[i + 1] = crate::utils::int_format::DIGITS100[rem + 1];
-   }
-   if n >= 10 {
-      let rem = (n * 2) as usize;
-      i -= 2;
-      buf[i] = crate::utils::int_format::DIGITS100[rem];
-      buf[i + 1] = crate::utils::int_format::DIGITS100[rem + 1];
-   } else {
-      i -= 1;
-      buf[i] = b'0' + n as u8;
-   }
-   &buf[i..]
+pub(crate) fn format_u64_digits(n: u64, buf: &mut [u8]) -> &[u8] {
+   format_usize_digits(n as usize, buf)
 }
 
 /// # Safety
-///
-/// Caller must ensure `dst` has enough capacity to hold the formatted RESP bulk header, payload, and CRLF.
+/// Caller must ensure `dst` has enough capacity for bulk header, payload, and CRLF.
 #[inline(always)]
 pub unsafe fn write_bulk_raw(dst: *mut u8, s: &[u8]) -> usize {
    unsafe {
@@ -220,7 +228,10 @@ pub fn write_float(out: &mut Vec<u8>, f: f64) {
    // point (9.0 -> "9"); otherwise shortest-roundtrip (ryu).
    if f.is_finite() && f == f.trunc() && f.abs() < 9.007_199_254_740_992e15 {
       let mut buf = [0u8; 20];
-      write_bulk(out, crate::utils::int_format::write_i64_to(&mut buf, f as i64));
+      write_bulk(
+         out,
+         crate::utils::int_format::write_i64_to(&mut buf, f as i64),
+      );
    } else {
       let mut buffer = ryu::Buffer::new();
       write_bulk(out, buffer.format(f));
@@ -407,6 +418,13 @@ pub fn write_opt_array(out: &mut Vec<u8>, items: &[Option<String>]) {
          None => write_nil(out),
       }
    }
+}
+
+#[inline]
+pub fn write_scan_cursor_header(out: &mut Vec<u8>, cursor: &str, count: usize) {
+   out.extend_from_slice(b"*2\r\n");
+   write_bulk(out, cursor);
+   write_array_header(out, count);
 }
 
 #[inline]

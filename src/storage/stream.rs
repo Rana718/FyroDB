@@ -167,7 +167,6 @@ fn put_varint(buf: &mut Vec<u8>, mut v: u64) {
    buf.push(v as u8);
 }
 
-// Item 48: Fast unrolled branchless varint decoding for 1, 2, and 3 byte common stream integers.
 #[inline(always)]
 fn get_varint(buf: &[u8], pos: &mut usize) -> u64 {
    let p = *pos;

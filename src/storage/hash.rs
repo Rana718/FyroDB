@@ -307,15 +307,23 @@ impl Store {
       }
    }
 
-   pub fn hget(&self, key: &str, field: &str) -> Result<Option<String>, &'static str> {
+   #[inline]
+   pub(crate) fn with_hash_ref<R, F>(&self, key: &str, default: R, f: F) -> Result<R, &'static str>
+   where
+      F: FnOnce(&HashInner) -> R,
+   {
       match self.data.get_ref(key) {
-         None => Ok(None),
-         Some(e) if e.is_expired() => Ok(None),
+         None => Ok(default),
+         Some(e) if e.is_expired() => Ok(default),
          Some(e) => match e.value.as_hash() {
-            Some(h) => Ok(h.get(field).map(|v| v.to_string())),
+            Some(h) => Ok(f(h)),
             None => Err("WRONGTYPE"),
          },
       }
+   }
+
+   pub fn hget(&self, key: &str, field: &str) -> Result<Option<String>, &'static str> {
+      self.with_hash_ref(key, None, |h| h.get(field).map(|v| v.to_string()))
    }
 
    /// Zero-alloc HGET: writes the bulk reply straight into `out`.
@@ -325,34 +333,22 @@ impl Store {
       field: &str,
       out: &mut Vec<u8>,
    ) -> Result<bool, &'static str> {
-      match self.data.get_ref(key) {
-         None => Ok(false),
-         Some(e) if e.is_expired() => Ok(false),
-         Some(e) => match e.value.as_hash() {
-            Some(h) => match h.get(field) {
-               Some(v) => {
-                  v.write_resp(out);
-                  Ok(true)
-               }
-               None => Ok(false),
-            },
-            None => Err("WRONGTYPE"),
-         },
-      }
+      self.with_hash_ref(key, false, |h| match h.get(field) {
+         Some(v) => {
+            v.write_resp(out);
+            true
+         }
+         None => false,
+      })
    }
 
    pub fn hmget(&self, key: &str, fields: &[&str]) -> Result<Vec<Option<String>>, &'static str> {
-      match self.data.get_ref(key) {
-         None => Ok(vec![None; fields.len()]),
-         Some(e) if e.is_expired() => Ok(vec![None; fields.len()]),
-         Some(e) => match e.value.as_hash() {
-            Some(h) => Ok(fields
-               .iter()
-               .map(|f| h.get(f).map(|v| v.to_string()))
-               .collect()),
-            None => Err("WRONGTYPE"),
-         },
-      }
+      self.with_hash_ref(key, vec![None; fields.len()], |h| {
+         fields
+            .iter()
+            .map(|f| h.get(f).map(|v| v.to_string()))
+            .collect()
+      })
    }
 
    /// Nil for missing fields; truncation keeps seqlock retries idempotent.
@@ -469,25 +465,11 @@ impl Store {
    }
 
    pub fn hexists(&self, key: &str, field: &str) -> Result<bool, &'static str> {
-      match self.data.get_ref(key) {
-         None => Ok(false),
-         Some(e) if e.is_expired() => Ok(false),
-         Some(e) => match e.value.as_hash() {
-            Some(h) => Ok(h.contains_key(field)),
-            None => Err("WRONGTYPE"),
-         },
-      }
+      self.with_hash_ref(key, false, |h| h.contains_key(field))
    }
 
    pub fn hlen(&self, key: &str) -> Result<usize, &'static str> {
-      match self.data.get_ref(key) {
-         None => Ok(0),
-         Some(e) if e.is_expired() => Ok(0),
-         Some(e) => match e.value.as_hash() {
-            Some(h) => Ok(h.len()),
-            None => Err("WRONGTYPE"),
-         },
-      }
+      self.with_hash_ref(key, 0, |h| h.len())
    }
 
    pub fn hkeys(&self, key: &str) -> Result<Vec<String>, &'static str> {

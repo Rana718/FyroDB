@@ -75,7 +75,10 @@ fn copy_large_payload(destination: &mut [u8], source: &[u8]) {
    #[cfg(all(target_arch = "x86_64", not(target_feature = "avx")))]
    {
       AVX_INIT.call_once(|| {
-         HAS_AVX.store(std::is_x86_feature_detected!("avx"), std::sync::atomic::Ordering::Relaxed);
+         HAS_AVX.store(
+            std::is_x86_feature_detected!("avx"),
+            std::sync::atomic::Ordering::Relaxed,
+         );
       });
       if source.len() >= 8192 && HAS_AVX.load(std::sync::atomic::Ordering::Relaxed) {
          unsafe { copy_streaming_payload(destination, source) };
@@ -89,16 +92,12 @@ fn copy_large_payload(destination: &mut [u8], source: &[u8]) {
 #[target_feature(enable = "avx,avx2")]
 unsafe fn copy_streaming_payload(destination: &mut [u8], source: &[u8]) {
    use std::arch::x86_64::{
-      _mm256_loadu_si256, _mm256_storeu_si256, _mm256_stream_si256, _mm_sfence,
+      _mm_sfence, _mm256_loadu_si256, _mm256_storeu_si256, _mm256_stream_si256,
    };
    unsafe {
       let dst = destination.as_mut_ptr();
       let src = source.as_ptr();
       let len = source.len();
-      // Large payload copy: for payloads >= 32KB (64KB, 262KB, 1MB), the aggregate database
-      // working set (>128MB) exceeds L2/L3 cache capacity. Streaming stores (_mm256_stream_si256)
-      // bypass the cache hierarchy and write directly to Write-Combining (WC) buffers, eliminating
-      // Read-For-Ownership (RFO) DRAM bus roundtrips and doubling throughput (Drepper Sec 6.2; Intel Arch Opt Manual Sec 7.5).
       if len >= 32768 {
          let align_prefix = ((32 - (dst as usize & 31)) & 31).min(len);
          if align_prefix > 0 {
@@ -106,10 +105,10 @@ unsafe fn copy_streaming_payload(destination: &mut [u8], source: &[u8]) {
          }
          let mut at = align_prefix;
          let stream_end = len - ((len - at) & 31);
-         // 512-byte unroll utilizing all 16 architectural YMM vector registers (ymm0..ymm15)
-         // without register spilling or software prefetch AGU port contention.
          while at + 512 <= stream_end {
-            for offset in [0, 32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416, 448, 480] {
+            for offset in [
+               0, 32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416, 448, 480,
+            ] {
                let value = _mm256_loadu_si256(src.add(at + offset).cast());
                _mm256_stream_si256(dst.add(at + offset).cast(), value);
             }
@@ -125,10 +124,11 @@ unsafe fn copy_streaming_payload(destination: &mut [u8], source: &[u8]) {
          }
          _mm_sfence();
       } else {
-         // 512-byte AVX unroll keeping hot cached lines in L1/L2 (Gjengset Ch. 10)
          let mut at = 0;
          while at + 512 <= len {
-            for offset in [0, 32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416, 448, 480] {
+            for offset in [
+               0, 32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416, 448, 480,
+            ] {
                let value = _mm256_loadu_si256(src.add(at + offset).cast());
                _mm256_storeu_si256(dst.add(at + offset).cast(), value);
             }
@@ -308,8 +308,7 @@ impl SmallStr {
    }
 
    #[inline(always)]
-   #[allow(dead_code)]
-   pub(crate) fn overwrite_bytes_streaming(&mut self, bytes: &[u8]) {
+   pub fn overwrite_bytes_streaming(&mut self, bytes: &[u8]) {
       if bytes.len() >= 8192
          && self.len == Tag::Heap
          && Self::read_heap_len(&self.data) == bytes.len()
@@ -447,13 +446,8 @@ impl SmallStr {
       crate::utils::resp::write_bulk_bytes(out, self.as_bytes());
    }
 
-   /// Writes the formatted RESP bulk string response directly to `p` without bounds checks.
-   /// Returns the total bytes written.
-   ///
    /// # Safety
-   ///
-   /// `p` must have at least `max(64, self.len() + 32)` writable bytes,
-   /// including the entire heap-backed payload and its RESP framing.
+   /// `p` must have at least `max(64, self.len() + 32)` writable bytes for formatted RESP response.
    #[inline(always)]
    pub unsafe fn write_resp_raw(&self, p: *mut u8) -> usize {
       unsafe {
@@ -676,7 +670,6 @@ impl Clone for SmallStr {
          self.data = source.data;
          self.len = source.len;
       } else if self.len == Tag::Heap && Self::read_heap_len(&self.data) == source.len() {
-         // Both are heap-allocated and have identical lengths: overwrite in-place without reallocation (Gjengset Ch. 13)
          self.as_bytes_mut().copy_from_slice(source.as_bytes());
       } else {
          *self = source.clone();

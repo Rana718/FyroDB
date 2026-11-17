@@ -53,10 +53,7 @@ impl Store {
       }
    }
 
-   /// Bytes-key twin of `record_current_value` (audit S-2): the captured
-   /// record carries the raw key bytes; non-UTF-8 keys skip the PG-proxy
-   /// invalidation (that cache's key domain is UTF-8).
-   // Item 31: Avoid second hash table lookup on replication/AOF record for live string writes.
+   /// Records live string write for replication and AOF without secondary table lookup.
    pub fn record_live_string(&self, key: &[u8], bytes: &[u8], expires_ms: u64) {
       let mut encoded: Option<Vec<u8>> = None;
       if crate::storage::persistence::aof::enabled() || self.replication.is_some() {
@@ -119,10 +116,7 @@ impl Store {
    }
 
    pub fn record_current_value(&self, key: &str) {
-      // One lookup, one encoding, shared by the AOF record and the
-      // replication record. The entry read guard spans the encode so the
-      // captured value is consistent (writers are excluded for the same
-      // window that orders the log append).
+      // One lookup and encoding shared by AOF and replication.
       let mut encoded: Option<Vec<u8>> = None;
       let mut expire_at_ms: Option<u64> = None;
       let mut live = false;

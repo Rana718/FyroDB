@@ -126,8 +126,17 @@ fn check_pipeline(store: Arc<Store>, wire: Vec<u8>, expected: &[u8]) -> usize {
       assert!(conn.parser.wbuf.len() <= conn.parser.wbuf.capacity());
       if conn.parser.wbuf != expected {
          let mut d = 0;
-         while d < expected.len() && d < conn.parser.wbuf.len() && conn.parser.wbuf[d] == expected[d] { d += 1; }
-         eprintln!("DIVERGE at {d}: got={:?} want={:?}", &conn.parser.wbuf[d..d+40.min(conn.parser.wbuf.len()-d)], &expected[d..d+40.min(expected.len()-d)]);
+         while d < expected.len()
+            && d < conn.parser.wbuf.len()
+            && conn.parser.wbuf[d] == expected[d]
+         {
+            d += 1;
+         }
+         eprintln!(
+            "DIVERGE at {d}: got={:?} want={:?}",
+            &conn.parser.wbuf[d..d + 40.min(conn.parser.wbuf.len() - d)],
+            &expected[d..d + 40.min(expected.len() - d)]
+         );
          panic!("wbuf mismatch at {d}");
       }
       assert_eq!(conn.parser.wbuf, expected);
@@ -746,7 +755,6 @@ fn binary_keys_round_trip_through_the_string_core() {
    // ttl accounting verified via the store unit tests; here we
    // assert the observable protocol behavior
 
-
    // DEL removes it
    assert!(store.del_bytes(binary_key));
    out.clear();
@@ -762,9 +770,5 @@ fn binary_keys_set_and_get_through_the_tcp_protocol() {
    wire.extend_from_slice(&command(&[b"GET", key]));
    wire.extend_from_slice(&command(&[b"DEL", key]));
    wire.extend_from_slice(&command(&[b"GET", key]));
-   check_pipeline(
-      store,
-      wire,
-      b"+OK\r\n$3\r\nval\r\n:1\r\n$-1\r\n",
-   );
+   check_pipeline(store, wire, b"+OK\r\n$3\r\nval\r\n:1\r\n$-1\r\n");
 }

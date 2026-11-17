@@ -483,7 +483,6 @@ impl PubSub {
       if self.pattern_count.load(Ordering::Relaxed) == 0 {
          return shard.publish(channel, || encode_batch(channel, messages));
       }
-      // Item 56: RCU-style atomic pointer load eliminates lock contention in pattern matching.
       let patterns = self.patterns.load();
       let Some(patterns) = patterns.as_ref() else {
          return shard.publish(channel, || encode_batch(channel, messages));

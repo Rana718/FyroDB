@@ -28,10 +28,7 @@ impl CompactKey {
    fn full_width_bytes(key: &[u8]) -> Self {
       let mut data = [0u8; INLINE_CAP];
       data.copy_from_slice(&key[..INLINE_CAP]);
-      Self {
-         data,
-         tag: key[15],
-      }
+      Self { data, tag: key[15] }
    }
 
    #[inline]
@@ -80,9 +77,7 @@ impl CompactKey {
       Self::from_bytes(s.as_bytes())
    }
 
-   /// Audit S-2: bytes-native key construction — identical layout rules as
-   /// `from_str` (inline ≤15, eligible 16-byte full-width, heap otherwise),
-   /// enabling binary keys end to end.
+   /// Binary key construction (inline <= 15 bytes, heap otherwise).
    #[inline(always)]
    pub fn from_bytes(key: &[u8]) -> Self {
       let len = key.len();

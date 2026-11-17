@@ -27,15 +27,20 @@ Consequences proven by the checker:
 ### `admission_protocol.rs` — the map admission handshake (`crates/customhash/src/access.rs`)
 
 Invariant: **a committed (admitted) read epoch never overlaps an active
-writer mutation section.** Consequences:
+writer mutation section.**
 
-- `committed_epochs_and_writers_exclude_each_other` — the soundness
-  condition for the guard-free entry reads in
-  `get_to_buf_epoch_entry_bytes` used by batched GET.
-- A committing reader has observed every writer stripe as zero
-  (`commit_requires_no_writers`); an active writer stays registered until
-  its exit, so a commit can never succeed inside a writer's window — this
-  is the Dekker handshake, proven rather than argued.
+### `striped_admission.rs` — multi-stripe writer admission and reader epoch isolation
+
+Invariant: **committed readers and writers in critical sections are strictly disjoint.**
+Consequences:
+- `mutual_exclusion_theorem` — `committed_readers > 0` and `writer_in_critical_section` can never coexist.
+- Linearizable atomic count synchronization guarantees no ABA or lost-wake race conditions across arbitrary reader/writer interleavings.
+
+### `blocking_protocol.rs` — BlockRegistry waiter registration and wakeup (`src/storage/blocking.rs`)
+
+Invariant: **a write to a key with pending waiters is guaranteed to dispatch a wake.**
+Consequences:
+- `no_lost_wakeup_theorem` — when `registered_waiters > 0`, the fast-path check `waiting_counter == 0` cannot skip signaling, eliminating lost wakeups.
 
 ### `fence_protocol.rs` — the cluster write fence (`src/storage/store/fence.rs`)
 

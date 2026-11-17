@@ -98,10 +98,6 @@ impl RequestRegistry {
             state.pending.remove(&request_id);
             return Err(RequestError::Timeout);
          }
-         // parking_lot: wait_for takes the guard by &mut (mutating it in
-         // place) and returns the timeout result; the deadline check above
-         // handles expiry, and a wake without the response arriving loops
-         // back to the slot re-check.
          let timed_out = wake.wait_for(&mut state, remaining).timed_out();
          if timed_out {
             state.pending.remove(&request_id);
@@ -137,9 +133,7 @@ impl RequestRegistry {
    }
 
    pub fn len(&self) -> usize {
-      self.state.0.lock()
-         .pending
-         .len()
+      self.state.0.lock().pending.len()
    }
 
    pub fn is_empty(&self) -> bool {

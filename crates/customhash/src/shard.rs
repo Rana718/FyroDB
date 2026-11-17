@@ -49,14 +49,11 @@ pub(crate) fn dead_estimate(len: usize, live: usize) -> usize {
    len.saturating_sub(live)
 }
 
-// Item 17: Cache-align Entry to 64 bytes to eliminate split-cache-line fetches
-// and prevent atomic RMW split-lock bus invalidations across CPU cores.
+// Cache-align Entry to 64 bytes to eliminate split-cache-line fetches.
 #[repr(C, align(64))]
 pub struct Entry<V> {
    pub key: CompactKey,
    pub state: AtomicU64,
-   // Read epochs can borrow values without locking each entry. Mutations
-   // require both the owning map's write epoch and the entry's write lock.
    pub value: UnsafeCell<std::mem::MaybeUninit<V>>,
 }
 
@@ -76,12 +73,8 @@ impl<V> std::ops::Deref for EntryReadGuard<'_, V> {
 impl<V> Drop for EntryReadGuard<'_, V> {
    #[inline(always)]
    fn drop(&mut self) {
-      // The decrement and the last-reader unlock are one atomic step: a
-      // reader that joins under the lock between a separate fetch_sub and
-      // store would have its count clobbered by the store, leaving it
-      // unprotected against a waiting writer. Folding both into one CAS
-      // closes that window; a joiner that lands first simply turns this
-      // into a plain decrement on the retry.
+      // Atomic CAS decrement and last-reader unlock to prevent races
+      // with concurrent readers joining under the lock.
       let mut current = self.entry.state.load(Ordering::Acquire);
       loop {
          let readers = current & STATE_READER_MASK;
@@ -413,16 +406,13 @@ impl<V> TaggedSlot<V> {
          .is_ok()
    }
 
-   // Item 21: Probing loads with Relaxed memory ordering; issues Acquire fence
-   // only upon discovering the matching slot, avoiding barrier stalls on non-matching slots.
+   // Probing loads with Relaxed ordering; issues Acquire fence only upon discovering match.
    #[inline(always)]
    pub(crate) unsafe fn probe_from_base(
       base: *const TaggedSlot<V>,
       hash: u64,
       max_probes: usize,
    ) -> *mut Entry<V> {
-      // Item 21: Probing loads with Relaxed memory ordering; issues Acquire fence
-      // only upon discovering the matching slot, avoiding barrier stalls on non-matching slots.
       let expected_hi = (hash_tag(hash) | (1 << TAG_BITS)) as u16;
       let word0 = unsafe { (*base).0.load(Ordering::Relaxed) } as usize;
       if (word0 >> TAG_SHIFT) as u16 == expected_hi {
@@ -744,8 +734,7 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
       Self::find_slow(key, mask, slots, base_idx + 16, expected_hi, expected_match)
    }
 
-   /// Bytes-key twin of `find_fast` (audit S-2): identical probe, full
-   /// byte comparison instead of `eq_str`.
+   /// Bytes-key variant of `find_fast`.
    pub(crate) fn find_fast_bytes<'a>(
       slots: *mut TaggedSlot<V>,
       mask: usize,
@@ -1127,7 +1116,7 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
       InsertFastResult::Fallback(value)
    }
 
-   /// Bytes-key twin of `insert_or_update_slot_fast` (audit S-2).
+   /// Bytes-key variant of `insert_or_update_slot_fast`.
    #[inline(always)]
    pub(crate) fn insert_or_update_slot_fast_bytes(
       &self,
@@ -1317,7 +1306,7 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
       FastSet::Retry
    }
 
-   /// Bytes-key twin of `probe_or_insert` (audit S-2).
+   /// Bytes-key variant of `probe_or_insert`.
    #[inline(always)]
    pub(crate) fn probe_or_insert_bytes<F>(&self, hash: u64, key: &[u8], make_value: F) -> FastSet<V>
    where
@@ -1543,9 +1532,7 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
       }
    }
 
-   /// Bytes-key twin of `set_key_with_overwrite` (audit S-2): probes by
-   /// tag, compares full key bytes, and builds the key with
-   /// `CompactKey::from_bytes`.
+   /// Bytes-key variant of `set_key_with_overwrite`.
    pub(crate) fn set_key_with_overwrite_bytes(
       &self,
       key: &[u8],

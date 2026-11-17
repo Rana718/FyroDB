@@ -29,8 +29,6 @@ pub(super) fn dispatch_set_expire_pair(
    conn: &mut Conn<'_>,
    set: &[(*const u8, usize)],
 ) -> PairOutcome {
-   // Zero-copy peek: the EXPIRE header is fixed-width, so a prefix check
-   // on the unparsed remainder decides without consuming or doing UTF-8 parsing on set parts.
    const EXPIRE_PREFIX: &[u8] = b"*3\r\n$6\r\nEXPIRE\r\n";
    if !conn
       .parser
@@ -53,11 +51,9 @@ pub(super) fn dispatch_set_expire_pair(
       value = v;
    }
 
-   // Consume and parse the EXPIRE command.
    match conn.parser.parse_one() {
       ParseResult::Complete => {}
       ParseResult::Incomplete => {
-         // SET succeeded; EXPIRE was incomplete and remains in rbuf at start_pos for the next read/parse.
          conn.store.set_string(key, value, 0);
          if conn.store.has_replication() {
             conn.store.record_current_value(key);
@@ -80,7 +76,6 @@ pub(super) fn dispatch_set_expire_pair(
       return PairOutcome::Done;
    }
    if unsafe { part_bytes(expire[1]) } != key.as_bytes() {
-      // EXPIRE for a different key: both go through normal dispatch.
       conn.store.set_string(key, value, 0);
       if conn.store.has_replication() {
          conn.store.record_current_value(key);
@@ -106,7 +101,6 @@ pub(super) fn dispatch_set_expire_pair(
          .and_then(crate::storage::value::expiry_from_secs)
    };
    let Some(exp) = exp else {
-      // Invalid TTL: the generic path reports the error identically.
       conn.store.set_string(key, value, 0);
       if conn.store.has_replication() {
          conn.store.record_current_value(key);
@@ -119,7 +113,6 @@ pub(super) fn dispatch_set_expire_pair(
    let store = conn.store;
    let _write_epoch = store.data.write_epoch();
 
-   // The pair: one lock, atomic value+TTL.
    let (hint, entry) = conn.hint_for(set[1]);
    conn.store.set_string_auto(key, hint, entry, value, exp);
    if conn.store.has_replication() {
@@ -127,14 +120,15 @@ pub(super) fn dispatch_set_expire_pair(
    }
    conn.parser.wbuf.extend_from_slice(b"+OK\r\n:1\r\n");
 
-   // Items 29 & 30: Parse arbitrary integer TTL seconds and coalesce SET+EXPIRE pairs.
    for _ in 0..128 {
       let avail = conn.parser.filled - conn.parser.pos;
       if avail < 48 {
          break;
       }
       let buf = unsafe { conn.parser.rbuf.as_ptr().add(conn.parser.pos) };
-      if let Some((k_slice, v_slice, ttl_secs)) = conn.parser.try_fast_set_expire_pair_at(buf, avail) {
+      if let Some((k_slice, v_slice, ttl_secs)) =
+         conn.parser.try_fast_set_expire_pair_at(buf, avail)
+      {
          let exp_ms = crate::storage::value::expiry_from_secs(ttl_secs).unwrap_or(0);
          let (hint, entry) = conn.hint_for(k_slice);
          let out = &mut conn.parser.wbuf;
@@ -254,27 +248,16 @@ pub(super) fn execute_publish_run(
    Ok(())
 }
 
-/// Same-key write whose pipelined runs execute under one lock, with
-/// per-command replies identical to sequential execution.
 #[derive(Clone, Copy, PartialEq)]
 pub(super) enum WriteOp {
-   /// `SET k v`: only the last value is observable; replies are all `+OK`.
    Set,
-   /// `INCR k`: replies are the consecutive counter values.
    Incr,
-   /// `HSET k f v`: reply per command is the "field added" flag.
    Hset,
-   /// `SADD k m`: reply per command is the "member added" flag.
    Sadd,
-   /// `ZADD k score m` (plain, no modifiers): reply is "member added".
    Zadd,
-   /// `PFADD k elem`: reply per command is the "register changed" flag.
    Pfadd,
-   /// `GEOADD k lon lat member`: reply per command is the added count.
    Geoadd,
-   /// `JSON.SET k path v`: only the last value is observable; replies are all `+OK`.
    JsonSet,
-   /// `XADD k * f v`: reply per command is the stream ID.
    Xadd,
 }
 
@@ -504,14 +487,13 @@ pub(super) fn execute_write_run(
          // state. Plain SET clears TTL. Bytes-native: no value scan.
          let last = parts[parts.len() - 1];
          let value = unsafe { part_bytes(last) };
-         conn.store.set_string_auto_bytes(key.as_bytes(), None, std::ptr::null(), value, 0);
+         conn
+            .store
+            .set_string_auto_bytes(key.as_bytes(), None, std::ptr::null(), value, 0);
          for _ in 0..cmds {
             conn.parser.wbuf.extend_from_slice(b"+OK\r\n");
          }
          if replication {
-            // One capture per run: the batch mutation is already complete
-            // above, so every loop iteration recorded the identical final
-            // value; K-1 lookups, encodes and appends were pure waste.
             conn.store.record_current_value(key);
          }
       }
@@ -544,9 +526,6 @@ pub(super) fn execute_write_run(
             }
          }
          if replication {
-            // One capture per run: the batch mutation is already complete
-            // above, so every loop iteration recorded the identical final
-            // value; K-1 lookups, encodes and appends were pure waste.
             conn.store.record_current_value(key);
          }
       }
@@ -575,9 +554,6 @@ pub(super) fn execute_write_run(
             }
          }
          if replication {
-            // One capture per run: the batch mutation is already complete
-            // above, so every loop iteration recorded the identical final
-            // value; K-1 lookups, encodes and appends were pure waste.
             conn.store.record_current_value(key);
          }
       }
@@ -597,9 +573,6 @@ pub(super) fn execute_write_run(
             }
          }
          if replication {
-            // One capture per run: the batch mutation is already complete
-            // above, so every loop iteration recorded the identical final
-            // value; K-1 lookups, encodes and appends were pure waste.
             conn.store.record_current_value(key);
          }
       }
@@ -628,9 +601,6 @@ pub(super) fn execute_write_run(
             }
          }
          if replication {
-            // One capture per run: the batch mutation is already complete
-            // above, so every loop iteration recorded the identical final
-            // value; K-1 lookups, encodes and appends were pure waste.
             conn.store.record_current_value(key);
          }
       }
@@ -687,9 +657,6 @@ pub(super) fn execute_write_run(
             }
          }
          if replication {
-            // One capture per run: the batch mutation is already complete
-            // above, so every loop iteration recorded the identical final
-            // value; K-1 lookups, encodes and appends were pure waste.
             conn.store.record_current_value(key);
          }
       }
@@ -755,9 +722,6 @@ pub(super) fn execute_write_run(
             }
          }
          if replication {
-            // One capture per run: the batch mutation is already complete
-            // above, so every loop iteration recorded the identical final
-            // value; K-1 lookups, encodes and appends were pure waste.
             conn.store.record_current_value(key);
          }
       }
@@ -820,9 +784,6 @@ pub(super) fn execute_write_run(
             }
          }
          if replication {
-            // One capture per run: the batch mutation is already complete
-            // above, so every loop iteration recorded the identical final
-            // value; K-1 lookups, encodes and appends were pure waste.
             conn.store.record_current_value(key);
          }
       }
@@ -1111,8 +1072,6 @@ pub(super) fn execute_queue_run(
    }
 
    if conn.store.has_replication() {
-      // One capture per run (see execute_write_run): the push/pop batch is
-      // complete, so per-iteration captures were identical duplicates.
       conn.store.record_current_value(key);
    }
    Ok(())

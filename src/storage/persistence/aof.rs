@@ -24,9 +24,7 @@ const KIND_SET: u8 = 0;
 const KIND_DEL: u8 = 1;
 const KIND_FLUSH: u8 = 2;
 const FLUSH_BYTES: usize = 64 * 1024;
-/// Sequence numbers are allocated in per-writer windows; the replay merges
-/// files by sequence, so non-contiguous windows are safe and the global
-/// counter stops being a per-write RMW across all workers.
+/// Sequence numbers are allocated in per-writer windows.
 const SEQ_WINDOW: u64 = 64;
 /// Bit 31 of the record length marks CRC'd records; old (uncrc'd) files
 /// never set it, so both formats replay from the same directory.
@@ -121,8 +119,7 @@ fn encode_kind(buf: &mut Vec<u8>, seq: u64, kind: u8, key: &[u8], value: Option<
    buf.extend_from_slice(&crc.to_le_bytes());
 }
 
-/// CRC-32 (IEEE 802.3), slice-by-8 accelerated: ~3.5 GB/s (10x faster than 1-byte loop)
-/// for large AOF body records (Item 60).
+/// Slice-by-8 accelerated CRC-32 (IEEE 802.3).
 fn crc32_ieee(data: &[u8]) -> u32 {
    static TABLE: std::sync::LazyLock<[[u32; 256]; 8]> = std::sync::LazyLock::new(|| {
       let mut table = [[0u32; 256]; 8];
@@ -131,7 +128,11 @@ fn crc32_ieee(data: &[u8]) -> u32 {
          let mut c = i as u32;
          let mut k = 0;
          while k < 8 {
-            c = if c & 1 != 0 { 0xEDB8_8320 ^ (c >> 1) } else { c >> 1 };
+            c = if c & 1 != 0 {
+               0xEDB8_8320 ^ (c >> 1)
+            } else {
+               c >> 1
+            };
             k += 1;
          }
          table[0][i] = c;
@@ -151,6 +152,7 @@ fn crc32_ieee(data: &[u8]) -> u32 {
    });
    let table = &*TABLE;
    let mut crc = 0xFFFF_FFFFu32;
+   #[allow(clippy::chunks_exact_to_as_chunks)]
    let mut chunks = data.chunks_exact(8);
    for chunk in chunks.by_ref() {
       let w1 = u32::from_le_bytes(chunk[..4].try_into().unwrap()) ^ crc;
@@ -377,10 +379,7 @@ impl Aof {
       })
    }
 
-   /// Allocate the next sequence number, refilling this writer's window
-   /// from the global counter every `SEQ_WINDOW` records instead of one
-   /// contended RMW per record. `seq_base` holds the window's exclusive
-   /// end; `seq_next == seq_base` means the window is exhausted.
+   /// Allocate the next sequence number, refilling this writer's window.
    #[inline]
    fn next_seq(w: &mut Writer, global: &AtomicU64) -> u64 {
       if w.seq_next == w.seq_base {
@@ -446,7 +445,7 @@ impl Aof {
       self.record_encoded_bytes(key.as_bytes(), encoded)
    }
 
-   /// Bytes-key twin of `record_encoded` (audit S-2).
+   /// Bytes-key variant of `record_encoded`.
    pub fn record_encoded_bytes(&self, key: &[u8], encoded: Option<&[u8]>) {
       let w = self.local();
       let mut w = w.lock();

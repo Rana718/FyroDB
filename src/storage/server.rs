@@ -130,22 +130,22 @@ impl Store {
       };
 
       let persistence_info = format!(
-            "# Persistence\r\n\
+         "# Persistence\r\n\
              aof_enabled:{}\r\n\
              aof_failed:{}\r\n\
              aof_fsync:{}\r\n\
              isolation_exclusive_total:{}\r\n\
              \r\n",
-            crate::storage::persistence::aof::enabled(),
-            crate::storage::persistence::aof::failed(),
-            match crate::storage::persistence::aof::get().map(|a| a.fsync_policy()) {
-               Some(crate::storage::persistence::aof::Fsync::Always) => "always",
-               Some(crate::storage::persistence::aof::Fsync::EverySec) => "everysec",
-               Some(crate::storage::persistence::aof::Fsync::No) => "no",
-               None => "none",
-            },
-            self.isolation_exclusive_total()
-         );
+         crate::storage::persistence::aof::enabled(),
+         crate::storage::persistence::aof::failed(),
+         match crate::storage::persistence::aof::get().map(|a| a.fsync_policy()) {
+            Some(crate::storage::persistence::aof::Fsync::Always) => "always",
+            Some(crate::storage::persistence::aof::Fsync::EverySec) => "everysec",
+            Some(crate::storage::persistence::aof::Fsync::No) => "no",
+            None => "none",
+         },
+         self.isolation_exclusive_total()
+      );
 
       format!(
          "# Server\r\n\
