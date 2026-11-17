@@ -2,7 +2,6 @@ use crossbeam_utils::CachePadded;
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Delivers a retry to the worker that owns a parked connection.
 pub trait Wake: Send + Sync {
@@ -29,8 +28,6 @@ fn key_shard(key: &str) -> usize {
 }
 
 pub struct BlockRegistry {
-   /// Registered (key, waiter) pairs; lets `signal` skip the lock.
-   waiting: AtomicUsize,
    /// 256 cache-padded shards to eliminate contention during concurrent blocking ops.
    keys: Box<[WaiterBucket]>,
 }
@@ -38,7 +35,6 @@ pub struct BlockRegistry {
 impl Default for BlockRegistry {
    fn default() -> Self {
       Self {
-         waiting: AtomicUsize::new(0),
          keys: (0..KEY_SHARDS)
             .map(|_| CachePadded::new(Mutex::new(HashMap::new())))
             .collect::<Vec<_>>()
@@ -49,13 +45,10 @@ impl Default for BlockRegistry {
 
 impl BlockRegistry {
    pub fn register(&self, keys: &[String], waiter: &Waiter) {
-      // one lock per shard: register all keys of a command that land in
-      // the same shard under a single acquisition
       for k in keys {
          let mut map = self.keys[key_shard(k)].lock();
          let list = map.entry(k.clone()).or_default();
          if !list.iter().any(|w| w.uid == waiter.uid) {
-            self.waiting.fetch_add(1, Ordering::SeqCst);
             list.push(waiter.clone());
          }
       }
@@ -65,12 +58,7 @@ impl BlockRegistry {
       for k in keys {
          let mut map = self.keys[key_shard(k)].lock();
          if let Some(list) = map.get_mut(k) {
-            let before = list.len();
             list.retain(|w| w.uid != uid);
-            let diff = before - list.len();
-            if diff > 0 {
-               self.waiting.fetch_sub(diff, Ordering::SeqCst);
-            }
             if list.is_empty() {
                map.remove(k);
             }
@@ -82,14 +70,6 @@ impl BlockRegistry {
    /// first (each worker retries in wake order).
    #[inline]
    pub fn signal(&self, key: &str) {
-      if self.waiting.load(Ordering::Acquire) == 0 {
-         return;
-      }
-      self.signal_slow(key);
-   }
-
-   #[cold]
-   fn signal_slow(&self, key: &str) {
       let map = self.keys[key_shard(key)].lock();
       if let Some(list) = map.get(key) {
          for w in list {
@@ -140,7 +120,6 @@ mod tests {
       reg.signal("zzz");
       assert_eq!(*rec.0.lock().unwrap(), vec![(7, 42)]);
       reg.unregister(&keys, 42);
-      assert_eq!(reg.waiting.load(Ordering::Relaxed), 0);
       reg.signal("a");
       assert_eq!(rec.0.lock().unwrap().len(), 1);
    }

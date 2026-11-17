@@ -10,5 +10,3 @@ The CI pipeline is fully automated and requires the following checks for all PRs
 - **Benchmark client validation**: Verification of benchmark harness.
 - **E2E Integration**: Stress testing via Dockerized deployment.
 
-## Performance Audit & Algorithms
-For detailed algorithm descriptions, recent changes, and latency metrics, please refer to [PERFORMANCE_AUDIT.md](PERFORMANCE_AUDIT.md).

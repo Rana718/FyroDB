@@ -1,0 +1,4 @@
+fyrodb running on 0.0.0.0:55609 (12 workers)
+  max_keys=unlimited shards=512 max_clients=10000 rdb_path=/tmp/fyrodb-e2e-f7dbionf/snapshot.rdb rdb_interval=300s
+fyrodb: received signal 15, shutting down...
+fyrodb: shutdown complete
