@@ -10,7 +10,12 @@ FyroDB is a two-engine system in a single Rust binary:
 
 ---
 
-## Current implementation and measurement
+## Recent Updates & Known Issues
+
+- **CI/CD**: Added E2E integration and stress tests using Docker to ensure stability.
+- **Safety**: Formal verification for critical safety invariants using Verus is now part of the CI/CD pipeline.
+- **Performance**: Optimized concurrency and memory paths.
+- **Known Issue**: A intermittent failure in `blocking_e2e.py` ("16 blocked clients each got exactly one element") is currently under investigation; it may be related to waiter registration race conditions under high concurrency.
 
 The retained runtime is checkpoint **d5a178b**, Docker image **3d5ef33d50f9**. Performance depends on client implementation, payload, key distribution, pipeline depth and CPU placement. [BENCHMARKS.md](BENCHMARKS.md) records the normal TCP suite first, then independent standard-client, payload, memory and historical comparisons with graphs, ranges and source hashes. Inverse aggregate throughput is not measured request latency.
 

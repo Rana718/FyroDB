@@ -41,4 +41,11 @@ for name in ["blocking", "stream", "search", "text", "isolation"]:
                     except subprocess.TimeoutExpired:
                         server.kill()
                         server.wait()
+                server_log = Path(work) / "server.log"
+                if server_log.exists():
+                    import shutil
+                    shutil.copy(server_log, root / "server_failure.log")
+                    print(f"Server log saved to {root / 'server_failure.log'}")
+                else:
+                    print("Server log not found")
 print("All Python end-to-end suites passed")
