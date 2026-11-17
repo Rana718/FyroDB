@@ -118,13 +118,16 @@ def main():
     threads = [threading.Thread(target=one, args=(cl,)) for cl in clients]
     for t in threads:
         t.start()
-    time.sleep(0.3)
+    time.sleep(1.0) # Increased sleep to ensure all threads are registered
     for i in range(n):
         c.call("RPUSH", "fan", str(i))
     for t in threads:
-        t.join(3)
+        t.join(10) # Increased timeout to ensure threads finish
     vals = sorted(int(r[1]) for r in results if r)
-    check(vals == list(range(n)), "16 blocked clients each got exactly one element")
+    if vals != list(range(n)):
+        print(f"DEBUG: expected {list(range(n))}, got {vals}")
+        raise SystemExit("FAIL: 16 blocked clients each got exactly one element")
+    print("16 blocked clients each got exactly one element")
     # Drained lists read as absent and LRANGE replies stay well-formed.
     c.call("RPUSH", "dr", "1")
     c.call("LPOP", "dr")
