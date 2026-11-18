@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-19
+
+### Fixed
+- Preserve atomic multi-key snapshots and complete binary values during concurrent writes, Lua scripts, transactions, and persistence.
+- Fix worker wakeups, blocking-command delivery, listener draining, and full-width vector searches.
+- Protect CustomHash reclamation and nested writer admission, including wrapped-slot probes.
+
+### Optimized
+- Reduce repeated GET and SET work, use bounded heap reuse, and stream eligible large overwrites.
+- Batch tombstone reclamation and avoid unnecessary allocations on repeated replies.
+
+### Verification
+- Add protocol, isolation, binary integrity, persistence, and blocking-client regressions for single- and multi-worker configurations.
+
+
 ### Tests and documentation — 2026-11-13
 
 - Retain six new regressions for deep binary SET pipelines, GET/EVAL/WATCH/MULTI/EXEC/NX boundaries, partial/malformed protocol cleanup, nested admission scopes, expiry/large-value transitions and concurrent SET/read/SAVE. Expand WATCH abort checks to 64- and 1024-command pipelines.
