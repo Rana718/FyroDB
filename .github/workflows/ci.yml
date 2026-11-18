@@ -63,10 +63,14 @@ jobs:
       - name: Install Task
         run: sudo sh -c "$(curl --location https://taskfile.dev/install.sh)" -- -d -b /usr/local/bin
       - name: Install Verus
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          mkdir -p $HOME/tools/verus
-          # Download and install Verus to match the location expected by Taskfile.yml
-          curl -L https://github.com/verus-lang/verus/releases/latest/download/verus-x86_64-unknown-linux-gnu.tar.gz | tar -xz -C $HOME/tools/verus --strip-components=1
+          gh release download 'release/0.2026.11.02.8bf68ee' --repo verus-lang/verus --pattern '*-x86-linux.zip' --dir "$RUNNER_TEMP"
+          unzip -q "$RUNNER_TEMP"/*-x86-linux.zip -d "$RUNNER_TEMP"
+          mkdir -p "$HOME/tools"
+          mv "$RUNNER_TEMP/verus-x86-linux" "$HOME/tools/verus"
+          rustup toolchain install 1.99.1 --profile minimal
       - name: Run Verus
         run: task verus
 
