@@ -134,15 +134,6 @@ task down
 
 Compare like-for-like builds with the Docker normal runner and independent clients; see [BENCHMARKS.md](BENCHMARKS.md). Keep medians, min/max, all attempts, keyspace, payloads, immutable images, CPU placement, process priorities, RSS and container memory. A shared-client sweep is a different budget from dedicated clients. Verify equal niceness before timing; do not silently drop contended or failed attempts.
 
-The versioned evidence and SVGs are generated deterministically:
-
-```bash
-python3 scripts/update_benchmark_docs.py
-python3 scripts/update_benchmark_docs.py --check
-```
-
-Regenerate after editing the benchmark page's source text because BENCHMARKS.md mirrors it. Add a new evidence campaign rather than replacing historical numbers with selected maxima. The generator checks archived hashes and selected raw-sample/summary consistency; it does not run a benchmark.
-
 ### Documentation
 
 The documentation lives in the `docs/` folder:

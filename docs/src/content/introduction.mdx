@@ -45,7 +45,6 @@ Both engines run in one process with separate event loops while sharing CPU, mem
 
 [Current benchmark evidence](/docs/benchmarks) leads with our normal Go TCP suite. The retained d5a178b runtime measured 20.130M GET/s on one worker and 47.419M GET/s on six workers using three physical cores plus SMT with dedicated clients. A separate twelve-worker shared-client run measured 55.897M GET/s. These are three-run medians under different stated CPU budgets, not latency measurements or a guaranteed deployment rate.
 
-<figure><a href="/benchmarks/2026-11-13/normal-scaling.svg"><img src="/benchmarks/2026-11-13/normal-scaling.svg" alt="Current normal TCP medians and peak RSS across worker allocations, including a separately labeled shared-client run" /></a></figure>
 
 The page includes every normal workload, official redis-benchmark comparisons with Dragonfly, earlier standalone Redis results, all tested payload sizes, memory, safety checks and rejected experiments. [Historical higher best-of-three figures](/docs/benchmark-history) remain available separately; the latest admission-reuse candidate was reverted.
 

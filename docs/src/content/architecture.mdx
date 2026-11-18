@@ -252,6 +252,5 @@ See [Cluster](/docs/cluster) for setup and operations.
 
 The current runtime is checkpoint **d5a178b**, image **3d5ef33d50f9**. [Benchmarks](/docs/benchmarks) leads with the normal Go TCP suite, then standard clients, large payloads, memory, hot keys and rejected trials. Historical best-of-three numbers are kept separately. The latest admission-reuse experiment was reverted; no speedup from that candidate is shipped.
 
-<figure><a href="/benchmarks/2026-11-13/normal-scaling.svg"><img src="/benchmarks/2026-11-13/normal-scaling.svg" alt="Retained runtime worker scaling with throughput, RSS and explicit dedicated versus shared client budgets" /></a></figure>
 
 EBR prevents reclamation; value guards prevent concurrent mutation races; command isolation preserves Lua and transaction atomicity. None can be removed merely because a microbenchmark improves.

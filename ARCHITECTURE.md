@@ -786,9 +786,7 @@ src/cluster/
 
 The retained runtime's dedicated-client sweep measured pipelined GET medians of 20.130M, 32.962M, 44.616M and 47.419M ops/s for one/two/three/six workers. Six workers occupy three physical cores with SMT. The separate twelve-worker shared-client case measured 55.897M GET/s; it is a different resource budget, not evidence of linear scaling. Historical peaks are preserved in their own section rather than rebranded as current results.
 
-![Current worker scaling with throughput and RSS](docs/public/benchmarks/2026-11-13/normal-scaling.svg)
 
-![Retained large-payload before and after, including all selected metrics](docs/public/benchmarks/2026-11-13/large-payload.svg)
 
 Throughput is completed operations divided by elapsed time under a stated workload. Its reciprocal is aggregate spacing, not a latency percentile. Read latency percentiles from the client histogram and compare ANN throughput together with recall; the current KV documentation update does not supply new vector or proxy measurements.
 
