@@ -15,7 +15,7 @@ FyroDB is a two-engine system in a single Rust binary:
 - **CI/CD**: Added E2E integration and stress tests using Docker to ensure stability.
 - **Safety**: Formal verification for critical safety invariants using Verus is now part of the CI/CD pipeline.
 - **Performance**: Optimized concurrency and memory paths.
-- **Known Issue**: A intermittent failure in `blocking_e2e.py` ("16 blocked clients each got exactly one element") is currently under investigation; it may be related to waiter registration race conditions under high concurrency.
+- The blocking regression in `blocking_e2e.py` checks that 200 clients each receive one distinct item. The first queued completion wakes the worker even when it arrives before the worker enters poll.
 
 The retained runtime is checkpoint **d5a178b**, Docker image **3d5ef33d50f9**. Performance depends on client implementation, payload, key distribution, pipeline depth and CPU placement. [BENCHMARKS.md](BENCHMARKS.md) records the normal TCP suite first, then independent standard-client, payload, memory and historical comparisons with graphs, ranges and source hashes. Inverse aggregate throughput is not measured request latency.
 
@@ -47,7 +47,7 @@ CustomMap owns the map-level Access admission state, cache-padded shard metadata
 ### Protection layers
 
 1. **Command isolation:** normal commands acquire a shared worker slot. EVAL, EVALSHA, EXEC and WATCH use exclusive command admission, serializing atomic operations and waiting for ordinary commands to leave every slot. Nested redis.call/redis.pcall dispatch reuses that isolation scope.
-2. **Map read/write admission:** try_read_epoch admits a read-only batch only when no writer has registered; its second check pairs with writer registration. Writers register before waiting for admitted readers to drain. Existing writers may proceed concurrently on different entries. Thread-local nesting avoids duplicate registration for an already-held map and preserves out-of-order drops across nested maps.
+2. **Map read/write admission:** A writer registers on one of eight cache-padded counters before checking for readers. It withdraws if a reader has claimed an epoch. A multi-key MGET claims an epoch, waits for admitted writers to finish, and uses one expiry timestamp for the entire reply. Opportunistic GET batches can decline an epoch. Thread-local nesting avoids duplicate registration for an already-held map and preserves out-of-order drops across nested maps.
 3. **Entry read/write guards:** ordinary value reads acquire a shared reader count in the packed entry state. Writers acquire the entry lock and wait for readers to leave. A map read epoch can replace repeated entry admission for an eligible batch, but it is not interchangeable with EBR.
 4. **EBR:** a pin keeps retired entries and tables alive while raw pointers are examined. EBR alone does not permit concurrently reading and mutating a Rust String, Vec or collection.
 5. **Snapshot and watch hooks:** writers capture required pre-images before mutation, publish completion with the existing ordering, then notify the observing hooks. WATCH invalidation includes direct and optimized batch writes.
@@ -57,6 +57,10 @@ The sequentially consistent map-admission handshake and acquire/release entry op
 ### Reader and writer flow
 
 A reader pins EBR, probes slots, validates the occupied state and full key, acquires the appropriate value protection, checks expiry/type and reads or serializes while that protection remains held. Fallback reads and collection iteration use guarded access. The guard is released before the pin can permit reclamation.
+
+Each worker can keep one encoded point-GET reply for an inline string without expiry, keyed by up to 32 bytes. To learn a reply it samples the started and finished writer counters before reading the entry under its guard. A subsequent hit requires the same map ID and the same start count on every stripe. A writer registers before changing data, so even an unrelated write invalidates the stamp. The cached reply owns its bytes and holds no EBR pin between commands.
+
+When every MGET argument names the same key, the server serializes one guarded value and repeats its RESP bytes directly in the output buffer. Concurrent writers on other entries can proceed. For distinct keys, a read view holds one map read epoch and one reclamation pin for the command. Each lookup validates the complete key and borrows its value until the view is dropped.
 
 A writer enters command isolation and map write admission, probes the entry, acquires its write lock, captures a snapshot pre-image if required, mutates the value, releases the entry state and issues write-observer/durability notifications. New inserts also coordinate with shard growth. In-place overwrites avoid allocation only when existing capacity and representation suffice.
 
@@ -68,7 +72,7 @@ Unrelated keys still share admission counters, allocator/cache/memory bandwidth 
 - **Partial-write ownership:** send attempts are bounded. Bytes that were not accepted by the socket are copied into the connection-owned output buffer before payload guards drop, preserving response order through short writes, EINTR, WouldBlock and later mutations.
 - **Repeated-key routing:** multicore repeated large replies can use the guarded vectored path. Single-worker repeats retain the buffered copy/repeat path because the vectored alternative regressed that cohort.
 - **SET prefetch tiles:** small multicore payloads use a shorter prefetch tile; ordinary and large payloads retain the wider batch. Key/state checks, snapshot capture, write admission and per-entry locks remain in both paths.
-- **Large overwrite copies:** selected values of at least 8 KiB can use an AVX non-temporal copy on supported x86-64 CPUs. Alignment/tails are handled and streaming stores are fenced before completion is published. Consecutive duplicates or hash repetition select cached copying conservatively; unsupported CPUs use the ordinary copy.
+- Heap string overwrites reuse the allocation when the new value fits and the unused space is at most one eighth of the new length, capped at 255 bytes. Larger changes resize the allocation, and values up to 23 bytes move inline. In-place overwrites below 1 MiB use cached copies. At 1 MiB and above, x86-64 machines with AVX2 use aligned streaming stores for the body, copy the edges normally, and fence before releasing the writer guard. Other machines use the standard copy.
 - **Allocation discipline:** these changes use bounded local arrays rather than persistent per-key/per-connection metadata. Payload growth, fallback buffering and snapshots can still allocate.
 
 Implementation: [fast_path.rs](src/handler/conn/fast_path.rs), [bulk.rs](src/handler/conn/bulk.rs), [small_str.rs](src/storage/value/small_str.rs), [access.rs](crates/customhash/src/access.rs), [shard.rs](crates/customhash/src/shard.rs), [isolation.rs](src/storage/store/isolation.rs) and [watch.rs](src/storage/store/watch.rs).
@@ -88,7 +92,7 @@ Every shard starts with eight slots and grows only as keys arrive. When a shard 
 3. Allocate new SlotTable at 2× capacity
 4. Rehash live Entry pointers from their keys (skip tombstones); the slot tag is rebuilt from the fresh hash
 5. Atomic swap of table pointer
-6. Retire old table via EBR
+6. Retire the old table and its unmigrated tombstones in one EBR callback
 7. Clear GROWING flag
 
 ### Epoch-Based Reclamation (EBR)
@@ -329,10 +333,9 @@ brute-force over the allowed ids when they are few (≤4096 or <2%), ACORN-1
 two-hop expansion below 30%, and in-traversal filtering above. `VECTOR_RANGE`
 walks the graph with a radius bound instead of scanning.
 
-FLAT fields batch concurrent queries: the first query of a burst becomes the
-leader, later ones join its batch (up to 32). The scan is two-pass: an Int8
-pre-filter narrows candidates before exact f32 rerank, with the Int8 codes held
-in thread-local scratch to avoid per-query allocation.
+FLAT batches up to 32 queries in a scan. Workers score each live vector in
+their partition against the queries, retain the best candidates locally, and
+merge those candidates using full-precision scores for unquantized vectors.
 
 ### Text and hybrid
 
@@ -364,8 +367,7 @@ commands behind it keep their order.
 - **Blocking commands** — BLPOP, BRPOP, BLMOVE, BRPOPLPUSH, BZPOPMIN, BZPOPMAX,
   XREAD BLOCK, XREADGROUP BLOCK — register a waiter per key in `BlockRegistry`
   and re-attempt once after registering, which closes the race with a write that
-  lands in between. Writes call `signal(key)`, which costs one relaxed load when
-  nobody is blocked. Woken connections retry on their own worker, and the ones
+  lands in between. List pushes notify up to one waiter per new item. Streams notify all waiters on the key. Woken connections retry on their own worker, and the ones
   that lose the race stay registered. Timeouts live in a per-worker binary heap
   that bounds the poll timeout.
 
@@ -845,10 +847,10 @@ Throughput is completed operations divided by elapsed time under a stated worklo
 | Cluster topology refresh      | O(1)                                                                                                       | One `Acquire` load of a version counter; only a change pays for the lock and `Arc` clone                                          |
 | Cluster write fence           | O(1) per write, O(W) to engage                                                                             | Per-worker in-flight counter; a fence holder drains W counters                                                                    |
 | Active expiry                 | O(budget) per tick | 32K-slot chunks, repeated while >10% of sampled TTL keys expired, ≤25 ms per 100 ms tick                   |
-| Blocking wake                 | O(W_k)        | W_k = waiters on the written key; one relaxed load when nobody is blocked                                         |
+| Blocking wake                 | O(W_k)        | W_k = waiters on the written key; empty queues are removed from the shard                                         |
 | XREADGROUP `>` / XACK         | O(log N + K) / O(log P) | Deliver after `last_delivered`, PEL is a BTreeMap plus per-consumer BTreeSet                          |
 | FT.SEARCH KNN (HNSW)          | O(ef · log N) | Graph traversal on the pool; quantized distances, exact rerank of the candidates                                 |
-| FT.SEARCH KNN (FLAT)          | O(N/2) avg    | Two-pass: Int8 pre-filter over all vectors, exact f32 rerank of the shortlist; batched across concurrent queries  |
+| FT.SEARCH KNN (FLAT)          | O(N × dims)   | Full-precision distance scan with bounded top-k heaps, batched across concurrent queries  |
 | FT.SEARCH filtered KNN        | O(A) … O(ef · log N) | A = allowed ids; brute-force, ACORN-1 or in-traversal chosen by filter selectivity                          |
 | FT.SEARCH text filter         | O(P + K)      | P = postings for the term; negations resolve as O(total − matched) sorted merge                                   |
 | FT.AGGREGATE cursor           | O(page)       | Rows are split off the cursor Vec with split_off; no full-cursor clone per page                                   |
@@ -887,7 +889,7 @@ Throughput is completed operations divided by elapsed time under a stated worklo
 | Vector graph           | Fixed-stride level-0 blocks (`u32` ids) + sparse upper layers             | Cache-line-aligned neighbour lists, parallel insert with per-node locks                                   |
 | Vector codes           | INT8 per-vector scale or RaBitQ 1-bit residuals + ≤16 centroids           | 4–32× smaller than f32; exact rerank from the stored hash field                                           |
 | Search dirty sets      | 16 sharded `HashSet` stripes per index                                    | Write hook stays cheap under concurrency; overflow falls back to a rebuild                                |
-| Blocked clients        | `HashMap<key, Vec<Waiter>>` + per-worker deadline heap                    | Wake only the waiters of the written key; timeouts bound the poll                                         |
+| Blocked clients        | `HashMap<key, VecDeque<Waiter>>` + per-worker deadline heap                    | Wake only the waiters of the written key; timeouts bound the poll                                         |
 | AOF                    | Per-thread append files, sequence-numbered state records                  | No cross-thread contention; replay is a k-way merge                                                       |
 | Proxy cached results   | CustomMap under `db:<fingerprint>` key prefix                             | Reuses the KV engine's guarded store; purge via SCAN + DEL or FLUSHALL                                  |
 | Proxy conn state       | `ProxyConn` enum (Startup / Active / Offloaded / Dead) per mio token      | Zero-allocation state transitions; `Active` holds a boxed `ActiveState` only while the connection is live  |

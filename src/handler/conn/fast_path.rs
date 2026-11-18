@@ -164,71 +164,89 @@ pub(super) fn cmd_id(cmd: &[u8]) -> CmdId {
    }
 }
 
-#[inline(always)]
-fn dispatch_get_one(conn: &mut Conn<'_>, key_part: (*const u8, usize)) {
-   let (hint, entry) = conn.hint_for(key_part);
-   let key = unsafe { part_bytes(key_part) };
-   if get_direct_send(conn, key, hint, entry) {
-      return;
-   }
-   let out = &mut conn.parser.wbuf;
-   let needed = 32;
-   if out.capacity().saturating_sub(out.len()) < needed {
-      out.reserve(needed.max(out.capacity()));
-   }
-   if !conn.store.get_to_buf_auto_bytes(key, hint, entry, out) {
-      out.extend_from_slice(b"$-1\r\n");
-   }
+struct PointCache {
+   key: [u8; 32],
+   key_len: usize,
+   reply: [u8; 32],
+   reply_len: usize,
+   stamp: Option<customhash::ReadStamp>,
 }
 
-fn get_direct_send(
-   conn: &mut Conn<'_>,
-   key: &[u8],
-   hint: Option<u64>,
-   entry_hint: *const (),
-) -> bool {
-   use std::io::IoSlice;
+thread_local! {
+   static POINT_CACHE: std::cell::RefCell<PointCache> = const { std::cell::RefCell::new(PointCache {
+      key: [0; 32], key_len: 0, reply: [0; 32], reply_len: 0, stamp: None,
+   }) };
+}
 
-   if conn.write_offset < conn.parser.wbuf.len() {
-      return false;
-   }
-   self_parser_wbuf_clear(conn);
+#[inline(always)]
+fn dispatch_get_one(conn: &mut Conn<'_>, key_part: (*const u8, usize), pin: &customhash::Guard) {
    let store = conn.store;
-   let _pin = customhash::pin();
-   let (h, idx) = match hint {
-      Some(h) => (h, store.data.shard_of(h)),
-      None => store.data.locate_bytes(key),
-   };
-   let entry = if !entry_hint.is_null() {
-      entry_hint.cast::<customhash::Entry<crate::storage::value::StoreValue>>()
-   } else {
-      match store.data.probe_entry_fast_bytes(key, h, idx) {
-         Some(e) => e,
-         None => return false,
+   let key = unsafe { part_bytes(key_part) };
+   let mut learn = None;
+   if key.len() <= 32 {
+      let hit = POINT_CACHE.with_borrow_mut(|cache| {
+         if cache.key_len == key.len() && &cache.key[..key.len()] == key {
+            if cache
+               .stamp
+               .as_ref()
+               .is_some_and(|stamp| store.data.stamp_is_current(stamp))
+            {
+               conn
+                  .parser
+                  .wbuf
+                  .extend_from_slice(&cache.reply[..cache.reply_len]);
+               return true;
+            }
+            cache.stamp = None;
+            learn = store.data.read_stamp();
+         } else {
+            cache.key[..key.len()].copy_from_slice(key);
+            cache.key_len = key.len();
+            cache.stamp = None;
+         }
+         false
+      });
+      if hit {
+         return;
       }
-   };
-   let e = unsafe { &*entry };
-   let state = e.state.load(std::sync::atomic::Ordering::Relaxed);
-   let expected = ((h as u32 as u64) << 32) | customhash::STATE_OCCUPIED;
-   if (state & (0xFFFF_FFFF_0000_0000 | customhash::STATE_OCCUPIED)) != expected {
-      return false;
    }
-   let Some(read) = e.read() else { return false };
-   let val = &*read;
-   if val.expires_ms != 0 && val.is_expired() {
+   let Some(read) = store.data.read_pinned_bytes(key, pin) else {
+      return crate::utils::resp::write_nil(&mut conn.parser.wbuf);
+   };
+   if read.is_expired() {
       drop(read);
       if !store.data.read_epoch_active() {
          store.data.remove_if_bytes(key, |v| v.is_expired());
       }
-      return false;
+      return crate::utils::resp::write_nil(&mut conn.parser.wbuf);
    }
-   let Some(s) = val.value.as_string() else {
-      return false;
+   let Some(value) = read.value.as_string() else {
+      return crate::utils::resp::write_nil(&mut conn.parser.wbuf);
    };
-   let payload = s.as_bytes();
-   if payload.len() < super::bulk::DIRECT_SEND_MIN {
-      return false;
+   #[cfg(not(feature = "io-uring"))]
+   if value.len() >= super::bulk::DIRECT_SEND_MIN && conn.write_offset == conn.parser.wbuf.len() {
+      send_large_value(conn, value.as_bytes());
+      return;
    }
+   let start = conn.parser.wbuf.len();
+   value.write_resp(&mut conn.parser.wbuf);
+   if let Some(stamp) = learn
+      && value.is_inline()
+      && read.expires_ms == 0
+   {
+      POINT_CACHE.with_borrow_mut(|cache| {
+         let reply = &conn.parser.wbuf[start..];
+         cache.reply[..reply.len()].copy_from_slice(reply);
+         cache.reply_len = reply.len();
+         cache.stamp = Some(stamp);
+      });
+   }
+}
+
+#[cfg(not(feature = "io-uring"))]
+fn send_large_value(conn: &mut Conn<'_>, payload: &[u8]) {
+   use std::io::IoSlice;
+
    let mut hdr = [0u8; 24];
    let hl = crate::utils::resp::format_bulk_header(payload.len(), &mut hdr);
    let total = hl + payload.len() + 2;
@@ -249,19 +267,15 @@ fn get_direct_send(
          Ok(n) => {
             written += n;
             if written >= total {
-               self_parser_wbuf_clear(conn);
-               return true;
+               conn.parser.wbuf.clear();
+               conn.write_offset = 0;
+               return;
             }
             IoSlice::advance_slices(&mut pending, n);
          }
          Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
          Err(_) => break,
       }
-   }
-
-   if written >= total {
-      self_parser_wbuf_clear(conn);
-      return true;
    }
 
    conn.parser.wbuf.clear();
@@ -276,13 +290,6 @@ fn get_direct_send(
       pos = 0;
    }
    conn.write_offset = 0;
-   true
-}
-
-#[inline(always)]
-fn self_parser_wbuf_clear(conn: &mut Conn<'_>) {
-   conn.parser.wbuf.clear();
-   conn.write_offset = 0;
 }
 
 #[inline(always)]
@@ -295,51 +302,61 @@ pub(super) fn dispatch_get_run<const STREAM_IO: bool>(
    conn: &mut Conn<'_>,
    first_key: (*const u8, usize),
    read_only: bool,
+   pin: &customhash::Guard,
 ) {
    if conn.parser.filled - conn.parser.pos < 20 && !is_null_store() {
-      dispatch_get_one(conn, first_key);
+      dispatch_get_one(conn, first_key, pin);
       return;
    }
-   dispatch_get_batch::<STREAM_IO>(conn, first_key, read_only);
+   dispatch_get_batch::<STREAM_IO>(conn, first_key, read_only, pin);
 }
 
 #[inline(never)]
-fn dispatch_repeated_get<const STREAM_IO: bool>(conn: &mut Conn<'_>, key: &[u8], count: usize) {
+fn dispatch_repeated_get<const STREAM_IO: bool>(
+   conn: &mut Conn<'_>,
+   key: &[u8],
+   count: usize,
+   pin: &customhash::Guard,
+) {
+   let store = conn.store;
    let out = &mut conn.parser.wbuf;
    let start = out.len();
-   if !conn.store.get_to_buf_hinted_bytes(key, None, out) {
-      out.extend_from_slice(b"$-1\r\n");
-   }
-   let reply_len = out.len() - start;
-   #[cfg(not(feature = "io-uring"))]
-   if STREAM_IO && conn.store.worker_capacity() > 1 && reply_len >= super::bulk::MIN_STREAM_BYTES {
-      super::bulk::send_repeated(&mut conn.stream, out, &mut conn.write_offset, start, count);
-      return;
-   }
-   if reply_len.saturating_mul(count) <= REPEAT_REPLY_CAP {
-      crate::utils::resp::repeat_reply(out, start, count);
-   } else {
-      let single_reply = out[start..].to_vec();
-      out.truncate(start);
-      let batch_cap = REPEAT_REPLY_CAP / single_reply.len().max(1);
-      let mut rem = count;
-      while rem > 0 {
-         let chunk = rem.min(batch_cap.max(1));
-         for _ in 0..chunk {
-            out.extend_from_slice(&single_reply);
-         }
-         rem -= chunk;
+   let read = store.data.read_pinned_bytes(key, pin);
+   if let Some(value) = read
+      .as_deref()
+      .filter(|v| !v.is_expired())
+      .and_then(|v| v.value.as_string())
+   {
+      #[cfg(not(feature = "io-uring"))]
+      if STREAM_IO && value.len() >= super::bulk::MIN_STREAM_BYTES && store.worker_capacity() > 1 {
+         super::bulk::send_repeated_value(
+            &mut conn.stream,
+            out,
+            &mut conn.write_offset,
+            value.as_bytes(),
+            count,
+         );
+         return;
       }
+      value.write_resp(out);
+      drop(read);
+   } else {
+      let expired = read.as_deref().is_some_and(|v| v.is_expired());
+      drop(read);
+      if expired && !store.data.read_epoch_active() {
+         store.data.remove_if_bytes(key, |v| v.is_expired());
+      }
+      crate::utils::resp::write_nil(out);
    }
+   crate::utils::resp::repeat_reply(out, start, count);
 }
-
-const REPEAT_REPLY_CAP: usize = 16 * 1024 * 1024;
 
 #[inline(never)]
 fn dispatch_get_batch<const STREAM_IO: bool>(
    conn: &mut Conn<'_>,
    first_key: (*const u8, usize),
    read_only: bool,
+   pin: &customhash::Guard,
 ) {
    const BATCH: usize = 256;
    let mut keys: [&[u8]; BATCH] = [&[]; BATCH];
@@ -387,16 +404,16 @@ fn dispatch_get_batch<const STREAM_IO: bool>(
    }
 
    if count == 1 {
-      dispatch_get_one(conn, first_key);
+      dispatch_get_one(conn, first_key, pin);
       return;
    }
 
    if same_parts(keys[0], keys[1]) && keys[2..count].iter().all(|&key| same_parts(key, keys[0])) {
-      dispatch_repeated_get::<STREAM_IO>(conn, keys[0], count);
+      dispatch_repeated_get::<STREAM_IO>(conn, keys[0], count, pin);
       return;
    }
    let store = conn.store;
-   let read_epoch = if read_only && (count >= 4 || count >= READ_EPOCH_MIN) {
+   let read_epoch = if read_only && count >= 4 {
       store.data.try_read_epoch()
    } else {
       None
@@ -409,8 +426,7 @@ fn dispatch_get_batch<const STREAM_IO: bool>(
       .store
       .prefetch_slots(&keys[..count], &mut hashes[..count], &mut tables[..count]);
    // Retry read epoch once before falling back to per-entry guards.
-   let read_epoch = if read_epoch.is_none() && read_only && (count >= 4 || count >= READ_EPOCH_MIN)
-   {
+   let read_epoch = if read_epoch.is_none() && read_only && count >= 4 {
       store.data.try_read_epoch()
    } else {
       read_epoch
@@ -515,12 +531,15 @@ fn dispatch_set_one(
    conn: &mut Conn<'_>,
    key_part: (*const u8, usize),
    value_part: (*const u8, usize),
+   pin: &customhash::Guard,
 ) {
    let (hint, entry) = conn.hint_for(key_part);
    let out = &mut conn.parser.wbuf;
    let key = unsafe { part_bytes(key_part) };
    let bytes = unsafe { part_bytes(value_part) };
-   conn.store.set_string_auto_bytes(key, hint, entry, bytes, 0);
+   conn
+      .store
+      .set_string_auto_bytes_pinned(key, hint, entry, bytes, 0, pin);
    if conn.store.has_replication() {
       conn.store.record_live_string(key, bytes, 0);
    }
@@ -532,15 +551,16 @@ pub(super) fn dispatch_set_run(
    conn: &mut Conn<'_>,
    first_key: (*const u8, usize),
    first_val: (*const u8, usize),
+   pin: &customhash::Guard,
 ) {
    if conn.parser.filled - conn.parser.pos < 24 && !is_null_store() {
-      dispatch_set_one(conn, first_key, first_val);
+      dispatch_set_one(conn, first_key, first_val, pin);
       return;
    }
    if first_val.1 >= 8192 {
-      dispatch_set_batch::<64, true>(conn, first_key, first_val);
+      dispatch_set_batch::<64, true>(conn, first_key, first_val, pin);
    } else {
-      dispatch_set_batch::<256, false>(conn, first_key, first_val);
+      dispatch_set_batch::<256, false>(conn, first_key, first_val, pin);
    }
 }
 
@@ -549,6 +569,7 @@ fn dispatch_set_batch<const BATCH: usize, const STREAMING: bool>(
    conn: &mut Conn<'_>,
    first_key: (*const u8, usize),
    first_val: (*const u8, usize),
+   pin: &customhash::Guard,
 ) {
    let mut keys: [&[u8]; BATCH] = [&[]; BATCH];
    let mut vals: [(*const u8, usize); BATCH] = [(std::ptr::null(), 0); BATCH];
@@ -593,11 +614,28 @@ fn dispatch_set_batch<const BATCH: usize, const STREAMING: bool>(
    }
 
    if count == 1 {
-      dispatch_set_one(conn, first_key, first_val);
+      dispatch_set_one(conn, first_key, first_val, pin);
       return;
    }
 
    let store = conn.store;
+   if count >= 4
+      && !store.has_replication()
+      && !store.data.observing()
+      && same_parts(keys[0], keys[count - 1])
+      && keys[1..count - 1]
+         .iter()
+         .all(|key| same_parts(keys[0], key))
+   {
+      let (hash, shard) = store.data.locate_bytes(keys[0]);
+      if let Some(entry) = store.data.probe_entry_fast_bytes(keys[0], hash, shard) {
+         let value = unsafe { part_bytes(vals[count - 1]) };
+         // The existing-key batch already coalesces consecutive overwrites under one entry lock.
+         unsafe { store.set_string_fast_entry_bytes(keys[0], hash, entry, value, 0) };
+         conn.parser.wbuf.extend_from_slice(&OK_BLOCK[..count * 5]);
+         return;
+      }
+   }
    store.prefetch_slots_write(&keys[..count], &mut hashes[..count], &mut tables[..count]);
    let prefetched = count.min(BATCH);
    store.probe_and_prefetch_entries_write(
@@ -606,7 +644,6 @@ fn dispatch_set_batch<const BATCH: usize, const STREAMING: bool>(
       &mut entries[..prefetched],
    );
    let write_epoch = store.data.write_epoch();
-   let pin = customhash::pin();
    let out = &mut conn.parser.wbuf;
    out.reserve(count * 5);
    let old_len = out.len();
@@ -697,7 +734,7 @@ fn dispatch_set_batch<const BATCH: usize, const STREAMING: bool>(
                         crate::storage::value::SmallStr::from_slice(val_bytes),
                      ),
                      &write_epoch,
-                     &pin,
+                     pin,
                   )
                };
                if written {
@@ -1133,11 +1170,11 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
    {
       match id {
          CmdId::Get if raw.len() == 2 => {
-            dispatch_get_run::<false>(conn, raw[1], false);
+            dispatch_get_run::<false>(conn, raw[1], false, &customhash::pin());
             return;
          }
          CmdId::Set if raw.len() == 3 => {
-            dispatch_set_run(conn, raw[1], raw[2]);
+            dispatch_set_run(conn, raw[1], raw[2], &customhash::pin());
             return;
          }
          CmdId::Del if raw.len() == 2 => {

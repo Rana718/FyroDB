@@ -249,7 +249,7 @@ pub fn execute(parts: &[&str], store: &Arc<Store>, out: &mut Vec<u8>) {
    }
 
    let cmd = ComdType::from(parts[0]);
-   let _guard = if matches!(cmd, ComdType::EVAL | ComdType::EVALSHA) {
+   let _guard = if matches!(cmd, ComdType::EVAL | ComdType::EVALSHA | ComdType::MSET | ComdType::MSETNX | ComdType::SAVE | ComdType::BGSAVE | ComdType::FLUSHALL | ComdType::FLUSHDB | ComdType::FLUSH | ComdType::CLUSTER) {
       store.atomic_command_guard()
    } else {
       store.command_guard(usize::MAX)

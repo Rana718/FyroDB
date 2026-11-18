@@ -198,7 +198,7 @@ pub fn dispatch(conn: &mut Conn<'_>, parts: &[&str]) {
                   return commands::string::mget(parts, conn.store, &mut conn.parser.wbuf);
                } else if cmd_eq(cmd, b"MSET") {
                   let response_start = conn.parser.wbuf.len();
-                  commands::string::mset(parts, conn.store, &mut conn.parser.wbuf);
+                  commands::execute(parts, conn.store, &mut conn.parser.wbuf);
                   capture_if_success(conn, parts, response_start);
                   return;
                }

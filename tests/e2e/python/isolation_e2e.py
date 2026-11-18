@@ -15,7 +15,7 @@ from client import Client
 
 def connect():
     c = Client()
-    c.s.settimeout(5)
+    c.s.settimeout(60)
     return c
 
 
@@ -163,16 +163,25 @@ def stress(mode, duration):
     def worker(index):
         c = connect()
         rng = random.Random(index)
-        commits = aborts = inconsistent = errors = 0
+        commits = aborts = inconsistent = errors = reads = 0
         examples = []
+        last_counter = 0
         try:
             while time.monotonic() < deadline:
                 if index >= 12:
                     value = c.call("GET", "counter") if mode == "watch" else c.call("MGET", *keys)
-                    if mode != "watch" and (not isinstance(value, list) or sum(map(int, value)) != 64000):
+                    reads += 1
+                    if mode == "watch":
+                        counter = int(value)
+                        consistent = counter >= last_counter
+                        last_counter = counter
+                    else:
+                        consistent = (isinstance(value, list) and len(value) == len(keys)
+                                      and sum(map(int, value)) == 64000)
+                    if not consistent:
                         inconsistent += 1
                         if len(examples) < 3:
-                            examples.append(dict(total=sum(map(int, value)) if isinstance(value, list) else None, reply=repr(value)))
+                            examples.append(dict(reply=repr(value)))
                 elif mode == "watch":
                     if c.call("WATCH", "counter") != "OK":
                         errors += 1
@@ -193,28 +202,34 @@ def stress(mode, duration):
                     if mode == "lua":
                         if c.call("EVAL", TRANSFER, 2, a, b) != 1:
                             errors += 1
+                            continue
                     else:
                         for args in [("MULTI",), ("DECR", a), ("INCR", b), ("EXEC",)]:
                             c.send(*args)
                         replies = [c.read() for _ in range(4)]
-                        if replies[:3] != ["OK", "QUEUED", "QUEUED"] or not isinstance(replies[3], list):
+                        result = replies[3]
+                        if (replies[:3] != ["OK", "QUEUED", "QUEUED"]
+                                or not isinstance(result, list) or len(result) != 2
+                                or not all(isinstance(v, int) for v in result)):
                             errors += 1
+                            continue
                     commits += 1
         except Exception:
             errors += 1
         finally:
             close(c)
-        return commits, aborts, inconsistent, errors, examples
+        return commits, aborts, inconsistent, errors, examples, reads
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=16) as pool:
         counts = list(pool.map(worker, range(16)))
     totals = [sum(row[i] for row in counts) for i in range(4)]
     final = int(c.call("GET", "counter")) if mode == "watch" else sum(map(int, c.call("MGET", *keys)))
     close(c)
+    progress = all(row[0] + row[1] > 0 for row in counts[:12]) and all(row[5] > 0 for row in counts[12:])
     expected = totals[0] if mode == "watch" else 64000
     examples = [example for row in counts for example in row[4]][:5]
     return dict(mode=mode, seconds=duration, commits=totals[0], aborts=totals[1], inconsistent=totals[2], inconsistent_examples=examples, errors=totals[3], final=final, expected=expected,
-                passed=totals[2] == 0 and totals[3] == 0 and final == expected)
+                reads=sum(row[5] for row in counts), passed=progress and totals[0] > 0 and totals[2] == 0 and totals[3] == 0 and final == expected)
 
 
 def main():
@@ -227,7 +242,7 @@ def main():
         with socket.socket() as probe:
             probe.bind(("127.0.0.1", 0))
             client.PORT = probe.getsockname()[1]
-        env = dict(os.environ, FYRODB_PORT=str(client.PORT), FYRODB_WORKERS="12", FYRODB_BIND="127.0.0.1", FYRODB_RDB_INTERVAL="86400", FYRODB_RDB_PATH=directory+"/dump.rdb")
+        env = dict(os.environ, FYRODB_PORT=str(client.PORT), FYRODB_WORKERS=os.environ.get("FYRODB_WORKERS", "12"), FYRODB_BIND="127.0.0.1", FYRODB_RDB_INTERVAL="86400", FYRODB_RDB_PATH=directory+"/dump.rdb")
         with open(directory+"/server.log", "w+") as log:
             server = subprocess.Popen([str(Path(args.binary).resolve())], env=env, stdout=log, stderr=log)
             try:

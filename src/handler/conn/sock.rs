@@ -82,7 +82,7 @@ impl<'a> Conn<'a> {
    }
 
    fn process_buffered_inner<const STREAM_IO: bool>(&mut self) -> bool {
-      let _guard = customhash::pin();
+      let pin = customhash::pin();
       let store = self.store;
       let mut batch_guard = Some(store.command_guard(self.worker));
       let mut prefetched = 0usize;
@@ -92,6 +92,7 @@ impl<'a> Conn<'a> {
             batch_guard = Some(store.command_guard(self.worker));
          }
          if self.park.is_some() {
+            drop(batch_guard.take());
             return true;
          }
          if self.parser.pos >= prefetched && !self.parser.in_partial() {
@@ -138,7 +139,7 @@ impl<'a> Conn<'a> {
                   && !self.store.at_key_capacity()
                {
                   if id == CmdId::Get && raw.len() == 2 {
-                     dispatch_get_run::<STREAM_IO>(self, raw[1], read_only);
+                     dispatch_get_run::<STREAM_IO>(self, raw[1], read_only, &pin);
                      prefetched = self.parser.pos;
                      continue;
                   }
@@ -150,7 +151,7 @@ impl<'a> Conn<'a> {
                            PairOutcome::ConnError => return false,
                         }
                      }
-                     dispatch_set_run(self, raw[1], raw[2]);
+                     dispatch_set_run(self, raw[1], raw[2], &pin);
                      prefetched = self.parser.pos;
                      continue;
                   }
@@ -394,5 +395,69 @@ mod tests {
       assert!(store.data.try_read_epoch().is_none());
       drop(writer);
       assert!(store.data.try_read_epoch().is_some());
+   }
+
+   #[test]
+   fn test_repro_parking_issue() {
+      let store = Arc::new(Store::with_config_workers(2, usize::MAX, 6));
+      let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+      let client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+      let (_peer, _) = listener.accept().unwrap();
+      client.set_nonblocking(true).unwrap();
+      let poll = mio::Poll::new().unwrap();
+      let waker = Arc::new(mio::Waker::new(poll.registry(), mio::Token(1)).unwrap());
+      let notifier = WorkerNotifier::new(waker, 0);
+      let pubsub = PubSub::new();
+      let mut conn = Conn::new(
+         Stream::Tcp(mio::net::TcpStream::from_std(client)),
+         &store,
+         &pubsub,
+         1,
+         &notifier,
+         None,
+         0,
+      );
+
+      // 1. Prepare pipeline: BLPOP key 0 + EVAL "return 1" 0
+      let blpop = b"*3\r\n$5\r\nBLPOP\r\n$3\r\nkey\r\n$1\r\n0\r\n";
+      let eval = b"*3\r\n$4\r\nEVAL\r\n$8\r\nreturn 1\r\n$1\r\n0\r\n";
+
+      let mut wire = Vec::new();
+      wire.extend_from_slice(blpop);
+      wire.extend_from_slice(eval);
+
+      conn.parser.filled = wire.len();
+      conn.parser.rbuf = wire;
+      conn.authenticated = true;
+
+      // 2. Process: BLPOP should park
+      let result = conn.process_buffered();
+
+      // Should be true (successful processing, even though it parked)
+      assert!(result, "process_buffered failed");
+
+      // Verify it is parked
+      assert!(conn.is_parked(), "Connection should be parked");
+
+      // 3. Verify that EVAL was not processed
+      // Parser position should NOT have advanced past the BLPOP command.
+      assert!(
+         conn.parser.pos < blpop.len() + eval.len(),
+         "Parser pos advanced too far"
+      );
+
+      // 4. Simulate wakeup and verify EVAL is processed
+      store.lpush("key", &["value"]).unwrap();
+      conn.on_completion(crate::pubsub::Completion::Retry {
+         token: conn.token,
+         uid: conn.uid,
+      });
+
+      // Check if EVAL was processed.
+      assert!(
+         conn.parser.wbuf.windows(4).any(|w| w == b":1\r\n"),
+         "EVAL result not found in wbuf: {:?}",
+         conn.parser.wbuf
+      );
    }
 }

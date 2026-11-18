@@ -1,6 +1,6 @@
 use crossbeam_utils::CachePadded;
 use parking_lot::Mutex;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
 /// Delivers a retry to the worker that owns a parked connection.
@@ -15,23 +15,7 @@ pub struct Waiter {
    pub uid: u64,
 }
 
-#[derive(Clone)]
-struct WaiterList {
-    waiters: Vec<Waiter>,
-    uids: HashSet<u64>,
-}
-
-impl Default for WaiterList {
-    fn default() -> Self {
-        Self {
-            waiters: Vec::new(),
-            uids: HashSet::new(),
-        }
-    }
-}
-
-// Granular locking: Shard -> HashMap -> Key -> Waiters list (Mutex with fast lookup)
-type WaiterBucket = CachePadded<Mutex<HashMap<String, Arc<Mutex<WaiterList>>>>>;
+type WaiterBucket = CachePadded<Mutex<HashMap<String, VecDeque<Waiter>>>>;
 const KEY_SHARDS: usize = 256;
 
 fn key_shard(key: &str) -> usize {
@@ -62,63 +46,46 @@ impl Default for BlockRegistry {
 impl BlockRegistry {
    pub fn register(&self, keys: &[String], waiter: &Waiter) {
       for k in keys {
-         let shard = &self.keys[key_shard(k)];
-         
-         let waiter_list = {
-            let map = shard.lock();
-            map.get(k).cloned()
-         };
-
-         let waiter_list = match waiter_list {
-            Some(list) => list,
-            None => {
-               let mut map = shard.lock();
-               map.entry(k.clone()).or_insert_with(|| Arc::new(Mutex::new(WaiterList::default()))).clone()
+         let mut shard = self.keys[key_shard(k)].lock();
+         if let Some(queue) = shard.get_mut(k) {
+            if !queue.iter().any(|w| w.uid == waiter.uid) {
+               queue.push_back(waiter.clone());
             }
-         };
-
-         let mut list = waiter_list.lock();
-         if list.uids.insert(waiter.uid) {
-            list.waiters.push(waiter.clone());
+         } else {
+            shard.insert(k.clone(), VecDeque::from([waiter.clone()]));
          }
       }
    }
 
    pub fn unregister(&self, keys: &[String], uid: u64) {
-      for k in keys {
-         let shard = &self.keys[key_shard(k)];
-         let waiter_list = {
-            let map = shard.lock();
-            map.get(k).cloned()
-         };
-
-         if let Some(list) = waiter_list {
-            let mut list = list.lock();
-            if list.uids.remove(&uid) {
-               list.waiters.retain(|w| w.uid != uid);
+      for key in keys {
+         let mut shard = self.keys[key_shard(key)].lock();
+         if let Some(queue) = shard.get_mut(key) {
+            queue.retain(|w| w.uid != uid);
+            if queue.is_empty() {
+               shard.remove(key);
             }
          }
       }
    }
 
-   /// A write made `key` possibly satisfiable: wake ONE waiter, oldest
-   /// first (the signaled waiter retries).
-   #[inline]
    pub fn signal(&self, key: &str) {
-      let shard = &self.keys[key_shard(key)];
-      let waiter_list = {
-         let map = shard.lock();
-         map.get(key).cloned()
-      };
+      self.signal_many(key, usize::MAX);
+   }
 
-      if let Some(list) = waiter_list {
-         let w = {
-            let list = list.lock();
-            list.waiters.first().cloned()
+   pub(super) fn signal_many(&self, key: &str, count: usize) {
+      let waiters: smallvec::SmallVec<[Waiter; 1]> = {
+         let mut shard = self.keys[key_shard(key)].lock();
+         let Some(queue) = shard.get_mut(key) else {
+            return;
          };
-         if let Some(w) = w {
-            w.wake.wake_retry(w.token, w.uid);
-         }
+         let n = count.min(queue.len());
+         let waiters = queue.iter().take(n).cloned().collect();
+         queue.rotate_left(n);
+         waiters
+      };
+      for w in waiters {
+         w.wake.wake_retry(w.token, w.uid);
       }
    }
 
@@ -127,7 +94,7 @@ impl BlockRegistry {
       for shard in &self.keys {
          let map = shard.lock();
          for list in map.values() {
-             uids.extend(list.lock().uids.iter());
+            uids.extend(list.iter().map(|w| w.uid));
          }
       }
       uids.sort_unstable();

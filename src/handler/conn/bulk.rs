@@ -82,6 +82,36 @@ fn send_batch<W: Write>(
             .checked_add(2)
       })
       .expect("reply length overflow");
+   send_frames(writer, buffered, offset, values.len(), body_bytes, |i| {
+      (&headers[i][..usize::from(lengths[i])], values[i])
+   });
+}
+
+pub(super) fn send_repeated_value<W: Write>(
+   writer: &mut W,
+   buffered: &mut Vec<u8>,
+   offset: &mut usize,
+   value: &[u8],
+   count: usize,
+) {
+   let mut header = [0; 24];
+   let n = crate::utils::resp::format_bulk_header(value.len(), &mut header);
+   let body = (n + value.len() + 2)
+      .checked_mul(count)
+      .expect("reply length overflow");
+   send_frames(writer, buffered, offset, count, body, |_| {
+      (&header[..n], value)
+   });
+}
+
+fn send_frames<'a, W: Write>(
+   writer: &mut W,
+   buffered: &mut Vec<u8>,
+   offset: &mut usize,
+   count: usize,
+   body_bytes: usize,
+   frame: impl Fn(usize) -> (&'a [u8], &'a [u8]),
+) {
    let prefix = buffered.len() - *offset;
    let total = prefix.saturating_add(body_bytes);
    let max_calls = if total >= DIRECT_SEND_MIN {
@@ -90,20 +120,20 @@ fn send_batch<W: Write>(
       EAGER_DRAIN_CALLS_MIN
    };
    #[inline(always)]
-   fn fill_slices<'a>(
+   fn fill_slices<'a, 'data: 'a>(
       slices: &mut [IoSlice<'a>],
       prefix: Option<&'a [u8]>,
-      headers: &'a [[u8; 24]],
-      lengths: &[u16],
-      values: &[&'a [u8]],
+      count: usize,
+      frame: impl Fn(usize) -> (&'data [u8], &'data [u8]),
    ) -> usize {
       let mut idx = 0;
       if let Some(p) = prefix {
          slices[idx] = IoSlice::new(p);
          idx += 1;
       }
-      for (i, value) in values.iter().enumerate() {
-         slices[idx] = IoSlice::new(&headers[i][..usize::from(lengths[i])]);
+      for i in 0..count {
+         let (header, value) = frame(i);
+         slices[idx] = IoSlice::new(header);
          slices[idx + 1] = IoSlice::new(value);
          slices[idx + 2] = IoSlice::new(b"\r\n");
          idx += 3;
@@ -116,17 +146,17 @@ fn send_batch<W: Write>(
    } else {
       None
    };
-   let written = if values.len() <= 16 {
+   let written = if count <= 16 {
       let mut slices = [IoSlice::new(&[]); 16 * 3 + 1];
-      let slice_idx = fill_slices(&mut slices, prefix_slice, headers, lengths, values);
+      let slice_idx = fill_slices(&mut slices, prefix_slice, count, &frame);
       write_vectored_bounded(writer, &mut slices[..slice_idx], max_calls)
-   } else if values.len() <= 32 {
+   } else if count <= 32 {
       let mut slices = [IoSlice::new(&[]); 32 * 3 + 1];
-      let slice_idx = fill_slices(&mut slices, prefix_slice, headers, lengths, values);
+      let slice_idx = fill_slices(&mut slices, prefix_slice, count, &frame);
       write_vectored_bounded(writer, &mut slices[..slice_idx], max_calls)
    } else {
       let mut slices = [IoSlice::new(&[]); BATCH * 3 + 1];
-      let slice_idx = fill_slices(&mut slices, prefix_slice, headers, lengths, values);
+      let slice_idx = fill_slices(&mut slices, prefix_slice, count, &frame);
       write_vectored_bounded(writer, &mut slices[..slice_idx], max_calls)
    };
    if written == total {
@@ -146,12 +176,9 @@ fn send_batch<W: Write>(
       0
    };
    buffered.reserve(body_bytes.saturating_sub(remaining));
-   for (i, value) in values.iter().enumerate() {
-      for part in [
-         &headers[i][..usize::from(lengths[i])],
-         *value,
-         b"\r\n".as_slice(),
-      ] {
+   for i in 0..count {
+      let (header, value) = frame(i);
+      for part in [header, value, b"\r\n".as_slice()] {
          if remaining >= part.len() {
             remaining -= part.len();
          } else {
@@ -162,59 +189,6 @@ fn send_batch<W: Write>(
    }
    if buffered.is_empty() && buffered.capacity() > RETAINED_WRITE_BUFFER {
       buffered.shrink_to(RETAINED_WRITE_BUFFER);
-   }
-}
-
-#[inline(never)]
-pub(super) fn send_repeated<W: Write>(
-   writer: &mut W,
-   buffered: &mut Vec<u8>,
-   offset: &mut usize,
-   start: usize,
-   count: usize,
-) {
-   assert!((1..=BATCH).contains(&count));
-   let prefix = start - *offset;
-   let reply = buffered.len() - start;
-   let total = reply
-      .checked_mul(count)
-      .and_then(|n| n.checked_add(prefix))
-      .expect("reply length overflow");
-   let written = {
-      let mut slices = [IoSlice::new(&[]); BATCH + 1];
-      slices[0] = IoSlice::new(&buffered[*offset..start]);
-      for slice in &mut slices[1..=count] {
-         *slice = IoSlice::new(&buffered[start..]);
-      }
-      // Large repeated replies drain eagerly like batch streams; small ones
-      // keep the tight 4-call bound (client drains at wire speed anyway).
-      let max_calls = if reply >= DIRECT_SEND_MIN {
-         eager_drain_calls(total)
-      } else {
-         EAGER_DRAIN_CALLS_MIN
-      };
-      write_vectored_bounded(
-         writer,
-         &mut slices[usize::from(prefix == 0)..=count],
-         max_calls,
-      )
-   };
-   if written == total {
-      buffered.clear();
-      *offset = 0;
-      if buffered.capacity() > RETAINED_WRITE_BUFFER {
-         buffered.shrink_to(RETAINED_WRITE_BUFFER);
-      }
-   } else if written >= prefix && reply != 0 {
-      let body_written = written - prefix;
-      let copies_left = count - body_written / reply;
-      buffered.copy_within(start.., 0);
-      buffered.truncate(reply);
-      crate::utils::resp::repeat_reply(buffered, 0, copies_left);
-      *offset = body_written % reply;
-   } else {
-      crate::utils::resp::repeat_reply(buffered, start, count);
-      *offset += written;
    }
 }
 
@@ -459,9 +433,15 @@ mod tests {
                   interrupt: true,
                   wire: Vec::new(),
                };
-               let mut buffered = [prefix.as_slice(), &reply].concat();
+               let mut buffered = prefix.to_vec();
                let mut at = offset;
-               send_repeated(&mut writer, &mut buffered, &mut at, prefix.len(), count);
+               send_repeated_value(
+                  &mut writer,
+                  &mut buffered,
+                  &mut at,
+                  b"\0\xff\r\nbody",
+                  count,
+               );
                writer.wire.extend_from_slice(&buffered[at..]);
                assert_eq!(
                   writer.wire, expected,
@@ -477,9 +457,15 @@ mod tests {
             interrupt: false,
             wire: Vec::new(),
          };
-         let mut buffered = reply.clone();
+         let mut buffered = Vec::new();
          let mut offset = 0;
-         send_repeated(&mut writer, &mut buffered, &mut offset, 0, 256);
+         send_repeated_value(
+            &mut writer,
+            &mut buffered,
+            &mut offset,
+            b"\0\xff\r\nbody",
+            256,
+         );
          assert_eq!(buffered, reply.repeat(256));
       }
    }
@@ -494,9 +480,9 @@ mod tests {
          interrupt: false,
          wire: Vec::new(),
       };
-      let mut buffered = reply.clone();
+      let mut buffered = Vec::new();
       let mut offset = 0;
-      send_repeated(&mut writer, &mut buffered, &mut offset, 0, 17);
+      send_repeated_value(&mut writer, &mut buffered, &mut offset, &[255; 8192], 17);
       assert!(buffered.len() < reply.len() * 17);
       assert!(offset < reply.len());
       writer.wire.extend_from_slice(&buffered[offset..]);

@@ -156,6 +156,7 @@ impl Store {
              \r\n\
              # Clients\r\n\
              connected_clients:{connected}\r\n\
+             blocked_clients:{blocked}\r\n\
              {persistence_info}\r\n\
              # Memory\r\n\
              used_memory:{allocated}\r\n\
@@ -184,6 +185,7 @@ impl Store {
          cgroup_human = format_bytes(cgroup),
          cluster_info = cluster_info,
          persistence_info = persistence_info,
+         blocked = self.blocking.blocked_clients(),
       )
    }
 

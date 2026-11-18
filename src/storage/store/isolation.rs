@@ -6,14 +6,14 @@ use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 thread_local! {
-   static CURRENT: Cell<(*const Isolation, bool)> = const { Cell::new((std::ptr::null(), false)) };
+   pub(crate) static CURRENT: Cell<(*const Isolation, bool)> = const { Cell::new((std::ptr::null(), false)) };
    static AUTO_SLOT: usize = {
       static NEXT: AtomicUsize = AtomicUsize::new(0);
       NEXT.fetch_add(1, Ordering::Relaxed)
    };
 }
 
-pub(super) struct Isolation {
+pub struct Isolation {
    slots: Box<[CachePadded<RawRwLock>]>,
    writer: Mutex<()>,
    /// Total exclusive-admission acquisitions (EVAL / EXEC / WATCH).
@@ -23,6 +23,7 @@ pub(super) struct Isolation {
 enum Held<'a> {
    Nested,
    Shared(&'a RawRwLock),
+   AtomicShared(&'a Isolation),
    Exclusive(&'a Isolation, #[allow(dead_code)] MutexGuard<'a, ()>),
 }
 
@@ -45,32 +46,45 @@ impl Isolation {
    }
 
    #[inline]
-   pub(super) fn enter(&self, worker: usize, exclusive: bool) -> CommandGuard<'_> {
+   pub(super) fn enter(&self, worker: usize, mode: IsolationMode) -> CommandGuard<'_> {
       let previous = CURRENT.get();
+      let exclusive = matches!(mode, IsolationMode::Exclusive);
       let held = if std::ptr::eq(previous.0, self) {
          assert!(
             !exclusive || previous.1,
             "command isolation cannot be upgraded"
          );
          Held::Nested
-      } else if exclusive {
-         self.exclusive_total.fetch_add(1, Ordering::Relaxed);
-         let writer = self.writer.lock();
-         for slot in &self.slots {
-            slot.lock_exclusive();
-         }
-         CURRENT.set((self, true));
-         Held::Exclusive(self, writer)
       } else {
-         let index = if worker == usize::MAX {
-            AUTO_SLOT.with(|index| index % self.slots.len())
-         } else {
-            worker.min(self.slots.len() - 1)
-         };
-         let slot = &*self.slots[index];
-         slot.lock_shared();
-         CURRENT.set((self, false));
-         Held::Shared(slot)
+         match mode {
+            IsolationMode::Exclusive => {
+               self.exclusive_total.fetch_add(1, Ordering::Relaxed);
+               let writer = self.writer.lock();
+               for slot in &self.slots {
+                  slot.lock_exclusive();
+               }
+               CURRENT.set((self, true));
+               Held::Exclusive(self, writer)
+            }
+            IsolationMode::AtomicShared => {
+               for slot in &self.slots {
+                  slot.lock_shared();
+               }
+               CURRENT.set((self, false));
+               Held::AtomicShared(self)
+            }
+            IsolationMode::Shared => {
+               let index = if worker == usize::MAX {
+                  AUTO_SLOT.with(|index| index % self.slots.len())
+               } else {
+                  worker.min(self.slots.len() - 1)
+               };
+               let slot = &*self.slots[index];
+               slot.lock_shared();
+               CURRENT.set((self, false));
+               Held::Shared(slot)
+            }
+         }
       };
       CommandGuard {
          held,
@@ -80,14 +94,24 @@ impl Isolation {
    }
 }
 
+pub enum IsolationMode {
+   Shared,
+   AtomicShared,
+   Exclusive,
+}
+
 impl Drop for CommandGuard<'_> {
    #[inline]
    fn drop(&mut self) {
       CURRENT.set(self.previous);
-      // Release exactly the raw locks acquired by enter on this thread.
       match &self.held {
          Held::Nested => {}
          Held::Shared(slot) => unsafe { slot.unlock_shared() },
+         Held::AtomicShared(isolation) => {
+            for slot in isolation.slots.iter().rev() {
+               unsafe { slot.unlock_shared() };
+            }
+         }
          Held::Exclusive(isolation, _) => {
             for slot in isolation.slots.iter().rev() {
                unsafe { slot.unlock_exclusive() };
@@ -114,10 +138,14 @@ impl super::Store {
 
    #[inline]
    pub fn command_guard(&self, worker: usize) -> CommandGuard<'_> {
-      self.isolation.enter(worker, false)
+      self.isolation.enter(worker, IsolationMode::Shared)
    }
 
    pub fn atomic_command_guard(&self) -> CommandGuard<'_> {
-      self.isolation.enter(usize::MAX, true)
+      self.isolation.enter(usize::MAX, IsolationMode::Exclusive)
+   }
+
+   pub fn atomic_shared_command_guard(&self) -> CommandGuard<'_> {
+      self.isolation.enter(usize::MAX, IsolationMode::AtomicShared)
    }
 }

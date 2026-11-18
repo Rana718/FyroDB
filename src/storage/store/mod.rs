@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 mod cluster;
 mod dbcache;
 mod fence;
-mod isolation;
+pub mod isolation;
 mod memory;
 mod ttl;
 mod watch;

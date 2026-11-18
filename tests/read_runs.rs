@@ -772,3 +772,78 @@ fn binary_keys_set_and_get_through_the_tcp_protocol() {
    wire.extend_from_slice(&command(&[b"GET", key]));
    check_pipeline(store, wire, b"+OK\r\n$3\r\nval\r\n:1\r\n$-1\r\n");
 }
+
+#[test]
+fn repeated_get_pipeline_preserves_binary_keys() {
+   let key = b"binary-key-\xff\x00";
+   let store = Arc::new(Store::with_config(8, usize::MAX));
+   with_connection(store, |conn| {
+      let mut wire = command(&[b"SET", key, b"payload"]);
+      for _ in 0..32 {
+         wire.extend(command(&[b"GET", key]));
+      }
+      conn.parser.filled = wire.len();
+      conn.parser.rbuf = wire;
+      assert!(conn.process_buffered());
+      let mut expected = b"+OK\r\n".to_vec();
+      expected.extend(bulk(b"payload").repeat(32));
+      assert_eq!(conn.parser.wbuf, expected);
+   });
+}
+
+#[test]
+fn repeated_set_on_existing_key_clears_ttl_and_preserves_reply_order() {
+   let store = Arc::new(Store::with_config_workers(8, usize::MAX, 6));
+   store.set_string("hot", "old", fyro_db::storage::value::now_ms() + 60_000);
+   with_connection(store, |conn| {
+      let mut wire = Vec::new();
+      for i in 0..32 {
+         wire.extend(command(&[b"SET", b"hot", &[0xff, i]]));
+      }
+      wire.extend(command(&[b"GET", b"hot"]));
+      wire.extend(command(&[b"PTTL", b"hot"]));
+      conn.parser.filled = wire.len();
+      conn.parser.rbuf = wire;
+      assert!(conn.process_buffered());
+      let mut expected = b"+OK\r\n".repeat(32);
+      expected.extend(bulk(&[0xff, 31]));
+      expected.extend(b":-1\r\n");
+      assert_eq!(conn.parser.wbuf, expected);
+   });
+}
+
+#[test]
+fn point_get_cache_observes_replacement_deletion_expiry_and_flush() {
+   let store = Arc::new(Store::with_config_workers(8, usize::MAX, 6));
+   with_connection(store.clone(), |conn| {
+      let mut expect = |value: Option<&[u8]>| {
+         for _ in 0..4 {
+            conn.parser.rbuf = command(&[b"GET", b"point"]);
+            conn.parser.pos = 0;
+            conn.parser.filled = conn.parser.rbuf.len();
+            conn.parser.wbuf.clear();
+            assert!(conn.process_buffered());
+            assert_eq!(
+               conn.parser.wbuf,
+               value.map(bulk).unwrap_or_else(|| b"$-1\r\n".to_vec())
+            );
+         }
+      };
+      store.set_string("point", "first", 0);
+      expect(Some(b"first"));
+      std::thread::scope(|s| {
+         s.spawn(|| store.set_string("point", "other", 0))
+            .join()
+            .unwrap()
+      });
+      expect(Some(b"other"));
+      store.del("point");
+      expect(None);
+      store.set_string("point", "expired", 1);
+      expect(None);
+      store.set_string("point", "back", 0);
+      expect(Some(b"back"));
+      store.flush();
+      expect(None);
+   });
+}

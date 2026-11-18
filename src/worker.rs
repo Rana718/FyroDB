@@ -104,9 +104,7 @@ pub fn run_worker(
       if !notifier.fanout.is_empty() || !notifier.pending.is_empty() {
          timeout = Some(std::time::Duration::ZERO);
       }
-      notifier.in_poll.store(true, Ordering::SeqCst);
       let poll_res = poll.poll(&mut events, timeout);
-      notifier.in_poll.store(false, Ordering::SeqCst);
 
       match poll_res {
          Ok(_) => {}

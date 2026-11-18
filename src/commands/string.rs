@@ -245,27 +245,8 @@ pub fn mset(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
    match parts {
       [_, items @ ..] if !items.is_empty() && items.len() % 2 == 0 => {
          let pairs = items.as_chunks::<2>().0;
-         const STACK_PAIRS: usize = 64;
-         if pairs.len() >= 2 && pairs.len() <= STACK_PAIRS {
-            // One slot-line prefetch for the whole batch; every SET then
-            // probes a warm table instead of cold-locating its shard.
-            let mut hashes = [0u64; STACK_PAIRS];
-            let mut tables = [std::ptr::null(); STACK_PAIRS];
-            let keys: Vec<&str> = pairs.iter().map(|&[k, _]| k).collect();
-            store.prefetch_slots_write(&keys, &mut hashes, &mut tables);
-            for (i, &[key, val]) in pairs.iter().enumerate() {
-               store.set_string_auto_bytes(
-                  key.as_bytes(),
-                  Some(hashes[i]),
-                  std::ptr::null(),
-                  val.as_bytes(),
-                  0,
-               );
-            }
-         } else {
-            for &[key, val] in pairs {
-               store.set_string(key, val, 0);
-            }
+         for &[key, val] in pairs {
+            store.set_string(key, val, 0);
          }
          resp::write_ok(out);
       }
@@ -306,67 +287,41 @@ pub fn msetnx(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
 }
 
 pub fn mget(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
-   match parts {
-      [_, keys @ ..] if !keys.is_empty() => {
-         const STACK_KEYS: usize = 64;
-         const EPOCH_MIN: usize = 8;
-         let n = keys.len();
-         if n > STACK_KEYS {
-            out.reserve(n * 32);
-            resp::write_array_header(out, n);
-            for &k in keys.iter() {
-               if !store.get_to_buf(k, out) {
-                  resp::write_nil(out);
-               }
-            }
-            return;
-         }
-         out.reserve(n * 32);
-         resp::write_array_header(out, n);
-
-         let mut hashes = [0u64; STACK_KEYS];
-         let mut tables = [std::ptr::null(); STACK_KEYS];
-         let mut entries = [std::ptr::null(); STACK_KEYS];
-         let read_epoch = if n >= EPOCH_MIN {
-            store.data.try_read_epoch()
-         } else {
-            None
-         };
-         store.prefetch_slots(keys, &mut hashes[..n], &mut tables[..n]);
-         // Same retry as the pipelined GET path: a writer registered
-         // elsewhere can drain during the slot prefetch.
-         let read_epoch = if read_epoch.is_none() && n >= EPOCH_MIN {
-            store.data.try_read_epoch()
-         } else {
-            read_epoch
-         };
-         if read_epoch.is_some() {
-            store.probe_and_prefetch_entries(&tables[..n], &hashes[..n], &mut entries[..n]);
-         } else {
-            store.probe_and_prefetch_entries_write(&tables[..n], &hashes[..n], &mut entries[..n]);
-         }
-         for (i, &k) in keys.iter().enumerate() {
-            let found = if let Some(epoch) = &read_epoch {
-               unsafe {
-                  store.get_to_buf_epoch_entry_bytes(
-                     k.as_bytes(),
-                     hashes[i],
-                     entries[i].cast(),
-                     epoch,
-                     out,
-                  )
-               }
-            } else {
-               unsafe {
-                  store.get_to_buf_fast_entry_bytes(k.as_bytes(), hashes[i], entries[i].cast(), out)
-               }
-            };
-            if !found {
-               resp::write_nil(out);
-            }
-         }
+   let [_, first, rest @ ..] = parts else {
+      return resp::write_wrong_args(out, "mget");
+   };
+   let _guard = store.command_guard(usize::MAX);
+   resp::write_array_header(out, rest.len() + 1);
+   if rest.iter().all(|key| key == first) {
+      let start = out.len();
+      if store
+         .data
+         .get_locked(first, |value| {
+            write_mget_value(Some(value), crate::storage::value::approx_now_ms(), out);
+         })
+         .is_none()
+      {
+         resp::write_nil(out);
       }
-      _ => resp::write_wrong_args(out, "mget"),
+      resp::repeat_reply(out, start, rest.len() + 1);
+      return;
+   }
+
+   let view = store.data.read_view();
+   let now = crate::storage::value::approx_now_ms();
+   for key in &parts[1..] {
+      write_mget_value(view.get(key), now, out);
+   }
+}
+
+fn write_mget_value(value: Option<&StoreValue>, now: u64, out: &mut Vec<u8>) {
+   if let Some(value) = value
+      && !value.is_expired_at(now)
+      && let Some(string) = value.value.as_string()
+   {
+      string.write_resp(out);
+   } else {
+      resp::write_nil(out);
    }
 }
 

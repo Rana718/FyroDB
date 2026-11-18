@@ -780,3 +780,17 @@ fn probe_reorder_speed() {
       );
    }
 }
+
+#[test]
+fn full_width_search_includes_disconnected_live_nodes() {
+   let graph = HnswGraph::new(DistanceMetric::L2, 2, 16, 100);
+   for id in 0..600 {
+      graph.restore_node(id, &[id as f32, 0.0], 0, &[Vec::new()]);
+   }
+   graph.restore_entry(Some(0));
+   graph.mark_deleted(31);
+   let hits = graph.search(&[511.0, 0.0], 599, 599);
+   assert_eq!(hits.len(), 599);
+   assert_eq!(hits[0].1, 511);
+   assert!(hits.iter().all(|hit| hit.1 != 31));
+}

@@ -92,7 +92,6 @@ pub struct WorkerNotifier {
    fanout_pending: AtomicBool,
    fanout_bytes: AtomicUsize,
    fanout_overflow: AtomicBool,
-   pub in_poll: AtomicBool,
 }
 
 impl WorkerNotifier {
@@ -109,7 +108,6 @@ impl WorkerNotifier {
          fanout_pending: AtomicBool::new(false),
          fanout_bytes: AtomicUsize::new(0),
          fanout_overflow: AtomicBool::new(false),
-         in_poll: AtomicBool::new(false),
       })
    }
 
@@ -122,7 +120,7 @@ impl WorkerNotifier {
    #[inline]
    pub fn notify(&self, token: usize) {
       self.pending.push(token);
-      if !signal::arm(&self.wake_pending) && self.in_poll.load(Ordering::Relaxed) {
+      if !signal::arm(&self.wake_pending) {
          let _ = self.waker.wake();
       }
    }
@@ -131,7 +129,7 @@ impl WorkerNotifier {
    #[inline]
    pub fn complete(&self, completion: Completion) {
       self.completions.push(completion);
-      if !signal::arm(&self.completion_pending) && self.in_poll.load(Ordering::Relaxed) {
+      if !signal::arm(&self.completion_pending) {
          let _ = self.waker.wake();
       }
    }
@@ -165,7 +163,7 @@ impl WorkerNotifier {
          return;
       }
       self.fanout.push(entry);
-      if !signal::arm(&self.fanout_pending) && self.in_poll.load(Ordering::Relaxed) {
+      if !signal::arm(&self.fanout_pending) {
          let _ = self.waker.wake();
       }
    }

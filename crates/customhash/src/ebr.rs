@@ -43,12 +43,16 @@ pub unsafe fn retire_raw(ptr: *mut u8, drop_fn: unsafe fn(*mut u8)) {
    if ptr.is_null() {
       return;
    }
+   unsafe { retire_with(move || drop_fn(ptr)) };
+}
+
+pub(crate) unsafe fn retire_with(free: impl FnOnce()) {
    let guard = pin();
    PENDING.fetch_add(1, Ordering::Relaxed);
    unsafe {
       guard.inner.defer_unchecked(move || {
          let _completed = Completed;
-         drop_fn(ptr);
+         free();
       });
    }
    let _ = DIRTY.try_with(|dirty| dirty.set(true));

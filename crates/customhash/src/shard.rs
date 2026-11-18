@@ -11,7 +11,7 @@ use super::key::CompactKey;
 pub const STATE_LOCK: u64 = 1;
 pub const STATE_OCCUPIED: u64 = 1 << 1;
 pub(crate) const STATE_SEQ_ONE: u64 = 1 << 2;
-pub(crate) const STATE_SEQ_MASK: u64 = ((1 << 14) - 1) << 2;
+pub const STATE_SEQ_MASK: u64 = ((1 << 14) - 1) << 2;
 const STATE_READER_ONE: u64 = 1 << 16;
 const STATE_READER_MASK: u64 = ((1 << 15) - 1) << 16;
 pub(crate) const STATE_SNAP: u64 = 1 << 31;
@@ -1225,85 +1225,7 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
    where
       F: FnOnce() -> V,
    {
-      let table_ptr = self.table.load(Ordering::Acquire);
-      let t = unsafe { &*table_ptr };
-      let base_idx = (hash as usize) & t.mask;
-      let base_ptr = unsafe { t.slots.add(base_idx) };
-      let expected_hi = (hash_tag(hash) | (1 << TAG_BITS)) as u16;
-      let mut vacant = usize::MAX;
-
-      let w0 = unsafe { (*base_ptr).0.load(Ordering::Acquire) } as usize;
-      if (w0 >> TAG_SHIFT) as u16 == expected_hi {
-         let p = (w0 & PTR_MASK) as *mut Entry<V>;
-         let e = unsafe { &*p };
-         let state = e.state.load(Ordering::Relaxed);
-         if stored_hash(state) == hash as u32 as u64 && e.key.eq_str(key) {
-            return if state & STATE_OCCUPIED != 0 {
-               FastSet::Existing(p)
-            } else {
-               FastSet::Retry
-            };
-         }
-      } else if w0 == 0 && base_idx < t.capacity {
-         vacant = 0;
-      }
-
-      if vacant == usize::MAX && w0 != 0 {
-         for j in 1..16usize {
-            let slot = unsafe { &*base_ptr.add(j) };
-            let word = slot.0.load(Ordering::Acquire) as usize;
-            if (word >> TAG_SHIFT) as u16 == expected_hi {
-               let p = (word & PTR_MASK) as *mut Entry<V>;
-               let e = unsafe { &*p };
-               let state = e.state.load(Ordering::Relaxed);
-               if stored_hash(state) == hash as u32 as u64 && e.key.eq_str(key) {
-                  return if state & STATE_OCCUPIED != 0 {
-                     FastSet::Existing(p)
-                  } else {
-                     FastSet::Retry
-                  };
-               }
-            } else if word == 0 {
-               if base_idx + j < t.capacity {
-                  vacant = j;
-               }
-               break;
-            }
-         }
-      }
-
-      if vacant == usize::MAX {
-         return FastSet::Retry;
-      }
-
-      let insert_guard = self.enter_insert();
-      if self.table.load(Ordering::Acquire) != table_ptr {
-         drop(insert_guard);
-         return FastSet::Retry;
-      }
-      if self.len.load(Ordering::Relaxed) >= t.threshold {
-         drop(insert_guard);
-         self.grow();
-         return FastSet::Retry;
-      }
-
-      let entry = alloc_entry(
-         CompactKey::from_str(key),
-         self.snap.fresh_state() | hash_bits(hash),
-         make_value(),
-      );
-      let slot = unsafe { t.slot((base_idx + vacant) & t.mask) };
-      if slot.claim(entry, hash) {
-         let new_len = self.len.fetch_add(1, Ordering::Relaxed) + 1;
-         drop(insert_guard);
-         if new_len >= t.threshold {
-            self.grow();
-         }
-         return FastSet::Inserted;
-      }
-      unsafe { drop_raw_entry::<V>(entry.cast()) };
-      drop(insert_guard);
-      FastSet::Retry
+      self.probe_or_insert_bytes(hash, key.as_bytes(), make_value)
    }
 
    /// Bytes-key variant of `probe_or_insert`.
@@ -1315,53 +1237,32 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
       let table_ptr = self.table.load(Ordering::Acquire);
       let t = unsafe { &*table_ptr };
       let base_idx = (hash as usize) & t.mask;
-      let base_ptr = unsafe { t.slots.add(base_idx) };
       let expected_hi = (hash_tag(hash) | (1 << TAG_BITS)) as u16;
-      let mut vacant = usize::MAX;
-
-      let w0 = unsafe { (*base_ptr).0.load(Ordering::Acquire) } as usize;
-      if (w0 >> TAG_SHIFT) as u16 == expected_hi {
-         let p = (w0 & PTR_MASK) as *mut Entry<V>;
-         let e = unsafe { &*p };
-         let state = e.state.load(Ordering::Relaxed);
-         if stored_hash(state) == hash as u32 as u64 && e.key.eq_bytes(key) {
+      let mut vacant = None;
+      for offset in 0..16.min(t.capacity) {
+         let idx = (base_idx + offset) & t.mask;
+         let word = unsafe { t.slot(idx) }.0.load(Ordering::Acquire) as usize;
+         if word == 0 {
+            vacant = Some(idx);
+            break;
+         }
+         if word & TAG_FLAG != 0 && (word >> TAG_SHIFT) as u16 != expected_hi {
+            continue;
+         }
+         let ptr = TaggedSlot::<V>::decode(word);
+         let entry = unsafe { &*ptr };
+         let state = entry.state.load(Ordering::Relaxed);
+         if stored_hash(state) == hash as u32 as u64 && entry.key.eq_bytes(key) {
             return if state & STATE_OCCUPIED != 0 {
-               FastSet::Existing(p)
+               FastSet::Existing(ptr)
             } else {
                FastSet::Retry
             };
          }
-      } else if w0 == 0 && base_idx < t.capacity {
-         vacant = 0;
       }
-
-      if vacant == usize::MAX && w0 != 0 {
-         for j in 1..16usize {
-            let slot = unsafe { &*base_ptr.add(j) };
-            let word = slot.0.load(Ordering::Acquire) as usize;
-            if (word >> TAG_SHIFT) as u16 == expected_hi {
-               let p = (word & PTR_MASK) as *mut Entry<V>;
-               let e = unsafe { &*p };
-               let state = e.state.load(Ordering::Relaxed);
-               if stored_hash(state) == hash as u32 as u64 && e.key.eq_bytes(key) {
-                  return if state & STATE_OCCUPIED != 0 {
-                     FastSet::Existing(p)
-                  } else {
-                     FastSet::Retry
-                  };
-               }
-            } else if word == 0 {
-               if base_idx + j < t.capacity {
-                  vacant = j;
-               }
-               break;
-            }
-         }
-      }
-
-      if vacant == usize::MAX {
+      let Some(vacant) = vacant else {
          return FastSet::Retry;
-      }
+      };
 
       let insert_guard = self.enter_insert();
       if self.table.load(Ordering::Acquire) != table_ptr {
@@ -1379,7 +1280,7 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
          self.snap.fresh_state() | hash_bits(hash),
          make_value(),
       );
-      let slot = unsafe { t.slot((base_idx + vacant) & t.mask) };
+      let slot = unsafe { t.slot(vacant) };
       if slot.claim(entry, hash) {
          let new_len = self.len.fetch_add(1, Ordering::Relaxed) + 1;
          drop(insert_guard);
@@ -1887,6 +1788,7 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
       let old_table = unsafe { &*old_ptr };
       let new_table = SlotTable::<V>::new(new_cap);
       let mut live_count = 0usize;
+      let mut retired = Vec::new();
       let old_slots = old_table.slots;
       let old_cap = old_table.capacity;
       let new_slots = new_table.slots;
@@ -1921,7 +1823,7 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
          let e = unsafe { &*p };
          let state = e.state.load(Ordering::Relaxed);
          if (state & STATE_OCCUPIED) == 0 {
-            unsafe { ebr::retire_raw(p.cast(), drop_raw_entry::<V>) };
+            retired.push(p);
             continue;
          }
 
@@ -1955,7 +1857,14 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
          }
       }
       self.table.store(new_ptr, Ordering::Release);
-      unsafe { ebr::retire_raw(old_ptr.cast(), drop_raw_table::<V>) };
+      unsafe {
+         ebr::retire_with(move || {
+            for entry in retired {
+               drop_raw_entry::<V>(entry.cast());
+            }
+            drop_raw_table::<V>(old_ptr.cast());
+         });
+      }
    }
 }
 

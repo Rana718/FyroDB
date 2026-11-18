@@ -29,6 +29,14 @@ pub(super) fn is_atomic(cmd: &[u8]) -> bool {
       || cmd.eq_ignore_ascii_case(b"EVALSHA")
       || cmd.eq_ignore_ascii_case(b"EXEC")
       || cmd.eq_ignore_ascii_case(b"WATCH")
+      || cmd.eq_ignore_ascii_case(b"FLUSHALL")
+      || cmd.eq_ignore_ascii_case(b"FLUSHDB")
+      || cmd.eq_ignore_ascii_case(b"FLUSH")
+      || cmd.eq_ignore_ascii_case(b"SAVE")
+      || cmd.eq_ignore_ascii_case(b"BGSAVE")
+      || cmd.eq_ignore_ascii_case(b"CLUSTER")
+      || cmd.eq_ignore_ascii_case(b"MSET")
+      || cmd.eq_ignore_ascii_case(b"MSETNX")
 }
 
 fn session(mode: &mut ConnMode) -> &mut Transaction {

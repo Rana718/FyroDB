@@ -163,3 +163,64 @@ fn nested_maps_preserve_out_of_order_guard_drops_and_unwinding() {
    first.insert_str("key", 7);
    assert_eq!(first.get("key"), Some(7));
 }
+
+#[test]
+fn snapshot_waits_for_an_admitted_writer_and_holds_both_keys_stable() {
+   let map = CustomMap::<usize>::with_capacity(2, 8);
+   let (started, starting) = mpsc::channel();
+   let (sampled, sample) = mpsc::channel();
+   std::thread::scope(|scope| {
+      let writer = map.write_epoch();
+      map.insert_str("a", 1);
+      scope.spawn(|| {
+         started.send(()).unwrap();
+         let snapshot = map.read_epoch();
+         let values = (map.get("a"), map.get("b"));
+         drop(snapshot);
+         sampled.send(values).unwrap();
+      });
+      starting.recv_timeout(Duration::from_secs(2)).unwrap();
+      assert!(matches!(
+         sample.recv_timeout(Duration::from_millis(20)),
+         Err(mpsc::RecvTimeoutError::Timeout)
+      ));
+      map.insert_str("b", 2);
+      drop(writer);
+      assert_eq!(
+         sample.recv_timeout(Duration::from_secs(2)).unwrap(),
+         (Some(1), Some(2))
+      );
+   });
+}
+
+#[test]
+fn deeply_nested_writes_release_every_map_out_of_order() {
+   let maps: Vec<_> = (0..12).map(|_| CustomMap::<usize>::new()).collect();
+   let guards: Vec<_> = maps.iter().map(CustomMap::write_epoch).collect();
+   let nested = maps[0].write_epoch();
+   for (i, guard) in guards.into_iter().enumerate() {
+      assert!(maps[i].try_read_epoch().is_none());
+      drop(guard);
+      assert_eq!(maps[i].try_read_epoch().is_some(), i != 0);
+   }
+   drop(nested);
+   assert!(maps[0].try_read_epoch().is_some());
+}
+
+#[test]
+fn point_read_stamps_detect_writers_and_map_changes() {
+   let map = CustomMap::<usize>::new();
+   let other = CustomMap::<usize>::new();
+   let stamp = map.read_stamp().unwrap();
+   assert!(!other.stamp_is_current(&stamp));
+   let writer = map.write_epoch();
+   assert!(!map.stamp_is_current(&stamp));
+   assert!(map.read_stamp().is_none());
+   map.insert_str("hot", 1);
+   drop(writer);
+   let updated = map.read_stamp().unwrap();
+   assert!(map.stamp_is_current(&updated));
+   assert!(!map.stamp_is_current(&stamp));
+   map.clear();
+   assert!(!map.stamp_is_current(&updated));
+}

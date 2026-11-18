@@ -72,7 +72,6 @@ struct Scratch {
    over: Vec<(f32, u32)>,
    over_sel: Vec<(f32, u32)>,
    rejected: Vec<(f32, u32)>,
-   q_int8: Vec<i8>,
    acorn_hop: Vec<u32>,
    acorn_frontier: Vec<u32>,
 }
@@ -90,7 +89,6 @@ impl Scratch {
          over: Vec::new(),
          over_sel: Vec::new(),
          rejected: Vec::new(),
-         q_int8: Vec::new(),
          acorn_hop: Vec::new(),
          acorn_frontier: Vec::new(),
       }
@@ -159,10 +157,7 @@ pub(crate) struct Inner {
    /// Exact vectors for nodes being linked in quantized graphs;
    /// released once linked so only codes stay resident.
    raw: Vec<Option<Box<[f32]>>>,
-   /// Packed Int8 codes and scales for two-pass pre-filter scans on
-   /// unquantized graphs, populated lazily by prepare/prepare_batch.
-   flat_int8: Vec<i8>,
-   flat_scales: Vec<f32>,
+
 }
 
 impl Inner {
@@ -193,22 +188,6 @@ impl Inner {
             .blocks
             .push((0..chunk_lines).map(|_| Line::zero()).collect());
       }
-   }
-
-   #[inline(always)]
-   fn flat_int8_of(&self, id: u32) -> &[i8] {
-      let off = id as usize * self.dims;
-      &self.flat_int8[off..off + self.dims]
-   }
-
-   #[inline(always)]
-   fn flat_scale(&self, id: u32) -> f32 {
-      self.flat_scales[id as usize]
-   }
-
-   #[inline]
-   fn has_flat_int8(&self) -> bool {
-      !self.flat_int8.is_empty()
    }
 
    /// The f32 vector of `id` (unquantized graphs only).
@@ -290,23 +269,7 @@ impl Inner {
       }
    }
 
-   #[inline(always)]
-   fn prefetch_flat_int8(&self, id: u32) {
-      if self.flat_int8.is_empty() {
-         return;
-      }
-      #[cfg(target_arch = "x86_64")]
-      unsafe {
-         use std::arch::x86_64::{_MM_HINT_T0, _mm_prefetch};
-         let p = self.flat_int8.as_ptr().add(id as usize * self.dims);
-         let bytes = self.dims.min(1024);
-         let mut off = 0;
-         while off < bytes {
-            _mm_prefetch(p.add(off), _MM_HINT_T0);
-            off += 64;
-         }
-      }
-   }
+
 }
 
 /// Persisted link structure (see `HnswGraph::dump`).
@@ -551,8 +514,6 @@ impl HnswGraph {
             upper: Vec::new(),
             free: Vec::new(),
             raw: Vec::new(),
-            flat_int8: Vec::new(),
-            flat_scales: Vec::new(),
          }),
          entry: AtomicU64::new(NO_ENTRY),
          entry_lock: Mutex::new(()),
@@ -628,8 +589,6 @@ impl HnswGraph {
          + g.upper.capacity() * 16
          + g.upper.iter().map(|u| u.len() * 4).sum::<usize>()
          + g.free.capacity() * 4
-         + g.flat_int8.capacity()
-         + g.flat_scales.capacity() * 4
          + g.raw.capacity() * std::mem::size_of::<Option<Box<[f32]>>>()
          + g.raw.iter().flatten().map(|r| r.len() * 4).sum::<usize>()
    }
@@ -786,24 +745,6 @@ impl HnswGraph {
       ((-u.ln() * self.ml) as usize).min(MAX_LEVEL)
    }
 
-   fn encode_flat_int8(g: &mut Inner, key_id: usize, vector: &[f32]) {
-      let dims = g.dims;
-      let needed = (key_id + 1) * dims;
-      if g.flat_int8.len() < needed {
-         g.flat_int8.resize(needed, 0);
-      }
-      if g.flat_scales.len() <= key_id {
-         g.flat_scales.resize(key_id + 1, 0.0);
-      }
-      let maxabs = vector.iter().fold(0f32, |m, x| m.max(x.abs()));
-      let scale = if maxabs > 0.0 { maxabs / 127.0 } else { 1.0 };
-      g.flat_scales[key_id] = scale;
-      let codes = &mut g.flat_int8[key_id * dims..(key_id + 1) * dims];
-      for (c, &x) in codes.iter_mut().zip(vector) {
-         *c = (x / scale).round().clamp(-127.0, 127.0) as i8;
-      }
-   }
-
    pub fn reserve(&self, n: usize) {
       let mut g = self.inner.write();
       g.ensure_chunks(n);
@@ -856,9 +797,7 @@ impl HnswGraph {
          vector,
          payload,
       );
-      if self.quant == Quant::None {
-         Self::encode_flat_int8(&mut g, key_id, vector);
-      } else {
+      if self.quant != Quant::None {
          if g.raw.len() <= key_id {
             g.raw.resize(key_id + 1, None);
          }
@@ -939,15 +878,7 @@ impl HnswGraph {
             self.count.fetch_add(1, Ordering::AcqRel);
             self.pending.fetch_add(1, Ordering::AcqRel);
          }
-         if self.quant == Quant::None {
-            let needed = (max_id + 1) * g.dims;
-            if g.flat_int8.len() < needed {
-               g.flat_int8.resize(needed, 0);
-            }
-            if g.flat_scales.len() <= max_id {
-               g.flat_scales.resize(max_id + 1, 0.0);
-            }
-         } else {
+         if self.quant != Quant::None {
             let max = max_id + 1;
             if g.raw.len() < max {
                g.raw.resize(max, None);
@@ -958,14 +889,13 @@ impl HnswGraph {
          }
       }
       // Keep the exclusive lock through encoding so queries cannot see
-      // partially written payloads or mismatched Int8 codes.
+      // partially written payloads.
       {
          let book = self.book.load();
          let rot = self.rot.as_ref();
          let quant = self.quant;
          let metric = self.metric;
          let pay = g.pay;
-         let dims = g.dims;
          let next = AtomicUsize::new(0);
          pool::global().parallel(pool::global().threads().max(1), |_| {
             loop {
@@ -977,25 +907,6 @@ impl HnswGraph {
                // SAFETY: each thread writes to a distinct node's payload.
                let payload = unsafe { std::slice::from_raw_parts_mut(g.base(key_id as u32), pay) };
                quant::encode(quant, rot, &book, metric, v, payload);
-               if quant == Quant::None {
-                  // SAFETY: each thread writes to a non-overlapping range.
-                  let slot = unsafe {
-                     std::slice::from_raw_parts_mut(
-                        (g.flat_int8.as_ptr() as *mut i8).add(key_id * dims),
-                        dims,
-                     )
-                  };
-                  let maxabs = v.iter().fold(0f32, |m, x| m.max(x.abs()));
-                  let scale = if maxabs > 0.0 { maxabs / 127.0 } else { 1.0 };
-                  unsafe {
-                     (g.flat_scales.as_ptr() as *mut f32)
-                        .add(key_id)
-                        .write(scale)
-                  };
-                  for (c, &x) in slot.iter_mut().zip(v) {
-                     *c = (x / scale).round().clamp(-127.0, 127.0) as i8;
-                  }
-               }
             }
          });
       }
@@ -1155,8 +1066,6 @@ impl HnswGraph {
       for (new, &old) in order.iter().enumerate() {
          map[old as usize] = new as u32;
       }
-      g.flat_int8 = Vec::new();
-      g.flat_scales = Vec::new();
       g.raw = Vec::new();
       let out = if self.m0 == 0 {
          HnswGraph::new_flat(self.metric, g.dims)
@@ -1343,11 +1252,7 @@ impl HnswGraph {
             if g.upper.capacity() > slack_target * 2 {
                g.upper.shrink_to(slack_target);
             }
-            let flat_target = slack_target * g.dims;
-            if g.flat_int8.capacity() > flat_target * 2 {
-               g.flat_int8.shrink_to(flat_target);
-               g.flat_scales.shrink_to(slack_target);
-            }
+
          }
       }
    }
@@ -1698,6 +1603,7 @@ impl HnswGraph {
             let nb = links[i];
             if !sc.visit(nb, epoch) {
                g.prefetch(nb);
+               g.prefetch_links(nb);
                links[np] = nb;
                np += 1;
             }

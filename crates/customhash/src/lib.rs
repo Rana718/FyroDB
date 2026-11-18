@@ -1,5 +1,5 @@
 mod access;
-pub use access::{ReadEpochGuard, WriteEpochGuard};
+pub use access::{ReadEpochGuard, ReadStamp, WriteEpochGuard};
 mod ebr;
 mod key;
 mod ops;
@@ -53,7 +53,7 @@ use std::hash::{BuildHasher, Hasher};
 use shard::*;
 pub use shard::{
    Entry, EntryReadGuard, FastSet, InsertFastResult, STATE_LOCK, STATE_MATCH_MASK, STATE_OCCUPIED,
-   bump_seq, unlock_write,
+   STATE_SEQ_MASK, bump_seq, unlock_write,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,6 +65,23 @@ impl std::fmt::Display for Full {
    }
 }
 impl std::error::Error for Full {}
+
+/// A pinned view of one map while its writers are excluded.
+pub struct ReadView<'a, V> {
+   map: &'a CustomMap<V>,
+   _epoch: ReadEpochGuard<'a>,
+   _pin: ebr::Guard,
+}
+
+impl<V: Clone + Send + Sync + 'static> ReadView<'_, V> {
+   #[inline]
+   pub fn get(&self, key: &str) -> Option<&V> {
+      let (hash, idx) = self.map.locate(key);
+      let entry = self.map.shards[idx].find(key, hash)?;
+      // The view pins this occupied entry and excludes value mutation for the returned borrow.
+      Some(unsafe { (*entry.value.get()).assume_init_ref() })
+   }
+}
 
 pub struct ValueRef<'a, V> {
    read: EntryReadGuard<'a, V>,
@@ -118,6 +135,28 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
       self.access.try_read()
    }
 
+   /// Wait for a stable map view. The caller must hold no map read or write guard.
+   pub fn read_epoch(&self) -> ReadEpochGuard<'_> {
+      self.access.read()
+   }
+
+   pub fn read_stamp(&self) -> Option<ReadStamp> {
+      self.access.stamp()
+   }
+
+   #[inline]
+   pub fn stamp_is_current(&self, stamp: &ReadStamp) -> bool {
+      self.access.matches(stamp)
+   }
+
+   pub fn read_view(&self) -> ReadView<'_, V> {
+      ReadView {
+         map: self,
+         _epoch: self.read_epoch(),
+         _pin: ebr::pin(),
+      }
+   }
+
    #[inline(always)]
    pub fn read_epoch_active(&self) -> bool {
       self.access.reading()
@@ -140,7 +179,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
    }
 
    #[inline(always)]
-   fn observing(&self) -> bool {
+   pub fn observing(&self) -> bool {
       unsafe { (*self.observing_ptr).load(Ordering::Relaxed) }
    }
 
@@ -862,6 +901,17 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
       })
    }
 
+   #[inline]
+   pub fn read_pinned_bytes<'g>(
+      &'g self,
+      key: &[u8],
+      _pin: &'g Guard,
+   ) -> Option<EntryReadGuard<'g, V>> {
+      let (hash, idx) = self.locate_bytes(key);
+      let (slots, mask) = self.shard_fast[idx].layout();
+      Shard::find_fast_bytes(slots, mask, key, hash)?.read()
+   }
+
    /// Bytes-key twin of `get_ref` (audit S-2).
    #[inline]
    pub fn get_ref_bytes(&self, key: &[u8]) -> Option<ValueRef<'_, V>> {
@@ -1078,8 +1128,22 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
    where
       F: FnOnce() -> V,
    {
-      let _pin = ebr::pin();
-      let _write_epoch = self.write_epoch();
+      self.probe_or_insert_pinned_bytes(hash, key, &ebr::pin(), &self.write_epoch(), make_value)
+   }
+
+   #[inline(always)]
+   pub fn probe_or_insert_pinned_bytes<F>(
+      &self,
+      hash: u64,
+      key: &[u8],
+      _pin: &Guard,
+      epoch: &WriteEpochGuard<'_>,
+      make_value: F,
+   ) -> FastSet<V>
+   where
+      F: FnOnce() -> V,
+   {
+      assert!(epoch.guards(&self.access));
       let idx = self.shard_of(hash);
       let shard = unsafe { self.shards.get_unchecked(idx) };
       let outcome = shard.probe_or_insert_bytes(hash, key, make_value);

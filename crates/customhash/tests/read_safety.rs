@@ -325,3 +325,27 @@ fn forgotten_guards_cannot_match_a_replacement_map_at_the_same_address() {
    map.insert_str("key", 1);
    assert_eq!(map.get("key"), Some(1));
 }
+
+#[test]
+fn fused_insert_wraps_and_reuses_the_existing_key() {
+   use customhash::{CustomMap, FastSet};
+   let map = CustomMap::<usize>::with_capacity(1, 128);
+   let mask = map.shard_slot_count(0) - 1;
+   let mut boundary = (0..)
+      .map(|i| format!("end:{i}"))
+      .filter(|k| map.locate_bytes(k.as_bytes()).0 as usize & mask == mask);
+   let first = boundary.next().unwrap();
+   let second = boundary.next().unwrap();
+   let hash = map.locate_bytes(second.as_bytes()).0;
+   map.insert_str(&first, 1);
+   assert!(matches!(
+      map.probe_or_insert_fast_bytes(hash, second.as_bytes(), || 2),
+      FastSet::Inserted
+   ));
+   assert!(matches!(
+      map.probe_or_insert_fast(hash, &second, || panic!("unexpected allocation")),
+      FastSet::Existing(_)
+   ));
+   assert_eq!(map.get(&second), Some(2));
+   assert_eq!(map.len(), 2);
+}

@@ -58,91 +58,32 @@ fn copy_medium_payload(destination: &mut [u8], source: &[u8]) {
    }
 }
 
-#[cfg(target_arch = "x86_64")]
-#[allow(dead_code)]
-static HAS_AVX: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-#[cfg(target_arch = "x86_64")]
-#[allow(dead_code)]
-static AVX_INIT: std::sync::Once = std::sync::Once::new();
-
-#[inline(always)]
+#[inline]
 fn copy_large_payload(destination: &mut [u8], source: &[u8]) {
-   #[cfg(all(target_arch = "x86_64", target_feature = "avx"))]
-   {
-      unsafe { copy_streaming_payload(destination, source) };
+   #[cfg(target_arch = "x86_64")]
+   if source.len() >= 1024 * 1024 && std::is_x86_feature_detected!("avx2") {
+      unsafe { stream_copy(destination, source) };
       return;
-   }
-   #[cfg(all(target_arch = "x86_64", not(target_feature = "avx")))]
-   {
-      AVX_INIT.call_once(|| {
-         HAS_AVX.store(
-            std::is_x86_feature_detected!("avx"),
-            std::sync::atomic::Ordering::Relaxed,
-         );
-      });
-      if source.len() >= 8192 && HAS_AVX.load(std::sync::atomic::Ordering::Relaxed) {
-         unsafe { copy_streaming_payload(destination, source) };
-         return;
-      }
    }
    destination.copy_from_slice(source);
 }
 
 #[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx,avx2")]
-unsafe fn copy_streaming_payload(destination: &mut [u8], source: &[u8]) {
-   use std::arch::x86_64::{
-      _mm_sfence, _mm256_loadu_si256, _mm256_storeu_si256, _mm256_stream_si256,
-   };
+#[target_feature(enable = "avx2")]
+unsafe fn stream_copy(destination: &mut [u8], source: &[u8]) {
+   use std::arch::x86_64::{_mm_sfence, _mm256_loadu_si256, _mm256_stream_si256};
+   assert_eq!(destination.len(), source.len());
+   let prefix = destination.as_ptr().align_offset(32).min(source.len());
+   let (head, rest) = destination.split_at_mut(prefix);
+   head.copy_from_slice(&source[..prefix]);
+   let body = rest.len() / 32 * 32;
    unsafe {
-      let dst = destination.as_mut_ptr();
-      let src = source.as_ptr();
-      let len = source.len();
-      if len >= 32768 {
-         let align_prefix = ((32 - (dst as usize & 31)) & 31).min(len);
-         if align_prefix > 0 {
-            std::ptr::copy_nonoverlapping(src, dst, align_prefix);
-         }
-         let mut at = align_prefix;
-         let stream_end = len - ((len - at) & 31);
-         while at + 512 <= stream_end {
-            for offset in [
-               0, 32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416, 448, 480,
-            ] {
-               let value = _mm256_loadu_si256(src.add(at + offset).cast());
-               _mm256_stream_si256(dst.add(at + offset).cast(), value);
-            }
-            at += 512;
-         }
-         while at + 32 <= stream_end {
-            let value = _mm256_loadu_si256(src.add(at).cast());
-            _mm256_stream_si256(dst.add(at).cast(), value);
-            at += 32;
-         }
-         if at < len {
-            std::ptr::copy_nonoverlapping(src.add(at), dst.add(at), len - at);
-         }
-         _mm_sfence();
-      } else {
-         let mut at = 0;
-         while at + 512 <= len {
-            for offset in [
-               0, 32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416, 448, 480,
-            ] {
-               let value = _mm256_loadu_si256(src.add(at + offset).cast());
-               _mm256_storeu_si256(dst.add(at + offset).cast(), value);
-            }
-            at += 512;
-         }
-         while at + 32 <= len {
-            let value = _mm256_loadu_si256(src.add(at).cast());
-            _mm256_storeu_si256(dst.add(at).cast(), value);
-            at += 32;
-         }
-         if at < len {
-            std::ptr::copy_nonoverlapping(src.add(at), dst.add(at), len - at);
-         }
+      for offset in (0..body).step_by(32) {
+         let v = _mm256_loadu_si256(source.as_ptr().add(prefix + offset).cast());
+         _mm256_stream_si256(rest.as_mut_ptr().add(offset).cast(), v);
       }
+      rest[body..].copy_from_slice(&source[prefix + body..]);
+      _mm_sfence();
    }
 }
 
@@ -290,19 +231,19 @@ impl SmallStr {
          self.len = Tag::inline(len);
          return;
       }
-      if self.len == Tag::Heap && Self::read_heap_len(&self.data) == len {
-         let destination = self.as_bytes_mut();
-         if (32..=64).contains(&len) {
-            destination[..32].copy_from_slice(&s[..32]);
-            destination[len - 32..len].copy_from_slice(&s[len - 32..len]);
-         } else if (65..=256).contains(&len) {
-            copy_medium_payload(destination, s);
-         } else if len >= 8192 {
-            copy_large_payload(destination, s);
-         } else {
-            destination.copy_from_slice(s);
+      if self.len == Tag::Heap && len > SMALL_STR_CAP {
+         let capacity = self.heap_capacity();
+         if len <= capacity && capacity - len <= (len / 8).min(u8::MAX as usize) {
+            Self::store_heap_len(&mut self.data, len);
+            self.data[16] = (capacity - len) as u8;
+            let destination = self.as_bytes_mut();
+            if (65..=256).contains(&len) {
+               copy_medium_payload(destination, s);
+            } else {
+               copy_large_payload(destination, s);
+            }
+            return;
          }
-         return;
       }
       *self = Self::from_slice(s);
    }
@@ -500,15 +441,20 @@ impl SmallStr {
    }
 
    #[inline]
+   fn heap_capacity(&self) -> usize {
+      Self::read_heap_len(&self.data) + usize::from(self.data[16])
+   }
+
+   #[inline]
    pub fn into_bytes(self) -> Vec<u8> {
       if self.len != Tag::Heap {
          return self.as_bytes().to_vec();
       }
       let ptr = usize::from_ne_bytes(self.data[..8].try_into().unwrap()) as *mut u8;
       let len = Self::read_heap_len(&self.data);
-      let bytes = unsafe { Box::from_raw(std::ptr::slice_from_raw_parts_mut(ptr, len)) };
+      let bytes = unsafe { Vec::from_raw_parts(ptr, len, self.heap_capacity()) };
       std::mem::forget(self);
-      bytes.into_vec()
+      bytes
    }
 
    #[inline(always)]
@@ -556,16 +502,7 @@ impl SmallStr {
             len: Tag::inline(len),
          }
       } else {
-         let len = bytes.len();
-         let mut b = Box::<[u8]>::new_uninit_slice(len);
-         let dst = b.as_mut_ptr() as *mut u8;
-         let dst_slice = unsafe { std::slice::from_raw_parts_mut(dst, len) };
-         if len >= 8192 {
-            copy_large_payload(dst_slice, bytes);
-         } else {
-            dst_slice.copy_from_slice(bytes);
-         }
-         let ptr = Box::into_raw(unsafe { b.assume_init() }) as *mut u8;
+         let ptr = Box::into_raw(Box::<[u8]>::from(bytes)) as *mut u8;
          let mut data = [0u8; SMALL_STR_CAP];
          data[..8].copy_from_slice(&(ptr as usize).to_ne_bytes());
          Self::store_heap_len(&mut data, len);
@@ -630,7 +567,7 @@ impl Drop for SmallStr {
    fn drop(&mut self) {
       if self.len == Tag::Heap {
          let ptr_val = unsafe { std::ptr::read_unaligned(self.data.as_ptr().cast::<*mut u8>()) };
-         let len_val = Self::read_heap_len(&self.data);
+         let len_val = self.heap_capacity();
          unsafe {
             drop(Box::from_raw(std::ptr::slice_from_raw_parts_mut(
                ptr_val, len_val,
@@ -660,7 +597,7 @@ impl Clone for SmallStr {
       if source.len != Tag::Heap {
          if self.len == Tag::Heap {
             let ptr_val = unsafe { std::ptr::read_unaligned(self.data.as_ptr().cast::<*mut u8>()) };
-            let len_val = Self::read_heap_len(&self.data);
+            let len_val = self.heap_capacity();
             unsafe {
                drop(Box::from_raw(std::ptr::slice_from_raw_parts_mut(
                   ptr_val, len_val,

@@ -67,12 +67,6 @@ fn large_copies_preserve_every_alignment_tail_and_surrounding_byte() {
          let input = &source[63 - shift..63 - shift + size];
          super::copy_large_payload(&mut destination[start..start + size], input);
          assert_eq!(&destination[start..start + size], input);
-         #[cfg(target_arch = "x86_64")]
-         if size >= 8192 && std::is_x86_feature_detected!("avx") {
-            destination[start..start + size].fill(0);
-            unsafe { super::copy_streaming_payload(&mut destination[start..start + size], input) };
-            assert_eq!(&destination[start..start + size], input);
-         }
          assert!(destination[..start].iter().all(|b| *b == 0xa5));
          assert!(destination[start + size..].iter().all(|b| *b == 0xa5));
          assert_eq!(source, before);
@@ -212,5 +206,43 @@ fn appending_to_binary_values_preserves_the_prefix_and_utf8_suffix_bytes() {
       let mut expected = vec![255; size];
       expected.extend_from_slice("é".as_bytes());
       assert_eq!(value.into_bytes(), expected);
+   }
+}
+
+#[test]
+fn overwrites_reuse_bounded_slack_and_preserve_owned_lengths() {
+   for n in [32, 4096, 65536] {
+      let mut v = SmallStr::from_slice(&vec![7; n]);
+      let ptr = v.as_bytes().as_ptr();
+      for len in [n - 1, n, n - 2] {
+         v.overwrite_bytes(&vec![0xff; len]);
+         assert_eq!(v.as_bytes().as_ptr(), ptr);
+         assert_eq!(v.as_bytes(), vec![0xff; len]);
+         assert_eq!(v.clone().into_bytes(), vec![0xff; len]);
+      }
+      let owned = v.into_bytes();
+      assert_eq!(owned.len(), n - 2);
+      assert_eq!(owned.capacity(), n);
+   }
+   let mut v = SmallStr::from_slice(&[8; 4096]);
+   v.overwrite_bytes(&[3; 128]);
+   assert_eq!(v.into_bytes().capacity(), 128);
+}
+
+#[test]
+fn megabyte_copies_preserve_unaligned_edges() {
+   for len in [(1 << 20) - 1, 1 << 20, (1 << 20) + 31] {
+      let source: Vec<u8> = (0..len + 1).map(|i| (i % 251) as u8).collect();
+      for offset in [0, 1, 7, 16, 31] {
+         let mut dst = vec![0xa5; len + 64];
+         super::copy_large_payload(&mut dst[offset..offset + len], &source[1..]);
+         assert_eq!(&dst[offset..offset + len], &source[1..]);
+         assert!(
+            dst[..offset]
+               .iter()
+               .chain(&dst[offset + len..])
+               .all(|&x| x == 0xa5)
+         );
+      }
    }
 }

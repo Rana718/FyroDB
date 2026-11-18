@@ -21,3 +21,6 @@ pub mod stream;
 pub mod string;
 pub mod value;
 pub mod zset;
+
+#[cfg(test)]
+mod mget_test;

@@ -167,7 +167,7 @@ The PostgreSQL caching proxy sits in front of upstream PostgreSQL instances whil
 
 HNSW graphs use fixed-stride `u32` level-0 blocks for cache-line-aligned neighbour lists. Thread-local `Scratch` buffers hold visited-set epochs, candidate heaps, Int8 query codes, and ACORN working sets — zero hot-path allocation after warmup. Arena buffers shrink at each power-of-two node count milestone, improving cache density on streaming inserts as well as bulk builds.
 
-FLAT fields batch concurrent queries into one pass. The scan is two-pass: an Int8 pre-filter narrows candidates before exact f32 rerank, with codes held in thread-local scratch.
+FLAT fields batch concurrent queries into one parallel scan of the stored vectors. Each worker keeps its local top-k results, and the coordinator merges them using full-precision scores for unquantized vectors.
 
 Negated filter sets resolve as a sorted merge over the ascending id range, using O(output) space instead of a boolean array per query.
 
