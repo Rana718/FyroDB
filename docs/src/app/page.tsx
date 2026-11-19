@@ -1,3 +1,4 @@
+import Image from "next/image";
 import Link from "next/link";
 import { FiBookOpen, FiCode, FiDatabase, FiLayers, FiTerminal, FiZap } from "react-icons/fi";
 
@@ -19,10 +20,23 @@ export default function HomePage() {
             <p className="home-description">A Redis-compatible database built in Rust. Find the guides, commands, and architecture you need to get started.</p>
             <div className="home-actions"><Link className="home-button-primary" href="/docs/getting-started">Get started</Link><a className="home-button-secondary" href="https://github.com/Rana718/FyroDB">View on GitHub</a></div>
          </section>
-         <section className="home-quickstart" aria-label="Quick start">
-            <div className="home-code-header"><span>QUICK START</span><span>TERMINAL</span></div>
-            <pre><code><span>$</span> docker run -p 8000:8000 rana718/fyrodb:latest{"\n"}<span>$</span> redis-cli -p 8000{"\n"}<span>›</span> SET hello world{"\n"}<b>OK</b>{"\n"}<span>›</span> GET hello{"\n"}<b>"world"</b></code></pre>
-         </section>
+         <div className="home-panels">
+            <section className="home-quickstart" aria-label="Quick start">
+               <div className="home-code-header"><span>QUICK START</span><span>TERMINAL</span></div>
+               <pre><code><span>$</span> docker run -p 8000:8000 rana718/fyrodb:latest{"\n"}<span>$</span> redis-cli -p 8000{"\n"}<span>›</span> SET hello world{"\n"}<b>OK</b>{"\n"}<span>›</span> GET hello{"\n"}<b>"world"</b></code></pre>
+            </section>
+            <section className="home-benchmarks" aria-labelledby="home-benchmark-title">
+               <h2 id="home-benchmark-title">Pipelined GET and SET</h2>
+               <p>12 workers on an Intel i5-11400H · Median of three runs with five-byte values.</p>
+               <Image
+                  src="/benchmarks/2026-11-19/throughput.svg"
+                  width={580}
+                  height={280}
+                  alt="Loopback TCP: 49.75M GET/s and 44.27M SET/s. In-process: 128.74M GET/s and 82.59M SET/s."
+               />
+               <Link href="/docs/benchmarks">Full benchmark results <span aria-hidden="true">→</span></Link>
+            </section>
+         </div>
          <section className="home-guides">
             <div className="home-section-heading"><div><p>EXPLORE</p><h2>Everything you need.</h2></div><p>From your first command to the details under the hood.</p></div>
             <div className="home-guide-grid">{guides.map(({ href, title, text, icon: Icon }) => <Link href={href} className="home-guide" key={href}><Icon size={19} aria-hidden="true"/><h3>{title}</h3><p>{text}</p></Link>)}</div>

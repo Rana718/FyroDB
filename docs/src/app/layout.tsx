@@ -8,20 +8,20 @@ import "@fontsource-variable/jetbrains-mono";
 
 const BASE_URL = "https://fyrodb.vercel.app";
 
+const description = "FyroDB is a Redis-compatible in-memory database written in Rust. Explore setup guides, commands, and measured GET and SET throughput over TCP and in-process.";
+
 export const metadata: Metadata = {
    title: {
       default: "FyroDB — Redis-compatible In-Memory Database in Rust",
       template: "%s | FyroDB Docs",
    },
-   description:
-      "FyroDB is a Redis-compatible, lock-free in-memory key-value store written in Rust. 53M+ ops/sec on a single node. Supports String, Hash, List, Set, Sorted Set, JSON, Stream, Bitmap, HyperLogLog, and Geospatial data types.",
+   description,
    keywords: [
       "FyroDB",
       "Redis alternative",
       "Redis compatible",
       "Rust key-value store",
       "in-memory database",
-      "lock-free database",
       "RESP protocol",
       "key-value database Rust",
       "high performance database",
@@ -49,8 +49,7 @@ export const metadata: Metadata = {
       url: BASE_URL,
       siteName: "FyroDB",
       title: "FyroDB — Redis-compatible In-Memory Database in Rust",
-      description:
-         "Lock-free in-memory key-value store written in Rust. 53M+ ops/sec on a single node. Drop-in Redis replacement with full RESP protocol support.",
+      description,
       images: [
          {
             url: `${BASE_URL}/logo.png`,
@@ -64,8 +63,7 @@ export const metadata: Metadata = {
    twitter: {
       card: "summary_large_image",
       title: "FyroDB — Redis-compatible In-Memory Database in Rust",
-      description:
-         "Lock-free in-memory key-value store in Rust. 53M+ ops/sec on a single node. Drop-in Redis replacement.",
+      description,
       images: [`${BASE_URL}/logo.png`],
    },
    icons: {

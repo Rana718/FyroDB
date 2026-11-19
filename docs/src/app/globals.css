@@ -308,7 +308,15 @@ body {
 .home-button-primary { background: var(--fg); color: var(--bg); }
 .home-button-secondary { border: 1px solid var(--border); color: var(--fg); }
 .home-button-primary:hover { opacity: .8; } .home-button-secondary:hover { background: var(--card); }
-.home-quickstart { max-width: 48rem; border: 1px solid var(--border); border-radius: .8rem; background: var(--card); overflow: hidden; }
+.home-panels { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.5rem; align-items: start; }
+.home-benchmarks { padding: 1.25rem; border: 1px solid var(--border); border-radius: .8rem; }
+.home-benchmarks h2 { font-size: 1.25rem; font-weight: 650; letter-spacing: -.025em; }
+.home-benchmarks p { margin: .35rem 0 1rem; color: var(--muted); font-size: .875rem; }
+.home-benchmarks img { display: block; width: 100%; height: auto; }
+.home-benchmarks a { display: inline-block; margin-top: 1rem; color: var(--primary); font-weight: 600; font-size: .9rem; }
+.home-benchmarks a:hover { text-decoration: underline; }
+@media (max-width: 800px) { .home-panels { grid-template-columns: minmax(0, 1fr); } }
+.home-quickstart { border: 1px solid var(--border); border-radius: .8rem; background: var(--card); overflow: hidden; }
 .home-code-header { display: flex; justify-content: space-between; padding: .8rem 1.1rem; border-bottom: 1px solid var(--border); color: var(--muted); font: 600 .68rem var(--font-mono); letter-spacing: .08em; }
 .home-quickstart pre { overflow-x: auto; margin: 0; padding: 1.4rem; font: .85rem/1.9 var(--font-mono); color: var(--fg); }
 .home-quickstart code span { color: var(--primary); } .home-quickstart code b { color: var(--accent-green); font-weight: 500; }
