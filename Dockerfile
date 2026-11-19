@@ -1,7 +1,13 @@
 # Build stage
-FROM rust:alpine AS builder
+FROM rust:1.99.1-alpine3.24 AS builder
 
-RUN apk add --no-cache musl-dev make pkgconfig openssl-dev openssl-libs-static
+ENV RUSTFLAGS="-C link-self-contained=no"
+
+# Pull only the musl security rebuild from the tagged Alpine repository.
+RUN apk --no-cache upgrade \
+    && echo '@muslfix https://dl-cdn.alpinelinux.org/alpine/v3.25/main' >> /etc/apk/repositories \
+    && apk add --no-cache 'musl@muslfix>=1.2.6-r6' 'musl-dev@muslfix>=1.2.6-r6' 'musl-utils@muslfix>=1.2.6-r6' \
+        llvm-libunwind-static make pkgconfig openssl-dev openssl-libs-static
 
 WORKDIR /app
 
@@ -14,22 +20,25 @@ COPY crates ./crates
 COPY benches ./benches
 RUN mkdir src && echo "fn main() {}" > src/main.rs && touch src/lib.rs
 RUN if [ "$TARGETARCH" = "amd64" ] || [ -z "$TARGETARCH" -a "$(uname -m)" = "x86_64" ]; then \
-        export RUSTFLAGS="-C target-cpu=${TARGET_CPU}"; \
+        export RUSTFLAGS="$RUSTFLAGS -C target-cpu=${TARGET_CPU}"; \
     fi; \
-    cargo build --release ${FEATURES:+--features $FEATURES}
+    cargo build --locked --release ${FEATURES:+--features $FEATURES}
 RUN rm -rf src
 
 COPY src ./src
 RUN touch src/main.rs src/lib.rs && \
     if [ "$TARGETARCH" = "amd64" ] || [ -z "$TARGETARCH" -a "$(uname -m)" = "x86_64" ]; then \
-        export RUSTFLAGS="-C target-cpu=${TARGET_CPU}"; \
+        export RUSTFLAGS="$RUSTFLAGS -C target-cpu=${TARGET_CPU}"; \
     fi; \
-    cargo build --release ${FEATURES:+--features $FEATURES}
+    cargo build --locked --release ${FEATURES:+--features $FEATURES}
 
 # Runtime stage
-FROM alpine:latest
+FROM alpine:3.24
 
-RUN apk add --no-cache ca-certificates netcat-openbsd redis libssl3 libcrypto3 \
+RUN apk --no-cache upgrade \
+    && echo '@muslfix https://dl-cdn.alpinelinux.org/alpine/v3.25/main' >> /etc/apk/repositories \
+    && apk add --no-cache 'musl@muslfix>=1.2.6-r6' 'musl-utils@muslfix>=1.2.6-r6' \
+        ca-certificates netcat-openbsd redis libssl3 libcrypto3 \
     && addgroup -S fyrodb && adduser -S fyrodb -G fyrodb \
     && mkdir -p /data && chown fyrodb:fyrodb /data
 

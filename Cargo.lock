@@ -403,7 +403,7 @@ dependencies = [
 
 [[package]]
 name = "fyro_db"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "arc-swap",
  "bytemuck",
