@@ -51,3 +51,37 @@ export function getAllSlugs(): string[] {
       .filter((f) => f.endsWith(".mdx"))
       .map((f) => f.replace(/\.mdx$/, ""));
 }
+
+export interface SearchRecord {
+   slug: string;
+   title: string;
+   heading: string;
+   text: string;
+}
+
+export function getSearchRecords(): SearchRecord[] {
+   return getAllDocs().flatMap((doc) => {
+      const content = getDoc(doc.slug)?.content ?? "";
+      const records: SearchRecord[] = [];
+      let heading = "";
+      let lines: string[] = [doc.description];
+      const addSection = () => {
+         const text = lines.join(" ")
+            .replace(/!?\[([^\]]*)\]\([^\s)]+\)/g, "$1")
+            .replace(/<[^>]+>/g, " ").replace(/[`*_#|]/g, " ").replace(/\s+/g, " ").trim();
+         if (text || heading) records.push({ slug: doc.slug, title: doc.title, heading, text });
+      };
+      for (const line of content.split("\n")) {
+         const match = line.match(/^#{2,3}\s+(.+)$/);
+         if (match) {
+            addSection();
+            heading = match[1].replace(/[`*_]/g, "").trim();
+            lines = [];
+         } else {
+            lines.push(line);
+         }
+      }
+      addSection();
+      return records;
+   });
+}

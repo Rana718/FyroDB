@@ -1,0 +1,23 @@
+---
+title: Changelog v0.4.0
+description: Snapshot consistency, reliable worker wakeups, and KV performance improvements.
+order: 90
+---
+
+# v0.4.0
+
+## Correctness and stability
+
+- MGET returns a consistent snapshot during concurrent writes. Lua scripts and transactions preserve isolation.
+- Blocking-command wakeups and listener handling avoid stranded clients.
+- CustomHash safely reclaims retired tables and tracks nested writers. Full-width vector searches include disconnected live nodes.
+
+## Performance and memory
+
+- Repeated point reads reuse a guarded response, and pipelined writes avoid redundant work.
+- Large values use bounded allocation reuse and eligible AVX2 streaming copies.
+- Reclamation batches tombstones, and repeated replies reduce intermediate copies.
+
+## Testing
+
+The E2E suite covers concurrent binary reads and writes from 5 bytes through 1 MiB, transaction isolation, blocking clients, increments, and persistence across restart.

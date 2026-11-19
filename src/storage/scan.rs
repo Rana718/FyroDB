@@ -13,7 +13,7 @@ impl Store {
       let (mut shard_idx, mut slot_idx) = if cursor == 0 {
          (0usize, 0usize)
       } else {
-         ((cursor >> 20) & 0xFFF, cursor & 0xF_FFFF)
+         (cursor >> 32, cursor & 0xFFFF_FFFF)
       };
 
       while shard_idx < total_shards {
@@ -35,7 +35,7 @@ impl Store {
                if shard_idx >= total_shards {
                   return (0, keys);
                }
-               let next_cursor = (shard_idx << 20) | (slot_idx & 0xF_FFFF);
+               let next_cursor = (shard_idx << 32) | (slot_idx & 0xFFFF_FFFF);
                return (next_cursor, keys);
             }
          }

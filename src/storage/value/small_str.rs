@@ -45,6 +45,48 @@ pub struct SmallStr {
    len: Tag,
 }
 
+#[inline(never)]
+fn copy_medium_payload(destination: &mut [u8], source: &[u8]) {
+   let len = source.len();
+   debug_assert!((65..=256).contains(&len));
+   if len <= 128 {
+      destination[..64].copy_from_slice(&source[..64]);
+      destination[len - 64..len].copy_from_slice(&source[len - 64..len]);
+   } else {
+      destination[..128].copy_from_slice(&source[..128]);
+      destination[len - 128..len].copy_from_slice(&source[len - 128..len]);
+   }
+}
+
+#[inline]
+fn copy_large_payload(destination: &mut [u8], source: &[u8]) {
+   #[cfg(target_arch = "x86_64")]
+   if source.len() >= 1024 * 1024 && std::is_x86_feature_detected!("avx2") {
+      unsafe { stream_copy(destination, source) };
+      return;
+   }
+   destination.copy_from_slice(source);
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn stream_copy(destination: &mut [u8], source: &[u8]) {
+   use std::arch::x86_64::{_mm_sfence, _mm256_loadu_si256, _mm256_stream_si256};
+   assert_eq!(destination.len(), source.len());
+   let prefix = destination.as_ptr().align_offset(32).min(source.len());
+   let (head, rest) = destination.split_at_mut(prefix);
+   head.copy_from_slice(&source[..prefix]);
+   let body = rest.len() / 32 * 32;
+   unsafe {
+      for offset in (0..body).step_by(32) {
+         let v = _mm256_loadu_si256(source.as_ptr().add(prefix + offset).cast());
+         _mm256_stream_si256(rest.as_mut_ptr().add(offset).cast(), v);
+      }
+      rest[body..].copy_from_slice(&source[prefix + body..]);
+      _mm_sfence();
+   }
+}
+
 const CRLF_U16: u16 = u16::from_ne_bytes(*b"\r\n");
 
 impl SmallStr {
@@ -65,39 +107,26 @@ impl SmallStr {
    /// Formats an integer into the inline buffer. i64 never exceeds 20 ASCII
    /// digits, so this allocates only when the digits exceed SMALL_STR_CAP.
    #[inline]
-   pub fn from_int(mut n: i64) -> Self {
-      let mut buf = [0u8; 20];
-      let neg = n < 0;
-      if neg {
-         // i64::MIN handled without overflow: negate digit-wise below.
-         let mut m = (n as i128).unsigned_abs();
-         let mut i = buf.len();
-         while m >= 10 {
-            i -= 1;
-            buf[i] = b'0' + (m % 10) as u8;
-            m /= 10;
-         }
-         i -= 1;
-         buf[i] = b'0' + m as u8;
-         i -= 1;
-         buf[i] = b'-';
-         return Self::new(unsafe { std::str::from_utf8_unchecked(&buf[i..]) });
+   pub fn from_int(n: i64) -> Self {
+      let mut data = [0u8; SMALL_STR_CAP];
+      let len = crate::utils::int_format::write_i64_into(&mut data, n);
+      Self {
+         data,
+         len: Tag::inline(len),
       }
-      let mut i = buf.len();
-      while n >= 10 {
-         i -= 1;
-         buf[i] = b'0' + (n % 10) as u8;
-         n /= 10;
-      }
-      i -= 1;
-      buf[i] = b'0' + n as u8;
-      Self::new(unsafe { std::str::from_utf8_unchecked(&buf[i..]) })
    }
 
    #[inline]
    pub fn from_float(f: f64) -> Self {
-      let mut buffer = ryu::Buffer::new();
-      Self::new(buffer.format(f))
+      // Redis d2string semantics: integral doubles print without a decimal
+      // point (9.0 -> "9"), everything else shortest-roundtrip (ryu).
+      if f.is_finite() && f == f.trunc() && f.abs() < 9.007_199_254_740_992e15 {
+         let mut buf = [0u8; 20];
+         Self::new(crate::utils::int_format::write_i64_to(&mut buf, f as i64))
+      } else {
+         let mut buffer = ryu::Buffer::new();
+         Self::new(buffer.format(f))
+      }
    }
 
    #[inline]
@@ -111,7 +140,6 @@ impl SmallStr {
          let mut data = [0u8; SMALL_STR_CAP];
          data[..s.len()].copy_from_slice(s.as_bytes());
          let len = Tag::inline(s.len());
-         drop(s);
          Self { data, len }
       } else {
          let ptr = Box::into_raw(s.into_boxed_str());
@@ -126,18 +154,15 @@ impl SmallStr {
       }
    }
 
-   #[inline(always)]
+   #[inline]
+   pub fn try_as_str(&self) -> Result<&str, std::str::Utf8Error> {
+      std::str::from_utf8(self.as_bytes())
+   }
+
+   /// Panics for non-UTF-8 values; binary callers must use as_bytes or try_as_str.
+   #[inline]
    pub fn as_str(&self) -> &str {
-      if self.len != Tag::Heap {
-         unsafe { std::str::from_utf8_unchecked(&self.data[..self.len as usize]) }
-      } else {
-         let ptr_val = unsafe { std::ptr::read_unaligned(self.data.as_ptr().cast::<*const u8>()) };
-         let len_val = Self::read_heap_len(&self.data);
-         unsafe {
-            let slice = std::slice::from_raw_parts(ptr_val, len_val);
-            std::str::from_utf8_unchecked(slice)
-         }
-      }
+      self.try_as_str().expect("binary SmallStr is not UTF-8")
    }
 
    #[inline]
@@ -149,6 +174,11 @@ impl SmallStr {
       }
    }
 
+   #[inline(always)]
+   pub fn is_inline(&self) -> bool {
+      self.len != Tag::Heap
+   }
+
    #[inline]
    pub fn is_empty(&self) -> bool {
       self.len() == 0
@@ -156,19 +186,7 @@ impl SmallStr {
 
    #[inline]
    pub fn into_string(self) -> String {
-      if self.len != Tag::Heap {
-         let s = self.as_str().to_owned();
-         std::mem::forget(self);
-         s
-      } else {
-         let ptr_val = unsafe { std::ptr::read_unaligned(self.data.as_ptr().cast::<*mut u8>()) };
-         let len_val = Self::read_heap_len(&self.data);
-         let boxed = unsafe {
-            Box::from_raw(std::ptr::slice_from_raw_parts_mut(ptr_val, len_val) as *mut str)
-         };
-         std::mem::forget(self);
-         boxed.into()
-      }
+      String::from_utf8(self.into_bytes()).expect("binary SmallStr is not UTF-8")
    }
 
    #[inline(always)]
@@ -213,7 +231,33 @@ impl SmallStr {
          self.len = Tag::inline(len);
          return;
       }
+      if self.len == Tag::Heap && len > SMALL_STR_CAP {
+         let capacity = self.heap_capacity();
+         if len <= capacity && capacity - len <= (len / 8).min(u8::MAX as usize) {
+            Self::store_heap_len(&mut self.data, len);
+            self.data[16] = (capacity - len) as u8;
+            let destination = self.as_bytes_mut();
+            if (65..=256).contains(&len) {
+               copy_medium_payload(destination, s);
+            } else {
+               copy_large_payload(destination, s);
+            }
+            return;
+         }
+      }
       *self = Self::from_slice(s);
+   }
+
+   #[inline(always)]
+   pub fn overwrite_bytes_streaming(&mut self, bytes: &[u8]) {
+      if bytes.len() >= 8192
+         && self.len == Tag::Heap
+         && Self::read_heap_len(&self.data) == bytes.len()
+      {
+         copy_large_payload(self.as_bytes_mut(), bytes);
+      } else {
+         self.overwrite_bytes(bytes);
+      }
    }
 
    #[inline(always)]
@@ -229,9 +273,10 @@ impl SmallStr {
          self.len = Tag::inline(cur + s.len());
          return;
       }
-      let mut owned = self.as_str().to_owned();
-      owned.push_str(s);
-      *self = Self::from_string(owned);
+      let mut owned = Vec::with_capacity(cur + s.len());
+      owned.extend_from_slice(self.as_bytes());
+      owned.extend_from_slice(s.as_bytes());
+      *self = Self::from_bytes(owned);
    }
 
    #[inline]
@@ -252,6 +297,26 @@ impl SmallStr {
       } else {
          let ptr = unsafe { std::ptr::read_unaligned(self.data.as_ptr().cast::<*const u8>()) };
          unsafe { std::slice::from_raw_parts(ptr, Self::read_heap_len(&self.data)) }
+      }
+   }
+
+   #[inline(always)]
+   pub(crate) fn prefetch_payload(&self) {
+      let bytes = self.as_bytes();
+      if !(24..=1024).contains(&bytes.len()) {
+         return;
+      }
+      for pointer in [bytes.as_ptr(), bytes.as_ptr().wrapping_add(bytes.len() - 1)] {
+         #[cfg(target_arch = "x86_64")]
+         unsafe {
+            std::arch::x86_64::_mm_prefetch::<{ std::arch::x86_64::_MM_HINT_T0 }>(pointer.cast());
+         }
+         #[cfg(target_arch = "aarch64")]
+         unsafe {
+            std::arch::asm!("prfm pldl1keep, [{0}]", in(reg) pointer, options(nostack, readonly, preserves_flags));
+         }
+         #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+         let _ = pointer;
       }
    }
 
@@ -277,7 +342,7 @@ impl SmallStr {
             }
             return;
          }
-         crate::utils::resp::write_bulk(out, self.as_str());
+         crate::utils::resp::write_bulk_bytes(out, self.as_bytes());
          return;
       }
       if len <= SMALL_STR_CAP {
@@ -316,19 +381,14 @@ impl SmallStr {
             }
             return;
          }
-         crate::utils::resp::write_bulk(out, self.as_str());
+         crate::utils::resp::write_bulk_bytes(out, self.as_bytes());
          return;
       }
       crate::utils::resp::write_bulk_bytes(out, self.as_bytes());
    }
 
-   /// Writes the formatted RESP bulk string response directly to `p` without bounds checks.
-   /// Returns the total bytes written.
-   ///
    /// # Safety
-   ///
-   /// The caller must ensure that `p` points to a valid buffer with at least 64 bytes
-   /// of allocated, writable memory.
+   /// `p` must have at least `max(64, self.len() + 32)` writable bytes for formatted RESP response.
    #[inline(always)]
    pub unsafe fn write_resp_raw(&self, p: *mut u8) -> usize {
       unsafe {
@@ -375,13 +435,14 @@ impl SmallStr {
             p.add(5 + len).cast::<u16>().write_unaligned(CRLF_U16);
             total
          } else {
-            let bytes = self.as_bytes();
-            let mut v = Vec::new();
-            crate::utils::resp::write_bulk_bytes(&mut v, bytes);
-            std::ptr::copy_nonoverlapping(v.as_ptr(), p, v.len());
-            v.len()
+            crate::utils::resp::write_bulk_raw(p, self.as_bytes())
          }
       }
+   }
+
+   #[inline]
+   fn heap_capacity(&self) -> usize {
+      Self::read_heap_len(&self.data) + usize::from(self.data[16])
    }
 
    #[inline]
@@ -391,9 +452,9 @@ impl SmallStr {
       }
       let ptr = usize::from_ne_bytes(self.data[..8].try_into().unwrap()) as *mut u8;
       let len = Self::read_heap_len(&self.data);
-      let bytes = unsafe { Box::from_raw(std::ptr::slice_from_raw_parts_mut(ptr, len)) };
+      let bytes = unsafe { Vec::from_raw_parts(ptr, len, self.heap_capacity()) };
       std::mem::forget(self);
-      bytes.into_vec()
+      bytes
    }
 
    #[inline(always)]
@@ -441,8 +502,7 @@ impl SmallStr {
             len: Tag::inline(len),
          }
       } else {
-         let len = bytes.len();
-         let ptr = Box::into_raw(bytes.to_vec().into_boxed_slice()) as *mut u8;
+         let ptr = Box::into_raw(Box::<[u8]>::from(bytes)) as *mut u8;
          let mut data = [0u8; SMALL_STR_CAP];
          data[..8].copy_from_slice(&(ptr as usize).to_ne_bytes());
          Self::store_heap_len(&mut data, len);
@@ -450,6 +510,18 @@ impl SmallStr {
             data,
             len: Tag::Heap,
          }
+      }
+   }
+
+   #[inline]
+   pub fn zeroed(len: usize) -> Self {
+      if len <= SMALL_STR_CAP {
+         Self {
+            data: [0u8; SMALL_STR_CAP],
+            len: Tag::inline(len),
+         }
+      } else {
+         Self::from_bytes(vec![0u8; len])
       }
    }
 
@@ -477,9 +549,16 @@ impl SmallStr {
    #[inline]
    pub fn ensure_len(&mut self, min_len: usize) {
       if self.len() < min_len {
-         let mut owned = self.as_str().to_owned();
-         owned.extend(std::iter::repeat_n('\0', min_len - owned.len()));
-         *self = Self::from_string(owned);
+         if self.len != Tag::Heap && min_len <= SMALL_STR_CAP {
+            let current = self.len();
+            self.data[current..min_len].fill(0);
+            self.len = Tag::inline(min_len);
+            return;
+         }
+         let mut owned = Vec::with_capacity(min_len);
+         owned.extend_from_slice(self.as_bytes());
+         owned.resize(min_len, 0);
+         *self = Self::from_bytes(owned);
       }
    }
 }
@@ -488,7 +567,7 @@ impl Drop for SmallStr {
    fn drop(&mut self) {
       if self.len == Tag::Heap {
          let ptr_val = unsafe { std::ptr::read_unaligned(self.data.as_ptr().cast::<*mut u8>()) };
-         let len_val = Self::read_heap_len(&self.data);
+         let len_val = self.heap_capacity();
          unsafe {
             drop(Box::from_raw(std::ptr::slice_from_raw_parts_mut(
                ptr_val, len_val,
@@ -510,6 +589,27 @@ impl Clone for SmallStr {
          }
       } else {
          Self::from_slice(self.as_bytes())
+      }
+   }
+
+   #[inline]
+   fn clone_from(&mut self, source: &Self) {
+      if source.len != Tag::Heap {
+         if self.len == Tag::Heap {
+            let ptr_val = unsafe { std::ptr::read_unaligned(self.data.as_ptr().cast::<*mut u8>()) };
+            let len_val = self.heap_capacity();
+            unsafe {
+               drop(Box::from_raw(std::ptr::slice_from_raw_parts_mut(
+                  ptr_val, len_val,
+               )));
+            }
+         }
+         self.data = source.data;
+         self.len = source.len;
+      } else if self.len == Tag::Heap && Self::read_heap_len(&self.data) == source.len() {
+         self.as_bytes_mut().copy_from_slice(source.as_bytes());
+      } else {
+         *self = source.clone();
       }
    }
 }
@@ -545,19 +645,19 @@ impl From<&str> for SmallStr {
 
 impl std::fmt::Display for SmallStr {
    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-      f.write_str(self.as_str())
+      f.write_str(&String::from_utf8_lossy(self.as_bytes()))
    }
 }
 
 impl std::fmt::Debug for SmallStr {
    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-      write!(f, "\"{}\"", self.as_str())
+      write!(f, "{:?}", String::from_utf8_lossy(self.as_bytes()))
    }
 }
 
 impl PartialEq for SmallStr {
    fn eq(&self, other: &Self) -> bool {
-      self.as_str() == other.as_str()
+      self.as_bytes() == other.as_bytes()
    }
 }
 
@@ -565,7 +665,10 @@ impl Eq for SmallStr {}
 
 impl std::hash::Hash for SmallStr {
    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-      self.as_str().hash(state);
+      match self.try_as_str() {
+         Ok(text) => text.hash(state),
+         Err(_) => self.as_bytes().hash(state),
+      }
    }
 }
 
@@ -584,34 +687,34 @@ impl AsRef<str> for SmallStr {
 
 impl PartialEq<str> for SmallStr {
    fn eq(&self, other: &str) -> bool {
-      self.as_str() == other
+      self.as_bytes() == other.as_bytes()
    }
 }
 
 impl PartialEq<&str> for SmallStr {
    fn eq(&self, other: &&str) -> bool {
-      self.as_str() == *other
+      self.as_bytes() == other.as_bytes()
    }
 }
 
 impl PartialEq<String> for SmallStr {
    #[inline]
    fn eq(&self, other: &String) -> bool {
-      self.as_str() == other.as_str()
+      self.as_bytes() == other.as_bytes()
    }
 }
 
 impl PartialEq<SmallStr> for String {
    #[inline]
    fn eq(&self, other: &SmallStr) -> bool {
-      self.as_str() == other.as_str()
+      self.as_bytes() == other.as_bytes()
    }
 }
 
 impl PartialEq<SmallStr> for &str {
    #[inline]
    fn eq(&self, other: &SmallStr) -> bool {
-      *self == other.as_str()
+      self.as_bytes() == other.as_bytes()
    }
 }
 

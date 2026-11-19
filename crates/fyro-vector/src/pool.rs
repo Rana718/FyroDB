@@ -1,20 +1,18 @@
 use crossbeam_queue::SegQueue;
-use std::collections::VecDeque;
+use parking_lot::{Condvar, Mutex};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 
 type Job = Box<dyn FnOnce() + Send + 'static>;
 
-#[derive(Default)]
-struct Queues {
-   high: VecDeque<Job>,
-   low: VecDeque<Job>,
-}
-
+/// Thread pool with lock-free priority queues and condvar parking.
 pub struct Pool {
    tickets: SegQueue<Job>,
-   queues: Mutex<Queues>,
+   high: SegQueue<Job>,
+   low: SegQueue<Job>,
+   /// Condvar pairing gate for sleeping workers.
+   sleep_gate: Mutex<()>,
    cv: Condvar,
    threads: usize,
    busy: AtomicUsize,
@@ -22,14 +20,12 @@ pub struct Pool {
    sleepers: AtomicUsize,
 }
 
-const SPIN: std::time::Duration = std::time::Duration::from_micros(30);
-
 static CONFIG: Mutex<Option<(usize, Option<Vec<usize>>)>> = Mutex::new(None);
 static GLOBAL: OnceLock<Arc<Pool>> = OnceLock::new();
 
 // Configures search thread pool size and CPU core affinity.
 pub fn configure(threads: usize, cores: Option<Vec<usize>>) {
-   let mut cfg = CONFIG.lock().unwrap();
+   let mut cfg = CONFIG.lock();
    *cfg = Some((threads.max(1), cores.filter(|c| !c.is_empty())));
 }
 
@@ -55,7 +51,7 @@ pub fn allowed_cores() -> Vec<usize> {
 
 pub fn global() -> &'static Pool {
    GLOBAL.get_or_init(|| {
-      let configured = CONFIG.lock().unwrap().clone();
+      let configured = CONFIG.lock().clone();
       let (threads, cores) = configured.unwrap_or_else(|| {
          let env_threads = std::env::var("FYRODB_SEARCH_THREADS")
             .or_else(|_| std::env::var("FYRODB_WORKERS"))
@@ -90,7 +86,9 @@ impl Pool {
    fn start(threads: usize, cores: Option<Vec<usize>>) -> Arc<Pool> {
       let pool = Arc::new(Pool {
          tickets: SegQueue::new(),
-         queues: Mutex::new(Queues::default()),
+         high: SegQueue::new(),
+         low: SegQueue::new(),
+         sleep_gate: Mutex::new(()),
          cv: Condvar::new(),
          threads,
          busy: AtomicUsize::new(0),
@@ -129,8 +127,7 @@ impl Pool {
       if self.queued.load(Ordering::Acquire) == 0 {
          return None;
       }
-      let mut q = self.queues.lock().unwrap();
-      let job = q.high.pop_front().or_else(|| q.low.pop_front());
+      let job = self.high.pop().or_else(|| self.low.pop());
       if job.is_some() {
          self.queued.fetch_sub(1, Ordering::AcqRel);
       }
@@ -138,17 +135,13 @@ impl Pool {
    }
 
    fn push(&self, job: Job, low: bool) {
-      let sleepers = {
-         let mut q = self.queues.lock().unwrap();
-         if low {
-            q.low.push_back(job);
-         } else {
-            q.high.push_back(job);
-         }
-         self.queued.fetch_add(1, Ordering::AcqRel);
-         self.sleepers.load(Ordering::Relaxed)
-      };
-      if sleepers > 0 {
+      if low {
+         self.low.push(job);
+      } else {
+         self.high.push(job);
+      }
+      self.queued.fetch_add(1, Ordering::SeqCst);
+      if self.sleepers.load(Ordering::SeqCst) > 0 {
          self.cv.notify_one();
       }
    }
@@ -176,30 +169,27 @@ impl Pool {
             self.run(job);
             continue;
          }
-         let start = std::time::Instant::now();
-         let mut i = 0u32;
-         loop {
-            if !self.tickets.is_empty() {
-               break;
-            }
-            if self.queued.load(Ordering::Acquire) != 0 {
+         let mut spins = 0u32;
+         while spins < 1024 {
+            if !self.tickets.is_empty() || self.queued.load(Ordering::Acquire) != 0 {
                break;
             }
             std::hint::spin_loop();
-            i = i.wrapping_add(1);
-            if i.is_multiple_of(64) && start.elapsed() >= SPIN {
-               break;
-            }
+            spins += 1;
          }
-         if !self.tickets.is_empty() || self.queued.load(Ordering::Acquire) != 0 {
+         // Dekker synchronization against push side to avoid lost wakes.
+         self.sleepers.fetch_add(1, Ordering::SeqCst);
+         let queued = self.queued.load(Ordering::SeqCst);
+         if queued != 0 {
+            self.sleepers.fetch_sub(1, Ordering::SeqCst);
             continue;
          }
-         let mut q = self.queues.lock().unwrap();
-         while self.tickets.is_empty() && q.high.is_empty() && q.low.is_empty() {
-            self.sleepers.fetch_add(1, Ordering::Relaxed);
-            q = self.cv.wait(q).unwrap();
-            self.sleepers.fetch_sub(1, Ordering::Relaxed);
-         }
+         let mut gate = self.sleep_gate.lock();
+         let _ = self
+            .cv
+            .wait_for(&mut gate, std::time::Duration::from_millis(2));
+         drop(gate);
+         self.sleepers.fetch_sub(1, Ordering::SeqCst);
       }
    }
 
@@ -231,9 +221,8 @@ impl Pool {
             .tickets
             .push(Box::new(move || shared.drain(tasks, f_static)));
       }
-      self.queued.fetch_add(tasks - 1, Ordering::AcqRel);
-      let sleepers = self.sleepers.load(Ordering::Relaxed);
-      if sleepers > 0 {
+      self.queued.fetch_add(tasks - 1, Ordering::SeqCst);
+      if self.sleepers.load(Ordering::SeqCst) > 0 {
          self.cv.notify_all();
       }
       shared.drain(tasks, f_static);

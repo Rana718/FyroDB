@@ -71,6 +71,103 @@ fn read_delivery(r: &mut BufReader<TcpStream>) -> String {
    parts[6].to_string()
 }
 
+fn binary_command(parts: &[&[u8]]) -> Vec<u8> {
+   let mut out = format!("*{}\r\n", parts.len()).into_bytes();
+   for part in parts {
+      out.extend_from_slice(format!("${}\r\n", part.len()).as_bytes());
+      out.extend_from_slice(part);
+      out.extend_from_slice(b"\r\n");
+   }
+   out
+}
+
+#[test]
+fn long_channel_direct_and_pattern_deliveries_keep_binary_payloads_and_order() {
+   let port = spawn_server();
+   let channel = "n".repeat(65);
+   let pattern = format!("{}*", "n".repeat(60));
+   let (mut sub, mut reader) = conn(port);
+   sub.write_all(&cmd(&["SUBSCRIBE", &channel])).unwrap();
+   read_reply(&mut reader);
+   sub.write_all(&cmd(&["PSUBSCRIBE", &pattern])).unwrap();
+   read_reply(&mut reader);
+   let (mut publisher, mut replies) = conn(port);
+   let sizes = [5, 23, 24, 64, 256, 1024, 4096, 10240];
+   let mut expected = Vec::new();
+   let mut wire = Vec::new();
+   for i in 0..64 {
+      let mut value = vec![i as u8; sizes[i % sizes.len()]];
+      value[..4].copy_from_slice(&[255, 0, 13, 10]);
+      wire.extend_from_slice(&binary_command(&[b"PUBLISH", channel.as_bytes(), &value]));
+      let mut direct = binary_command(&[b"message", channel.as_bytes(), &value]);
+      direct.extend_from_slice(&binary_command(&[
+         b"pmessage",
+         pattern.as_bytes(),
+         channel.as_bytes(),
+         &value,
+      ]));
+      expected.push(direct);
+   }
+   publisher.write_all(&wire).unwrap();
+   for _ in 0..64 {
+      assert_eq!(read_reply(&mut replies), b":2\r\n");
+   }
+   for expected in expected {
+      let mut received = read_reply(&mut reader);
+      received.extend_from_slice(&read_reply(&mut reader));
+      assert_eq!(received, expected);
+   }
+   publisher.write_all(&cmd(&["PING"])).unwrap();
+   assert_eq!(read_reply(&mut replies), b"+PONG\r\n");
+}
+
+#[test]
+fn a_slow_subscriber_is_disconnected_without_unbounded_backlog_or_server_failure() {
+   let port = spawn_server();
+   let (mut sub, mut reader) = conn(port);
+   let small_receive = 4096i32;
+   use std::os::fd::AsRawFd;
+   assert_eq!(
+      unsafe {
+         libc::setsockopt(
+            sub.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_RCVBUF,
+            (&small_receive as *const i32).cast(),
+            std::mem::size_of::<i32>() as _,
+         )
+      },
+      0
+   );
+   sub.write_all(&cmd(&["SUBSCRIBE", "slow"])).unwrap();
+   read_reply(&mut reader);
+   let (mut publisher, mut replies) = conn(port);
+   let value = vec![b'x'; 10240];
+   let batch = binary_command(&[b"PUBLISH", b"slow", &value]).repeat(128);
+   let mut disconnected = false;
+   for _ in 0..80 {
+      publisher.write_all(&batch).unwrap();
+      for _ in 0..128 {
+         let count = read_reply(&mut replies);
+         assert!(count == b":1\r\n" || count == b":0\r\n");
+         disconnected |= count == b":0\r\n";
+      }
+      if disconnected {
+         break;
+      }
+   }
+   assert!(
+      disconnected,
+      "subscriber remained connected after exceeding its byte budget"
+   );
+   publisher.write_all(&cmd(&["PING"])).unwrap();
+   assert_eq!(read_reply(&mut replies), b"+PONG\r\n");
+   publisher
+      .write_all(&cmd(&["SET", "after-overload", "safe"]))
+      .unwrap();
+   assert_eq!(read_reply(&mut replies), b"+OK\r\n");
+}
+
 #[test]
 fn batched_publishes_deliver_in_order_to_all_subscribers() {
    let port = spawn_server();

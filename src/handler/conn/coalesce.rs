@@ -29,8 +29,6 @@ pub(super) fn dispatch_set_expire_pair(
    conn: &mut Conn<'_>,
    set: &[(*const u8, usize)],
 ) -> PairOutcome {
-   // Zero-copy peek: the EXPIRE header is fixed-width, so a prefix check
-   // on the unparsed remainder decides without consuming or doing UTF-8 parsing on set parts.
    const EXPIRE_PREFIX: &[u8] = b"*3\r\n$6\r\nEXPIRE\r\n";
    if !conn
       .parser
@@ -53,11 +51,9 @@ pub(super) fn dispatch_set_expire_pair(
       value = v;
    }
 
-   // Consume and parse the EXPIRE command.
    match conn.parser.parse_one() {
       ParseResult::Complete => {}
       ParseResult::Incomplete => {
-         // SET succeeded; EXPIRE was incomplete and remains in rbuf at start_pos for the next read/parse.
          conn.store.set_string(key, value, 0);
          if conn.store.has_replication() {
             conn.store.record_current_value(key);
@@ -80,7 +76,6 @@ pub(super) fn dispatch_set_expire_pair(
       return PairOutcome::Done;
    }
    if unsafe { part_bytes(expire[1]) } != key.as_bytes() {
-      // EXPIRE for a different key: both go through normal dispatch.
       conn.store.set_string(key, value, 0);
       if conn.store.has_replication() {
          conn.store.record_current_value(key);
@@ -106,7 +101,6 @@ pub(super) fn dispatch_set_expire_pair(
          .and_then(crate::storage::value::expiry_from_secs)
    };
    let Some(exp) = exp else {
-      // Invalid TTL: the generic path reports the error identically.
       conn.store.set_string(key, value, 0);
       if conn.store.has_replication() {
          conn.store.record_current_value(key);
@@ -116,7 +110,9 @@ pub(super) fn dispatch_set_expire_pair(
       return PairOutcome::Done;
    };
 
-   // The pair: one lock, atomic value+TTL.
+   let store = conn.store;
+   let _write_epoch = store.data.write_epoch();
+
    let (hint, entry) = conn.hint_for(set[1]);
    conn.store.set_string_auto(key, hint, entry, value, exp);
    if conn.store.has_replication() {
@@ -124,14 +120,16 @@ pub(super) fn dispatch_set_expire_pair(
    }
    conn.parser.wbuf.extend_from_slice(b"+OK\r\n:1\r\n");
 
-   let exp_60 = crate::storage::value::expiry_from_secs(60).unwrap();
    for _ in 0..128 {
       let avail = conn.parser.filled - conn.parser.pos;
       if avail < 48 {
          break;
       }
       let buf = unsafe { conn.parser.rbuf.as_ptr().add(conn.parser.pos) };
-      if let Some((k_slice, v_slice)) = conn.parser.try_fast_set_expire_pair_at(buf, avail) {
+      if let Some((k_slice, v_slice, ttl_secs)) =
+         conn.parser.try_fast_set_expire_pair_at(buf, avail)
+      {
+         let exp_ms = crate::storage::value::expiry_from_secs(ttl_secs).unwrap_or(0);
          let (hint, entry) = conn.hint_for(k_slice);
          let out = &mut conn.parser.wbuf;
          let Some(k_str) = part_str(out, k_slice) else {
@@ -142,7 +140,7 @@ pub(super) fn dispatch_set_expire_pair(
          };
          conn
             .store
-            .set_string_auto(k_str, hint, entry, v_str, exp_60);
+            .set_string_auto(k_str, hint, entry, v_str, exp_ms);
          if conn.store.has_replication() {
             conn.store.record_current_value(k_str);
          }
@@ -190,6 +188,7 @@ pub(super) fn dispatch_publish_run(
          }
       }
 
+      let next_start = conn.parser.pos;
       match conn.parser.parse_one() {
          ParseResult::Complete => {
             let raw_ptr = conn.parser.parts_raw.as_ptr();
@@ -205,7 +204,7 @@ pub(super) fn dispatch_publish_run(
                   Err(()) => QueueRunOutcome::ConnError,
                };
                if matches!(outcome, QueueRunOutcome::Done) {
-                  dispatch_raw(conn, raw);
+                  conn.parser.pos = next_start;
                }
                return outcome;
             }
@@ -236,56 +235,29 @@ pub(super) fn execute_publish_run(
 ) -> Result<(), ()> {
    let out = &mut conn.parser.wbuf;
    out.reserve(cmds * 8);
-   let mut messages: [&str; QUEUE_RUN_MAX] = [""; QUEUE_RUN_MAX];
+   let mut messages: [&[u8]; QUEUE_RUN_MAX] = [&[]; QUEUE_RUN_MAX];
    for (idx, &part) in parts.iter().enumerate() {
-      let Some(m) = part_str(out, part) else {
-         return Err(());
-      };
-      messages[idx] = m;
+      messages[idx] = unsafe { part_bytes(part) };
    }
-   let n = conn.pubsub.publish_batch(channel, &messages[..cmds]);
+   let n = conn.pubsub.publish_batch_bytes(channel, &messages[..cmds]);
    let old_len = out.len();
    crate::utils::resp::write_integer(out, n as i64);
-   let single_len = out.len() - old_len;
    if cmds > 1 {
-      let total_add = (cmds - 1) * single_len;
-      out.reserve(total_add);
-      let src = unsafe { out.as_ptr().add(old_len) };
-      let mut dst = unsafe { out.as_mut_ptr().add(out.len()) };
-      for _ in 1..cmds {
-         unsafe {
-            std::ptr::copy_nonoverlapping(src, dst, single_len);
-            dst = dst.add(single_len);
-         }
-      }
-      unsafe {
-         out.set_len(old_len + cmds * single_len);
-      }
+      crate::utils::resp::repeat_reply(out, old_len, cmds);
    }
    Ok(())
 }
 
-/// Same-key write whose pipelined runs execute under one lock, with
-/// per-command replies identical to sequential execution.
 #[derive(Clone, Copy, PartialEq)]
 pub(super) enum WriteOp {
-   /// `SET k v`: only the last value is observable; replies are all `+OK`.
    Set,
-   /// `INCR k`: replies are the consecutive counter values.
    Incr,
-   /// `HSET k f v`: reply per command is the "field added" flag.
    Hset,
-   /// `SADD k m`: reply per command is the "member added" flag.
    Sadd,
-   /// `ZADD k score m` (plain, no modifiers): reply is "member added".
    Zadd,
-   /// `PFADD k elem`: reply per command is the "register changed" flag.
    Pfadd,
-   /// `GEOADD k lon lat member`: reply per command is the added count.
    Geoadd,
-   /// `JSON.SET k path v`: only the last value is observable; replies are all `+OK`.
    JsonSet,
-   /// `XADD k * f v`: reply per command is the stream ID.
    Xadd,
 }
 
@@ -453,6 +425,7 @@ pub(super) fn dispatch_write_run(
          }
       }
 
+      let next_start = conn.parser.pos;
       match conn.parser.parse_one() {
          ParseResult::Complete => {
             let raw_ptr = conn.parser.parts_raw.as_ptr();
@@ -469,7 +442,7 @@ pub(super) fn dispatch_write_run(
                   Err(()) => QueueRunOutcome::ConnError,
                };
                if matches!(outcome, QueueRunOutcome::Done) {
-                  dispatch_raw(conn, raw);
+                  conn.parser.pos = next_start;
                }
                return outcome;
             }
@@ -504,25 +477,24 @@ pub(super) fn execute_write_run(
    cmds: usize,
    parts: &[(*const u8, usize)],
 ) -> Result<(), ()> {
+   let store = conn.store;
+   let _write_epoch = store.data.write_epoch();
    let replication = conn.store.has_replication();
 
    match op {
       WriteOp::Set => {
          // Sequential SETs fully overwrite: one call reproduces the final
-         // state. Plain SET clears TTL (set_string uses zero TTL).
+         // state. Plain SET clears TTL. Bytes-native: no value scan.
          let last = parts[parts.len() - 1];
-         let out = &mut conn.parser.wbuf;
-         let Some(value) = part_str(out, last) else {
-            return Err(());
-         };
-         conn.store.set_string(key, value, 0);
+         let value = unsafe { part_bytes(last) };
+         conn
+            .store
+            .set_string_auto_bytes(key.as_bytes(), None, std::ptr::null(), value, 0);
          for _ in 0..cmds {
             conn.parser.wbuf.extend_from_slice(b"+OK\r\n");
          }
          if replication {
-            for _ in 0..cmds {
-               conn.store.record_current_value(key);
-            }
+            conn.store.record_current_value(key);
          }
       }
       WriteOp::Incr => {
@@ -554,9 +526,7 @@ pub(super) fn execute_write_run(
             }
          }
          if replication {
-            for _ in 0..cmds {
-               conn.store.record_current_value(key);
-            }
+            conn.store.record_current_value(key);
          }
       }
       WriteOp::Hset => {
@@ -584,9 +554,7 @@ pub(super) fn execute_write_run(
             }
          }
          if replication {
-            for _ in 0..cmds {
-               conn.store.record_current_value(key);
-            }
+            conn.store.record_current_value(key);
          }
       }
       WriteOp::Sadd => {
@@ -605,9 +573,7 @@ pub(super) fn execute_write_run(
             }
          }
          if replication {
-            for _ in 0..cmds {
-               conn.store.record_current_value(key);
-            }
+            conn.store.record_current_value(key);
          }
       }
       WriteOp::Pfadd => {
@@ -635,9 +601,7 @@ pub(super) fn execute_write_run(
             }
          }
          if replication {
-            for _ in 0..cmds {
-               conn.store.record_current_value(key);
-            }
+            conn.store.record_current_value(key);
          }
       }
       WriteOp::Zadd => {
@@ -693,9 +657,7 @@ pub(super) fn execute_write_run(
             }
          }
          if replication {
-            for _ in 0..cmds {
-               conn.store.record_current_value(key);
-            }
+            conn.store.record_current_value(key);
          }
       }
       WriteOp::Geoadd => {
@@ -760,9 +722,7 @@ pub(super) fn execute_write_run(
             }
          }
          if replication {
-            for _ in 0..cmds {
-               conn.store.record_current_value(key);
-            }
+            conn.store.record_current_value(key);
          }
       }
       WriteOp::Xadd => {
@@ -824,9 +784,7 @@ pub(super) fn execute_write_run(
             }
          }
          if replication {
-            for _ in 0..cmds {
-               conn.store.record_current_value(key);
-            }
+            conn.store.record_current_value(key);
          }
       }
    }
@@ -976,6 +934,7 @@ pub(super) fn dispatch_queue_run(
          }
       }
 
+      let next_start = conn.parser.pos;
       match conn.parser.parse_one() {
          ParseResult::Complete => {
             let raw_ptr = conn.parser.parts_raw.as_ptr();
@@ -997,7 +956,7 @@ pub(super) fn dispatch_queue_run(
                   Err(()) => QueueRunOutcome::ConnError,
                };
                if matches!(outcome, QueueRunOutcome::Done) {
-                  dispatch_raw(conn, raw);
+                  conn.parser.pos = next_start;
                }
                return outcome;
             }
@@ -1033,6 +992,8 @@ pub(super) fn execute_queue_run(
    cmds: usize,
    parts: &[(*const u8, usize)],
 ) -> Result<(), ()> {
+   let store = conn.store;
+   let _write_epoch = store.data.write_epoch();
    let out = &mut conn.parser.wbuf;
    let store = conn.store;
 
@@ -1111,9 +1072,7 @@ pub(super) fn execute_queue_run(
    }
 
    if conn.store.has_replication() {
-      for _ in 0..cmds {
-         conn.store.record_current_value(key);
-      }
+      conn.store.record_current_value(key);
    }
    Ok(())
 }

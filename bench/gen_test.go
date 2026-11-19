@@ -74,6 +74,9 @@ func BenchmarkStandardParallelSet(b *testing.B) {
 
 // Test100ClientsUltraThroughput measures 100 concurrent clients generating SET and GET commands.
 func Test100ClientsUltraThroughput(t *testing.T) {
+	if testing.Short() {
+		t.Skip("client throughput measurement")
+	}
 	numClients := 100
 	opsPerClient := 100_000
 	totalOps := int64(numClients * opsPerClient)
@@ -124,6 +127,9 @@ func Test100ClientsUltraThroughput(t *testing.T) {
 
 // TestMockLoopbackThroughput measures client generation + mock server writing & reading over in-memory pipe.
 func TestMockLoopbackThroughput(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback throughput measurement")
+	}
 	numClients := 100
 	opsPerClient := 100_000
 	totalOps := int64(numClients * opsPerClient)

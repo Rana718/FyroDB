@@ -14,8 +14,9 @@ pub(crate) struct FlatReq {
    q: Vec<f32>,
    k: usize,
    ready: AtomicBool,
-   result: Mutex<Option<Vec<(f32, usize)>>>,
+   result: std::cell::UnsafeCell<Option<Vec<(f32, usize)>>>,
 }
+unsafe impl Sync for FlatReq {}
 
 // Lock-free MPSC: CAS winner does the scan, others spin-yield on their ready flag.
 pub(crate) struct FlatBatch {
@@ -49,7 +50,45 @@ impl HnswGraph {
    }
 
    /// Re-scores approximate candidates using exact vectors from `fetch(id)`.
-   /// Returns the best `k` sorted by metric distance.
+   pub fn rerank_fast<F>(
+      &self,
+      q: &[f32],
+      cands: Vec<(f32, usize)>,
+      k: usize,
+      mut fetch: F,
+   ) -> Vec<(f32, usize)>
+   where
+      F: FnMut(usize, &mut [f32]) -> bool,
+   {
+      let mut scratch = vec![0.0f32; q.len()];
+      self.rerank_by_fn(cands, k, |id| {
+         if fetch(id, &mut scratch) {
+            Some(crate::distance::distance(self.metric, q, &scratch))
+         } else {
+            None
+         }
+      })
+   }
+
+   #[inline]
+   pub fn rerank_by_fn<F>(
+      &self,
+      cands: Vec<(f32, usize)>,
+      k: usize,
+      mut score: F,
+   ) -> Vec<(f32, usize)>
+   where
+      F: FnMut(usize) -> Option<f32>,
+   {
+      let mut out: Vec<(f32, usize)> = cands
+         .into_iter()
+         .filter_map(|(_, id)| score(id).map(|d| (d, id)))
+         .collect();
+      out.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
+      out.truncate(k);
+      out
+   }
+
    pub fn rerank(
       &self,
       q: &[f32],
@@ -57,15 +96,19 @@ impl HnswGraph {
       k: usize,
       fetch: &dyn Fn(usize) -> Option<Vec<f32>>,
    ) -> Vec<(f32, usize)> {
-      let mut out: Vec<(f32, usize)> = cands
-         .into_iter()
-         .filter_map(|(_, id)| {
-            fetch(id).map(|v| (crate::distance::distance(self.metric, q, &v), id))
-         })
-         .collect();
-      out.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
-      out.truncate(k);
-      out
+      self.rerank_by(cands, k, &|id| {
+         fetch(id).map(|v| crate::distance::distance(self.metric, q, &v))
+      })
+   }
+
+   /// Scores candidates without requiring an owned vector per fetch.
+   pub fn rerank_by(
+      &self,
+      cands: Vec<(f32, usize)>,
+      k: usize,
+      score: &dyn Fn(usize) -> Option<f32>,
+   ) -> Vec<(f32, usize)> {
+      self.rerank_by_fn(cands, k, score)
    }
 
    /// Filtered graph search: traverses unfiltered graph while collecting only
@@ -292,9 +335,8 @@ impl HnswGraph {
       out: &mut Vec<(f32, u32)>,
    ) {
       out.clear();
-      // Small graphs: traversal overhead dominates — scan directly.
-      if g.len > 0 && g.len < 500 {
-         let mut heap: BinaryHeap<(Dist, u32)> = BinaryHeap::with_capacity(k + 1);
+      if g.len < 500 || k >= self.len() {
+         let mut heap: BinaryHeap<(Dist, u32)> = BinaryHeap::with_capacity(k.min(g.len));
          for id in 0..g.len as u32 {
             if g.flag(id) & F_DELETED != 0 || !collect.accepts(g, id) {
                continue;
@@ -350,12 +392,12 @@ impl HnswGraph {
          q: q.to_vec(),
          k,
          ready: AtomicBool::new(false),
-         result: Mutex::new(None),
+         result: std::cell::UnsafeCell::new(None),
       });
       self.flat.queue.push(Arc::clone(&req));
       loop {
          if req.ready.load(Ordering::Acquire) {
-            return req.result.lock().take().unwrap_or_default();
+            return unsafe { (*req.result.get()).take().unwrap_or_default() };
          }
          // Try to become the scanner.
          if self
@@ -374,7 +416,7 @@ impl HnswGraph {
             if batch.is_empty() {
                self.flat.scanning.store(false, Ordering::Release);
                if req.ready.load(Ordering::Acquire) {
-                  return req.result.lock().take().unwrap_or_default();
+                  return unsafe { (*req.result.get()).take().unwrap_or_default() };
                }
                std::hint::spin_loop();
                continue;
@@ -384,7 +426,9 @@ impl HnswGraph {
                self.exact_batch(&g, &batch)
             };
             for (r, res) in batch.iter().zip(results) {
-               *r.result.lock() = Some(res);
+               unsafe {
+                  *r.result.get() = Some(res);
+               }
                r.ready.store(true, Ordering::Release);
             }
             self.flat.scanning.store(false, Ordering::Release);
@@ -394,7 +438,7 @@ impl HnswGraph {
                for _ in 0..32 {
                   std::hint::spin_loop();
                   if req.ready.load(Ordering::Acquire) {
-                     return req.result.lock().take().unwrap_or_default();
+                     return unsafe { (*req.result.get()).take().unwrap_or_default() };
                   }
                }
                std::thread::yield_now();
@@ -471,9 +515,6 @@ impl HnswGraph {
       lo: usize,
       hi: usize,
    ) -> Vec<Vec<(f32, u32)>> {
-      if self.quant == Quant::None && g.has_flat_int8() && (hi - lo) >= 2048 {
-         return self.scan_batch_two_pass(kern, g, queries, valid, lo, hi);
-      }
       let mut heaps: Vec<BinaryHeap<(Dist, u32)>> = queries
          .iter()
          .map(|(_, k)| BinaryHeap::with_capacity(k + 1))
@@ -574,13 +615,6 @@ impl HnswGraph {
       hi: usize,
       ids: Option<&[usize]>,
    ) -> Vec<(f32, u32)> {
-      let span = ids.map_or(hi - lo, |s| s.len());
-      if self.quant == Quant::None && g.has_flat_int8() && span >= 256 {
-         return match ids {
-            None => self.scan_two_pass(kern, g, q, k, lo, hi),
-            Some(id_slice) => self.scan_ids_two_pass(kern, g, q, k, &id_slice[lo..hi]),
-         };
-      }
       // Max-heap capped at k: the top is the current worst.
       let mut heap: BinaryHeap<(Dist, u32)> = BinaryHeap::with_capacity(k + 1);
       let push = |heap: &mut BinaryHeap<(Dist, u32)>, id: u32| {
@@ -622,233 +656,5 @@ impl HnswGraph {
          .into_iter()
          .map(|(Dist(d), id)| (d, id))
          .collect()
-   }
-
-   /// Two-pass scan: first scan compact Int8 codes for top candidates,
-   /// then rerank against exact f32 vectors.
-   #[inline(always)]
-   fn scan_two_pass<K: Kernel>(
-      &self,
-      kern: K,
-      g: &Inner,
-      q: Query,
-      k: usize,
-      lo: usize,
-      hi: usize,
-   ) -> Vec<(f32, u32)> {
-      let rerank_k = (k * 4).max(32).min(hi - lo);
-      let q_maxabs = q.v.iter().fold(0f32, |m, x| m.max(x.abs()));
-      let q_scale = if q_maxabs > 0.0 {
-         q_maxabs / 127.0
-      } else {
-         1.0
-      };
-      with_scratch(|sc| {
-         sc.q_int8.resize(q.v.len(), 0i8);
-         for (c, &x) in sc.q_int8.iter_mut().zip(q.v.iter()) {
-            *c = (x / q_scale).round().clamp(-127.0, 127.0) as i8;
-         }
-         let q_codes = &sc.q_int8[..q.v.len()];
-         let mut pre_heap: BinaryHeap<(Dist, u32)> = BinaryHeap::with_capacity(rerank_k + 1);
-         for id in lo..hi {
-            if id + 16 < hi {
-               g.prefetch_flat_int8((id + 16) as u32);
-            }
-            if g.flag(id as u32) & F_DELETED != 0 {
-               continue;
-            }
-            let stored = g.flat_int8_of(id as u32);
-            let dot = kern.dot_i8(q_codes, stored);
-            let approx = match self.metric {
-               DistanceMetric::Cosine => -(dot as f32 * q_scale * g.flat_scale(id as u32)),
-               DistanceMetric::Ip => -(dot as f32 * q_scale * g.flat_scale(id as u32)),
-               DistanceMetric::L2 => -(dot as f32 * q_scale * g.flat_scale(id as u32)),
-            };
-            let d = Dist(approx);
-            if pre_heap.len() < rerank_k {
-               pre_heap.push((d, id as u32));
-            } else if pre_heap.peek().is_some_and(|top| d < top.0) {
-               pre_heap.pop();
-               pre_heap.push((d, id as u32));
-            }
-         }
-         let mut heap: BinaryHeap<(Dist, u32)> = BinaryHeap::with_capacity(k + 1);
-         for (_, id) in pre_heap.into_vec() {
-            g.prefetch(id);
-            let d = Dist(self.dist(kern, g, q, id));
-            if heap.len() < k {
-               heap.push((d, id));
-            } else if heap.peek().is_some_and(|top| d < top.0) {
-               heap.pop();
-               heap.push((d, id));
-            }
-         }
-         heap
-            .into_vec()
-            .into_iter()
-            .map(|(Dist(d), id)| (d, id))
-            .collect()
-      })
-   }
-
-   /// Two-pass batched scan: Int8 pre-filter for all queries in one arena sweep,
-   /// then per-query exact rerank of the shortlisted candidates.
-   #[allow(clippy::too_many_arguments)]
-   #[inline(always)]
-   fn scan_batch_two_pass<K: Kernel>(
-      &self,
-      kern: K,
-      g: &Inner,
-      queries: &[(Query, usize)],
-      valid: &[bool],
-      lo: usize,
-      hi: usize,
-   ) -> Vec<Vec<(f32, u32)>> {
-      let nq = queries.len();
-      let rerank_ks: Vec<usize> = queries
-         .iter()
-         .map(|(_, k)| (k * 4).max(32).min(hi - lo))
-         .collect();
-      // Encode all query vectors to Int8 once.
-      let q_info: Vec<(Vec<i8>, f32)> = queries
-         .iter()
-         .zip(valid.iter())
-         .map(|((q, _), &v)| {
-            if !v {
-               return (Vec::new(), 0.0);
-            }
-            let q_maxabs = q.v.iter().fold(0f32, |m, x| m.max(x.abs()));
-            let q_scale = if q_maxabs > 0.0 {
-               q_maxabs / 127.0
-            } else {
-               1.0
-            };
-            let codes =
-               q.v.iter()
-                  .map(|&x| (x / q_scale).round().clamp(-127.0, 127.0) as i8)
-                  .collect();
-            (codes, q_scale)
-         })
-         .collect();
-      // Pass 1: Int8 pre-filter — single pass over arena, all queries share each vector load.
-      let mut pre_heaps: Vec<BinaryHeap<(Dist, u32)>> = rerank_ks
-         .iter()
-         .map(|&rk| BinaryHeap::with_capacity(rk + 1))
-         .collect();
-      for id in lo..hi {
-         if id + 16 < hi {
-            g.prefetch_flat_int8((id + 16) as u32);
-         }
-         let id = id as u32;
-         if g.flag(id) & F_DELETED != 0 {
-            continue;
-         }
-         let stored = g.flat_int8_of(id);
-         let x_scale = g.flat_scale(id);
-         for i in 0..nq {
-            if !valid[i] {
-               continue;
-            }
-            let (ref q_codes, q_scale) = q_info[i];
-            let dot = kern.dot_i8(q_codes, stored);
-            let approx = Dist(-(dot as f32 * q_scale * x_scale));
-            let heap = &mut pre_heaps[i];
-            let rk = rerank_ks[i];
-            if heap.len() < rk {
-               heap.push((approx, id));
-            } else if heap.peek().is_some_and(|top| approx < top.0) {
-               heap.pop();
-               heap.push((approx, id));
-            }
-         }
-      }
-      // Pass 2: exact rerank per query.
-      pre_heaps
-         .into_iter()
-         .zip(queries.iter().zip(valid.iter()))
-         .map(|(pre_heap, ((q, k), &v))| {
-            if !v {
-               return Vec::new();
-            }
-            let mut heap: BinaryHeap<(Dist, u32)> = BinaryHeap::with_capacity(k + 1);
-            for (_, id) in pre_heap.into_vec() {
-               g.prefetch(id);
-               let d = Dist(self.dist(kern, g, *q, id));
-               if heap.len() < *k {
-                  heap.push((d, id));
-               } else if heap.peek().is_some_and(|top| d < top.0) {
-                  heap.pop();
-                  heap.push((d, id));
-               }
-            }
-            heap
-               .into_vec()
-               .into_iter()
-               .map(|(Dist(d), id)| (d, id))
-               .collect()
-         })
-         .collect()
-   }
-
-   /// Two-pass scan over an explicit id subset: Int8 pre-filter then exact rerank.
-   #[inline(always)]
-   fn scan_ids_two_pass<K: Kernel>(
-      &self,
-      kern: K,
-      g: &Inner,
-      q: Query,
-      k: usize,
-      ids: &[usize],
-   ) -> Vec<(f32, u32)> {
-      let rerank_k = (k * 4).max(32).min(ids.len());
-      let q_maxabs = q.v.iter().fold(0f32, |m, x| m.max(x.abs()));
-      let q_scale = if q_maxabs > 0.0 {
-         q_maxabs / 127.0
-      } else {
-         1.0
-      };
-      with_scratch(|sc| {
-         sc.q_int8.resize(q.v.len(), 0i8);
-         for (c, &x) in sc.q_int8.iter_mut().zip(q.v.iter()) {
-            *c = (x / q_scale).round().clamp(-127.0, 127.0) as i8;
-         }
-         let q_codes = &sc.q_int8[..q.v.len()];
-         let mut pre_heap: BinaryHeap<(Dist, u32)> = BinaryHeap::with_capacity(rerank_k + 1);
-         for (i, &id) in ids.iter().enumerate() {
-            if id >= g.len || g.flag(id as u32) & F_DELETED != 0 {
-               continue;
-            }
-            if let Some(&next) = ids.get(i + 16)
-               && next < g.len
-            {
-               g.prefetch_flat_int8(next as u32);
-            }
-            let stored = g.flat_int8_of(id as u32);
-            let dot = kern.dot_i8(q_codes, stored);
-            let approx = Dist(-(dot as f32 * q_scale * g.flat_scale(id as u32)));
-            if pre_heap.len() < rerank_k {
-               pre_heap.push((approx, id as u32));
-            } else if pre_heap.peek().is_some_and(|top| approx < top.0) {
-               pre_heap.pop();
-               pre_heap.push((approx, id as u32));
-            }
-         }
-         let mut heap: BinaryHeap<(Dist, u32)> = BinaryHeap::with_capacity(k + 1);
-         for (_, id) in pre_heap.into_vec() {
-            g.prefetch(id);
-            let d = Dist(self.dist(kern, g, q, id));
-            if heap.len() < k {
-               heap.push((d, id));
-            } else if heap.peek().is_some_and(|top| d < top.0) {
-               heap.pop();
-               heap.push((d, id));
-            }
-         }
-         heap
-            .into_vec()
-            .into_iter()
-            .map(|(Dist(d), id)| (d, id))
-            .collect()
-      })
    }
 }

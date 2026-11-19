@@ -37,13 +37,16 @@ impl Store {
       members: &[(f64, &str)],
       out: &mut Vec<u8>,
    ) -> Result<(), &'static str> {
+      // Collect flags under lock and serialize after to shorten critical section.
+      let mut flags = smallvec::SmallVec::<[bool; 32]>::new();
+      flags.reserve(members.len());
       out.reserve(members.len() * 4);
       let result = self.data.update_with(key, |val| {
          if val.is_expired() {
             let mut z = ZSetData::with_capacity(members.len());
             for (s, m) in members {
                let added = z.insert(*s, m);
-               out.extend_from_slice(if added { b":1\r\n" } else { b":0\r\n" });
+               flags.push(added);
             }
             val.value = FyroDB::ZSet(Box::new(z));
             val.expires_ms = 0;
@@ -54,7 +57,7 @@ impl Store {
                z.reserve(members.len());
                for (s, m) in members {
                   let added = z.insert(*s, m);
-                  out.extend_from_slice(if added { b":1\r\n" } else { b":0\r\n" });
+                  flags.push(added);
                }
                Ok(())
             }
@@ -63,12 +66,19 @@ impl Store {
       });
 
       match result {
-         Some(r) => r,
+         Some(r) => {
+            if r.is_ok() {
+               for added in flags.iter() {
+                  out.extend_from_slice(if *added { b":1\r\n" } else { b":0\r\n" });
+               }
+            }
+            r
+         }
          None => {
             let mut z = ZSetData::with_capacity(members.len());
             for (s, m) in members {
                let added = z.insert(*s, m);
-               out.extend_from_slice(if added { b":1\r\n" } else { b":0\r\n" });
+               flags.push(added);
             }
             self.data.insert_str(
                key,
@@ -77,6 +87,9 @@ impl Store {
                   expires_ms: 0,
                },
             );
+            for added in flags.iter() {
+               out.extend_from_slice(if *added { b":1\r\n" } else { b":0\r\n" });
+            }
             Ok(())
          }
       }
@@ -268,26 +281,29 @@ impl Store {
       }
    }
 
-   pub fn zscore(&self, key: &str, member: &str) -> Result<Option<f64>, &'static str> {
+   #[inline]
+   pub(crate) fn with_zset_ref<R, F>(&self, key: &str, default: R, f: F) -> Result<R, &'static str>
+   where
+      F: FnOnce(&ZSetData) -> R,
+   {
       match self.data.get_ref(key) {
-         None => Ok(None),
-         Some(e) if e.is_expired() => Ok(None),
+         None => Ok(default),
+         Some(e) if e.is_expired() => Ok(default),
          Some(e) => match e.value.as_zset() {
-            Some(z) => Ok(z.get_score(member)),
+            Some(z) => Ok(f(z)),
             None => Err("WRONGTYPE"),
          },
       }
    }
 
+   pub fn zscore(&self, key: &str, member: &str) -> Result<Option<f64>, &'static str> {
+      self.with_zset_ref(key, None, |z| z.get_score(member))
+   }
+
    pub fn zmscore(&self, key: &str, members: &[&str]) -> Result<Vec<Option<f64>>, &'static str> {
-      match self.data.get_ref(key) {
-         None => Ok(vec![None; members.len()]),
-         Some(e) if e.is_expired() => Ok(vec![None; members.len()]),
-         Some(e) => match e.value.as_zset() {
-            Some(z) => Ok(members.iter().map(|m| z.get_score(m)).collect()),
-            None => Err("WRONGTYPE"),
-         },
-      }
+      self.with_zset_ref(key, vec![None; members.len()], |z| {
+         members.iter().map(|m| z.get_score(m)).collect()
+      })
    }
 
    /// Nil for missing members; truncation keeps seqlock retries idempotent.
@@ -334,47 +350,19 @@ impl Store {
    }
 
    pub fn zrank(&self, key: &str, member: &str) -> Result<Option<usize>, &'static str> {
-      match self.data.get_ref(key) {
-         None => Ok(None),
-         Some(e) if e.is_expired() => Ok(None),
-         Some(e) => match e.value.as_zset() {
-            Some(z) => Ok(z.rank(member)),
-            None => Err("WRONGTYPE"),
-         },
-      }
+      self.with_zset_ref(key, None, |z| z.rank(member))
    }
 
    pub fn zrevrank(&self, key: &str, member: &str) -> Result<Option<usize>, &'static str> {
-      match self.data.get_ref(key) {
-         None => Ok(None),
-         Some(e) if e.is_expired() => Ok(None),
-         Some(e) => match e.value.as_zset() {
-            Some(z) => Ok(z.rev_rank(member)),
-            None => Err("WRONGTYPE"),
-         },
-      }
+      self.with_zset_ref(key, None, |z| z.rev_rank(member))
    }
 
    pub fn zcard(&self, key: &str) -> Result<usize, &'static str> {
-      match self.data.get_ref(key) {
-         None => Ok(0),
-         Some(e) if e.is_expired() => Ok(0),
-         Some(e) => match e.value.as_zset() {
-            Some(z) => Ok(z.len()),
-            None => Err("WRONGTYPE"),
-         },
-      }
+      self.with_zset_ref(key, 0, |z| z.len())
    }
 
    pub fn zcount(&self, key: &str, min: f64, max: f64) -> Result<usize, &'static str> {
-      match self.data.get_ref(key) {
-         None => Ok(0),
-         Some(e) if e.is_expired() => Ok(0),
-         Some(e) => match e.value.as_zset() {
-            Some(z) => Ok(z.count_in_score_range(min, max)),
-            None => Err("WRONGTYPE"),
-         },
-      }
+      self.with_zset_ref(key, 0, |z| z.count_in_score_range(min, max))
    }
 
    /// Wakes connections blocked on `key` after a successful write.
@@ -420,26 +408,17 @@ impl Store {
       stop: i64,
       _withscores: bool,
    ) -> Result<Vec<(String, f64)>, &'static str> {
-      match self.data.get_ref(key) {
-         None => Ok(vec![]),
-         Some(e) if e.is_expired() => Ok(vec![]),
-         Some(e) => match e.value.as_zset() {
-            Some(z) => {
-               let len = z.len() as i64;
-               let s = normalize_zset_index(start, len);
-               let e_idx = normalize_zset_index(stop, len);
-               if s > e_idx {
-                  return Ok(vec![]);
-               }
-               let items: Vec<(String, f64)> = z
-                  .range_by_rank(s, e_idx + 1)
-                  .map(|entry| (entry.member.to_string(), entry.score))
-                  .collect();
-               Ok(items)
-            }
-            None => Err("WRONGTYPE"),
-         },
-      }
+      self.with_zset_ref(key, vec![], |z| {
+         let len = z.len() as i64;
+         let s = normalize_zset_index(start, len);
+         let e_idx = normalize_zset_index(stop, len);
+         if s > e_idx {
+            return vec![];
+         }
+         z.range_by_rank(s, e_idx + 1)
+            .map(|entry| (entry.member.to_string(), entry.score))
+            .collect()
+      })
    }
 
    /// Zero-alloc ZRANGE: bulk elements stream straight into `out`. With
@@ -452,31 +431,24 @@ impl Store {
       withscores: bool,
       out: &mut Vec<u8>,
    ) -> Result<usize, &'static str> {
-      match self.data.get_ref(key) {
-         None => Ok(0),
-         Some(e) if e.is_expired() => Ok(0),
-         Some(e) => match e.value.as_zset() {
-            Some(z) => {
-               let len = z.len() as i64;
-               let s = normalize_zset_index(start, len);
-               let e_idx = normalize_zset_index(stop, len);
-               if s > e_idx {
-                  return Ok(0);
-               }
-               let n = e_idx - s + 1;
-               out.reserve(n * if withscores { 32 } else { 20 });
-               crate::utils::resp::write_array_header(out, if withscores { n * 2 } else { n });
-               for entry in z.range_by_rank(s, e_idx + 1) {
-                  entry.member.write_resp(out);
-                  if withscores {
-                     crate::utils::resp::write_float(out, entry.score);
-                  }
-               }
-               Ok(n)
+      self.with_zset_ref(key, 0, |z| {
+         let len = z.len() as i64;
+         let s = normalize_zset_index(start, len);
+         let e_idx = normalize_zset_index(stop, len);
+         if s > e_idx {
+            return 0;
+         }
+         let n = e_idx - s + 1;
+         out.reserve(n * if withscores { 32 } else { 20 });
+         crate::utils::resp::write_array_header(out, if withscores { n * 2 } else { n });
+         for entry in z.range_by_rank(s, e_idx + 1) {
+            entry.member.write_resp(out);
+            if withscores {
+               crate::utils::resp::write_float(out, entry.score);
             }
-            None => Err("WRONGTYPE"),
-         },
-      }
+         }
+         n
+      })
    }
 
    pub fn zrevrange_to_buf(
@@ -487,31 +459,24 @@ impl Store {
       withscores: bool,
       out: &mut Vec<u8>,
    ) -> Result<usize, &'static str> {
-      match self.data.get_ref(key) {
-         None => Ok(0),
-         Some(e) if e.is_expired() => Ok(0),
-         Some(e) => match e.value.as_zset() {
-            Some(z) => {
-               let len = z.len() as i64;
-               let s = normalize_zset_index(start, len);
-               let e_idx = normalize_zset_index(stop, len);
-               if s > e_idx {
-                  return Ok(0);
-               }
-               let n = e_idx - s + 1;
-               out.reserve(n * if withscores { 32 } else { 20 });
-               crate::utils::resp::write_array_header(out, if withscores { n * 2 } else { n });
-               for entry in z.iter_rev().skip(s).take(n) {
-                  entry.member.write_resp(out);
-                  if withscores {
-                     crate::utils::resp::write_float(out, entry.score);
-                  }
-               }
-               Ok(n)
+      self.with_zset_ref(key, 0, |z| {
+         let len = z.len() as i64;
+         let s = normalize_zset_index(start, len);
+         let e_idx = normalize_zset_index(stop, len);
+         if s > e_idx {
+            return 0;
+         }
+         let n = e_idx - s + 1;
+         out.reserve(n * if withscores { 32 } else { 20 });
+         crate::utils::resp::write_array_header(out, if withscores { n * 2 } else { n });
+         for entry in z.iter_rev().skip(s).take(n) {
+            entry.member.write_resp(out);
+            if withscores {
+               crate::utils::resp::write_float(out, entry.score);
             }
-            None => Err("WRONGTYPE"),
-         },
-      }
+         }
+         n
+      })
    }
 
    pub fn zrevrange(
@@ -520,28 +485,19 @@ impl Store {
       start: i64,
       stop: i64,
    ) -> Result<Vec<(String, f64)>, &'static str> {
-      match self.data.get_ref(key) {
-         None => Ok(vec![]),
-         Some(e) if e.is_expired() => Ok(vec![]),
-         Some(e) => match e.value.as_zset() {
-            Some(z) => {
-               let len = z.len() as i64;
-               let s = normalize_zset_index(start, len);
-               let e_idx = normalize_zset_index(stop, len);
-               if s > e_idx {
-                  return Ok(vec![]);
-               }
-               let items: Vec<(String, f64)> = z
-                  .iter_rev()
-                  .skip(s)
-                  .take(e_idx - s + 1)
-                  .map(|entry| (entry.member.to_string(), entry.score))
-                  .collect();
-               Ok(items)
-            }
-            None => Err("WRONGTYPE"),
-         },
-      }
+      self.with_zset_ref(key, vec![], |z| {
+         let len = z.len() as i64;
+         let s = normalize_zset_index(start, len);
+         let e_idx = normalize_zset_index(stop, len);
+         if s > e_idx {
+            return vec![];
+         }
+         z.iter_rev()
+            .skip(s)
+            .take(e_idx - s + 1)
+            .map(|entry| (entry.member.to_string(), entry.score))
+            .collect()
+      })
    }
 
    pub fn zrangebyscore(
@@ -552,22 +508,13 @@ impl Store {
       offset: usize,
       count: usize,
    ) -> Result<Vec<(String, f64)>, &'static str> {
-      match self.data.get_ref(key) {
-         None => Ok(vec![]),
-         Some(e) if e.is_expired() => Ok(vec![]),
-         Some(e) => match e.value.as_zset() {
-            Some(z) => {
-               let items: Vec<(String, f64)> = z
-                  .range_by_score(min, max)
-                  .skip(offset)
-                  .take(if count == 0 { usize::MAX } else { count })
-                  .map(|entry| (entry.member.to_string(), entry.score))
-                  .collect();
-               Ok(items)
-            }
-            None => Err("WRONGTYPE"),
-         },
-      }
+      self.with_zset_ref(key, vec![], |z| {
+         z.range_by_score(min, max)
+            .skip(offset)
+            .take(if count == 0 { usize::MAX } else { count })
+            .map(|entry| (entry.member.to_string(), entry.score))
+            .collect()
+      })
    }
 
    pub fn zrevrangebyscore(
@@ -578,77 +525,54 @@ impl Store {
       offset: usize,
       count: usize,
    ) -> Result<Vec<(String, f64)>, &'static str> {
-      match self.data.get_ref(key) {
-         None => Ok(vec![]),
-         Some(e) if e.is_expired() => Ok(vec![]),
-         Some(e) => match e.value.as_zset() {
+      self.with_zset_ref(key, vec![], |z| {
+         z.rev_range_by_score(min, max)
+            .into_iter()
+            .skip(offset)
+            .take(if count == 0 { usize::MAX } else { count })
+            .map(|entry| (entry.member.to_string(), entry.score))
+            .collect()
+      })
+   }
+
+   fn zpop_extreme(
+      &self,
+      key: &str,
+      count: usize,
+      mut pop_fn: impl FnMut(&mut ZSetData) -> Option<crate::storage::value::ZEntry>,
+   ) -> Result<Vec<(String, f64)>, &'static str> {
+      let result = self.data.update_with(key, |val| {
+         if val.is_expired() {
+            return Ok(vec![]);
+         }
+         match val.value.as_zset_mut() {
             Some(z) => {
-               let items: Vec<(String, f64)> = z
-                  .rev_range_by_score(min, max)
-                  .into_iter()
-                  .skip(offset)
-                  .take(if count == 0 { usize::MAX } else { count })
-                  .map(|entry| (entry.member.to_string(), entry.score))
-                  .collect();
-               Ok(items)
+               let n = count.min(z.len());
+               let mut out = Vec::with_capacity(n);
+               for _ in 0..n {
+                  if let Some(entry) = pop_fn(z) {
+                     out.push((entry.member, entry.score));
+                  }
+               }
+               Ok(out)
             }
             None => Err("WRONGTYPE"),
-         },
+         }
+      });
+
+      match result {
+         Some(Ok(v)) => Ok(v.into_iter().map(|(m, s)| (m.to_string(), s)).collect()),
+         Some(Err(e)) => Err(e),
+         None => Ok(vec![]),
       }
    }
 
    pub fn zpopmin(&self, key: &str, count: usize) -> Result<Vec<(String, f64)>, &'static str> {
-      let result = self.data.update_with(key, |val| {
-         if val.is_expired() {
-            return Ok(vec![]);
-         }
-         match val.value.as_zset_mut() {
-            Some(z) => {
-               let n = count.min(z.len());
-               let mut out = Vec::with_capacity(n);
-               for _ in 0..n {
-                  if let Some(entry) = z.pop_min() {
-                     out.push((entry.member, entry.score));
-                  }
-               }
-               Ok(out)
-            }
-            None => Err("WRONGTYPE"),
-         }
-      });
-
-      match result {
-         Some(Ok(v)) => Ok(v.into_iter().map(|(m, s)| (m.to_string(), s)).collect()),
-         Some(Err(e)) => Err(e),
-         None => Ok(vec![]),
-      }
+      self.zpop_extreme(key, count, |z| z.pop_min())
    }
 
    pub fn zpopmax(&self, key: &str, count: usize) -> Result<Vec<(String, f64)>, &'static str> {
-      let result = self.data.update_with(key, |val| {
-         if val.is_expired() {
-            return Ok(vec![]);
-         }
-         match val.value.as_zset_mut() {
-            Some(z) => {
-               let n = count.min(z.len());
-               let mut out = Vec::with_capacity(n);
-               for _ in 0..n {
-                  if let Some(entry) = z.pop_max() {
-                     out.push((entry.member, entry.score));
-                  }
-               }
-               Ok(out)
-            }
-            None => Err("WRONGTYPE"),
-         }
-      });
-
-      match result {
-         Some(Ok(v)) => Ok(v.into_iter().map(|(m, s)| (m.to_string(), s)).collect()),
-         Some(Err(e)) => Err(e),
-         None => Ok(vec![]),
-      }
+      self.zpop_extreme(key, count, |z| z.pop_max())
    }
 
    pub fn zunionstore(

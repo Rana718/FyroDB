@@ -75,22 +75,14 @@ pub fn set(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
       });
 
       match result {
-         Some((true, old_val)) => {
+         Some((did_set, old_val)) => {
             if get {
                match old_val {
                   Some(s) => s.write_resp(out),
                   None => resp::write_nil(out),
                }
-            } else {
+            } else if did_set {
                resp::write_ok(out);
-            }
-         }
-         Some((false, old_val)) => {
-            if get {
-               match old_val {
-                  Some(s) => s.write_resp(out),
-                  None => resp::write_nil(out),
-               }
             } else {
                resp::write_nil(out);
             }
@@ -129,20 +121,29 @@ pub fn setnx(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
    }
 }
 
-pub fn setex(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
-   let [_, key, secs, value] = parts else {
-      return resp::write_wrong_args(out, "setex");
-   };
-   let s = parse_int!(out, secs, u64);
-   if s == 0 {
-      return resp::write_err(out, "invalid expire time in 'setex' command");
-   }
-   let Some(exp) = expiry_from_secs(s) else {
-      return resp::write_err(out, "invalid expire time in 'setex' command");
+#[inline]
+fn set_with_expiry(
+   store: &Store,
+   out: &mut Vec<u8>,
+   cmd: &'static str,
+   key: &str,
+   time_str: &str,
+   value: &str,
+   calc_expiry: fn(u64) -> Option<u64>,
+) {
+   let t = parse_int!(out, time_str, u64);
+   let exp = if t != 0 { calc_expiry(t) } else { None };
+   let Some(expires_ms) = exp else {
+      let err_msg = if cmd == "setex" {
+         "invalid expire time in 'setex' command"
+      } else {
+         "invalid expire time in 'psetex' command"
+      };
+      return resp::write_err(out, err_msg);
    };
    let sv = StoreValue {
       value: crate::storage::value::FyroDB::String(SmallStr::new(value)),
-      expires_ms: exp,
+      expires_ms,
    };
    match store.try_set_value(key, sv) {
       Ok(_) => resp::write_ok(out),
@@ -150,24 +151,19 @@ pub fn setex(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
    }
 }
 
-pub fn psetex(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
-   let [_, key, ms, value] = parts else {
-      return resp::write_wrong_args(out, "psetex");
-   };
-   let m = parse_int!(out, ms, u64);
-   if m == 0 {
-      return resp::write_err(out, "invalid expire time in 'psetex' command");
+pub fn setex(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
+   match parts {
+      [_, key, secs, value] => {
+         set_with_expiry(store, out, "setex", key, secs, value, expiry_from_secs)
+      }
+      _ => resp::write_wrong_args(out, "setex"),
    }
-   let Some(exp) = expiry_from_ms(m) else {
-      return resp::write_err(out, "invalid expire time in 'psetex' command");
-   };
-   let sv = StoreValue {
-      value: crate::storage::value::FyroDB::String(SmallStr::new(value)),
-      expires_ms: exp,
-   };
-   match store.try_set_value(key, sv) {
-      Ok(_) => resp::write_ok(out),
-      Err(e) => resp::write_err(out, &e.to_string()),
+}
+
+pub fn psetex(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
+   match parts {
+      [_, key, ms, value] => set_with_expiry(store, out, "psetex", key, ms, value, expiry_from_ms),
+      _ => resp::write_wrong_args(out, "psetex"),
    }
 }
 
@@ -248,7 +244,8 @@ pub fn getex(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
 pub fn mset(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
    match parts {
       [_, items @ ..] if !items.is_empty() && items.len() % 2 == 0 => {
-         for &[key, val] in items.as_chunks::<2>().0 {
+         let pairs = items.as_chunks::<2>().0;
+         for &[key, val] in pairs {
             store.set_string(key, val, 0);
          }
          resp::write_ok(out);
@@ -290,17 +287,41 @@ pub fn msetnx(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
 }
 
 pub fn mget(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
-   match parts {
-      [_, keys @ ..] if !keys.is_empty() => {
-         out.reserve(keys.len() * 32);
-         resp::write_array_header(out, keys.len());
-         for &k in keys.iter() {
-            if !store.get_to_buf(k, out) {
-               resp::write_nil(out);
-            }
-         }
+   let [_, first, rest @ ..] = parts else {
+      return resp::write_wrong_args(out, "mget");
+   };
+   let _guard = store.command_guard(usize::MAX);
+   resp::write_array_header(out, rest.len() + 1);
+   if rest.iter().all(|key| key == first) {
+      let start = out.len();
+      if store
+         .data
+         .get_locked(first, |value| {
+            write_mget_value(Some(value), crate::storage::value::approx_now_ms(), out);
+         })
+         .is_none()
+      {
+         resp::write_nil(out);
       }
-      _ => resp::write_wrong_args(out, "mget"),
+      resp::repeat_reply(out, start, rest.len() + 1);
+      return;
+   }
+
+   let view = store.data.read_view();
+   let now = crate::storage::value::approx_now_ms();
+   for key in &parts[1..] {
+      write_mget_value(view.get(key), now, out);
+   }
+}
+
+fn write_mget_value(value: Option<&StoreValue>, now: u64, out: &mut Vec<u8>) {
+   if let Some(value) = value
+      && !value.is_expired_at(now)
+      && let Some(string) = value.value.as_string()
+   {
+      string.write_resp(out);
+   } else {
+      resp::write_nil(out);
    }
 }
 
@@ -394,8 +415,8 @@ pub fn lcs(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
          Err(e) => resp::write_store_err(out, e),
       }
    } else {
-      match store.lcs(key1, key2) {
-         Ok(s) => resp::write_bulk(out, &s),
+      match store.lcs_bytes(key1, key2) {
+         Ok(s) => resp::write_bulk_bytes(out, &s),
          Err(e) => resp::write_store_err(out, e),
       }
    }

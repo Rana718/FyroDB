@@ -1,4 +1,6 @@
 use mio::net::TcpListener;
+#[cfg(feature = "unix-sockets")]
+use mio::net::UnixListener;
 use mio::{Events, Interest, Poll, Token, Waker};
 use socket2::{Domain, Protocol, Socket, Type};
 use std::net::SocketAddr;
@@ -7,6 +9,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use crate::handler::Conn;
 use crate::handler::conn::ConnMode;
+use crate::handler::net::{Listener, Stream};
 use crate::pubsub::{PubSub, WorkerNotifier};
 use crate::storage::store::Store;
 use crate::storage::value::tick_clock;
@@ -35,11 +38,10 @@ pub fn run_worker(
    auth: Option<&str>,
    worker_index: usize,
 ) {
-   let addr: SocketAddr = format!("{}:{}", bind, port).parse().unwrap();
-   let mut listener = make_listener(addr);
+   let mut listener = make_listener(port, bind, worker_index);
 
    let mut poll = Poll::new().unwrap();
-   let mut events = Events::with_capacity(512);
+   let mut events = Events::with_capacity(1024);
 
    poll
       .registry()
@@ -49,15 +51,14 @@ pub fn run_worker(
    let waker = Arc::new(Waker::new(poll.registry(), WAKER_TOKEN).unwrap());
    let notifier = WorkerNotifier::new(waker, worker_index);
 
-   // A Conn is large; a fixed 4096-slot reservation is a sizeable idle
-   // allocation. Grow with actual connections.
    let mut conns: Vec<Option<Conn>> = Vec::new();
    let mut next_token: usize = 1;
    let mut free: Vec<usize> = Vec::new();
    let mut dirty: Vec<usize> = Vec::with_capacity(32);
    let mut sub_dirty: Vec<usize> = Vec::with_capacity(16);
    let mut fanout_scratch: Vec<crate::pubsub::FanEntry> = Vec::new();
-   let mut fanout_seen: Vec<bool> = Vec::new();
+   let mut fanout_seen: Vec<u32> = Vec::new();
+   let mut fanout_gen: u32 = 0;
    let mut completions: Vec<crate::pubsub::Completion> = Vec::new();
    let mut expired: Vec<(usize, u64)> = Vec::new();
    let busy_window = std::env::var("FYRODB_BUSY_POLL_US")
@@ -73,32 +74,39 @@ pub fn run_worker(
 
    loop {
       if SHUTDOWN.load(Ordering::Acquire) {
-         for id in 0..conns.len() {
-            if let Some(Some(conn)) = conns.get_mut(id) {
-               let _ = conn.do_write();
+         for conn in conns.iter_mut().flatten() {
+            let _ = conn.do_write();
+         }
+         #[cfg(feature = "unix-sockets")]
+         #[allow(clippy::collapsible_if)]
+         if worker_index == 0 {
+            if let Some(path) = parse_unix_path(bind) {
+               let _ = std::fs::remove_file(path);
             }
          }
          return;
       }
 
-      let mut timeout = if sub_dirty.is_empty() {
-         None
-      } else {
-         Some(std::time::Duration::from_micros(50))
-      };
-      // Wake for the earliest blocked-command deadline.
-      if let Some(deadline) = crate::handler::conn::park::next_deadline() {
-         let until = deadline.saturating_duration_since(std::time::Instant::now());
-         timeout = Some(timeout.map_or(until, |t| t.min(until)));
-      }
-
-      if let Some(window) = busy_window
+      let mut timeout = if let Some(window) = busy_window
          && last_active.elapsed() < window
       {
+         Some(std::time::Duration::ZERO)
+      } else {
+         let mut timeout = (!sub_dirty.is_empty()).then_some(std::time::Duration::from_micros(50));
+         // Wake for the earliest blocked-command deadline.
+         if let Some(deadline) = crate::handler::conn::park::next_deadline() {
+            let until = deadline.saturating_duration_since(std::time::Instant::now());
+            timeout = Some(timeout.map_or(until, |t| t.min(until)));
+         }
+         timeout
+      };
+
+      if !notifier.fanout.is_empty() || !notifier.pending.is_empty() {
          timeout = Some(std::time::Duration::ZERO);
       }
+      let poll_res = poll.poll(&mut events, timeout);
 
-      match poll.poll(&mut events, timeout) {
+      match poll_res {
          Ok(_) => {}
          Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
          Err(_) => continue,
@@ -111,9 +119,10 @@ pub fn run_worker(
 
       for event in events.iter() {
          match event.token() {
+            // Edge-triggered accept loop must drain until WouldBlock.
             LISTENER_TOKEN => loop {
                match listener.accept() {
-                  Ok((mut stream, _)) => {
+                  Ok(mut stream) => {
                      let current = store.connected_clients();
                      let max = MAX_CLIENTS.load(Ordering::Relaxed);
                      if current >= max {
@@ -125,10 +134,21 @@ pub fn run_worker(
                         continue;
                      }
 
-                     let sock_ref = socket2::SockRef::from(&stream);
-                     let _ = sock_ref.set_tcp_nodelay(true);
-                     #[cfg(target_os = "linux")]
-                     let _ = sock_ref.set_tcp_quickack(true);
+                     match stream {
+                        Stream::Tcp(ref tcp) => {
+                           let sock_ref = socket2::SockRef::from(tcp);
+                           let _ = sock_ref.set_tcp_nodelay(true);
+                           #[cfg(target_os = "linux")]
+                           {
+                              let _ = sock_ref.set_tcp_quickack(true);
+                              // 8MB socket buffers allow large pipelined batches to stream zero-copy.
+                              let _ = sock_ref.set_send_buffer_size(8 * 1024 * 1024);
+                              let _ = sock_ref.set_recv_buffer_size(8 * 1024 * 1024);
+                           }
+                        }
+                        #[cfg(feature = "unix-sockets")]
+                        Stream::Unix(_) => {}
+                     }
                      let id = alloc_slot(&mut free, &mut next_token, &mut conns);
                      poll
                         .registry()
@@ -150,6 +170,16 @@ pub fn run_worker(
             },
 
             WAKER_TOKEN => {
+               if notifier.take_fanout_overflow() {
+                  for id in 0..conns.len() {
+                     if conns[id]
+                        .as_ref()
+                        .is_some_and(|conn| matches!(conn.mode, ConnMode::Subscribed { .. }))
+                     {
+                        close_conn(&mut conns, &mut poll, &mut free, id);
+                     }
+                  }
+               }
                notifier.drain_completions(&mut completions);
                for c in completions.drain(..) {
                   let token = match &c {
@@ -166,11 +196,15 @@ pub fn run_worker(
                      close_conn(&mut conns, &mut poll, &mut free, token);
                   }
                }
-               fanout_seen.resize(conns.len(), false);
-               fanout_seen.fill(false);
+               fanout_gen = fanout_gen.wrapping_add(1);
+               if fanout_gen == 0 {
+                  fanout_seen.fill(0);
+                  fanout_gen = 1;
+               }
+               fanout_seen.resize(conns.len(), 0);
                for &id in &sub_dirty {
                   if id < fanout_seen.len() {
-                     fanout_seen[id] = true;
+                     fanout_seen[id] = fanout_gen;
                   }
                }
                let pre_drain = sub_dirty.len();
@@ -179,8 +213,8 @@ pub fn run_worker(
                   let mut w = pre_drain;
                   for r in pre_drain..sub_dirty.len() {
                      let id = sub_dirty[r];
-                     if id < fanout_seen.len() && !fanout_seen[id] {
-                        fanout_seen[id] = true;
+                     if id < fanout_seen.len() && fanout_seen[id] != fanout_gen {
+                        fanout_seen[id] = fanout_gen;
                         sub_dirty[w] = id;
                         w += 1;
                      }
@@ -193,20 +227,15 @@ pub fn run_worker(
                   &mut sub_dirty,
                   &mut fanout_scratch,
                   &mut fanout_seen,
+                  fanout_gen,
                );
             }
 
             token => {
                let id = token.0;
-               let mut close = false;
                if let Some(conn) = conns.get_mut(id).and_then(|s| s.as_mut()) {
-                  if event.is_readable() && !conn.do_read() {
-                     close = true;
-                  }
-                  // Retry WouldBlock writes when writable
-                  if !close && event.is_writable() && !conn.do_write() {
-                     close = true;
-                  }
+                  let close = (event.is_readable() && !conn.do_read())
+                     || (event.is_writable() && !conn.do_write());
                   if !close {
                      let wants_writable = conn.has_pending_write();
                      if wants_writable {
@@ -214,10 +243,9 @@ pub fn run_worker(
                      } else if conn.writable_registered {
                         sync_write_interest(&mut conns, &mut poll, id);
                      }
+                  } else {
+                     close_conn(&mut conns, &mut poll, &mut free, id);
                   }
-               }
-               if close {
-                  close_conn(&mut conns, &mut poll, &mut free, id);
                }
             }
          }
@@ -253,31 +281,34 @@ pub fn run_worker(
       #[cfg(feature = "io-uring")]
       if let Some(ring) = send_ring.as_mut() {
          sent.clear();
-         for &id in &dirty {
+         sub_dirty.sort_unstable();
+         sub_dirty.dedup();
+         sub_dirty.retain(|&id| {
+            if conns
+               .get(id)
+               .and_then(|c| c.as_ref())
+               .is_some_and(is_slow_subscriber)
+            {
+               close_conn(&mut conns, &mut poll, &mut free, id);
+               false
+            } else {
+               true
+            }
+         });
+         for id in dirty.iter().copied().chain(
+            sub_dirty
+               .iter()
+               .copied()
+               .filter(|id| dirty.binary_search(id).is_err()),
+         ) {
             if let Some(Some(conn)) = conns.get_mut(id)
                && let Some((fd, ptr, len)) = conn.prepare_send()
             {
-               ring.push(fd, ptr, len, id as u64, &mut sent);
+               // Each connection is submitted once; buffers stay untouched until all CQEs arrive.
+               unsafe { ring.push(fd, ptr, len, id as u64, &mut sent) };
             }
          }
-         let mut w = 0;
-         for r in 0..sub_dirty.len() {
-            let id = sub_dirty[r];
-            if let Some(Some(conn)) = conns.get_mut(id) {
-               if is_slow_subscriber(conn) {
-                  close_conn(&mut conns, &mut poll, &mut free, id);
-                  continue;
-               }
-               if let Some((fd, ptr, len)) = conn.prepare_send() {
-                  ring.push(fd, ptr, len, id as u64, &mut sent);
-                  sub_dirty[w] = id;
-                  w += 1;
-               }
-            }
-         }
-         sub_dirty.truncate(w);
-
-         ring.submit_and_reap(&mut sent);
+         ring.complete(&mut sent);
          for &(id, res) in &sent {
             let id = id as usize;
             let keep = conns
@@ -321,6 +352,7 @@ pub fn run_worker(
          &mut sub_dirty,
          &mut fanout_scratch,
          &mut fanout_seen,
+         &mut fanout_gen,
       );
 
       let mut i = 0;
@@ -363,7 +395,10 @@ pub fn run_worker(
 #[inline]
 fn is_slow_subscriber(conn: &Conn) -> bool {
    if let ConnMode::Subscribed { ref slot, .. } = conn.mode {
-      slot.queue_len() > SLOW_SUB_MSG_CAP
+      let (bytes, overflow) = slot.backlog_state();
+      overflow
+         || slot.limit_exceeded(conn.parser.wbuf.len().saturating_sub(conn.write_offset))
+         || (bytes != 0 && slot.queue_len() > SLOW_SUB_MSG_CAP)
    } else {
       false
    }
@@ -375,122 +410,250 @@ fn flush_fanout(
    conns: &mut [Option<Conn>],
    sub_dirty: &mut Vec<usize>,
    scratch: &mut Vec<crate::pubsub::FanEntry>,
-   seen: &mut Vec<bool>,
+   seen: &mut Vec<u32>,
+   fgen: &mut u32,
 ) {
    if notifier.fanout.is_empty() {
       return;
    }
-   if conns.len() > seen.len() {
-      seen.resize(conns.len(), false);
+   *fgen = fgen.wrapping_add(1);
+   if *fgen == 0 {
+      seen.fill(0);
+      *fgen = 1;
    }
-   seen.fill(false);
+   if conns.len() > seen.len() {
+      seen.resize(conns.len(), 0);
+   }
    for &id in sub_dirty.iter() {
       if id < seen.len() {
-         seen[id] = true;
+         seen[id] = *fgen;
       }
    }
-   deliver_fanout(notifier, conns, sub_dirty, scratch, seen);
+   deliver_fanout(notifier, conns, sub_dirty, scratch, seen, *fgen);
 }
 
 /// Frames append straight to wbuf (memcpy); a connection past the batch
 /// cap spills into its slot queue (backlog drain, shedding intact).
 fn deliver_fanout(
-   notifier: &Arc<crate::pubsub::WorkerNotifier>,
+   notifier: &WorkerNotifier,
    conns: &mut [Option<Conn>],
    sub_dirty: &mut Vec<usize>,
    scratch: &mut Vec<crate::pubsub::FanEntry>,
-   seen: &mut [bool],
+   seen: &mut [u32],
+   fgen: u32,
 ) {
-   // Caller-owned scratch reused across wakeups; the subscription map is
-   // borrowed under one lock for the whole batch.
    scratch.clear();
-   notifier.drain_fanout(|entry| scratch.push(entry));
+   notifier.drain_fanout_limit(1024, 1024 * 1024, |entry| scratch.push(entry));
    if scratch.is_empty() {
       return;
    }
-   notifier.with_local_subs(|subs| {
-      if scratch.len() > 1 && scratch.iter().all(|e| e.channel == scratch[0].channel) {
-         let ch = &scratch[0].channel;
-         let Some(tokens) = subs.get(ch.as_ref()) else {
+   notifier.with_local_subs(|local| {
+      let Some(local) = local else { return };
+      let first = &scratch[0];
+      let grouped = scratch.len() > 1 && scratch.iter().all(|entry| entry.same_subscription(first));
+      if grouped {
+         let subscriptions = if first.is_pattern() {
+            &local.patterns
+         } else {
+            &local.channels
+         };
+         let Some(members) = subscriptions.get(first.channel.as_ref()) else {
             return;
          };
-         let total_frame_len: usize = scratch.iter().map(|e| e.frame.len()).sum();
-         for &token in tokens {
+         let total = scratch
+            .iter()
+            .fold(0usize, |n, entry| n.saturating_add(entry.frame.len()));
+         for member in members {
+            if member.generation > first.generation() {
+               continue;
+            }
+            let token = member.token;
             let Some(Some(conn)) = conns.get_mut(token) else {
                continue;
             };
-            let subscribed = matches!(
-                &conn.mode,
-                crate::handler::conn::ConnMode::Subscribed { channels, .. }
-                    if channels.contains(ch.as_ref())
-            );
-            if !subscribed {
+            let ConnMode::Subscribed {
+               slot,
+               channels,
+               patterns,
+            } = &conn.mode
+            else {
+               continue;
+            };
+            if !(if first.is_pattern() {
+               patterns.contains(first.channel.as_ref())
+            } else {
+               channels.contains(first.channel.as_ref())
+            }) {
                continue;
             }
-            if conn.parser.wbuf.len() + total_frame_len
-               <= crate::handler::conn::SUB_WRITE_BATCH_BYTES
+            if !slot.has_pending()
+               && conn.parser.wbuf.len().saturating_add(total)
+                  <= crate::handler::conn::SUB_WRITE_BATCH_BYTES
             {
-               conn.parser.wbuf.reserve(total_frame_len);
+               conn.parser.wbuf.reserve(total);
                for entry in scratch.iter() {
                   conn.parser.wbuf.extend_from_slice(&entry.frame);
                }
             } else {
+               let mut queued = slot.has_pending();
                for entry in scratch.iter() {
-                  if conn.parser.wbuf.len() + entry.frame.len()
-                     <= crate::handler::conn::SUB_WRITE_BATCH_BYTES
+                  if !queued
+                     && conn.parser.wbuf.len().saturating_add(entry.frame.len())
+                        <= crate::handler::conn::SUB_WRITE_BATCH_BYTES
                   {
                      conn.parser.wbuf.extend_from_slice(&entry.frame);
-                  } else if let crate::handler::conn::ConnMode::Subscribed { slot, .. } = &conn.mode
-                  {
-                     slot.push(Arc::clone(&entry.frame));
+                  } else {
+                     slot.push_local(Arc::clone(&entry.frame));
+                     queued = true;
                   }
                }
             }
-            if !seen[token] {
-               seen[token] = true;
+            if seen.get(token).copied().unwrap_or(0) != fgen {
+               if token < seen.len() {
+                  seen[token] = fgen;
+               }
                sub_dirty.push(token);
             }
          }
-         return;
-      }
-
-      for entry in scratch.iter() {
-         let Some(tokens) = subs.get(entry.channel.as_ref()) else {
-            continue;
-         };
-         for &token in tokens {
-            let Some(Some(conn)) = conns.get_mut(token) else {
+      } else {
+         for entry in scratch.iter() {
+            let subscriptions = if entry.is_pattern() {
+               &local.patterns
+            } else {
+               &local.channels
+            };
+            let Some(members) = subscriptions.get(entry.channel.as_ref()) else {
                continue;
             };
-            let subscribed = matches!(
-                &conn.mode,
-                crate::handler::conn::ConnMode::Subscribed { channels, .. }
-                    if channels.contains(entry.channel.as_ref())
-            );
-            if !subscribed {
-               continue;
-            }
-            if conn.parser.wbuf.len() + entry.frame.len()
-               <= crate::handler::conn::SUB_WRITE_BATCH_BYTES
-            {
-               conn.parser.wbuf.extend_from_slice(&entry.frame);
-            } else if let crate::handler::conn::ConnMode::Subscribed { slot, .. } = &conn.mode {
-               slot.push(Arc::clone(&entry.frame));
-            }
-            if !seen[token] {
-               seen[token] = true;
-               sub_dirty.push(token);
+            for member in members {
+               if member.generation > entry.generation() {
+                  continue;
+               }
+               let token = member.token;
+               let Some(Some(conn)) = conns.get_mut(token) else {
+                  continue;
+               };
+               let ConnMode::Subscribed {
+                  slot,
+                  channels,
+                  patterns,
+               } = &conn.mode
+               else {
+                  continue;
+               };
+               if !(if entry.is_pattern() {
+                  patterns.contains(entry.channel.as_ref())
+               } else {
+                  channels.contains(entry.channel.as_ref())
+               }) {
+                  continue;
+               }
+               if !slot.has_pending()
+                  && conn.parser.wbuf.len().saturating_add(entry.frame.len())
+                     <= crate::handler::conn::SUB_WRITE_BATCH_BYTES
+               {
+                  conn.parser.wbuf.extend_from_slice(&entry.frame);
+               } else {
+                  slot.push_local(Arc::clone(&entry.frame));
+               }
+               if seen.get(token).copied().unwrap_or(0) != fgen {
+                  if token < seen.len() {
+                     seen[token] = fgen;
+                  }
+                  sub_dirty.push(token);
+               }
             }
          }
       }
    });
+   scratch.clear();
 }
 
-fn make_listener(addr: SocketAddr) -> TcpListener {
+#[cfg(feature = "unix-sockets")]
+static UNIX_LISTENERS: parking_lot::Mutex<
+   Option<std::collections::HashMap<String, std::os::unix::net::UnixListener>>,
+> = parking_lot::Mutex::new(None);
+
+#[cfg(feature = "unix-sockets")]
+fn parse_unix_path(bind: &str) -> Option<&str> {
+   if let Some(path) = bind.strip_prefix("unix://") {
+      Some(path)
+   } else if let Some(path) = bind.strip_prefix("unix:") {
+      Some(path)
+   } else {
+      None
+   }
+}
+
+#[cfg(feature = "unix-sockets")]
+fn make_unix_listener(path: &str, _worker_index: usize) -> UnixListener {
+   use std::os::unix::net::UnixListener as StdUnixListener;
+
+   let mut lock = UNIX_LISTENERS.lock();
+   let map = lock.get_or_insert_with(std::collections::HashMap::new);
+
+   if let Some(std_listener) = map.get(path) {
+      let clone = std_listener
+         .try_clone()
+         .expect("failed to clone unix listener");
+      return UnixListener::from_std(clone);
+   }
+
+   let _ = std::fs::remove_file(path);
+   let std_listener = StdUnixListener::bind(path).unwrap_or_else(|e| {
+      panic!("failed to bind unix socket at {path}: {e}");
+   });
+   std_listener.set_nonblocking(true).unwrap();
+   let clone = std_listener
+      .try_clone()
+      .expect("failed to clone unix listener");
+
+   map.insert(path.to_string(), std_listener);
+   UnixListener::from_std(clone)
+}
+
+fn make_listener(port: u16, bind: &str, worker_index: usize) -> Listener {
+   #[cfg(not(feature = "unix-sockets"))]
+   if bind.starts_with("unix:") || bind.starts_with("unix://") {
+      panic!("Unix socket support is disabled; enable with feature 'unix-sockets'");
+   }
+
+   #[cfg(feature = "unix-sockets")]
+   if let Some(path) = parse_unix_path(bind) {
+      return Listener::Unix(make_unix_listener(path, worker_index));
+   }
+
+   let addr: SocketAddr = format!("{}:{}", bind, port).parse().unwrap();
+   Listener::Tcp(make_tcp_listener(addr, worker_index))
+}
+
+fn make_tcp_listener(addr: SocketAddr, _worker_index: usize) -> TcpListener {
    let socket = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP)).unwrap();
    socket.set_reuse_address(true).unwrap();
    socket.set_reuse_port(true).unwrap();
    socket.set_nonblocking(true).unwrap();
+   #[cfg(target_os = "linux")]
+   {
+      // TCP_DEFER_ACCEPT delays wakeup until payload arrives.
+      #[allow(unsafe_code)]
+      unsafe {
+         use std::os::fd::AsRawFd;
+         let val: libc::c_int = 1;
+         let _ = libc::setsockopt(
+            socket.as_raw_fd(),
+            libc::IPPROTO_TCP,
+            libc::TCP_DEFER_ACCEPT,
+            &val as *const _ as *const libc::c_void,
+            std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+         );
+      }
+      #[cfg(target_os = "linux")]
+      {
+         // Set socket buffer sizes before listen() for SYN/ACK window scaling.
+         let _ = socket.set_send_buffer_size(8 * 1024 * 1024);
+         let _ = socket.set_recv_buffer_size(8 * 1024 * 1024);
+      }
+   }
    socket.bind(&addr.into()).unwrap();
    socket.listen(8192).unwrap();
    TcpListener::from_std(std::net::TcpListener::from(socket))
@@ -507,7 +670,13 @@ fn alloc_slot(
    let id = *next_token;
    *next_token += 1;
    if id >= conns.len() {
+      let previous = conns.capacity();
       conns.resize_with(id + 1, || None);
+      if conns.capacity() != previous && previous * size_of::<Option<Conn>>() >= 32 * 1024 {
+         // Reclaim large retired slot arrays during connection bursts;
+         // ordinary request processing never pays for this collection.
+         rust_zmalloc::purge();
+      }
    }
    id
 }
@@ -540,5 +709,157 @@ fn sync_write_interest(conns: &mut [Option<Conn>], poll: &mut Poll, id: usize) {
       .is_ok()
    {
       conn.writable_registered = wants_writable;
+   }
+}
+
+#[cfg(test)]
+mod pubsub_regressions {
+   use super::*;
+
+   fn with_subscriber(
+      run: impl FnOnce(Conn<'_>, &PubSub, &Arc<WorkerNotifier>, &Arc<crate::pubsub::SubSlot>),
+   ) {
+      let store = Arc::new(Store::with_config_workers(1, usize::MAX, 2));
+      let pubsub = PubSub::new();
+      let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+      let client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+      let (_peer, _) = listener.accept().unwrap();
+      client.set_nonblocking(true).unwrap();
+      let stream = Stream::Tcp(mio::net::TcpStream::from_std(client));
+      let poll = Poll::new().unwrap();
+      let notifier = WorkerNotifier::new(
+         Arc::new(Waker::new(poll.registry(), WAKER_TOKEN).unwrap()),
+         0,
+      );
+      let slot = Arc::new(crate::pubsub::SubSlot::new(0, Arc::clone(&notifier)));
+      let mut conn = Conn::new(stream, &store, &pubsub, 0, &notifier, None, 0);
+      conn.mode = ConnMode::Subscribed {
+         slot: Arc::clone(&slot),
+         channels: Box::new(crate::handler::conn::Channels {
+            keys: [Arc::<str>::from("a"), Arc::<str>::from("b")]
+               .into_iter()
+               .collect(),
+            transaction: None,
+         }),
+         patterns: Default::default(),
+      };
+      for channel in ["a", "b"] {
+         pubsub.subscribe(channel, Arc::clone(&slot));
+         notifier.register_local(channel, 0);
+      }
+      run(conn, &pubsub, &notifier, &slot);
+   }
+
+   fn deliver(notifier: &Arc<WorkerNotifier>, conns: &mut [Option<Conn<'_>>]) {
+      deliver_fanout(
+         notifier,
+         conns,
+         &mut Vec::new(),
+         &mut Vec::new(),
+         &mut [0],
+         1,
+      );
+   }
+
+   #[test]
+   fn small_new_frames_cannot_pass_an_older_queued_frame() {
+      for mixed_channel in [false, true] {
+         with_subscriber(|mut conn, pubsub, notifier, slot| {
+            let prefix = vec![b'p'; crate::handler::conn::SUB_WRITE_BATCH_BYTES - 64];
+            conn.parser.wbuf.extend_from_slice(&prefix);
+            let large = "L".repeat(1024);
+            let channel = if mixed_channel { "b" } else { "a" };
+            pubsub.publish("a", &large);
+            pubsub.publish(channel, "small");
+            let mut conns = [Some(conn)];
+            deliver(notifier, &mut conns);
+            assert_eq!(conns[0].as_ref().unwrap().parser.wbuf, prefix);
+            let mut actual = Vec::new();
+            slot.drain_into(&mut actual);
+            let expected = [
+               crate::pubsub::frame::encode_message("a", &large).as_ref(),
+               crate::pubsub::frame::encode_message(channel, "small").as_ref(),
+            ]
+            .concat();
+            assert_eq!(actual, expected);
+         });
+      }
+   }
+
+   #[test]
+   fn a_new_subscription_cannot_receive_an_old_queued_publication() {
+      with_subscriber(|mut conn, pubsub, notifier, _old_slot| {
+         assert_eq!(pubsub.publish("a", "old-secret"), 1);
+         crate::handler::subscription::do_full_unsubscribe(&mut conn);
+         let slot = Arc::new(crate::pubsub::SubSlot::new(0, Arc::clone(notifier)));
+         pubsub.subscribe("a", Arc::clone(&slot));
+         notifier.register_local("a", 0);
+         conn.mode = ConnMode::Subscribed {
+            slot: Arc::clone(&slot),
+            channels: Box::new(crate::handler::conn::Channels {
+               keys: [Arc::<str>::from("a")].into_iter().collect(),
+               transaction: None,
+            }),
+            patterns: Default::default(),
+         };
+         let mut conns = [Some(conn)];
+         deliver(notifier, &mut conns);
+         assert!(conns[0].as_ref().unwrap().parser.wbuf.is_empty());
+         assert!(!slot.has_pending());
+      });
+   }
+   #[test]
+   fn subscribed_commands_cannot_bypass_permissions_or_change_ping_framing() {
+      with_subscriber(|mut conn, _pubsub, _notifier, _slot| {
+         conn.store.set_string("secret", "old", 0);
+         let commands: &[&[&[u8]]] = &[
+            &[b"GET", b"secret"],
+            &[b"SET", b"secret", b"changed"],
+            &[b"PUBLISH", b"a", b"blocked"],
+            &[b"PING", &[0, 255, 13, 10]],
+            &[b"UNSUBSCRIBE", b"a", b"b"],
+            &[b"GET", b"secret"],
+         ];
+         let mut wire = Vec::new();
+         for command in commands {
+            wire.extend_from_slice(format!("*{}\r\n", command.len()).as_bytes());
+            for part in *command {
+               wire.extend_from_slice(format!("${}\r\n", part.len()).as_bytes());
+               wire.extend_from_slice(part);
+               wire.extend_from_slice(b"\r\n");
+            }
+         }
+         conn.parser.filled = wire.len();
+         conn.parser.rbuf = wire;
+         assert!(conn.process_buffered());
+         let mut expected = b"-ERR Command not allowed in subscribed state\r\n".repeat(3);
+         expected.extend_from_slice(b"*2\r\n$4\r\npong\r\n$4\r\n\0\xff\r\n\r\n");
+         expected.extend_from_slice(b"*3\r\n$11\r\nunsubscribe\r\n$1\r\na\r\n:1\r\n*3\r\n$11\r\nunsubscribe\r\n$1\r\nb\r\n:0\r\n$3\r\nold\r\n");
+         assert_eq!(conn.parser.wbuf, expected);
+      });
+   }
+   #[test]
+   fn direct_and_pattern_frames_keep_publication_order_for_one_subscriber() {
+      for pattern in ["a", "a*"] {
+         with_subscriber(|mut conn, pubsub, notifier, slot| {
+            let name = pubsub.psubscribe_shared(pattern, Arc::clone(slot));
+            let ConnMode::Subscribed { patterns, .. } = &mut conn.mode else {
+               unreachable!()
+            };
+            patterns.insert(name);
+            assert_eq!(pubsub.publish_batch("a", &["one", "two"]), 2);
+            let mut conns = [Some(conn)];
+            deliver(notifier, &mut conns);
+            let mut expected = Vec::new();
+            for message in ["one", "two"] {
+               expected.extend_from_slice(&crate::pubsub::frame::encode_message("a", message));
+               expected.extend_from_slice(&crate::pubsub::frame::encode_pmessage(
+                  pattern, "a", message,
+               ));
+            }
+            assert_eq!(conns[0].as_ref().unwrap().parser.wbuf, expected);
+            assert!(!slot.has_pending());
+         });
+      }
    }
 }

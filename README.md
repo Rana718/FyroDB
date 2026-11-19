@@ -1,154 +1,17 @@
 # FyroDB
 
-<p align="center">
-  <a href="https://hub.docker.com/r/rana718/fyrodb"><img src="https://img.shields.io/docker/pulls/rana718/fyrodb?style=flat-square" alt="Docker Pulls"></a>
-  <img src="https://img.shields.io/badge/language-Rust-orange?style=flat-square&logo=rust" alt="Rust">
-  <a href="https://fyrodb.vercel.app/docs"><img src="https://img.shields.io/badge/docs-online-brightgreen?style=flat-square" alt="Docs"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-green?style=flat-square" alt="License"></a>
-</p>
+FyroDB is a high-performance database optimized for low latency and high concurrency.
 
-A Redis-compatible in-memory KV store **and** a PostgreSQL query caching proxy — both in one Rust binary. The KV engine speaks RESP2/RESP3; any Redis client works. The proxy speaks full PostgreSQL wire protocol; any Postgres driver works.
+## CI/CD Status
 
-**v0.3.1** — Redis Lua scripting engine, zero-allocation write run coalescing, in-process L1 proxy caching, right-sized shard memory, and pub/sub fanout pipeline scaling. → [Changelog](https://fyrodb.vercel.app/docs/changelog-0-3-1)
+PRs to `main` run the following required checks for changes to Rust code (including tests, benchmarks, and proofs), Cargo manifests and lockfiles, or workspace Cargo and toolchain configuration. Docs-only and Go-client-only PRs skip these jobs after a changed-file check. Mixed PRs with Rust changes run the full suite.
 
----
+- **Test**: Workspace-wide integration and unit tests.
+- **Lint**: Clippy with strict warning enforcement.
+- **Verus**: Formal safety invariant verification.
+- **Benchmark client validation**: Verification of benchmark harness.
+- **E2E Integration**: Stress testing via Dockerized deployment.
 
-## Install
+## Benchmarks
 
-```bash
-# Docker
-docker run -p 8000:8000 rana718/fyrodb:latest
-
-# From source
-cargo build --release && ./target/release/fyro_db
-```
-
-```bash
-# Connect (KV / Redis-compatible)
-redis-cli -p 8000 SET name rana
-redis-cli -p 8000 GET name
-```
-
----
-
-## KV Engine
-
-Redis-compatible — any Redis client, SDK, or CLI works unchanged.
-
-```yaml
-services:
-  fyrodb:
-    image: rana718/fyrodb:latest
-    ports:
-      - "8000:8000"
-    environment:
-      FYRODB_PORT: "8000"
-      FYRODB_WORKERS: "0"        # 0 = auto (CPU cores)
-      FYRODB_MAX_KEYS: "5000000"
-      FYRODB_AUTH: "secret"
-      FYRODB_RDB_PATH: /data/fyrodb.rdb
-    volumes:
-      - fyrodb-data:/data
-volumes:
-  fyrodb-data:
-```
-
-**Key numbers (6-core i5-11400H, 100 clients, 1M ops):**
-
-| Benchmark | FyroDB | Redis Cluster (12 nodes) | Speedup |
-|---|---|---|---|
-| Pipelined GET | 53.38M ops/sec | 11.62M ops/sec | 4.59× |
-| Pipelined SET | 39.62M ops/sec | 6.53M ops/sec | 6.07× |
-| Mixed SET/GET | 45.87M ops/sec | 5.82M ops/sec | 7.88× |
-| INCR (counters) | 108.56M ops/sec | 6.54M ops/sec | 16.6× |
-| Pub/Sub delivery | 113.98M msg/sec | 8.09M msg/sec | 14.1× |
-| Hot Key contention | 37.68M ops/sec | 1.61M ops/sec | 23.4× |
-
-Full benchmark table → [Benchmarks docs](https://fyrodb.vercel.app/docs/benchmarks)
-
-**Data types:** String · Hash · List · Set · Sorted Set · JSON · Stream · Bitmap · HyperLogLog · Geospatial · Vector Search · Full-Text Search
-
----
-
-## DB Cache Proxy
-
-Sits in front of any PostgreSQL database. Change one env var in your app — no code changes needed.
-
-```bash
-# Before
-DATABASE_URL=postgres://user:pass@postgres:5432/mydb
-
-# After (identical wire protocol, cached automatically)
-DATABASE_URL=postgres://user:pass@fyrodb:5432/mydb
-```
-
-First query for each SQL pattern → forwarded to Postgres, result cached. Every subsequent identical query → served from memory in ~1 µs, no database call.
-
-```yaml
-services:
-  app:
-    build: .
-    environment:
-      REDIS_URL: redis://fyrodb:8000        # KV / sessions
-      DATABASE_URL: postgres://appuser:secret@fyrodb:5432/mydb  # cached queries
-
-  fyrodb:
-    image: rana718/fyrodb:latest
-    ports:
-      - "8000:8000"    # KV / Redis
-      - "5432:5432"    # DB Cache Proxy
-    environment:
-      FYRODB_PROXY_ENABLED: "true"
-      FYRODB_PROXY_UPSTREAM_URL: postgres://appuser:secret@postgres:5432/mydb
-      FYRODB_PROXY_TRUST_AUTH: "true"
-      FYRODB_PROXY_CACHE_TTL_MS: "30000"
-      FYRODB_PROXY_WORKERS: "2"
-
-  postgres:
-    image: postgres:16
-    environment:
-      POSTGRES_USER: appuser
-      POSTGRES_PASSWORD: secret
-      POSTGRES_DB: mydb
-```
-
-→ [DB Cache Proxy docs](https://fyrodb.vercel.app/docs/db-cache-proxy)
-
----
-
-## Configuration
-
-| Variable | Default | Description |
-|---|---|---|
-| `FYRODB_PORT` | `8000` | KV listen port |
-| `FYRODB_WORKERS` | `0` (auto) | Worker threads |
-| `FYRODB_AUTH` | (none) | KV password |
-| `FYRODB_MAX_KEYS` | `0` (unlimited) | Key ceiling |
-| `FYRODB_RDB_PATH` | `fyrodb.rdb` | Snapshot path |
-| `FYRODB_PROXY_ENABLED` | `false` | Enable DB cache proxy |
-| `FYRODB_PROXY_PORT` | `5432` | Proxy listen port |
-| `FYRODB_PROXY_UPSTREAM_URL` | (none) | `postgres://...` upstream |
-| `FYRODB_PROXY_WORKERS` | `0` (auto) | Proxy mio threads |
-| `FYRODB_PROXY_CACHE_TTL_MS` | `60000` | Result TTL |
-| `FYRODB_PROXY_TRUST_AUTH` | `false` | Skip client auth |
-| `FYRODB_PROXY_MODE` | `dual` | `dual` or `cache-only` |
-
-Full reference → [Configuration docs](https://fyrodb.vercel.app/docs/configuration)
-
----
-
-## Links
-
-| | |
-|---|---|
-| Documentation | https://fyrodb.vercel.app/docs/introduction |
-| Architecture | [ARCHITECTURE.md](ARCHITECTURE.md) |
-| Changelog | [CHANGELOG.md](CHANGELOG.md) |
-| Contributing | [CONTRIBUTING.md](CONTRIBUTING.md) |
-| Docker Hub | https://hub.docker.com/r/rana718/fyrodb |
-
-Built on [`customhash`](https://www.ranadolui.me/blog/custom-concurrent-hashmap-rust) — a sharded lock-free concurrent hash map with epoch-based reclamation and per-key seqlock.
-
-## License
-
-Apache 2.0
+On an Intel i5-11400H with 12 workers, the native Go client measured **49.75M pipelined GET/s** and **44.27M pipelined SET/s** over loopback TCP. The embedded Rust suite reached **128.74M GET/s** and **82.59M SET/s**. Each figure is the median of three runs at `021baed` with ten million operations per KV phase and five-byte values. Median whole-suite peak TCP server RSS was **1,096 MiB**. [Full results and reproduction commands](https://fyrodb.vercel.app/docs/benchmarks) · [Measurements in this checkout](docs/public/benchmarks/2026-11-19/results.json)

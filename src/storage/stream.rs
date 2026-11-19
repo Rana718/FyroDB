@@ -38,12 +38,12 @@ impl StreamId {
 
    #[inline(always)]
    pub fn write_to_resp(&self, out: &mut Vec<u8>) {
-      let mut id_buf = [0u8; 48];
-      let mut cur = &mut id_buf[..];
-      use std::io::Write;
-      let _ = write!(cur, "{}-{}", self.ms, self.seq);
-      let id_len = 48 - cur.len();
-      crate::utils::resp::write_bulk_bytes(out, &id_buf[..id_len]);
+      let mut id_buf = [0u8; 41];
+      let seq_len = crate::utils::resp::format_u64_digits(self.seq, &mut id_buf[21..]).len();
+      let dash = id_buf.len() - seq_len - 1;
+      id_buf[dash] = b'-';
+      let ms_len = crate::utils::resp::format_u64_digits(self.ms, &mut id_buf[..dash]).len();
+      crate::utils::resp::write_bulk_bytes(out, &id_buf[dash - ms_len..]);
    }
 
    pub fn new(ms: u64, seq: u64) -> Self {
@@ -167,8 +167,32 @@ fn put_varint(buf: &mut Vec<u8>, mut v: u64) {
    buf.push(v as u8);
 }
 
-#[inline]
+#[inline(always)]
 fn get_varint(buf: &[u8], pos: &mut usize) -> u64 {
+   let p = *pos;
+   if p < buf.len() {
+      let b0 = buf[p];
+      if b0 < 0x80 {
+         *pos = p + 1;
+         return b0 as u64;
+      }
+      if p + 1 < buf.len() {
+         let b1 = buf[p + 1];
+         if b1 < 0x80 {
+            *pos = p + 2;
+            return ((b0 & 0x7f) as u64) | (((b1 & 0x7f) as u64) << 7);
+         }
+         if p + 2 < buf.len() {
+            let b2 = buf[p + 2];
+            if b2 < 0x80 {
+               *pos = p + 3;
+               return ((b0 & 0x7f) as u64)
+                  | (((b1 & 0x7f) as u64) << 7)
+                  | (((b2 & 0x7f) as u64) << 14);
+            }
+         }
+      }
+   }
    let mut v = 0u64;
    let mut shift = 0;
    loop {
@@ -1667,5 +1691,28 @@ mod tests {
       assert_eq!(parse_range_end("7"), Ok(Some(StreamId::new(7, u64::MAX))));
       assert_eq!(parse_range_start("7"), Ok(Some(StreamId::new(7, 0))));
       assert!(parse_range_start("x").is_err());
+   }
+
+   #[test]
+   fn stream_id_replies_cover_all_decimal_widths() {
+      let mut values = vec![0, 1, 9, 10, u64::MAX];
+      let mut power = 10u64;
+      while let Some(next) = power.checked_mul(10) {
+         values.extend([power - 1, power, power + 1]);
+         power = next;
+      }
+      for &ms in &values {
+         for &seq in &values {
+            let id = StreamId::new(ms, seq);
+            let text = id.to_string();
+            let mut reply = vec![b'x'; 5];
+            id.write_to_resp(&mut reply);
+            assert_eq!(
+               &reply[5..],
+               format!("${}\r\n{}\r\n", text.len(), text).as_bytes()
+            );
+            assert_eq!(&reply[..5], b"xxxxx");
+         }
+      }
    }
 }

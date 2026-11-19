@@ -7,7 +7,7 @@ pub(super) struct WriteFence {
    pub(super) in_flight: Box<[CachePadded<AtomicUsize>]>,
    /// Set while a fence holder is draining or holding the barrier.
    pub(super) engaged: AtomicBool,
-   pub(super) gate: Mutex<()>,
+   pub(super) gate: parking_lot::Mutex<()>,
 }
 
 impl WriteFence {
@@ -18,7 +18,7 @@ impl WriteFence {
             .collect::<Vec<_>>()
             .into_boxed_slice(),
          engaged: AtomicBool::new(false),
-         gate: Mutex::new(()),
+         gate: parking_lot::Mutex::new(()),
       }
    }
 }
@@ -26,7 +26,7 @@ impl WriteFence {
 /// Held for the duration of one write command.
 pub struct WriteTicket<'a> {
    pub(super) slot: Option<&'a AtomicUsize>,
-   pub(super) _gate: Option<std::sync::MutexGuard<'a, ()>>,
+   pub(super) _gate: Option<parking_lot::MutexGuard<'a, ()>>,
 }
 
 impl Drop for WriteTicket<'_> {
@@ -41,7 +41,7 @@ impl Drop for WriteTicket<'_> {
 /// Held while a bulk cluster operation needs a stable view of the keyspace.
 pub struct WriteFenceGuard<'a> {
    pub(super) fence: &'a WriteFence,
-   pub(super) _gate: std::sync::MutexGuard<'a, ()>,
+   pub(super) _gate: parking_lot::MutexGuard<'a, ()>,
 }
 
 impl Drop for WriteFenceGuard<'_> {
@@ -51,21 +51,15 @@ impl Drop for WriteFenceGuard<'_> {
 }
 
 impl Store {
-   /// Both sides of the fence use SeqCst: the writer's counter step and the
-   /// holder's flag step form a dekker handshake, and a weaker store/load pair
-   /// on the arming side would let both proceed when the store is still in
-   /// flight. The uncontended cost is a locked RMW plus one load per write.
    #[inline]
    pub fn begin_write(&self, worker: usize) -> WriteTicket<'_> {
       let fence = &self.cluster_write_fence;
       let slot = match fence.in_flight.get(worker) {
          Some(slot) => &**slot,
-         // Out-of-range worker index: fall back to the barrier rather than
-         // executing unfenced.
          None => {
             return WriteTicket {
                slot: None,
-               _gate: Some(fence.gate.lock().unwrap_or_else(|e| e.into_inner())),
+               _gate: Some(fence.gate.lock()),
             };
          }
       };
@@ -80,13 +74,10 @@ impl Store {
       slot.fetch_sub(1, Ordering::Release);
       WriteTicket {
          slot: None,
-         _gate: Some(fence.gate.lock().unwrap_or_else(|e| e.into_inner())),
+         _gate: Some(fence.gate.lock()),
       }
    }
 
-   /// Arm the fence and wait for in-flight writes to drain, then disarm it.
-   /// Migration only needs this one-time drain: once the slot is marked
-   /// migrating, new writes to it are ASK-redirected and never land locally.
    pub fn drain_writes(&self) {
       let _guard = self.cluster_write_guard();
    }
@@ -96,7 +87,7 @@ impl Store {
    pub fn cluster_write_guard(&self) -> WriteFenceGuard<'_> {
       let fence = &self.cluster_write_fence;
       fence.engaged.store(true, Ordering::SeqCst);
-      let gate = fence.gate.lock().unwrap_or_else(|e| e.into_inner());
+      let gate = fence.gate.lock();
       for slot in fence.in_flight.iter() {
          while slot.load(Ordering::SeqCst) != 0 {
             std::hint::spin_loop();

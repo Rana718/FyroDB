@@ -20,9 +20,18 @@ pub fn rpush(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
    }
 }
 
-pub fn lpop(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
+fn pop_impl<F>(
+   parts: &[&str],
+   store: &Store,
+   out: &mut Vec<u8>,
+   back: bool,
+   cmd_name: &'static str,
+   multi_pop: F,
+) where
+   F: FnOnce(&Store, &str, usize) -> Result<Vec<String>, &'static str>,
+{
    if let [_, key] = parts {
-      return match wt!(out, store.pop_one_to_buf(key, false, out)) {
+      return match wt!(out, store.pop_one_to_buf(key, back, out)) {
          true => {}
          false => resp::write_nil(out),
       };
@@ -32,36 +41,18 @@ pub fn lpop(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
          let c = parse_int!(out, cnt, usize);
          (*key, c)
       }
-      _ => return resp::write_wrong_args(out, "lpop"),
+      _ => return resp::write_wrong_args(out, cmd_name),
    };
-   let items = wt!(out, store.lpop(key, count));
-   if items.is_empty() && parts.len() == 2 {
-      resp::write_nil(out);
-   } else {
-      resp::write_array(out, &items);
-   }
+   let items = wt!(out, multi_pop(store, key, count));
+   resp::write_array(out, &items);
+}
+
+pub fn lpop(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
+   pop_impl(parts, store, out, false, "lpop", Store::lpop);
 }
 
 pub fn rpop(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
-   if let [_, key] = parts {
-      return match wt!(out, store.pop_one_to_buf(key, true, out)) {
-         true => {}
-         false => resp::write_nil(out),
-      };
-   }
-   let (key, count) = match parts {
-      [_, key, cnt] => {
-         let c = parse_int!(out, cnt, usize);
-         (*key, c)
-      }
-      _ => return resp::write_wrong_args(out, "rpop"),
-   };
-   let items = wt!(out, store.rpop(key, count));
-   if items.is_empty() && parts.len() == 2 {
-      resp::write_nil(out);
-   } else {
-      resp::write_array(out, &items);
-   }
+   pop_impl(parts, store, out, true, "rpop", Store::rpop);
 }
 
 pub fn llen(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
@@ -183,6 +174,22 @@ pub fn lpos(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
    }
 }
 
+#[inline]
+fn write_lmove_result(
+   store: &Store,
+   out: &mut Vec<u8>,
+   src: &str,
+   dst: &str,
+   left_src: bool,
+   left_dst: bool,
+) {
+   match store.lmove(src, dst, left_src, left_dst) {
+      Ok(Some(v)) => resp::write_bulk(out, &v),
+      Ok(None) => resp::write_nil(out),
+      Err(e) => resp::write_store_err(out, e),
+   }
+}
+
 pub fn lmove(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
    let [_, src, dst, src_dir, dst_dir] = parts else {
       return resp::write_wrong_args(out, "lmove");
@@ -201,34 +208,26 @@ pub fn lmove(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
    } else {
       return resp::write_err(out, "syntax error");
    };
-   match store.lmove(src, dst, left_src, left_dst) {
-      Ok(Some(v)) => resp::write_bulk(out, &v),
-      Ok(None) => resp::write_nil(out),
-      Err(e) => resp::write_store_err(out, e),
-   }
+   write_lmove_result(store, out, src, dst, left_src, left_dst);
 }
 
 pub fn rpoplpush(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
    let [_, src, dst] = parts else {
       return resp::write_wrong_args(out, "rpoplpush");
    };
-   match store.lmove(src, dst, false, true) {
-      Ok(Some(v)) => resp::write_bulk(out, &v),
-      Ok(None) => resp::write_nil(out),
-      Err(e) => resp::write_store_err(out, e),
-   }
+   write_lmove_result(store, out, src, dst, false, true);
 }
 
-pub fn blpop(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
+fn bpop_impl(parts: &[&str], store: &Store, out: &mut Vec<u8>, back: bool, cmd_name: &'static str) {
    if parts.len() < 3 {
-      return resp::write_wrong_args(out, "blpop");
+      return resp::write_wrong_args(out, cmd_name);
    }
    let _timeout = parts[parts.len() - 1];
    let keys = &parts[1..parts.len() - 1];
    // Reused single-element scratch avoids a Vec<String> per key probed.
    let mut scratch = String::new();
    for &k in keys {
-      match store.pop_one_to_scratch(k, false, &mut scratch) {
+      match store.pop_one_to_scratch(k, back, &mut scratch) {
          Ok(true) => {
             resp::write_array_header(out, 2);
             resp::write_bulk(out, k);
@@ -242,26 +241,12 @@ pub fn blpop(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
    resp::write_nil(out);
 }
 
+pub fn blpop(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
+   bpop_impl(parts, store, out, false, "blpop");
+}
+
 pub fn brpop(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
-   if parts.len() < 3 {
-      return resp::write_wrong_args(out, "brpop");
-   }
-   let _timeout = parts[parts.len() - 1];
-   let keys = &parts[1..parts.len() - 1];
-   let mut scratch = String::new();
-   for &k in keys {
-      match store.pop_one_to_scratch(k, true, &mut scratch) {
-         Ok(true) => {
-            resp::write_array_header(out, 2);
-            resp::write_bulk(out, k);
-            resp::write_bulk(out, &scratch);
-            return;
-         }
-         Ok(false) => {}
-         Err(_) => continue,
-      }
-   }
-   resp::write_nil(out);
+   bpop_impl(parts, store, out, true, "brpop");
 }
 
 pub fn blmove(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
@@ -270,9 +255,5 @@ pub fn blmove(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
    };
    let left_src = src_dir.eq_ignore_ascii_case("LEFT");
    let left_dst = dst_dir.eq_ignore_ascii_case("LEFT");
-   match store.lmove(src, dst, left_src, left_dst) {
-      Ok(Some(v)) => resp::write_bulk(out, &v),
-      Ok(None) => resp::write_nil(out),
-      Err(e) => resp::write_store_err(out, e),
-   }
+   write_lmove_result(store, out, src, dst, left_src, left_dst);
 }

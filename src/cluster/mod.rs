@@ -13,7 +13,7 @@ pub use failure::{FailureReport, FailureTracker, decode_failure_report, encode_f
 pub use hash::{HASH_SLOTS, Slot, SlotRange, hash_slot};
 pub use replication::{
    ApplyError, LogError, MutationKind, MutationLog, MutationRecord, ReplicaApplier,
-   ReplicationCodecError, ReplicationCoordinator, ReplicationMessage, ReplicationStream,
+   ReplicationCodecError, ReplicationCoordinator, ReplicationMessage, ReplicationStream, SpinMutex,
    StreamError, decode_mutation, decode_mutation_batch, decode_replication_message,
    encode_mutation, encode_mutation_batch, encode_replication_message, encode_snapshot,
 };

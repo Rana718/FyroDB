@@ -1,6 +1,6 @@
 [package]
 name = "fyro_db"
-version = "0.3.1"
+version = "0.4.0"
 edition = "2024"
 license = "Apache-2.0"
 autobins = false
@@ -43,6 +43,8 @@ mio = { version = "1.2", features = ["net", "os-poll"] }
 num_cpus = "1.17"
 socket2 = { version = "0.6", features = ["all"] }
 
+arc-swap = "1.9"
+smallvec = { version = "1.16", features = ["union"] }
 crossbeam-queue = "0.3"
 crossbeam-utils = "0.8"
 foldhash = "0.2"
@@ -59,6 +61,13 @@ sha1 = "0.11.0"
 io-uring = { version = "0.7", optional = true }
 pprof = { version = "0.15", optional = true, default-features = false, features = ["frame-pointer"] }
 
+[dev-dependencies]
+loom = "0.7.3"
+
+[[test]]
+name = "verus_safety_invariants"
+path = "tests/verus_safety_invariants.rs"
+
 [[bin]]
 name = "fyro_db"
 path = "src/main.rs"
@@ -67,6 +76,9 @@ path = "src/main.rs"
 io-uring = ["dep:io-uring"]
 profiling = ["dep:pprof"]
 bench-tools = []
+unix-sockets = []
+unix = ["unix-sockets"]
+unix-socket = ["unix-sockets"]
 
 
 [[bench]]

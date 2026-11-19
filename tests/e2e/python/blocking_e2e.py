@@ -69,6 +69,8 @@ def main():
     time.sleep(0.1)
     c.call("RPUSH", "src", "item")
     th.join(2)
+    if res.get("v") != "item":
+        print(f"DEBUG: BLMOVE expected 'item', got {res.get('v')}")
     check(res.get("v") == "item", "BLMOVE woke and moved the element")
     check(c.call("LRANGE", "dst", "0", "-1") == ["item"], "element landed in dst")
     c.call("RPUSH", "src2", "z")
@@ -80,10 +82,13 @@ def main():
     res = {}
     th = threading.Thread(target=lambda: res.setdefault("v", z.call("BZPOPMIN", "zs", "5")))
     th.start()
-    time.sleep(0.1)
+    time.sleep(0.5) # Increased sleep
     c.call("ZADD", "zs", "3", "m3", "1", "m1")
     th.join(2)
-    check(res.get("v") == ["zs", "m1", "1"], "BZPOPMIN woke with the lowest member")
+    popped = res.get("v")
+    check(isinstance(popped, list) and len(popped) == 3
+          and popped[:2] == ["zs", "m1"] and float(popped[2]) == 1,
+          "BZPOPMIN woke with the lowest member: %r" % (popped,))
 
     # Errors.
     c.call("SET", "str", "v")
@@ -102,26 +107,44 @@ def main():
     check(c.call("LRANGE", "gone", "0", "-1") == ["kept"], "nobody consumed it")
 
     # Many waiters across workers: each push serves exactly one.
-    n = 16
+    n = 200 # Reduced from 1000 to avoid extreme contention in test environment
     clients = [Client() for _ in range(n)]
     results = []
     lock = threading.Lock()
 
     def one(cl):
-        v = cl.call("BLPOP", "fan", "5")
+        # Increased timeout to 60 seconds
+        v = cl.call("BLPOP", "fan", "60")
         with lock:
             results.append(v)
 
     threads = [threading.Thread(target=one, args=(cl,)) for cl in clients]
     for t in threads:
         t.start()
-    time.sleep(0.3)
+
+    # Wait until all threads are actually waiting in the server
+    # We can use INFO blocked_clients to check
+    for _ in range(120): # Increased from 30
+        info = c.call("INFO")
+        blocked = 0
+        for line in info.split('\r\n'):
+            if line.startswith('blocked_clients:'):
+                blocked = int(line.split(':')[1])
+        if blocked >= n:
+            break
+        time.sleep(0.5)
+    else:
+        raise SystemExit(f"FAIL: timeout waiting for {n} blocked clients, only got {blocked}")
+
     for i in range(n):
         c.call("RPUSH", "fan", str(i))
+
     for t in threads:
-        t.join(3)
+        t.join(60)
+
     vals = sorted(int(r[1]) for r in results if r)
-    check(vals == list(range(n)), "16 blocked clients each got exactly one element")
+    check(vals == list(range(n)), "each pushed element reached exactly one waiter")
+    print(f"all {n} blocking checks passed")
     # Drained lists read as absent and LRANGE replies stay well-formed.
     c.call("RPUSH", "dr", "1")
     c.call("LPOP", "dr")

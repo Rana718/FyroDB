@@ -2,16 +2,18 @@ use foldhash::fast::FixedState;
 use parking_lot::{Condvar, Mutex};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub(super) const FILL_WAIT_MS: u64 = 50;
-pub(super) const INFLIGHT_SHARDS: usize = 16;
+pub(super) const INFLIGHT_SHARDS: usize = 64;
 
 pub(super) type InflightShard = Mutex<HashMap<String, Arc<FillWait>, FixedState>>;
 
 #[derive(Default)]
 pub(super) struct FillWait {
-   pub(super) done: Mutex<bool>,
+   pub(super) done: AtomicBool,
    pub(super) cond: Condvar,
+   pub(super) lock: Mutex<()>,
 }
 
 // Marks a cache fill as in progress so concurrent misses for the same key wait
@@ -34,7 +36,7 @@ impl Drop for FillGuard {
             shard.remove(&self.key);
          }
       }
-      *self.slot.done.lock() = true;
+      self.slot.done.store(true, Ordering::Release);
       self.slot.cond.notify_all();
    }
 }

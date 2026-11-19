@@ -143,32 +143,32 @@ impl Store {
          }
       });
 
-      match result {
-         Some(r) => r,
-         None => Ok(0),
+      result.unwrap_or(Ok(0))
+   }
+
+   #[inline]
+   pub(crate) fn with_set_ref<R, F>(&self, key: &str, default: R, f: F) -> Result<R, &'static str>
+   where
+      F: FnOnce(&SetInner) -> R,
+   {
+      match self.data.get_ref(key) {
+         None => Ok(default),
+         Some(e) if e.is_expired() => Ok(default),
+         Some(e) => match e.value.as_set() {
+            Some(s) => Ok(f(s)),
+            None => Err("WRONGTYPE"),
+         },
       }
    }
 
    pub fn sismember(&self, key: &str, member: &str) -> Result<bool, &'static str> {
-      match self.data.get_ref(key) {
-         None => Ok(false),
-         Some(e) if e.is_expired() => Ok(false),
-         Some(e) => match e.value.as_set() {
-            Some(s) => Ok(s.contains(member)),
-            None => Err("WRONGTYPE"),
-         },
-      }
+      self.with_set_ref(key, false, |s| s.contains(member))
    }
 
    pub fn smismember(&self, key: &str, members: &[&str]) -> Result<Vec<bool>, &'static str> {
-      match self.data.get_ref(key) {
-         None => Ok(vec![false; members.len()]),
-         Some(e) if e.is_expired() => Ok(vec![false; members.len()]),
-         Some(e) => match e.value.as_set() {
-            Some(s) => Ok(members.iter().map(|m| s.contains(m)).collect()),
-            None => Err("WRONGTYPE"),
-         },
-      }
+      self.with_set_ref(key, vec![false; members.len()], |s| {
+         members.iter().map(|m| s.contains(m)).collect()
+      })
    }
 
    /// One integer per member; truncation keeps retries idempotent.
@@ -221,10 +221,7 @@ impl Store {
             None => Err("WRONGTYPE"),
          }
       });
-      match result {
-         Some(r) => r,
-         None => Ok(vec![]),
-      }
+      result.unwrap_or_else(|| Ok(vec![]))
    }
 
    /// Bulk elements stream into `out`; truncation keeps retries idempotent.
@@ -260,14 +257,7 @@ impl Store {
    }
 
    pub fn scard(&self, key: &str) -> Result<usize, &'static str> {
-      match self.data.get_ref(key) {
-         None => Ok(0),
-         Some(e) if e.is_expired() => Ok(0),
-         Some(e) => match e.value.as_set() {
-            Some(s) => Ok(s.len()),
-            None => Err("WRONGTYPE"),
-         },
-      }
+      self.with_set_ref(key, 0, |s| s.len())
    }
 
    pub fn spop(&self, key: &str, count: usize) -> Result<Vec<String>, &'static str> {
@@ -292,10 +282,7 @@ impl Store {
          }
       });
 
-      match result {
-         Some(r) => r,
-         None => Ok(vec![]),
-      }
+      result.unwrap_or_else(|| Ok(vec![]))
    }
 
    pub fn srandmember(&self, key: &str, count: i64) -> Result<Vec<String>, &'static str> {

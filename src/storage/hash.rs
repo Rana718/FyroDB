@@ -145,11 +145,12 @@ impl Store {
       &self,
       key: &str,
       fields: &[(&str, &[u8])],
-   ) -> Result<Vec<bool>, &'static str> {
+   ) -> Result<smallvec::SmallVec<[bool; 32]>, &'static str> {
       let result = self.data.update_with(key, |val| {
          if val.is_expired() {
             let mut h = HashInner::new();
-            let flags: Vec<bool> = fields.iter().map(|(f, v)| h.insert_bytes(f, v)).collect();
+            let flags: smallvec::SmallVec<[bool; 32]> =
+               fields.iter().map(|(f, v)| h.insert_bytes(f, v)).collect();
             val.value = FyroDB::Hash(Box::new(h));
             val.expires_ms = 0;
             return Ok(flags);
@@ -164,7 +165,8 @@ impl Store {
          Some(r) => r,
          None => {
             let mut h = HashInner::new();
-            let flags: Vec<bool> = fields.iter().map(|(f, v)| h.insert_bytes(f, v)).collect();
+            let flags: smallvec::SmallVec<[bool; 32]> =
+               fields.iter().map(|(f, v)| h.insert_bytes(f, v)).collect();
             self.data.insert_str(
                key,
                StoreValue {
@@ -305,15 +307,23 @@ impl Store {
       }
    }
 
-   pub fn hget(&self, key: &str, field: &str) -> Result<Option<String>, &'static str> {
+   #[inline]
+   pub(crate) fn with_hash_ref<R, F>(&self, key: &str, default: R, f: F) -> Result<R, &'static str>
+   where
+      F: FnOnce(&HashInner) -> R,
+   {
       match self.data.get_ref(key) {
-         None => Ok(None),
-         Some(e) if e.is_expired() => Ok(None),
+         None => Ok(default),
+         Some(e) if e.is_expired() => Ok(default),
          Some(e) => match e.value.as_hash() {
-            Some(h) => Ok(h.get(field).map(|v| v.to_string())),
+            Some(h) => Ok(f(h)),
             None => Err("WRONGTYPE"),
          },
       }
+   }
+
+   pub fn hget(&self, key: &str, field: &str) -> Result<Option<String>, &'static str> {
+      self.with_hash_ref(key, None, |h| h.get(field).map(|v| v.to_string()))
    }
 
    /// Zero-alloc HGET: writes the bulk reply straight into `out`.
@@ -323,34 +333,22 @@ impl Store {
       field: &str,
       out: &mut Vec<u8>,
    ) -> Result<bool, &'static str> {
-      match self.data.get_ref(key) {
-         None => Ok(false),
-         Some(e) if e.is_expired() => Ok(false),
-         Some(e) => match e.value.as_hash() {
-            Some(h) => match h.get(field) {
-               Some(v) => {
-                  v.write_resp(out);
-                  Ok(true)
-               }
-               None => Ok(false),
-            },
-            None => Err("WRONGTYPE"),
-         },
-      }
+      self.with_hash_ref(key, false, |h| match h.get(field) {
+         Some(v) => {
+            v.write_resp(out);
+            true
+         }
+         None => false,
+      })
    }
 
    pub fn hmget(&self, key: &str, fields: &[&str]) -> Result<Vec<Option<String>>, &'static str> {
-      match self.data.get_ref(key) {
-         None => Ok(vec![None; fields.len()]),
-         Some(e) if e.is_expired() => Ok(vec![None; fields.len()]),
-         Some(e) => match e.value.as_hash() {
-            Some(h) => Ok(fields
-               .iter()
-               .map(|f| h.get(f).map(|v| v.to_string()))
-               .collect()),
-            None => Err("WRONGTYPE"),
-         },
-      }
+      self.with_hash_ref(key, vec![None; fields.len()], |h| {
+         fields
+            .iter()
+            .map(|f| h.get(f).map(|v| v.to_string()))
+            .collect()
+      })
    }
 
    /// Nil for missing fields; truncation keeps seqlock retries idempotent.
@@ -410,10 +408,7 @@ impl Store {
             None => Err("WRONGTYPE"),
          }
       });
-      match result {
-         Some(r) => r,
-         None => Ok(vec![]),
-      }
+      result.unwrap_or_else(|| Ok(vec![]))
    }
 
    /// Bulk elements stream into `out`; truncation keeps retries idempotent.
@@ -456,39 +451,25 @@ impl Store {
          }
          match val.value.as_hash_mut() {
             Some(h) => {
-               let count = fields.iter().filter(|f| h.remove(f).is_some()).count();
+               let count = fields
+                  .iter()
+                  .filter(|f| h.remove_small(f).is_some())
+                  .count();
                Ok(count)
             }
             None => Err("WRONGTYPE"),
          }
       });
 
-      match result {
-         Some(r) => r,
-         None => Ok(0),
-      }
+      result.unwrap_or(Ok(0))
    }
 
    pub fn hexists(&self, key: &str, field: &str) -> Result<bool, &'static str> {
-      match self.data.get_ref(key) {
-         None => Ok(false),
-         Some(e) if e.is_expired() => Ok(false),
-         Some(e) => match e.value.as_hash() {
-            Some(h) => Ok(h.contains_key(field)),
-            None => Err("WRONGTYPE"),
-         },
-      }
+      self.with_hash_ref(key, false, |h| h.contains_key(field))
    }
 
    pub fn hlen(&self, key: &str) -> Result<usize, &'static str> {
-      match self.data.get_ref(key) {
-         None => Ok(0),
-         Some(e) if e.is_expired() => Ok(0),
-         Some(e) => match e.value.as_hash() {
-            Some(h) => Ok(h.len()),
-            None => Err("WRONGTYPE"),
-         },
-      }
+      self.with_hash_ref(key, 0, |h| h.len())
    }
 
    pub fn hkeys(&self, key: &str) -> Result<Vec<String>, &'static str> {
@@ -501,10 +482,7 @@ impl Store {
             None => Err("WRONGTYPE"),
          }
       });
-      match result {
-         Some(r) => r,
-         None => Ok(vec![]),
-      }
+      result.unwrap_or_else(|| Ok(vec![]))
    }
 
    pub fn hkeys_to_buf(&self, key: &str, out: &mut Vec<u8>) -> Result<usize, &'static str> {
@@ -575,14 +553,11 @@ impl Store {
             None => Err("WRONGTYPE"),
          }
       });
-      match result {
-         Some(r) => r,
-         None => {
-            out.truncate(start_len);
-            crate::utils::resp::write_array_header(out, 0);
-            Ok(0)
-         }
-      }
+      result.unwrap_or_else(|| {
+         out.truncate(start_len);
+         crate::utils::resp::write_array_header(out, 0);
+         Ok(0)
+      })
    }
 
    pub fn hincrby(&self, key: &str, field: &str, by: i64) -> Result<i64, &'static str> {
@@ -596,7 +571,12 @@ impl Store {
          match val.value.as_hash_mut() {
             Some(h) => {
                if let Some(v) = h.get_mut(field) {
-                  let n = match v.as_str().parse::<i64>() {
+                  let n = match v
+                     .try_as_str()
+                     .ok()
+                     .and_then(|s| s.parse::<i64>().ok())
+                     .ok_or(())
+                  {
                      Ok(n) => n,
                      Err(_) => return Err("value is not an integer or out of range"),
                   };
@@ -646,7 +626,12 @@ impl Store {
          match val.value.as_hash_mut() {
             Some(h) => {
                if let Some(v) = h.get_mut(field) {
-                  let n = match v.as_str().parse::<f64>() {
+                  let n = match v
+                     .try_as_str()
+                     .ok()
+                     .and_then(|s| s.parse::<f64>().ok())
+                     .ok_or(())
+                  {
                      Ok(n) => n,
                      Err(_) => return Err("value is not a valid float"),
                   };

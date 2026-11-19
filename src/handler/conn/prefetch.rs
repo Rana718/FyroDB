@@ -144,14 +144,34 @@ pub(crate) struct Hint {
    entry: *const (),
 }
 
+pub(crate) struct PrefetchState {
+   pub(crate) hints: [Hint; customhash::PREFETCH_BATCH],
+   pub(crate) hint_n: u8,
+   pub(crate) hint_idx: u8,
+   pub(crate) pf_backoff: u8,
+}
+
+impl Default for PrefetchState {
+   fn default() -> Self {
+      Self {
+         hints: [Hint::default(); customhash::PREFETCH_BATCH],
+         hint_n: 0,
+         hint_idx: 0,
+         pf_backoff: 0,
+      }
+   }
+}
+
 impl Conn<'_> {
    #[inline]
    pub(super) fn prefetch_ahead(&mut self) -> usize {
-      self.hint_n = 0;
-      self.hint_idx = 0;
       let p = &self.parser;
       let buf = &p.rbuf[p.pos..p.filled];
       if buf.len() < 16 {
+         if let Some(pf) = self.prefetch.as_mut() {
+            pf.hint_n = 0;
+            pf.hint_idx = 0;
+         }
          return p.filled;
       }
       if buf.len() >= 20 {
@@ -162,6 +182,10 @@ impl Conn<'_> {
          if tag == T2 {
             let w8 = unsafe { std::ptr::read_unaligned(buf.as_ptr().add(4) as *const u64) };
             if w8 == H_GET_UPPER || w8 == H_GET_LOWER {
+               if let Some(pf) = self.prefetch.as_mut() {
+                  pf.hint_n = 0;
+                  pf.hint_idx = 0;
+               }
                return p.pos;
             }
          }
@@ -174,6 +198,10 @@ impl Conn<'_> {
          if tag == T3 {
             let w8 = unsafe { std::ptr::read_unaligned(buf.as_ptr().add(4) as *const u64) };
             if w8 == H_SET_UPPER || w8 == H_SET_LOWER {
+               if let Some(pf) = self.prefetch.as_mut() {
+                  pf.hint_n = 0;
+                  pf.hint_idx = 0;
+               }
                return p.pos;
             }
          }
@@ -181,10 +209,16 @@ impl Conn<'_> {
       let mut keys: [&[u8]; BATCH] = [&[]; BATCH];
       let (n, used) = scan_keys(buf, &mut keys);
       if n < 2 {
-         self.pf_backoff = (self.pf_backoff + 1).min(5);
-         return p.pos + (used.max(1) << self.pf_backoff);
+         let pf = self.prefetch.get_or_insert_with(Box::default);
+         pf.hint_n = 0;
+         pf.hint_idx = 0;
+         pf.pf_backoff = (pf.pf_backoff + 1).min(5);
+         return p.pos + (used.max(1) << pf.pf_backoff);
       }
-      self.pf_backoff = 0;
+      let pf = self.prefetch.get_or_insert_with(Box::default);
+      pf.hint_n = 0;
+      pf.hint_idx = 0;
+      pf.pf_backoff = 0;
       let next = p.pos + used.max(1);
       {
          let mut hashes = [0u64; BATCH];
@@ -198,7 +232,8 @@ impl Conn<'_> {
             .store
             .data
             .probe_and_prefetch_entries(&tables[..n], &hashes[..n], &mut entries[..n]);
-         for (h, (k, (&hash, &entry))) in self.hints.iter_mut().zip(
+         let pf = self.prefetch.get_or_insert_with(Box::default);
+         for (h, (k, (&hash, &entry))) in pf.hints.iter_mut().zip(
             keys[..n]
                .iter()
                .zip(hashes[..n].iter().zip(entries[..n].iter())),
@@ -210,8 +245,8 @@ impl Conn<'_> {
                entry,
             };
          }
-         self.hint_n = n as u8;
-         self.hint_idx = 0;
+         pf.hint_n = n as u8;
+         pf.hint_idx = 0;
       }
       next
    }
@@ -288,19 +323,22 @@ impl Conn<'_> {
 
    #[inline(always)]
    pub(super) fn hint_for(&mut self, part: (*const u8, usize)) -> (Option<u64>, *const ()) {
-      let idx = self.hint_idx as usize;
-      let n = self.hint_n as usize;
+      let Some(pf) = self.prefetch.as_mut() else {
+         return (None, std::ptr::null());
+      };
+      let idx = pf.hint_idx as usize;
+      let n = pf.hint_n as usize;
       if idx < n {
-         let h = &self.hints[idx];
+         let h = &pf.hints[idx];
          if h.ptr == part.0 as usize && h.len == part.1 && h.hash != 0 {
-            self.hint_idx += 1;
+            pf.hint_idx += 1;
             return (Some(h.hash), h.entry);
          }
       }
       for i in 0..n {
-         let h = &self.hints[i];
+         let h = &pf.hints[i];
          if h.ptr == part.0 as usize && h.len == part.1 && h.hash != 0 {
-            self.hint_idx = (i + 1) as u8;
+            pf.hint_idx = (i + 1) as u8;
             return (Some(h.hash), h.entry);
          }
       }

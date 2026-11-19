@@ -54,22 +54,17 @@ impl Store {
       key: &str,
       members: &[&str],
    ) -> Result<Vec<Option<(f64, f64)>>, &'static str> {
-      match self.data.get_ref(key) {
-         None => Ok(vec![None; members.len()]),
-         Some(e) if e.is_expired() => Ok(vec![None; members.len()]),
-         Some(e) => match e.value.as_zset() {
-            Some(z) => Ok(members
-               .iter()
-               .map(|m| {
-                  z.get_score(m).map(|score| {
-                     let bits = score.to_bits();
-                     geohash_decode(bits)
-                  })
+      self.with_zset_ref(key, vec![None; members.len()], |z| {
+         members
+            .iter()
+            .map(|m| {
+               z.get_score(m).map(|score| {
+                  let bits = score.to_bits();
+                  geohash_decode(bits)
                })
-               .collect()),
-            None => Err("WRONGTYPE"),
-         },
-      }
+            })
+            .collect()
+      })
    }
 
    pub fn geodist(
@@ -79,46 +74,34 @@ impl Store {
       member2: &str,
       unit: GeoUnit,
    ) -> Result<Option<f64>, &'static str> {
-      match self.data.get_ref(key) {
-         None => Ok(None),
-         Some(e) if e.is_expired() => Ok(None),
-         Some(e) => match e.value.as_zset() {
-            Some(z) => {
-               let s1 = match z.get_score(member1) {
-                  Some(s) => s,
-                  None => return Ok(None),
-               };
-               let s2 = match z.get_score(member2) {
-                  Some(s) => s,
-                  None => return Ok(None),
-               };
-               let (lon1, lat1) = geohash_decode(s1.to_bits());
-               let (lon2, lat2) = geohash_decode(s2.to_bits());
-               let dist = haversine(lat1, lon1, lat2, lon2);
-               Ok(Some(unit.from_meters(dist)))
-            }
-            None => Err("WRONGTYPE"),
-         },
-      }
+      self.with_zset_ref(key, None, |z| {
+         let s1 = match z.get_score(member1) {
+            Some(s) => s,
+            None => return None,
+         };
+         let s2 = match z.get_score(member2) {
+            Some(s) => s,
+            None => return None,
+         };
+         let (lon1, lat1) = geohash_decode(s1.to_bits());
+         let (lon2, lat2) = geohash_decode(s2.to_bits());
+         let dist = haversine(lat1, lon1, lat2, lon2);
+         Some(unit.from_meters(dist))
+      })
    }
 
    pub fn geohash(&self, key: &str, members: &[&str]) -> Result<Vec<Option<String>>, &'static str> {
-      match self.data.get_ref(key) {
-         None => Ok(vec![None; members.len()]),
-         Some(e) if e.is_expired() => Ok(vec![None; members.len()]),
-         Some(e) => match e.value.as_zset() {
-            Some(z) => Ok(members
-               .iter()
-               .map(|m| {
-                  z.get_score(m).map(|score| {
-                     let bits = score.to_bits();
-                     encode_geohash_string(bits)
-                  })
+      self.with_zset_ref(key, vec![None; members.len()], |z| {
+         members
+            .iter()
+            .map(|m| {
+               z.get_score(m).map(|score| {
+                  let bits = score.to_bits();
+                  encode_geohash_string(bits)
                })
-               .collect()),
-            None => Err("WRONGTYPE"),
-         },
-      }
+            })
+            .collect()
+      })
    }
 
    pub fn geosearch(
@@ -137,56 +120,49 @@ impl Store {
          }
       };
 
-      match self.data.get_ref(key) {
-         None => Ok(vec![]),
-         Some(e) if e.is_expired() => Ok(vec![]),
-         Some(e) => match e.value.as_zset() {
-            Some(z) => {
-               let mut results: Vec<GeoResult> = Vec::new();
-               for entry in z.iter() {
-                  let (lon, lat) = geohash_decode(entry.score.to_bits());
-                  let dist = haversine(clat, clon, lat, lon);
-                  let in_range = match &query.shape {
-                     GeoShape::Radius(r, unit) => dist <= unit.to_meters(*r),
-                     GeoShape::Box(w, h, unit) => {
-                        let half_w = unit.to_meters(*w) / 2.0;
-                        let half_h = unit.to_meters(*h) / 2.0;
-                        let dx = haversine(clat, clon, clat, lon);
-                        let dy = haversine(clat, clon, lat, clon);
-                        dx <= half_w && dy <= half_h
-                     }
-                  };
-                  if in_range {
-                     results.push(GeoResult {
-                        member: entry.member.to_string(),
-                        dist,
-                        lon,
-                        lat,
-                        hash: entry.score.to_bits(),
-                     });
-                  }
+      self.with_zset_ref(key, vec![], |z| {
+         let mut results: Vec<GeoResult> = Vec::new();
+         for entry in z.iter() {
+            let (lon, lat) = geohash_decode(entry.score.to_bits());
+            let dist = haversine(clat, clon, lat, lon);
+            let in_range = match &query.shape {
+               GeoShape::Radius(r, unit) => dist <= unit.to_meters(*r),
+               GeoShape::Box(w, h, unit) => {
+                  let half_w = unit.to_meters(*w) / 2.0;
+                  let half_h = unit.to_meters(*h) / 2.0;
+                  let dx = haversine(clat, clon, clat, lon);
+                  let dy = haversine(clat, clon, lat, clon);
+                  dx <= half_w && dy <= half_h
                }
-               if query.asc {
-                  results.sort_by(|a, b| {
-                     a.dist
-                        .partial_cmp(&b.dist)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                  });
-               } else {
-                  results.sort_by(|a, b| {
-                     b.dist
-                        .partial_cmp(&a.dist)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                  });
-               }
-               if query.count > 0 && results.len() > query.count {
-                  results.truncate(query.count);
-               }
-               Ok(results)
+            };
+            if in_range {
+               results.push(GeoResult {
+                  member: entry.member.to_string(),
+                  dist,
+                  lon,
+                  lat,
+                  hash: entry.score.to_bits(),
+               });
             }
-            None => Err("WRONGTYPE"),
-         },
-      }
+         }
+         if query.asc {
+            results.sort_by(|a, b| {
+               a.dist
+                  .partial_cmp(&b.dist)
+                  .unwrap_or(std::cmp::Ordering::Equal)
+            });
+         } else {
+            results.sort_by(|a, b| {
+               b.dist
+                  .partial_cmp(&a.dist)
+                  .unwrap_or(std::cmp::Ordering::Equal)
+            });
+         }
+         if query.count > 0 && results.len() > query.count {
+            results.truncate(query.count);
+         }
+         results
+      })
    }
 
    pub fn geosearchstore(
@@ -284,13 +260,21 @@ pub struct GeoResult {
 }
 
 #[inline(always)]
-fn spread26(mut x: u64) -> u64 {
-   x = (x | (x << 16)) & 0x0000_FFFF_0000_FFFF;
-   x = (x | (x << 8)) & 0x00FF_00FF_00FF_00FF;
-   x = (x | (x << 4)) & 0x0F0F_0F0F_0F0F_0F0F;
-   x = (x | (x << 2)) & 0x3333_3333_3333_3333;
-   x = (x | (x << 1)) & 0x5555_5555_5555_5555;
-   x
+fn spread26(x: u64) -> u64 {
+   #[cfg(all(target_arch = "x86_64", target_feature = "bmi2"))]
+   unsafe {
+      core::arch::x86_64::_pdep_u64(x, 0x5555_5555_5555_5555)
+   }
+   #[cfg(not(all(target_arch = "x86_64", target_feature = "bmi2")))]
+   {
+      let mut x = x;
+      x = (x | (x << 16)) & 0x0000_FFFF_0000_FFFF;
+      x = (x | (x << 8)) & 0x00FF_00FF_00FF_00FF;
+      x = (x | (x << 4)) & 0x0F0F_0F0F_0F0F_0F0F;
+      x = (x | (x << 2)) & 0x3333_3333_3333_3333;
+      x = (x | (x << 1)) & 0x5555_5555_5555_5555;
+      x
+   }
 }
 
 pub(crate) fn geohash_encode(lon: f64, lat: f64) -> u64 {
@@ -309,30 +293,34 @@ pub(crate) fn geohash_encode(lon: f64, lat: f64) -> u64 {
    (spread26(ilon) << 1) | spread26(ilat)
 }
 
+#[inline(always)]
 fn geohash_decode(bits: u64) -> (f64, f64) {
-   let mut lon_range = (-180.0f64, 180.0f64);
-   let mut lat_range = (-85.05112878f64, 85.05112878f64);
+   const LAT_MIN: f64 = -85.05112878;
+   const LAT_RANGE: f64 = 85.05112878 * 2.0;
+   const LON_MIN: f64 = -180.0;
+   const LON_RANGE: f64 = 360.0;
+   const SCALE: f64 = (1u64 << 26) as f64;
 
-   for i in 0..52 {
-      let bit = (bits >> (51 - i)) & 1;
-      if i % 2 == 0 {
-         let mid = (lon_range.0 + lon_range.1) / 2.0;
-         if bit == 1 {
-            lon_range.0 = mid;
-         } else {
-            lon_range.1 = mid;
-         }
-      } else {
-         let mid = (lat_range.0 + lat_range.1) / 2.0;
-         if bit == 1 {
-            lat_range.0 = mid;
-         } else {
-            lat_range.1 = mid;
-         }
+   #[cfg(all(target_arch = "x86_64", target_feature = "bmi2"))]
+   let (ilon, ilat) = unsafe {
+      (
+         core::arch::x86_64::_pext_u64(bits >> 1, 0x5555_5555_5555_5555),
+         core::arch::x86_64::_pext_u64(bits, 0x5555_5555_5555_5555),
+      )
+   };
+   #[cfg(not(all(target_arch = "x86_64", target_feature = "bmi2")))]
+   let (ilon, ilat) = {
+      let mut ilon = 0u64;
+      let mut ilat = 0u64;
+      for i in 0..26 {
+         ilon |= ((bits >> (2 * i + 1)) & 1) << i;
+         ilat |= ((bits >> (2 * i)) & 1) << i;
       }
-   }
-   let lon = (lon_range.0 + lon_range.1) / 2.0;
-   let lat = (lat_range.0 + lat_range.1) / 2.0;
+      (ilon, ilat)
+   };
+
+   let lon = LON_MIN + (ilon as f64 + 0.5) * (LON_RANGE / SCALE);
+   let lat = LAT_MIN + (ilat as f64 + 0.5) * (LAT_RANGE / SCALE);
    (lon, lat)
 }
 
@@ -348,14 +336,22 @@ fn encode_geohash_string(bits: u64) -> String {
    result
 }
 
+#[inline(always)]
 fn haversine(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
+   if (lat1 - lat2).abs() < 1e-12 && (lon1 - lon2).abs() < 1e-12 {
+      return 0.0;
+   }
    const EARTH_RADIUS: f64 = 6372797.560856;
-   let lat1_r = lat1 * PI / 180.0;
-   let lat2_r = lat2 * PI / 180.0;
-   let dlat = (lat2 - lat1) * PI / 180.0;
-   let dlon = (lon2 - lon1) * PI / 180.0;
+   const DEG_TO_RAD: f64 = PI / 180.0;
+   let lat1_r = lat1 * DEG_TO_RAD;
+   let lat2_r = lat2 * DEG_TO_RAD;
+   let dlat = (lat2 - lat1) * DEG_TO_RAD;
+   let dlon = (lon2 - lon1) * DEG_TO_RAD;
 
-   let a = (dlat / 2.0).sin().powi(2) + lat1_r.cos() * lat2_r.cos() * (dlon / 2.0).sin().powi(2);
+   let sin_half_dlat = (dlat * 0.5).sin();
+   let sin_half_dlon = (dlon * 0.5).sin();
+   let a =
+      sin_half_dlat * sin_half_dlat + lat1_r.cos() * lat2_r.cos() * sin_half_dlon * sin_half_dlon;
    let c = 2.0 * a.sqrt().asin();
    EARTH_RADIUS * c
 }

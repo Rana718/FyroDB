@@ -1,7 +1,7 @@
+use crossbeam_utils::CachePadded;
 use parking_lot::Mutex;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Delivers a retry to the worker that owns a parked connection.
 pub trait Wake: Send + Sync {
@@ -15,64 +15,88 @@ pub struct Waiter {
    pub uid: u64,
 }
 
-#[derive(Default)]
+type WaiterBucket = CachePadded<Mutex<HashMap<String, VecDeque<Waiter>>>>;
+const KEY_SHARDS: usize = 256;
+
+fn key_shard(key: &str) -> usize {
+   // foldhash-free cheap mixer: sharding only needs to spread, not hash
+   let mut h = 0x9E37_79B9_7F4A_7C15u64;
+   for b in key.as_bytes() {
+      h = (h ^ (*b as u64)).wrapping_mul(0x100_0000_01b3);
+   }
+   (h >> 32) as usize % KEY_SHARDS
+}
+
 pub struct BlockRegistry {
-   /// Registered (key, waiter) pairs; lets `signal` skip the lock.
-   waiting: AtomicUsize,
-   keys: Mutex<HashMap<String, Vec<Waiter>>>,
+   /// 256 cache-padded shards to eliminate contention during concurrent blocking ops.
+   keys: Box<[WaiterBucket]>,
+}
+
+impl Default for BlockRegistry {
+   fn default() -> Self {
+      Self {
+         keys: (0..KEY_SHARDS)
+            .map(|_| CachePadded::new(Mutex::new(HashMap::new())))
+            .collect::<Vec<_>>()
+            .into_boxed_slice(),
+      }
+   }
 }
 
 impl BlockRegistry {
    pub fn register(&self, keys: &[String], waiter: &Waiter) {
-      let mut map = self.keys.lock();
       for k in keys {
-         let list = map.entry(k.clone()).or_default();
-         if !list.iter().any(|w| w.uid == waiter.uid) {
-            list.push(waiter.clone());
-            self.waiting.fetch_add(1, Ordering::Relaxed);
+         let mut shard = self.keys[key_shard(k)].lock();
+         if let Some(queue) = shard.get_mut(k) {
+            if !queue.iter().any(|w| w.uid == waiter.uid) {
+               queue.push_back(waiter.clone());
+            }
+         } else {
+            shard.insert(k.clone(), VecDeque::from([waiter.clone()]));
          }
       }
    }
 
    pub fn unregister(&self, keys: &[String], uid: u64) {
-      let mut map = self.keys.lock();
-      for k in keys {
-         if let Some(list) = map.get_mut(k) {
-            let before = list.len();
-            list.retain(|w| w.uid != uid);
-            self
-               .waiting
-               .fetch_sub(before - list.len(), Ordering::Relaxed);
-            if list.is_empty() {
-               map.remove(k);
+      for key in keys {
+         let mut shard = self.keys[key_shard(key)].lock();
+         if let Some(queue) = shard.get_mut(key) {
+            queue.retain(|w| w.uid != uid);
+            if queue.is_empty() {
+               shard.remove(key);
             }
          }
       }
    }
 
-   /// A write made `key` possibly satisfiable: wake its waiters, oldest
-   /// first (each worker retries in wake order).
-   #[inline]
    pub fn signal(&self, key: &str) {
-      if self.waiting.load(Ordering::Relaxed) == 0 {
-         return;
-      }
-      self.signal_slow(key);
+      self.signal_many(key, usize::MAX);
    }
 
-   #[cold]
-   fn signal_slow(&self, key: &str) {
-      let map = self.keys.lock();
-      if let Some(list) = map.get(key) {
-         for w in list {
-            w.wake.wake_retry(w.token, w.uid);
-         }
+   pub(super) fn signal_many(&self, key: &str, count: usize) {
+      let waiters: smallvec::SmallVec<[Waiter; 1]> = {
+         let mut shard = self.keys[key_shard(key)].lock();
+         let Some(queue) = shard.get_mut(key) else {
+            return;
+         };
+         let n = count.min(queue.len());
+         let waiters = queue.iter().take(n).cloned().collect();
+         queue.rotate_left(n);
+         waiters
+      };
+      for w in waiters {
+         w.wake.wake_retry(w.token, w.uid);
       }
    }
 
    pub fn blocked_clients(&self) -> usize {
-      let map = self.keys.lock();
-      let mut uids: Vec<u64> = map.values().flatten().map(|w| w.uid).collect();
+      let mut uids: Vec<u64> = Vec::new();
+      for shard in &self.keys {
+         let map = shard.lock();
+         for list in map.values() {
+            uids.extend(list.iter().map(|w| w.uid));
+         }
+      }
       uids.sort_unstable();
       uids.dedup();
       uids.len()
@@ -109,7 +133,6 @@ mod tests {
       reg.signal("zzz");
       assert_eq!(*rec.0.lock().unwrap(), vec![(7, 42)]);
       reg.unregister(&keys, 42);
-      assert_eq!(reg.waiting.load(Ordering::Relaxed), 0);
       reg.signal("a");
       assert_eq!(rec.0.lock().unwrap().len(), 1);
    }

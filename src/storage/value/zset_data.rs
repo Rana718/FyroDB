@@ -12,6 +12,17 @@ pub struct ZSetData {
    chunks: Vec<Vec<ZEntry>>,
    index: Option<Box<Index>>,
    len: usize,
+   fingerprint: u64,
+}
+
+#[inline(always)]
+fn member_bloom_bit(m: &[u8]) -> u64 {
+   let mut h = 0xcbf29ce484222325u64;
+   for &b in m {
+      h ^= b as u64;
+      h = h.wrapping_mul(0x100000001b3);
+   }
+   1u64 << (h & 63)
 }
 
 #[derive(Clone)]
@@ -83,6 +94,7 @@ impl ZSetData {
          chunks: Vec::new(),
          index: None,
          len: 0,
+         fingerprint: 0,
       }
    }
 
@@ -103,6 +115,7 @@ impl ZSetData {
          chunks,
          index,
          len: 0,
+         fingerprint: 0,
       }
    }
 
@@ -136,10 +149,33 @@ impl ZSetData {
 
    #[inline]
    fn rank_of(&self, ci: usize, ei: usize) -> usize {
-      self.chunks[..ci].iter().map(Vec::len).sum::<usize>() + ei
+      if ci >= self.chunks.len() {
+         return self.len;
+      }
+      if ci > self.chunks.len() / 2 {
+         let tail_len: usize = self.chunks[ci + 1..].iter().map(Vec::len).sum();
+         self
+            .len
+            .saturating_sub(tail_len + (self.chunks[ci].len().saturating_sub(ei)))
+      } else {
+         self.chunks[..ci].iter().map(Vec::len).sum::<usize>() + ei
+      }
    }
 
    fn locate_rank(&self, mut r: usize) -> (usize, usize) {
+      if r >= self.len {
+         return (self.chunks.len(), 0);
+      }
+      if r > self.len / 2 {
+         let mut remaining = self.len - r;
+         for (ci, c) in self.chunks.iter().enumerate().rev() {
+            if remaining <= c.len() {
+               return (ci, c.len() - remaining);
+            }
+            remaining -= c.len();
+         }
+         return (0, 0);
+      }
       for (ci, c) in self.chunks.iter().enumerate() {
          if r < c.len() {
             return (ci, r);
@@ -181,19 +217,42 @@ impl ZSetData {
    fn score_of(&self, member: &str) -> Option<f64> {
       match &self.index {
          Some(ix) => ix.get(member).copied(),
-         None => self
-            .chunks
-            .iter()
-            .flatten()
-            .find(|e| e.member.as_str() == member)
-            .map(|e| e.score),
+         None => {
+            let m_bytes = member.as_bytes();
+            if (self.fingerprint & member_bloom_bit(m_bytes)) == 0 {
+               return None;
+            }
+            if self.chunks.len() == 1 {
+               self.chunks[0]
+                  .iter()
+                  .find(|e| e.member.as_bytes() == m_bytes)
+                  .map(|e| e.score)
+            } else {
+               self
+                  .chunks
+                  .iter()
+                  .flatten()
+                  .find(|e| e.member.as_bytes() == m_bytes)
+                  .map(|e| e.score)
+            }
+         }
       }
    }
 
    fn locate_member(&self, member: &str) -> Option<(usize, usize)> {
       if self.index.is_none() {
+         let m_bytes = member.as_bytes();
+         if (self.fingerprint & member_bloom_bit(m_bytes)) == 0 {
+            return None;
+         }
+         if self.chunks.len() == 1 {
+            return self.chunks[0]
+               .iter()
+               .position(|e| e.member.as_bytes() == m_bytes)
+               .map(|ei| (0, ei));
+         }
          for (ci, c) in self.chunks.iter().enumerate() {
-            if let Some(ei) = c.iter().position(|e| e.member.as_str() == member) {
+            if let Some(ei) = c.iter().position(|e| e.member.as_bytes() == m_bytes) {
                return Some((ci, ei));
             }
          }
@@ -218,6 +277,7 @@ impl ZSetData {
    }
 
    fn insert_new(&mut self, score: f64, member: &str) {
+      self.fingerprint |= member_bloom_bit(member.as_bytes());
       let entry = ZEntry {
          score,
          member: SmallStr::new(member),
@@ -286,6 +346,7 @@ impl ZSetData {
    }
 
    pub fn insert(&mut self, score: f64, member: &str) -> bool {
+      self.fingerprint |= member_bloom_bit(member.as_bytes());
       if let Some(ix) = self.index.as_deref_mut() {
          if let Some(&old) = ix.get(member) {
             if (old - score).abs() > f64::EPSILON {

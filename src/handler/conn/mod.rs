@@ -1,7 +1,8 @@
 use foldhash::HashSet;
-use mio::net::TcpStream;
 use std::io::{self, Write};
 use std::sync::Arc;
+
+use crate::handler::net::Stream;
 
 use crate::pubsub::{PubSub, SubSlot, WorkerNotifier};
 use crate::storage::store::Store;
@@ -58,26 +59,49 @@ pub fn record_raw_arrival(bytes: usize) {
 pub(crate) const SUB_WRITE_BATCH_BYTES: usize = 256 * 1024;
 const RETAINED_WRITE_BUFFER: usize = 32 * 1024;
 
+#[cfg(not(feature = "io-uring"))]
+mod bulk;
 mod coalesce;
-mod fast_path;
+pub(crate) mod fast_path;
 pub mod park;
 mod prefetch;
 mod sock;
+mod transaction;
 
 use coalesce::*;
 use fast_path::*;
 
 pub enum ConnMode {
    Normal,
+   Transaction(Box<transaction::Transaction>),
    Subscribed {
       slot: Arc<SubSlot>,
-      channels: HashSet<String>,
-      patterns: HashSet<String>,
+      channels: Box<Channels>,
+      patterns: HashSet<Arc<str>>,
    },
 }
 
+#[derive(Default)]
+pub struct Channels {
+   pub(crate) keys: HashSet<Arc<str>>,
+   pub(crate) transaction: Option<Box<transaction::Transaction>>,
+}
+
+impl std::ops::Deref for Channels {
+   type Target = HashSet<Arc<str>>;
+   fn deref(&self) -> &Self::Target {
+      &self.keys
+   }
+}
+
+impl std::ops::DerefMut for Channels {
+   fn deref_mut(&mut self) -> &mut Self::Target {
+      &mut self.keys
+   }
+}
+
 pub struct Conn<'a> {
-   pub stream: TcpStream,
+   pub stream: Stream,
    pub parser: RespParser,
    pub store: &'a Arc<Store>,
    pub pubsub: &'a PubSub,
@@ -94,14 +118,9 @@ pub struct Conn<'a> {
    pub uid: u64,
    /// Set while the current command waits off-worker or on a key.
    pub park: Option<park::Parked>,
-   #[allow(dead_code)]
-   hints: [prefetch::Hint; customhash::PREFETCH_BATCH],
-   #[allow(dead_code)]
-   pub(crate) hint_n: u8,
-   #[allow(dead_code)]
-   pub(crate) hint_idx: u8,
-   #[allow(dead_code)]
-   pf_backoff: u8,
+   /// Reusable scratch for element pops to build RESP replies outside entry lock.
+   pub(crate) pop_scratch: String,
+   pub(crate) prefetch: Option<Box<prefetch::PrefetchState>>,
    topology_cache: Option<(
       u64,
       Arc<crate::cluster::Topology>,
@@ -111,7 +130,7 @@ pub struct Conn<'a> {
 
 impl<'a> Conn<'a> {
    pub fn new(
-      stream: TcpStream,
+      stream: Stream,
       store: &'a Arc<Store>,
       pubsub: &'a PubSub,
       token: usize,
@@ -121,8 +140,7 @@ impl<'a> Conn<'a> {
    ) -> Self {
       store.client_connected();
       let authenticated = auth.is_none();
-      let mut parser = RespParser::new();
-      parser.wbuf.reserve(16 * 1024);
+      let parser = RespParser::new();
       Self {
          stream,
          parser,
@@ -139,10 +157,8 @@ impl<'a> Conn<'a> {
          worker,
          uid: park::next_uid(),
          park: None,
-         hints: [prefetch::Hint::default(); customhash::PREFETCH_BATCH],
-         hint_n: 0,
-         hint_idx: 0,
-         pf_backoff: 0,
+         pop_scratch: String::new(),
+         prefetch: None,
          topology_cache: None,
       }
    }

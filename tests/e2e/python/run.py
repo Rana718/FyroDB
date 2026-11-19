@@ -11,7 +11,7 @@ binary = Path(sys.argv[1] if len(sys.argv) > 1 else os.environ.get("FYRODB_BIN",
 if not binary.is_file():
     raise SystemExit(f"Server binary does not exist: {binary}")
 
-for name in ["blocking", "stream", "search", "text"]:
+for name in ["blocking", "stream", "search", "text", "isolation", "integrity"]:
     with tempfile.TemporaryDirectory(prefix="fyrodb-e2e-") as work:
         with socket.socket() as reservation:
             reservation.bind(("127.0.0.1", 0))
@@ -41,4 +41,11 @@ for name in ["blocking", "stream", "search", "text"]:
                     except subprocess.TimeoutExpired:
                         server.kill()
                         server.wait()
+                server_log = Path(work) / "server.log"
+                if server_log.exists():
+                    import shutil
+                    shutil.copy(server_log, root / "server_failure.log")
+                    print(f"Server log saved to {root / 'server_failure.log'}")
+                else:
+                    print("Server log not found")
 print("All Python end-to-end suites passed")

@@ -53,11 +53,92 @@ impl Store {
       }
    }
 
+   /// Records live string write for replication and AOF without secondary table lookup.
+   pub fn record_live_string(&self, key: &[u8], bytes: &[u8], expires_ms: u64) {
+      let mut encoded: Option<Vec<u8>> = None;
+      if crate::storage::persistence::aof::enabled() || self.replication.is_some() {
+         encoded = Some(crate::storage::rdb::encode_string_value(bytes, expires_ms));
+      }
+      if let Some(aof) = crate::storage::persistence::aof::get() {
+         aof.record_encoded_bytes(key, encoded.as_deref());
+      }
+      let Some(log) = &self.replication else { return };
+      let slot = crate::cluster::hash_slot(key);
+      let Some(enc) = encoded else { return };
+      let expire_at_ms = (expires_ms != 0).then_some(expires_ms);
+      let _ = log.append(crate::cluster::MutationRecord::replace(
+         slot,
+         key.to_vec(),
+         enc,
+         expire_at_ms,
+      ));
+   }
+
+   pub fn record_current_value_bytes(&self, key: &[u8]) {
+      let mut encoded: Option<Vec<u8>> = None;
+      let mut expire_at_ms: Option<u64> = None;
+      let mut live = false;
+      {
+         let value = self.data.get_ref_bytes(key);
+         if let Some(value) = value.as_ref().filter(|value| !value.is_expired()) {
+            live = true;
+            if crate::storage::persistence::aof::enabled() {
+               encoded = crate::storage::persistence::aof::encode_live(value);
+            }
+            expire_at_ms = Some(value.expires_ms).filter(|expiry| *expiry != 0);
+            if self.replication.is_some() && encoded.is_none() {
+               encoded = crate::storage::rdb::encode_single_value(value).ok();
+            }
+         }
+      }
+      if let Some(aof) = crate::storage::persistence::aof::get() {
+         aof.record_encoded_bytes(key, encoded.as_deref());
+      }
+      let Some(log) = &self.replication else { return };
+      let slot = crate::cluster::hash_slot(key);
+      let Some(encoded) = (live.then_some(encoded)).flatten() else {
+         let _ = log.append(crate::cluster::MutationRecord {
+            offset: 0,
+            slot,
+            kind: crate::cluster::MutationKind::Delete,
+            key: key.to_vec(),
+            value: Vec::new(),
+            expire_at_ms: None,
+         });
+         return;
+      };
+      let _ = log.append(crate::cluster::MutationRecord::replace(
+         slot,
+         key.to_vec(),
+         encoded,
+         expire_at_ms,
+      ));
+   }
+
    pub fn record_current_value(&self, key: &str) {
-      self.aof_capture(key);
+      // One lookup and encoding shared by AOF and replication.
+      let mut encoded: Option<Vec<u8>> = None;
+      let mut expire_at_ms: Option<u64> = None;
+      let mut live = false;
+      {
+         let value = self.data.get_ref(key);
+         if let Some(value) = value.as_ref().filter(|value| !value.is_expired()) {
+            live = true;
+            if crate::storage::persistence::aof::enabled() {
+               encoded = crate::storage::persistence::aof::encode_live(value);
+            }
+            expire_at_ms = Some(value.expires_ms).filter(|expiry| *expiry != 0);
+            if self.replication.is_some() && encoded.is_none() {
+               encoded = crate::storage::rdb::encode_single_value(value).ok();
+            }
+         }
+      }
+      if let Some(aof) = crate::storage::persistence::aof::get() {
+         aof.record_encoded(key, encoded.as_deref());
+      }
       let Some(log) = &self.replication else { return };
       let slot = crate::cluster::hash_slot(key.as_bytes());
-      let Some(value) = self.data.get_ref(key).filter(|value| !value.is_expired()) else {
+      let Some(encoded) = (live.then_some(encoded)).flatten() else {
          let _ = log.append(crate::cluster::MutationRecord {
             offset: 0,
             slot,
@@ -68,14 +149,11 @@ impl Store {
          });
          return;
       };
-      let Ok(encoded) = crate::storage::rdb::encode_single_value(&value) else {
-         return;
-      };
       let _ = log.append(crate::cluster::MutationRecord::replace(
          slot,
          key.as_bytes().to_vec(),
          encoded,
-         Some(value.expires_ms).filter(|expiry| *expiry != 0),
+         expire_at_ms,
       ));
    }
 
@@ -100,7 +178,7 @@ impl Store {
          }
          let _ = self.cluster_state.replace_topology(topology);
       }
-      *self.cluster_meta_path.lock().unwrap() = Some(path);
+      *self.cluster_meta_path.lock() = Some(path);
       let _ = self.persist_cluster_metadata();
       if let Some(log) = &self.replication {
          let journal_path = format!("{rdb_path}.repllog");
@@ -132,7 +210,7 @@ impl Store {
    }
 
    fn persist_cluster_metadata(&self) -> std::io::Result<()> {
-      let Some(path) = self.cluster_meta_path.lock().unwrap().clone() else {
+      let Some(path) = self.cluster_meta_path.lock().clone() else {
          return Ok(());
       };
       crate::storage::rdb::save_cluster_metadata(
@@ -148,6 +226,7 @@ impl Store {
       &self,
       record: &crate::cluster::MutationRecord,
    ) -> Result<(), crate::cluster::ApplyError> {
+      let _guard = self.command_guard(usize::MAX);
       let key =
          std::str::from_utf8(&record.key).map_err(|_| crate::cluster::ApplyError::InvalidKey)?;
       if crate::cluster::hash_slot(record.key.as_slice()) != record.slot {
@@ -250,7 +329,7 @@ impl Store {
    pub fn set_replica_identity(&self, identity: [u8; 16]) {
       if self.replica_identity() != Some(identity) {
          self.replica_applied_offset.store(0, Ordering::Release);
-         if let Some(path) = self.replica_meta_path.lock().unwrap().as_ref() {
+         if let Some(path) = self.replica_meta_path.lock().as_ref() {
             let _ = crate::storage::rdb::save_replication_metadata(
                path,
                self.cluster_state.topology().epoch,
@@ -258,14 +337,14 @@ impl Store {
             );
          }
       }
-      *self.replica_identity.lock().unwrap() = Some(identity);
-      if let Some(path) = self.replica_meta_path.lock().unwrap().as_ref() {
+      *self.replica_identity.lock() = Some(identity);
+      if let Some(path) = self.replica_meta_path.lock().as_ref() {
          let _ = std::fs::write(format!("{path}.id"), identity);
       }
    }
 
    pub fn replica_identity(&self) -> Option<[u8; 16]> {
-      *self.replica_identity.lock().unwrap()
+      *self.replica_identity.lock()
    }
 
    /// Visit live values in one hash slot. The callback receives an owned
@@ -423,7 +502,7 @@ impl Store {
 
    pub fn persist_replica_offset(&self) {
       let offset = self.replica_applied_offset();
-      if let Some(path) = self.replica_meta_path.lock().unwrap().as_deref() {
+      if let Some(path) = self.replica_meta_path.lock().as_deref() {
          let _ = crate::storage::rdb::save_replication_metadata(
             path,
             self.cluster_state.topology_arc().epoch,
@@ -442,9 +521,9 @@ impl Store {
       if let Ok(bytes) = std::fs::read(format!("{path}.id"))
          && bytes.len() == 16
       {
-         *self.replica_identity.lock().unwrap() = Some(bytes.try_into().unwrap());
+         *self.replica_identity.lock() = Some(bytes.try_into().unwrap());
       }
-      *self.replica_meta_path.lock().unwrap() = Some(path);
+      *self.replica_meta_path.lock() = Some(path);
    }
 
    pub fn update_cluster_health(&self, total: usize, healthy: usize, suspect: usize) {

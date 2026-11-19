@@ -59,6 +59,24 @@ pub const ZERO: &[u8] = b":0\r\n";
 pub const ONE: &[u8] = b":1\r\n";
 pub const PONG: &[u8] = b"+PONG\r\n";
 
+#[inline(never)]
+pub(crate) fn repeat_reply(out: &mut Vec<u8>, start: usize, copies: usize) {
+   let width = out.len() - start;
+   if copies <= 1 || width == 0 {
+      return;
+   }
+   let additional = width
+      .checked_mul(copies - 1)
+      .expect("reply length overflow");
+   out.reserve(additional);
+   let mut written = 1;
+   while written < copies {
+      let count = written.min(copies - written);
+      out.extend_from_within(start..start + count * width);
+      written += count;
+   }
+}
+
 static INT_CACHE: [&[u8]; 10] = [
    b":0\r\n", b":1\r\n", b":2\r\n", b":3\r\n", b":4\r\n", b":5\r\n", b":6\r\n", b":7\r\n",
    b":8\r\n", b":9\r\n",
@@ -78,30 +96,73 @@ const RESP_BULK_HEADERS: [u32; 10] = [
 ];
 const CRLF_U16: u16 = u16::from_ne_bytes(*b"\r\n");
 
-const DIGITS100: &[u8; 200] = b"0001020304050607080910111213141516171819\
-2021222324252627282930313233343536373839\
-4041424344454647484950515253545556575859\
-6061626364656667686970717273747576777879\
-8081828384858687888990919293949596979899";
-
 #[inline(always)]
 pub fn format_usize_digits(mut n: usize, buf: &mut [u8]) -> &[u8] {
    if n == 0 {
-      buf[0] = b'0';
-      return &buf[..1];
+      let last = buf.len() - 1;
+      buf[last] = b'0';
+      return &buf[last..];
    }
    let mut i = buf.len();
-   while n > 0 {
+   while n >= 100 {
+      let q = n / 100;
+      let rem = (n - q * 100) * 2;
+      n = q;
+      i -= 2;
+      buf[i] = crate::utils::int_format::DIGITS100[rem];
+      buf[i + 1] = crate::utils::int_format::DIGITS100[rem + 1];
+   }
+   if n >= 10 {
+      let rem = n * 2;
+      i -= 2;
+      buf[i] = crate::utils::int_format::DIGITS100[rem];
+      buf[i + 1] = crate::utils::int_format::DIGITS100[rem + 1];
+   } else {
       i -= 1;
-      buf[i] = b'0' + (n % 10) as u8;
-      n /= 10;
+      buf[i] = b'0' + n as u8;
    }
    &buf[i..]
 }
 
+/// Formats a RESP bulk string header `$len\r\n` into the provided 24-byte buffer,
+/// returning the number of bytes written.
+#[inline(always)]
+pub fn format_bulk_header(len: usize, out: &mut [u8; 24]) -> usize {
+   out[0] = b'$';
+   if len < 10 {
+      out[1] = b'0' + len as u8;
+      out[2] = b'\r';
+      out[3] = b'\n';
+      4
+   } else if len < 100 {
+      out[1] = b'0' + (len / 10) as u8;
+      out[2] = b'0' + (len % 10) as u8;
+      out[3] = b'\r';
+      out[4] = b'\n';
+      5
+   } else if len < 1000 {
+      out[1] = b'0' + (len / 100) as u8;
+      out[2] = b'0' + ((len / 10) % 10) as u8;
+      out[3] = b'0' + (len % 10) as u8;
+      out[4] = b'\r';
+      out[5] = b'\n';
+      6
+   } else {
+      let mut digits = [0u8; 20];
+      let number = format_usize_digits(len, &mut digits);
+      out[1..1 + number.len()].copy_from_slice(number);
+      out[1 + number.len()..3 + number.len()].copy_from_slice(b"\r\n");
+      number.len() + 3
+   }
+}
+
+#[inline(always)]
+pub(crate) fn format_u64_digits(n: u64, buf: &mut [u8]) -> &[u8] {
+   format_usize_digits(n as usize, buf)
+}
+
 /// # Safety
-///
-/// Caller must ensure `dst` has enough capacity to hold the formatted RESP bulk header, payload, and CRLF.
+/// Caller must ensure `dst` has enough capacity for bulk header, payload, and CRLF.
 #[inline(always)]
 pub unsafe fn write_bulk_raw(dst: *mut u8, s: &[u8]) -> usize {
    unsafe {
@@ -141,7 +202,6 @@ pub unsafe fn write_bulk_raw(dst: *mut u8, s: &[u8]) -> usize {
       }
    }
 }
-
 #[inline]
 pub fn write_ok(out: &mut Vec<u8>) {
    out.extend_from_slice(OK);
@@ -164,8 +224,18 @@ pub fn write_bulk(out: &mut Vec<u8>, s: &str) {
 
 #[inline]
 pub fn write_float(out: &mut Vec<u8>, f: f64) {
-   let mut buffer = ryu::Buffer::new();
-   write_bulk(out, buffer.format(f));
+   // Redis d2string semantics: integral doubles print without a decimal
+   // point (9.0 -> "9"); otherwise shortest-roundtrip (ryu).
+   if f.is_finite() && f == f.trunc() && f.abs() < 9.007_199_254_740_992e15 {
+      let mut buf = [0u8; 20];
+      write_bulk(
+         out,
+         crate::utils::int_format::write_i64_to(&mut buf, f as i64),
+      );
+   } else {
+      let mut buffer = ryu::Buffer::new();
+      write_bulk(out, buffer.format(f));
+   }
 }
 
 #[cold]
@@ -216,12 +286,80 @@ pub fn write_bulk_bytes(out: &mut Vec<u8>, s: &[u8]) {
       }
       return;
    }
-   out.reserve(1 + 10 + 2 + len + 2);
-   out.push(b'$');
-   write_usize(out, len);
-   out.extend_from_slice(b"\r\n");
-   out.extend_from_slice(s);
-   out.extend_from_slice(b"\r\n");
+   if len < 10_000 {
+      write_medium_bulk(out, s);
+      return;
+   }
+   if len < 100_000 {
+      let old_len = out.len();
+      let digits = 5;
+      let header = digits + 3;
+      let total = header + len + 2;
+      if out.capacity() - old_len < total {
+         reserve_resp(out, total);
+      }
+      unsafe {
+         let p = out.as_mut_ptr().add(old_len);
+         *p = b'$';
+         let mut buf = [0u8; 20];
+         let num = crate::utils::int_format::write_usize_to(&mut buf, len);
+         std::ptr::copy_nonoverlapping(num.as_ptr(), p.add(1), digits);
+         p.add(digits + 1).cast::<u16>().write_unaligned(CRLF_U16);
+         std::ptr::copy_nonoverlapping(s.as_ptr(), p.add(header), len);
+         p.add(header + len).cast::<u16>().write_unaligned(CRLF_U16);
+         out.set_len(old_len + total);
+      }
+      return;
+   }
+   let mut digits_buf = [0u8; 20];
+   let num = crate::utils::int_format::write_usize_to(&mut digits_buf, len);
+   let digits = num.len();
+   let header = digits + 3;
+   let total = header + len + 2;
+   let old_len = out.len();
+   if out.capacity() - old_len < total {
+      out.reserve_exact(total);
+   }
+   unsafe {
+      let p = out.as_mut_ptr().add(old_len);
+      *p = b'$';
+      std::ptr::copy_nonoverlapping(num.as_ptr(), p.add(1), digits);
+      p.add(digits + 1).cast::<u16>().write_unaligned(CRLF_U16);
+      std::ptr::copy_nonoverlapping(s.as_ptr(), p.add(header), len);
+      p.add(header + len).cast::<u16>().write_unaligned(CRLF_U16);
+      out.set_len(old_len + total);
+   }
+}
+
+#[inline(never)]
+fn write_medium_bulk(out: &mut Vec<u8>, s: &[u8]) {
+   let len = s.len();
+   debug_assert!((100..10_000).contains(&len));
+   let old_len = out.len();
+   let digits = if len < 1000 { 3 } else { 4 };
+   let header = digits + 3;
+   let total = header + len + 2;
+   if out.capacity() - old_len < total {
+      reserve_resp(out, total);
+   }
+   unsafe {
+      let p = out.as_mut_ptr().add(old_len);
+      *p = b'$';
+      if digits == 3 {
+         *p.add(1) = b'0' + (len / 100) as u8;
+      } else {
+         let index = (len / 100) * 2;
+         *p.add(1) = DIGITS100[index];
+         *p.add(2) = DIGITS100[index + 1];
+      }
+      let index = (len % 100) * 2;
+      *p.add(digits - 1) = DIGITS100[index];
+      *p.add(digits) = DIGITS100[index + 1];
+      p.add(digits + 1).cast::<u16>().write_unaligned(CRLF_U16);
+      std::ptr::copy_nonoverlapping(s.as_ptr(), p.add(header), len);
+      p.add(header + len).cast::<u16>().write_unaligned(CRLF_U16);
+      out.set_len(old_len + total);
+   }
 }
 
 #[inline(always)]
@@ -230,45 +368,9 @@ pub fn write_integer(out: &mut Vec<u8>, n: i64) {
       out.extend_from_slice(INT_CACHE[n as usize]);
       return;
    }
-   let old_len = out.len();
-   if out.capacity() - old_len < 32 {
-      out.reserve(32);
-   }
-   unsafe {
-      let base = out.as_mut_ptr().add(old_len);
-      *base = b':';
-      let (mut val, mut pos) = if n < 0 {
-         *base.add(1) = b'-';
-         (n.unsigned_abs(), 2)
-      } else {
-         (n as u64, 1)
-      };
-
-      let mut digits = [0u8; 20];
-      let mut d_pos = 20;
-      while val >= 100 {
-         let rem = (val % 100) as usize * 2;
-         val /= 100;
-         d_pos -= 2;
-         digits[d_pos] = DIGITS100[rem];
-         digits[d_pos + 1] = DIGITS100[rem + 1];
-      }
-      if val < 10 {
-         d_pos -= 1;
-         digits[d_pos] = b'0' + val as u8;
-      } else {
-         let rem = val as usize * 2;
-         d_pos -= 2;
-         digits[d_pos] = DIGITS100[rem];
-         digits[d_pos + 1] = DIGITS100[rem + 1];
-      }
-      let d_len = 20 - d_pos;
-      std::ptr::copy_nonoverlapping(digits.as_ptr().add(d_pos), base.add(pos), d_len);
-      pos += d_len;
-      *base.add(pos) = b'\r';
-      *base.add(pos + 1) = b'\n';
-      out.set_len(old_len + pos + 2);
-   }
+   out.push(b':');
+   write_i64(out, n);
+   out.extend_from_slice(b"\r\n");
 }
 
 #[inline]
@@ -319,9 +421,16 @@ pub fn write_opt_array(out: &mut Vec<u8>, items: &[Option<String>]) {
 }
 
 #[inline]
+pub fn write_scan_cursor_header(out: &mut Vec<u8>, cursor: &str, count: usize) {
+   out.extend_from_slice(b"*2\r\n");
+   write_bulk(out, cursor);
+   write_array_header(out, count);
+}
+
+#[inline]
 pub fn write_err(out: &mut Vec<u8>, msg: &str) {
    out.extend_from_slice(b"-ERR ");
-   out.extend_from_slice(msg.as_bytes());
+   write_line_bytes(out, msg.as_bytes());
    out.extend_from_slice(b"\r\n");
 }
 
@@ -334,11 +443,22 @@ pub fn write_store_err(out: &mut Vec<u8>, err: &str) {
    let code = err.split(' ').next().unwrap_or("");
    if code.len() >= 3 && err.len() > code.len() && code.bytes().all(|b| b.is_ascii_uppercase()) {
       out.push(b'-');
-      out.extend_from_slice(err.as_bytes());
+      write_line_bytes(out, err.as_bytes());
       out.extend_from_slice(b"\r\n");
    } else {
       write_err(out, err);
    }
+}
+
+#[inline]
+pub(crate) fn write_line_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
+   out.extend(bytes.iter().map(|&byte| {
+      if matches!(byte, b'\r' | b'\n') {
+         b' '
+      } else {
+         byte
+      }
+   }));
 }
 
 #[inline]
@@ -356,25 +476,34 @@ pub fn write_wrong_args(out: &mut Vec<u8>, cmd: &str) {
 #[inline]
 pub fn write_simple(out: &mut Vec<u8>, s: &str) {
    out.push(b'+');
-   out.extend_from_slice(s.as_bytes());
+   write_line_bytes(out, s.as_bytes());
    out.extend_from_slice(b"\r\n");
 }
 
+use crate::utils::int_format::DIGITS100;
+
 #[inline(always)]
 pub fn write_usize(out: &mut Vec<u8>, n: usize) {
-   if n < 10 {
-      out.push(b'0' + n as u8);
+   if n < 100 {
+      if n < 10 {
+         out.push(b'0' + n as u8);
+      } else {
+         let rem = n * 2;
+         out.extend_from_slice(&DIGITS100[rem..rem + 2]);
+      }
       return;
    }
-   let mut buf = [0u8; 20];
-   let mut pos = 20;
-   let mut v = n;
-   while v > 0 {
-      pos -= 1;
-      buf[pos] = b'0' + (v % 10) as u8;
-      v /= 10;
+   let mut digits = [0u8; 20];
+   let s = crate::utils::int_format::write_usize_to(&mut digits, n);
+   let d_len = s.len();
+   let old_len = out.len();
+   if out.capacity() - old_len < d_len {
+      reserve_resp(out, d_len);
    }
-   out.extend_from_slice(&buf[pos..]);
+   unsafe {
+      std::ptr::copy_nonoverlapping(s.as_ptr(), out.as_mut_ptr().add(old_len), d_len);
+      out.set_len(old_len + d_len);
+   }
 }
 
 #[inline(always)]
@@ -383,22 +512,29 @@ pub fn write_i64(out: &mut Vec<u8>, n: i64) {
       write_usize(out, n as usize);
       return;
    }
-   out.push(b'-');
-   let mut buf = [0u8; 20];
-   let mut pos = 20;
-   let mut v = n;
-   loop {
-      pos -= 1;
-      buf[pos] = b'0' + (-(v % 10)) as u8;
-      v /= 10;
-      if v == 0 {
-         break;
-      }
-   }
-   out.extend_from_slice(&buf[pos..]);
+
+   let mut digits = [0u8; 20];
+   let s = crate::utils::int_format::write_i64_to(&mut digits, n);
+   out.extend_from_slice(s.as_bytes());
 }
 
-#[inline]
-pub fn bulk(s: &str) -> String {
-   format!("${}\r\n{}\r\n", s.len(), s)
+#[cfg(test)]
+mod tests {
+   #[test]
+   fn bulk_headers_preserve_binary_payloads_prefixes_and_digit_boundaries() {
+      for length in (0..=1025).chain([9998, 9999, 10_000, 10_001, 65_536]) {
+         let value: Vec<_> = (0..length).map(|i| (i % 256) as u8).collect();
+         let mut expected = b"+prefix\r\n".to_vec();
+         expected.extend_from_slice(format!("${length}\r\n").as_bytes());
+         expected.extend_from_slice(&value);
+         expected.extend_from_slice(b"\r\n+OK\r\n");
+         for spare in [0, 1, length + 32] {
+            let mut out = Vec::with_capacity(9 + spare);
+            out.extend_from_slice(b"+prefix\r\n");
+            super::write_bulk_bytes(&mut out, &value);
+            super::write_ok(&mut out);
+            assert_eq!(out, expected, "length={length}, spare={spare}");
+         }
+      }
+   }
 }

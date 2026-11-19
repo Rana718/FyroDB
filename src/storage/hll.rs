@@ -16,6 +16,18 @@ impl Default for HllData {
    }
 }
 
+const RECIP_2_POW: [f64; 64] = {
+   let mut table = [0.0f64; 64];
+   let mut i = 0;
+   let mut val = 1.0f64;
+   while i < 64 {
+      table[i] = val;
+      val *= 0.5f64;
+      i += 1;
+   }
+   table
+};
+
 impl HllData {
    pub fn new() -> Self {
       Self {
@@ -61,14 +73,24 @@ impl HllData {
    }
 
    pub fn count(&self) -> u64 {
-      let mut sum = 0.0f64;
+      let mut sum0 = 0.0f64;
+      let mut sum1 = 0.0f64;
+      let mut sum2 = 0.0f64;
+      let mut sum3 = 0.0f64;
       let mut zeros = 0u32;
-      for &reg in &self.registers {
-         sum += 1.0 / (1u64 << reg) as f64;
-         if reg == 0 {
-            zeros += 1;
-         }
+      #[allow(clippy::chunks_exact_to_as_chunks)]
+      let chunks = self.registers.chunks_exact(4);
+      for chunk in chunks {
+         sum0 += RECIP_2_POW[(chunk[0] as usize).min(63)];
+         sum1 += RECIP_2_POW[(chunk[1] as usize).min(63)];
+         sum2 += RECIP_2_POW[(chunk[2] as usize).min(63)];
+         sum3 += RECIP_2_POW[(chunk[3] as usize).min(63)];
+         zeros += (chunk[0] == 0) as u32
+            + (chunk[1] == 0) as u32
+            + (chunk[2] == 0) as u32
+            + (chunk[3] == 0) as u32;
       }
+      let sum = (sum0 + sum1) + (sum2 + sum3);
       let m = HLL_REGISTERS as f64;
       let alpha = 0.7213 / (1.0 + 1.079 / m);
       let raw = alpha * m * m / sum;
@@ -83,6 +105,23 @@ impl HllData {
    }
 
    pub fn merge(&mut self, other: &HllData) {
+      #[cfg(target_arch = "x86_64")]
+      {
+         if std::is_x86_feature_detected!("avx2") {
+            unsafe {
+               use std::arch::x86_64::{_mm256_loadu_si256, _mm256_max_epu8, _mm256_storeu_si256};
+               let dst = self.registers.as_mut_ptr();
+               let src = other.registers.as_ptr();
+               for i in (0..HLL_REGISTERS).step_by(32) {
+                  let v1 = _mm256_loadu_si256(dst.add(i).cast());
+                  let v2 = _mm256_loadu_si256(src.add(i).cast());
+                  let max = _mm256_max_epu8(v1, v2);
+                  _mm256_storeu_si256(dst.add(i).cast(), max);
+               }
+               return;
+            }
+         }
+      }
       for i in 0..HLL_REGISTERS {
          if other.registers[i] > self.registers[i] {
             self.registers[i] = other.registers[i];
@@ -105,17 +144,13 @@ fn hll_hash(data: &[u8]) -> u64 {
    h
 }
 
-#[inline]
-fn leading_zeros_after(mut w: u64) -> u8 {
+#[inline(always)]
+fn leading_zeros_after(w: u64) -> u8 {
    if w == 0 {
-      return 50;
+      50
+   } else {
+      (w.trailing_zeros() as u8).min(50)
    }
-   let mut count = 0u8;
-   while w & 1 == 0 && count < 50 {
-      count += 1;
-      w >>= 1;
-   }
-   count
 }
 
 impl Store {
@@ -230,41 +265,9 @@ impl Store {
       }
    }
 
-   pub fn pfcount(&self, keys: &[&str]) -> Result<u64, &'static str> {
-      if keys.len() == 1 {
-         match self.data.get_ref(keys[0]) {
-            None => Ok(0),
-            Some(e) if e.is_expired() => Ok(0),
-            Some(e) => match e.value.as_string() {
-               Some(s) => {
-                  let hll = decode_hll(s.as_bytes());
-                  Ok(hll.count())
-               }
-               None => Err("WRONGTYPE"),
-            },
-         }
-      } else {
-         let mut merged = HllData::new();
-         for &k in keys {
-            match self.data.get_ref(k) {
-               None => {}
-               Some(e) if e.is_expired() => {}
-               Some(e) => match e.value.as_string() {
-                  Some(s) => {
-                     let hll = decode_hll(s.as_bytes());
-                     merged.merge(&hll);
-                  }
-                  None => return Err("WRONGTYPE"),
-               },
-            }
-         }
-         Ok(merged.count())
-      }
-   }
-
-   pub fn pfmerge(&self, dest: &str, sources: &[&str]) -> Result<(), &'static str> {
+   fn merge_hll_keys(&self, keys: &[&str]) -> Result<HllData, &'static str> {
       let mut merged = HllData::new();
-      for &k in sources {
+      for &k in keys {
          match self.data.get_ref(k) {
             None => {}
             Some(e) if e.is_expired() => {}
@@ -277,6 +280,26 @@ impl Store {
             },
          }
       }
+      Ok(merged)
+   }
+
+   pub fn pfcount(&self, keys: &[&str]) -> Result<u64, &'static str> {
+      if keys.len() == 1 {
+         match self.data.get_ref(keys[0]) {
+            None => Ok(0),
+            Some(e) if e.is_expired() => Ok(0),
+            Some(e) => match e.value.as_string() {
+               Some(s) => Ok(decode_hll(s.as_bytes()).count()),
+               None => Err("WRONGTYPE"),
+            },
+         }
+      } else {
+         Ok(self.merge_hll_keys(keys)?.count())
+      }
+   }
+
+   pub fn pfmerge(&self, dest: &str, sources: &[&str]) -> Result<(), &'static str> {
+      let merged = self.merge_hll_keys(sources)?;
       let encoded = encode_hll(&merged);
       self
          .data

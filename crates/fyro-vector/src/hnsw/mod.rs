@@ -1,6 +1,7 @@
 use crate::DistanceMetric;
 use crate::kernels::{self, Isa, Kernel};
 use crate::pool;
+use arc_swap::ArcSwap;
 use parking_lot::{Mutex, RwLock};
 use std::cell::{RefCell, UnsafeCell};
 use std::cmp::Reverse;
@@ -71,7 +72,6 @@ struct Scratch {
    over: Vec<(f32, u32)>,
    over_sel: Vec<(f32, u32)>,
    rejected: Vec<(f32, u32)>,
-   q_int8: Vec<i8>,
    acorn_hop: Vec<u32>,
    acorn_frontier: Vec<u32>,
 }
@@ -89,7 +89,6 @@ impl Scratch {
          over: Vec::new(),
          over_sel: Vec::new(),
          rejected: Vec::new(),
-         q_int8: Vec::new(),
          acorn_hop: Vec::new(),
          acorn_frontier: Vec::new(),
       }
@@ -142,7 +141,10 @@ pub(crate) struct Inner {
    pay: usize,
    /// u32 words per level-0 block (multiple of 16: whole cache lines).
    stride: usize,
-   blocks: Vec<Line>,
+   /// Chunked node arena to allow incremental growth without full realloc.
+   blocks: Vec<Box<[Line]>>,
+   /// nodes per arena chunk (>= 1)
+   nodes_per_chunk: usize,
    /// Node slots allocated (ids `0..len`).
    len: usize,
    flags: Vec<AtomicU8>,
@@ -155,34 +157,37 @@ pub(crate) struct Inner {
    /// Exact vectors for nodes being linked in quantized graphs;
    /// released once linked so only codes stay resident.
    raw: Vec<Option<Box<[f32]>>>,
-   /// Packed Int8 codes and scales for two-pass pre-filter scans on
-   /// unquantized graphs, populated lazily by prepare/prepare_batch.
-   flat_int8: Vec<i8>,
-   flat_scales: Vec<f32>,
+
 }
 
 impl Inner {
    #[inline(always)]
+   fn nodes_per_chunk_for(stride: usize) -> usize {
+      // ~1 MiB per chunk: at least 64 nodes, power of two
+      (16384 / (stride / 16)).max(64).next_power_of_two()
+   }
+
+   #[inline(always)]
    fn base(&self, id: u32) -> *mut u32 {
       debug_assert!((id as usize) < self.len);
-      // SAFETY: ids < len; blocks hold at least len * stride words.
-      unsafe { (self.blocks.as_ptr() as *mut u32).add(id as usize * self.stride) }
+      // SAFETY: ids < len; chunk (id / nodes_per_chunk) exists and holds
+      // at least one node's stride words at the node's offset.
+      let np = self.nodes_per_chunk;
+      let chunk = id as usize / np;
+      let off = (id as usize % np) * self.stride;
+      unsafe { self.blocks[chunk].as_ptr().cast::<u32>().add(off) as *mut u32 }
    }
 
-   #[inline(always)]
-   fn flat_int8_of(&self, id: u32) -> &[i8] {
-      let off = id as usize * self.dims;
-      &self.flat_int8[off..off + self.dims]
-   }
-
-   #[inline(always)]
-   fn flat_scale(&self, id: u32) -> f32 {
-      self.flat_scales[id as usize]
-   }
-
-   #[inline]
-   fn has_flat_int8(&self) -> bool {
-      !self.flat_int8.is_empty()
+   /// Append zeroed chunks until the arena holds `n` nodes. Growth is
+   /// O(new chunk) — no copy of existing blocks, no giant realloc.
+   fn ensure_chunks(&mut self, n: usize) {
+      let needed = n.div_ceil(self.nodes_per_chunk);
+      let chunk_lines = self.nodes_per_chunk * (self.stride / 16);
+      while self.blocks.len() < needed {
+         self
+            .blocks
+            .push((0..chunk_lines).map(|_| Line::zero()).collect());
+      }
    }
 
    /// The f32 vector of `id` (unquantized graphs only).
@@ -264,23 +269,7 @@ impl Inner {
       }
    }
 
-   #[inline(always)]
-   fn prefetch_flat_int8(&self, id: u32) {
-      if self.flat_int8.is_empty() {
-         return;
-      }
-      #[cfg(target_arch = "x86_64")]
-      unsafe {
-         use std::arch::x86_64::{_MM_HINT_T0, _mm_prefetch};
-         let p = self.flat_int8.as_ptr().add(id as usize * self.dims);
-         let bytes = self.dims.min(1024);
-         let mut off = 0;
-         while off < bytes {
-            _mm_prefetch(p.add(off), _MM_HINT_T0);
-            off += 64;
-         }
-      }
-   }
+
 }
 
 /// Persisted link structure (see `HnswGraph::dump`).
@@ -394,7 +383,7 @@ pub struct HnswGraph {
    quant: Quant,
    rot: Option<quant::Rotation>,
    /// RaBitQ centroids; replaced only while the graph is empty.
-   book: RwLock<Arc<quant::Codebook>>,
+   book: ArcSwap<quant::Codebook>,
    m: usize,
    m0: usize,
    ef_construction: usize,
@@ -478,6 +467,16 @@ impl HnswGraph {
       Self::with_quant(metric, dims, m, ef_construction, Quant::None)
    }
 
+   /// Vector-only arena: FLAT queries need no neighbor slots or upper layers.
+   pub fn new_flat(metric: DistanceMetric, dims: usize) -> Self {
+      let mut graph = Self::new(metric, dims, 2, 1);
+      graph.m0 = 0;
+      graph.ml = 0.0;
+      let inner = graph.inner.get_mut();
+      inner.stride = (inner.pay + 1).div_ceil(16) * 16;
+      graph
+   }
+
    /// Creates a graph with `quant`-encoded traversal payloads; search returns
    /// approximate candidates intended to be reranked with exact vectors.
    pub fn with_quant(
@@ -496,7 +495,7 @@ impl HnswGraph {
          metric,
          quant,
          rot: (quant == Quant::RaBitQ).then(|| quant::Rotation::new(dims, dims as u64)),
-         book: RwLock::new(Arc::new(quant::Codebook::zero(dims))),
+         book: ArcSwap::from_pointee(quant::Codebook::zero(dims)),
          m,
          m0,
          ef_construction: ef_construction.clamp(1, 10_000),
@@ -507,6 +506,7 @@ impl HnswGraph {
             pay,
             stride,
             blocks: Vec::new(),
+            nodes_per_chunk: Inner::nodes_per_chunk_for(stride),
             len: 0,
             flags: Vec::new(),
             levels: Vec::new(),
@@ -514,8 +514,6 @@ impl HnswGraph {
             upper: Vec::new(),
             free: Vec::new(),
             raw: Vec::new(),
-            flat_int8: Vec::new(),
-            flat_scales: Vec::new(),
          }),
          entry: AtomicU64::new(NO_ENTRY),
          entry_lock: Mutex::new(()),
@@ -584,12 +582,14 @@ impl HnswGraph {
    /// Approximate heap bytes held by the index.
    pub fn memory_bytes(&self) -> usize {
       let g = self.inner.read();
-      g.blocks.capacity() * 64
-         + g.flags.capacity() * 2
+      g.blocks.iter().map(|c| c.len() * 64).sum::<usize>()
+         + g.flags.capacity()
+         + g.levels.capacity()
          + g.locks.capacity()
          + g.upper.capacity() * 16
          + g.upper.iter().map(|u| u.len() * 4).sum::<usize>()
          + g.free.capacity() * 4
+         + g.raw.capacity() * std::mem::size_of::<Option<Box<[f32]>>>()
          + g.raw.iter().flatten().map(|r| r.len() * 4).sum::<usize>()
    }
 
@@ -608,7 +608,7 @@ impl HnswGraph {
       quant::encode(
          self.quant,
          self.rot.as_ref(),
-         &self.book.read(),
+         &self.book.load(),
          self.metric,
          v,
          buf,
@@ -694,7 +694,7 @@ impl HnswGraph {
       quant::encode_query(
          self.quant,
          self.rot.as_ref(),
-         &self.book.read(),
+         &self.book.load(),
          self.metric,
          v,
       )
@@ -703,17 +703,17 @@ impl HnswGraph {
    // Only honored while graph is empty — existing codes are tied to the old codebook.
    pub fn train(&self, sample: &[Vec<f32>]) -> usize {
       if self.quant != Quant::RaBitQ || self.node_count() > 0 {
-         return self.book.read().centroids.len();
+         return self.book.load().centroids.len();
       }
       let book = quant::Codebook::train(sample, self.inner.read().dims);
       let n = book.centroids.len();
-      *self.book.write() = Arc::new(book);
+      self.book.store(Arc::new(book));
       n
    }
 
    /// The centroids codes are encoded against (persistence).
    pub fn centroids(&self) -> Vec<Vec<f32>> {
-      self.book.read().centroids.clone()
+      self.book.load().centroids.clone()
    }
 
    /// Install persisted centroids (empty graph only), as `train` would.
@@ -724,7 +724,7 @@ impl HnswGraph {
          && !centroids.is_empty()
          && centroids.iter().all(|c| c.len() == dims)
       {
-         *self.book.write() = Arc::new(quant::Codebook { centroids });
+         self.book.store(Arc::new(quant::Codebook { centroids }));
       }
    }
 
@@ -745,31 +745,9 @@ impl HnswGraph {
       ((-u.ln() * self.ml) as usize).min(MAX_LEVEL)
    }
 
-   fn encode_flat_int8(g: &mut Inner, key_id: usize, vector: &[f32]) {
-      let dims = g.dims;
-      let needed = (key_id + 1) * dims;
-      if g.flat_int8.len() < needed {
-         g.flat_int8.resize(needed, 0);
-      }
-      if g.flat_scales.len() <= key_id {
-         g.flat_scales.resize(key_id + 1, 0.0);
-      }
-      let maxabs = vector.iter().fold(0f32, |m, x| m.max(x.abs()));
-      let scale = if maxabs > 0.0 { maxabs / 127.0 } else { 1.0 };
-      g.flat_scales[key_id] = scale;
-      let codes = &mut g.flat_int8[key_id * dims..(key_id + 1) * dims];
-      for (c, &x) in codes.iter_mut().zip(vector) {
-         *c = (x / scale).round().clamp(-127.0, 127.0) as i8;
-      }
-   }
-
    pub fn reserve(&self, n: usize) {
       let mut g = self.inner.write();
-      let lines = n * g.stride / 16;
-      if g.blocks.capacity() < lines {
-         let extra = lines - g.blocks.len();
-         g.blocks.reserve_exact(extra);
-      }
+      g.ensure_chunks(n);
       let extra = n.saturating_sub(g.flags.len());
       g.flags.reserve_exact(extra);
       g.levels.reserve_exact(extra);
@@ -782,10 +760,8 @@ impl HnswGraph {
          return;
       }
       let n = id + 1;
-      let lines = n * g.stride / 16;
-      if g.blocks.len() < lines {
-         g.blocks.resize_with(lines, Line::zero);
-      }
+      // chunked arena: append zeroed chunks — no copy of existing blocks
+      g.ensure_chunks(n);
       while g.flags.len() < n {
          g.flags.push(AtomicU8::new(F_DELETED));
          g.levels.push(0);
@@ -816,14 +792,12 @@ impl HnswGraph {
       quant::encode(
          self.quant,
          self.rot.as_ref(),
-         &self.book.read(),
+         &self.book.load(),
          self.metric,
          vector,
          payload,
       );
-      if self.quant == Quant::None {
-         Self::encode_flat_int8(&mut g, key_id, vector);
-      } else {
+      if self.quant != Quant::None {
          if g.raw.len() <= key_id {
             g.raw.resize(key_id + 1, None);
          }
@@ -844,9 +818,11 @@ impl HnswGraph {
       } else if let Some(pos) = g.free.iter().position(|&f| f == id) {
          g.free.swap_remove(pos);
       }
-      g.flags[key_id].store(F_PENDING, Ordering::Release);
+      g.flags[key_id].store(if self.m0 == 0 { 0 } else { F_PENDING }, Ordering::Release);
       self.count.fetch_add(1, Ordering::AcqRel);
-      self.pending.fetch_add(1, Ordering::AcqRel);
+      if self.m0 != 0 {
+         self.pending.fetch_add(1, Ordering::AcqRel);
+      }
       lvl
    }
 
@@ -857,9 +833,25 @@ impl HnswGraph {
          return;
       }
       let max_id = items.iter().map(|&(id, _)| id).max().unwrap();
-      let levels: Vec<usize> = items.iter().map(|&(id, _)| self.random_level(id)).collect();
+      assert!(
+         max_id < (u32::MAX >> 1) as usize,
+         "vector id space exhausted"
+      );
+      let mut levels: Vec<usize> = items.iter().map(|&(id, _)| id).collect();
+      if !levels.windows(2).all(|ids| ids[0] < ids[1])
+         && !levels.windows(2).all(|ids| ids[0] > ids[1])
       {
-         let mut g = self.inner.write();
+         levels.sort_unstable();
+         assert!(
+            levels.windows(2).all(|ids| ids[0] != ids[1]),
+            "duplicate vector id"
+         );
+      }
+      for (level, &(id, _)) in levels.iter_mut().zip(items) {
+         *level = self.random_level(id);
+      }
+      let mut g = self.inner.write();
+      {
          assert!(
             items.iter().all(|&(_, v)| v.len() == g.dims),
             "dimension mismatch"
@@ -886,15 +878,7 @@ impl HnswGraph {
             self.count.fetch_add(1, Ordering::AcqRel);
             self.pending.fetch_add(1, Ordering::AcqRel);
          }
-         if self.quant == Quant::None {
-            let needed = (max_id + 1) * g.dims;
-            if g.flat_int8.len() < needed {
-               g.flat_int8.resize(needed, 0);
-            }
-            if g.flat_scales.len() <= max_id {
-               g.flat_scales.resize(max_id + 1, 0.0);
-            }
-         } else {
+         if self.quant != Quant::None {
             let max = max_id + 1;
             if g.raw.len() < max {
                g.raw.resize(max, None);
@@ -904,16 +888,14 @@ impl HnswGraph {
             }
          }
       }
-      // Encode payloads in parallel under a read lock — each thread writes
-      // to non-overlapping per-node memory regions.
+      // Keep the exclusive lock through encoding so queries cannot see
+      // partially written payloads.
       {
-         let g = self.inner.read();
-         let book = self.book.read();
+         let book = self.book.load();
          let rot = self.rot.as_ref();
          let quant = self.quant;
          let metric = self.metric;
          let pay = g.pay;
-         let dims = g.dims;
          let next = AtomicUsize::new(0);
          pool::global().parallel(pool::global().threads().max(1), |_| {
             loop {
@@ -925,30 +907,13 @@ impl HnswGraph {
                // SAFETY: each thread writes to a distinct node's payload.
                let payload = unsafe { std::slice::from_raw_parts_mut(g.base(key_id as u32), pay) };
                quant::encode(quant, rot, &book, metric, v, payload);
-               if quant == Quant::None {
-                  // SAFETY: each thread writes to a non-overlapping range.
-                  let codes = unsafe {
-                     std::slice::from_raw_parts_mut(
-                        g.flat_int8.as_ptr() as *mut i8,
-                        g.flat_int8.len(),
-                     )
-                  };
-                  let scales = unsafe {
-                     std::slice::from_raw_parts_mut(
-                        g.flat_scales.as_ptr() as *mut f32,
-                        g.flat_scales.len(),
-                     )
-                  };
-                  let maxabs = v.iter().fold(0f32, |m, x| m.max(x.abs()));
-                  let scale = if maxabs > 0.0 { maxabs / 127.0 } else { 1.0 };
-                  scales[key_id] = scale;
-                  let slot = &mut codes[key_id * dims..(key_id + 1) * dims];
-                  for (c, &x) in slot.iter_mut().zip(v) {
-                     *c = (x / scale).round().clamp(-127.0, 127.0) as i8;
-                  }
-               }
             }
          });
+      }
+      if self.m0 == 0 {
+         for &(id, _) in items {
+            self.finish_link(&g, id as u32);
+         }
       }
    }
 
@@ -1101,22 +1066,23 @@ impl HnswGraph {
       for (new, &old) in order.iter().enumerate() {
          map[old as usize] = new as u32;
       }
-      g.flat_int8 = Vec::new();
-      g.flat_scales = Vec::new();
       g.raw = Vec::new();
-      let out = HnswGraph::with_quant(
-         self.metric,
-         g.dims,
-         self.m,
-         self.ef_construction,
-         self.quant,
-      );
-      *out.book.write() = Arc::clone(&self.book.read());
+      let out = if self.m0 == 0 {
+         HnswGraph::new_flat(self.metric, g.dims)
+      } else {
+         HnswGraph::with_quant(
+            self.metric,
+            g.dims,
+            self.m,
+            self.ef_construction,
+            self.quant,
+         )
+      };
+      out.book.store(Arc::clone(&self.book.load()));
       {
          let mut o = out.inner.write();
          let count = order.len();
-         let lines = count * o.stride / 16;
-         o.blocks.resize_with(lines, Line::zero);
+         o.ensure_chunks(count);
          o.len = count;
          o.flags = (0..count).map(|_| AtomicU8::new(0)).collect();
          o.levels = vec![0; count];
@@ -1270,13 +1236,23 @@ impl HnswGraph {
          if by_batch || by_milestone {
             self.last_shrink.store(count, Ordering::Relaxed);
             let mut g = self.inner.write();
-            g.blocks.shrink_to_fit();
-            g.flags.shrink_to_fit();
-            g.levels.shrink_to_fit();
-            g.locks.shrink_to_fit();
-            g.upper.shrink_to_fit();
-            g.flat_int8.shrink_to_fit();
-            g.flat_scales.shrink_to_fit();
+            // Shrink with headroom to avoid immediate realloc on next insert.
+            let slack_target = (count * 3 / 2).max(1024).next_power_of_two();
+            let keep_chunks = slack_target.div_ceil(g.nodes_per_chunk);
+            if g.blocks.len() > keep_chunks {
+               g.blocks.truncate(keep_chunks.max(1));
+            }
+            if g.flags.capacity() > slack_target * 2 {
+               g.flags.shrink_to(slack_target);
+               g.levels.shrink_to(slack_target);
+            }
+            if g.locks.capacity() > slack_target * 2 {
+               g.locks.shrink_to(slack_target);
+            }
+            if g.upper.capacity() > slack_target * 2 {
+               g.upper.shrink_to(slack_target);
+            }
+
          }
       }
    }
@@ -1627,6 +1603,7 @@ impl HnswGraph {
             let nb = links[i];
             if !sc.visit(nb, epoch) {
                g.prefetch(nb);
+               g.prefetch_links(nb);
                links[np] = nb;
                np += 1;
             }

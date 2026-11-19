@@ -305,10 +305,15 @@ func recallAt(got []int, want []int, k int) float64 {
 }
 
 func annSearchCmd(idx string, k, ef int, filter string, blob []byte) []byte {
-	query := fmt.Sprintf("*=>[KNN %d @vec $v EF_RUNTIME %d AS score]", k, ef)
+	selector := "*"
 	if filter != "" {
-		query = fmt.Sprintf("(%s)=>[KNN %d @vec $v EF_RUNTIME %d AS score]", filter, k, ef)
+		selector = "(" + filter + ")"
 	}
+	option := ""
+	if ef > 0 {
+		option = fmt.Sprintf(" EF_RUNTIME %d", ef)
+	}
+	query := fmt.Sprintf("%s=>[KNN %d @vec $v%s AS score]", selector, k, option)
 	out := appendArrayHdr(nil, 13)
 	out = appendBulkStr(out, "FT.SEARCH")
 	out = appendBulkStr(out, idx)
@@ -332,8 +337,12 @@ func annQueryPhase(label, idx string, cfg annConfig, ef, conc int, filter string
 	conns := preDial(conc)
 	defer closeAll(conns)
 	cmds := make([][]byte, len(blobs))
+	queryEF := ef
+	if strings.EqualFold(cfg.algo, "FLAT") {
+		queryEF = 0
+	}
 	for i, b := range blobs {
-		cmds[i] = annSearchCmd(idx, cfg.k, ef, filter, b)
+		cmds[i] = annSearchCmd(idx, cfg.k, queryEF, filter, b)
 	}
 	hs := make([]hist, conc)
 	recalls := make([]float64, conc)
@@ -405,6 +414,48 @@ func waitIndexed(conn *net.TCPConn, r *bufio.Reader, idx string) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	panic("indexing did not finish before the benchmark deadline: " + idx)
+}
+
+// An opt-in recall gate also verifies older servers whose readiness flag can
+// become clear before background graph updates finish.
+func verifyANNReady(conn *net.TCPConn, r *bufio.Reader, idx string, cfg annConfig, blobs [][]byte, gt [][]int) {
+	value := os.Getenv("ANN_READY_RECALL")
+	if value == "" {
+		return
+	}
+	threshold, err := strconv.ParseFloat(value, 64)
+	if err != nil || math.IsNaN(threshold) || threshold <= 0 || threshold > 1 {
+		panic("ANN_READY_RECALL must be in (0, 1]")
+	}
+	n := min(32, len(blobs), len(gt))
+	if n == 0 {
+		panic("ANN readiness verification needs queries and ground truth")
+	}
+	deadline := time.Now().Add(2 * time.Minute)
+	probeEF := 320
+	if strings.EqualFold(cfg.algo, "FLAT") {
+		probeEF = 0
+	}
+	settled := 0
+	for time.Now().Before(deadline) {
+		var recall float64
+		for i := 0; i < n; i++ {
+			writeFull(conn, annSearchCmd(idx, cfg.k, probeEF, "", blobs[i]))
+			recall += recallAt(readSearchIDs(r, nil), gt[i], cfg.k)
+		}
+		recall /= float64(n)
+		if recall >= threshold && ftInfoField(conn, r, idx, "indexing") != "1" {
+			settled++
+			if settled == 3 {
+				fmt.Printf("   readiness probe: recall@%d %.4f over %d queries\n", cfg.k, recall, n)
+				return
+			}
+		} else {
+			settled = 0
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	panic("ANN readiness recall did not reach " + value)
 }
 
 // readValue decodes one RESP2 reply into string / int64 / []any / nil.
@@ -576,9 +627,14 @@ func runANN() {
 	// Kick the build if the load outran it, then wait for the index to
 	// report complete so no timed query hits a partial graph.
 	buildStart := time.Now()
-	writeFull(conn, annSearchCmd(idx, cfg.k, 10, "", blobs[0]))
+	buildEF := 10
+	if strings.EqualFold(cfg.algo, "FLAT") {
+		buildEF = 0
+	}
+	writeFull(conn, annSearchCmd(idx, cfg.k, buildEF, "", blobs[0]))
 	readSearchIDs(r, nil)
 	waitIndexed(conn, r, idx)
+	verifyANNReady(conn, r, idx, cfg, blobs, gt)
 	buildElapsed := time.Since(buildStart)
 	fmt.Printf("   index build (after load): %s\n", buildElapsed.Round(time.Millisecond))
 	recordResult("ANN index build", int64(len(base)), buildElapsed)

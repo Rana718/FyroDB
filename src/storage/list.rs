@@ -2,7 +2,13 @@ use crate::storage::store::Store;
 use crate::storage::value::{FyroDB, ListInner, StoreValue};
 
 impl Store {
-   fn list_push(&self, key: &str, values: &[&str], front: bool) -> Result<usize, &'static str> {
+   fn list_push(
+      &self,
+      key: &str,
+      values: &[&str],
+      front: bool,
+      signal: bool,
+   ) -> Result<usize, &'static str> {
       let push = |l: &mut ListInner| {
          for v in values {
             if front {
@@ -23,11 +29,17 @@ impl Store {
                return Ok(n);
             }
             match val.value.as_list_mut() {
-               Some(l) => Ok(push(l)),
+               Some(l) => {
+                  let n = push(l);
+                  Ok(n)
+               }
                None => Err("WRONGTYPE"),
             }
          });
          if let Some(r) = result {
+            if signal && r.is_ok() {
+               self.blocking.signal_many(key, values.len());
+            }
             return r;
          }
          let mut l = ListInner::new();
@@ -37,25 +49,20 @@ impl Store {
             expires_ms: 0,
          };
          if self.data.insert_if_absent_str(key, v) {
+            if signal {
+               self.blocking.signal_many(key, values.len());
+            }
             return Ok(n);
          }
       }
    }
 
    pub fn lpush(&self, key: &str, values: &[&str]) -> Result<usize, &'static str> {
-      let r = self.list_push(key, values, true);
-      if r.is_ok() {
-         self.blocking.signal(key);
-      }
-      r
+      self.list_push(key, values, true, true)
    }
 
    pub fn rpush(&self, key: &str, values: &[&str]) -> Result<usize, &'static str> {
-      let r = self.list_push(key, values, false);
-      if r.is_ok() {
-         self.blocking.signal(key);
-      }
-      r
+      self.list_push(key, values, false, true)
    }
 
    fn list_write<R: Default>(
@@ -116,6 +123,8 @@ impl Store {
       from_back: bool,
       out: &mut Vec<u8>,
    ) -> Result<usize, &'static str> {
+      // Reserve before taking entry lock to avoid realloc while holding key.
+      out.reserve(count.saturating_mul(24).min(64 * 1024));
       self.list_write(key, |l| {
          let mut n = 0;
          while n < count {
@@ -402,12 +411,12 @@ impl Store {
          return Ok(None);
       };
       let pushed = if left_dst {
-         self.list_push(dst, &[&value], true)
+         self.list_push(dst, &[&value], true, true)
       } else {
-         self.list_push(dst, &[&value], false)
+         self.list_push(dst, &[&value], false, true)
       };
       if let Err(e) = pushed {
-         let _ = self.list_push(src, &[&value], left_src);
+         let _ = self.list_push(src, &[&value], left_src, false);
          return Err(e);
       }
       Ok(Some(value))

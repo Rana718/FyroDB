@@ -67,6 +67,7 @@ string_enum! {
         PTTL => "PTTL",
         EXPIRE => "EXPIRE",
         PEXPIRE => "PEXPIRE",
+        PEXPIREAT => "PEXPIREAT",
         EXPIREAT => "EXPIREAT",
         EXPIRETIME => "EXPIRETIME",
         PEXPIRETIME => "PEXPIRETIME",
@@ -248,7 +249,13 @@ pub fn execute(parts: &[&str], store: &Arc<Store>, out: &mut Vec<u8>) {
    }
 
    let cmd = ComdType::from(parts[0]);
+   let _guard = if matches!(cmd, ComdType::EVAL | ComdType::EVALSHA | ComdType::MSET | ComdType::MSETNX | ComdType::SAVE | ComdType::BGSAVE | ComdType::FLUSHALL | ComdType::FLUSHDB | ComdType::FLUSH | ComdType::CLUSTER) {
+      store.atomic_command_guard()
+   } else {
+      store.command_guard(usize::MAX)
+   };
    match cmd {
+      ComdType::Exec if parts[0].eq_ignore_ascii_case("EXEC") => transaction::exec_empty(out),
       ComdType::PING => connection::ping(parts, out),
       ComdType::ECHO => connection::echo(parts, out),
       ComdType::INFO => connection::info(store, out),
@@ -307,6 +314,7 @@ pub fn execute(parts: &[&str], store: &Arc<Store>, out: &mut Vec<u8>) {
       ComdType::PTTL => keys::pttl_check(parts, store, out),
       ComdType::EXPIRE => keys::expire(parts, store, out),
       ComdType::PEXPIRE => keys::pexpire(parts, store, out),
+      ComdType::PEXPIREAT => keys::pexpireat(parts, store, out),
       ComdType::EXPIREAT => keys::expireat(parts, store, out),
       ComdType::EXPIRETIME => keys::expiretime(parts, store, out),
       ComdType::PEXPIRETIME => keys::pexpiretime(parts, store, out),

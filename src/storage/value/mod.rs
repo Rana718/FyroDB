@@ -192,7 +192,11 @@ pub struct StoreValue {
    pub expires_ms: u64,
 }
 
-static UNIX_MS_CACHE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+// 64-byte alignment eliminates false sharing on timer ticks.
+#[repr(align(64))]
+struct PaddedAtomicU64(std::sync::atomic::AtomicU64);
+
+static UNIX_MS_CACHE: PaddedAtomicU64 = PaddedAtomicU64(std::sync::atomic::AtomicU64::new(0));
 
 #[inline(always)]
 pub fn now_ms() -> u64 {
@@ -205,12 +209,31 @@ pub fn now_ms() -> u64 {
 
 #[inline]
 pub fn tick_clock() {
-   UNIX_MS_CACHE.store(now_ms(), std::sync::atomic::Ordering::Relaxed);
+   // Gate store on value change to avoid bouncing exclusive cache lines.
+   let now = now_ms();
+   if UNIX_MS_CACHE.0.load(std::sync::atomic::Ordering::Relaxed) != now {
+      UNIX_MS_CACHE
+         .0
+         .store(now, std::sync::atomic::Ordering::Relaxed);
+   }
 }
 
 #[inline]
 pub fn expiry_from_secs(secs: u64) -> Option<u64> {
    approx_now_ms().checked_add(secs.checked_mul(1000)?)
+}
+
+/// EXPIRE-family semantics: negative deltas place deadline in past to delete key.
+#[inline]
+pub fn expiry_from_secs_signed(secs: i64) -> Option<u64> {
+   let deadline = (approx_now_ms() as i64).saturating_add(secs.saturating_mul(1000));
+   Some(deadline.max(1) as u64)
+}
+
+#[inline]
+pub fn expiry_from_ms_signed(ms: i64) -> Option<u64> {
+   let deadline = (approx_now_ms() as i64).saturating_add(ms);
+   Some(deadline.max(1) as u64)
 }
 
 #[inline]
@@ -219,43 +242,19 @@ pub fn expiry_from_ms(ms: u64) -> Option<u64> {
 }
 
 #[inline]
+/// Unix **milliseconds** → absolute expiry deadline.
+pub fn expiry_from_unix_ms(unix_ms: u64) -> Option<u64> {
+   Some(unix_ms)
+}
+
 pub fn expiry_from_unix_secs(unix_secs: u64) -> Option<u64> {
    unix_secs.checked_mul(1000)
 }
 
 #[inline(always)]
 pub fn approx_now_ms() -> u64 {
-   let cached = UNIX_MS_CACHE.load(std::sync::atomic::Ordering::Relaxed);
+   let cached = UNIX_MS_CACHE.0.load(std::sync::atomic::Ordering::Relaxed);
    if cached == 0 { now_ms() } else { cached }
-}
-
-/// Formats an integer into `buf`, returning the written slice; i64 never
-/// needs more than 20 ASCII bytes.
-#[inline]
-pub fn write_int_to(buf: &mut [u8; 20], mut n: i64) -> &str {
-   let mut i = buf.len();
-   let neg = n < 0;
-   if neg {
-      let mut m = (n as i128).unsigned_abs();
-      while m >= 10 {
-         i -= 1;
-         buf[i] = b'0' + (m % 10) as u8;
-         m /= 10;
-      }
-      i -= 1;
-      buf[i] = b'0' + m as u8;
-      i -= 1;
-      buf[i] = b'-';
-   } else {
-      while n >= 10 {
-         i -= 1;
-         buf[i] = b'0' + (n % 10) as u8;
-         n /= 10;
-      }
-      i -= 1;
-      buf[i] = b'0' + n as u8;
-   }
-   unsafe { std::str::from_utf8_unchecked(&buf[i..]) }
 }
 
 impl StoreValue {
@@ -418,4 +417,4 @@ impl StoreValue {
 const _: () = assert!(std::mem::size_of::<SmallStr>() == 24);
 const _: () = assert!(std::mem::size_of::<FyroDB>() == 24);
 const _: () = assert!(std::mem::size_of::<StoreValue>() == 32);
-const _: () = assert!(customhash::entry_size::<StoreValue>() == 56);
+const _: () = assert!(customhash::entry_size::<StoreValue>() == 64);

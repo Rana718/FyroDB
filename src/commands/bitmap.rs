@@ -122,11 +122,10 @@ pub fn bitfield(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
          if i + 2 >= rest.len() {
             return resp::write_err(out, "syntax error");
          }
-         let (signed, bits) = parse_bitfield_type(rest[i + 1]);
-         let offset = parse_bitfield_offset(rest[i + 2], bits);
-         if bits == 0 || bits > 64 {
-            return resp::write_err(out, "invalid bitfield type");
-         }
+         let Some((signed, bits, offset)) = parse_bf_type_and_offset(rest[i + 1], rest[i + 2], out)
+         else {
+            return;
+         };
          let val = bf_get(store, key, offset, bits, signed);
          results.push(Some(val));
          i += 3;
@@ -134,15 +133,14 @@ pub fn bitfield(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
          if i + 3 >= rest.len() {
             return resp::write_err(out, "syntax error");
          }
-         let (signed, bits) = parse_bitfield_type(rest[i + 1]);
-         let offset = parse_bitfield_offset(rest[i + 2], bits);
+         let Some((signed, bits, offset)) = parse_bf_type_and_offset(rest[i + 1], rest[i + 2], out)
+         else {
+            return;
+         };
          let value = match rest[i + 3].parse::<i64>() {
             Ok(v) => v,
             Err(_) => return resp::write_err(out, "value is not an integer"),
          };
-         if bits == 0 || bits > 64 {
-            return resp::write_err(out, "invalid bitfield type");
-         }
          let old = bf_get(store, key, offset, bits, signed);
          bf_set(store, key, offset, bits, value);
          results.push(Some(old));
@@ -151,15 +149,14 @@ pub fn bitfield(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
          if i + 3 >= rest.len() {
             return resp::write_err(out, "syntax error");
          }
-         let (signed, bits) = parse_bitfield_type(rest[i + 1]);
-         let offset = parse_bitfield_offset(rest[i + 2], bits);
+         let Some((signed, bits, offset)) = parse_bf_type_and_offset(rest[i + 1], rest[i + 2], out)
+         else {
+            return;
+         };
          let increment = match rest[i + 3].parse::<i64>() {
             Ok(v) => v,
             Err(_) => return resp::write_err(out, "value is not an integer"),
          };
-         if bits == 0 || bits > 64 {
-            return resp::write_err(out, "invalid bitfield type");
-         }
          let old = bf_get(store, key, offset, bits, signed);
          let new_val = old.wrapping_add(increment);
          let clamped = if signed {
@@ -240,6 +237,20 @@ fn parse_bitfield_offset(s: &str, bits: u32) -> u64 {
    } else {
       s.parse::<u64>().unwrap_or(0)
    }
+}
+
+fn parse_bf_type_and_offset(
+   type_str: &str,
+   offset_str: &str,
+   out: &mut Vec<u8>,
+) -> Option<(bool, u32, u64)> {
+   let (signed, bits) = parse_bitfield_type(type_str);
+   if bits == 0 || bits > 64 {
+      resp::write_err(out, "invalid bitfield type");
+      return None;
+   }
+   let offset = parse_bitfield_offset(offset_str, bits);
+   Some((signed, bits, offset))
 }
 
 fn bf_get(store: &Store, key: &str, offset: u64, bits: u32, signed: bool) -> i64 {

@@ -10,6 +10,7 @@ name = "fyro_vector"
 path = "src/lib.rs"
 
 [dependencies]
+arc-swap = "1.7"
 bytemuck = "1"
 parking_lot = "0.12"
 num_cpus = "1.17"

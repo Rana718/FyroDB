@@ -1,5 +1,6 @@
 import { notFound } from "next/navigation";
 import { getDoc, getAllSlugs } from "@/lib/docs";
+import { PageOutline } from "@/components/PageOutline";
 import { MDXContent } from "@/components/MDXContent";
 import type { Metadata } from "next";
 
@@ -59,10 +60,16 @@ export default async function DocPage({ params }: Props) {
    if (!doc) notFound();
 
    return (
-      <article>
-         <h1 className="text-3xl font-bold text-fg mb-2">{doc.title}</h1>
-         <p className="text-muted mb-8">{doc.description}</p>
+      <div className="docs-page-grid">
+      <article className="docs-article">
+         <header className="docs-page-header">
+            <p className="docs-eyebrow">FyroDB documentation</p>
+            <h1>{doc.title}</h1>
+            {doc.description && <p className="docs-description">{doc.description}</p>}
+         </header>
          <MDXContent source={doc.content} />
       </article>
+      <PageOutline key={slug} />
+      </div>
    );
 }

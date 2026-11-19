@@ -3,6 +3,32 @@ use foldhash::{HashMap, HashMapExt, HashSet};
 
 pub(crate) const COMPACT_THRESHOLD: usize = 128;
 
+#[cfg(test)]
+mod allocation_tests {
+   use super::*;
+
+   #[test]
+   fn hash_overwrites_reuse_heap_values_and_preserve_clones() {
+      for fields in [3, COMPACT_THRESHOLD + 1] {
+         let mut hash = HashInner::new();
+         for i in 0..fields {
+            assert!(hash.insert_bytes(&format!("field:{i}"), &[b'a'; 256]));
+         }
+         let snapshot = hash.clone();
+         let ptr = hash.get("field:0").unwrap().as_bytes().as_ptr();
+         assert!(!hash.insert_bytes("field:0", &[255; 256]));
+         assert_eq!(hash.get("field:0").unwrap().as_bytes().as_ptr(), ptr);
+         assert_eq!(hash.get("field:0").unwrap().as_bytes(), &[255; 256]);
+         assert_eq!(snapshot.get("field:0").unwrap().as_bytes(), &[b'a'; 256]);
+         assert!(!hash.insert_ref("field:0", "short"));
+         assert_eq!(hash.get("field:0").unwrap().as_str(), "short");
+         assert!(hash.insert_ref("new", "value"));
+         assert_eq!(hash.len(), fields + 1);
+         assert_eq!(hash.get("field:1").unwrap().as_bytes(), &[b'a'; 256]);
+      }
+   }
+}
+
 #[derive(Clone)]
 pub enum HashInner {
    Compact(Vec<SmallStr>),
@@ -20,13 +46,13 @@ pub enum SetInner {
 fn compact_find(v: &[SmallStr], field: &str) -> Result<usize, usize> {
    let n = v.len() / 2;
    if n <= 4 {
-      for i in 0..n {
-         let f = unsafe { v.get_unchecked(i * 2).as_str() };
+      for i in (0..n * 2).step_by(2) {
+         let f = unsafe { v.get_unchecked(i).as_str() };
          if f == field {
-            return Ok(i);
+            return Ok(i / 2);
          }
          if f > field {
-            return Err(i);
+            return Err(i / 2);
          }
       }
       return Err(n);
@@ -35,7 +61,7 @@ fn compact_find(v: &[SmallStr], field: &str) -> Result<usize, usize> {
    let mut hi = n;
    while lo < hi {
       let mid = lo + (hi - lo) / 2;
-      match v[mid * 2].as_str().cmp(field) {
+      match unsafe { v.get_unchecked(mid * 2).as_str().cmp(field) } {
          std::cmp::Ordering::Less => lo = mid + 1,
          std::cmp::Ordering::Equal => return Ok(mid),
          std::cmp::Ordering::Greater => hi = mid,
@@ -53,7 +79,7 @@ impl Default for HashInner {
 impl HashInner {
    #[inline]
    pub fn new() -> Self {
-      Self::Compact(Vec::new())
+      Self::Compact(Vec::with_capacity(16))
    }
 
    #[inline]
@@ -92,12 +118,37 @@ impl HashInner {
    /// One scan finds-or-inserts; overwrites avoid two String temporaries.
    #[inline]
    pub fn insert_ref(&mut self, field: &str, value: &str) -> bool {
-      self.insert_field(field, SmallStr::new(value))
+      self.insert_bytes(field, value.as_bytes())
    }
 
    #[inline]
    pub fn insert_bytes(&mut self, field: &str, value: &[u8]) -> bool {
-      self.insert_field(field, SmallStr::from_slice(value))
+      match self {
+         Self::Compact(v) => match compact_find(v, field) {
+            Ok(i) => {
+               v[i * 2 + 1].overwrite_bytes(value);
+               false
+            }
+            Err(i) => {
+               v.insert(i * 2, SmallStr::new(field));
+               v.insert(i * 2 + 1, SmallStr::from_slice(value));
+               if v.len() / 2 > COMPACT_THRESHOLD {
+                  self.promote_hash();
+               }
+               true
+            }
+         },
+         Self::Full(m) => match m.get_mut(field) {
+            Some(slot) => {
+               slot.overwrite_bytes(value);
+               false
+            }
+            None => {
+               m.insert(SmallStr::new(field), SmallStr::from_slice(value));
+               true
+            }
+         },
+      }
    }
 
    pub fn insert_field(&mut self, field: &str, value: SmallStr) -> bool {
@@ -109,13 +160,8 @@ impl HashInner {
             }
             Err(pos) => {
                let idx = pos * 2;
-               if idx == v.len() {
-                  v.push(SmallStr::new(field));
-                  v.push(value);
-               } else {
-                  v.insert(idx, SmallStr::new(field));
-                  v.insert(idx + 1, value);
-               }
+               v.insert(idx, SmallStr::new(field));
+               v.insert(idx + 1, value);
                if v.len() / 2 > COMPACT_THRESHOLD {
                   self.promote_hash();
                }
@@ -158,13 +204,17 @@ impl HashInner {
 
    #[inline]
    pub fn remove(&mut self, field: &str) -> Option<String> {
+      self.remove_small(field).map(SmallStr::into_string)
+   }
+
+   pub fn remove_small(&mut self, field: &str) -> Option<SmallStr> {
       match self {
          Self::Compact(v) => match compact_find(v, field) {
             Ok(pair_idx) => {
                let idx = pair_idx * 2;
                v.remove(idx);
-               let val = v.remove(idx).into_string();
-               if v.capacity() > v.len().saturating_mul(2).max(8) {
+               let val = v.remove(idx);
+               if v.capacity() / 2 > v.len().max(4) {
                   v.shrink_to_fit();
                }
                Some(val)
@@ -172,7 +222,7 @@ impl HashInner {
             Err(_) => None,
          },
          Self::Full(m) => {
-            let out = m.remove(field).map(|s| s.into_string());
+            let out = m.remove(field);
             if m.len() <= COMPACT_THRESHOLD / 2 {
                self.demote_hash();
             }
@@ -223,12 +273,10 @@ impl HashInner {
    fn promote_hash(&mut self) {
       if let Self::Compact(v) = self {
          let mut map = HashMap::with_capacity(v.len() / 2);
-         let mut i = 0;
-         while i < v.len() {
-            let val = std::mem::take(&mut v[i + 1]);
+         for i in (0..v.len()).step_by(2) {
             let key = std::mem::take(&mut v[i]);
+            let val = std::mem::take(&mut v[i + 1]);
             map.insert(key, val);
-            i += 2;
          }
          *self = Self::Full(Box::new(map));
       }
@@ -407,8 +455,21 @@ impl SetInner {
    #[inline]
    pub fn contains(&self, member: &str) -> bool {
       match self {
-         Self::Integers(v) => canonical_i64(member).is_some_and(|n| v.binary_search(&n).is_ok()),
-         Self::Compact(v) => v.binary_search_by(|m| m.as_str().cmp(member)).is_ok(),
+         Self::Integers(v) => canonical_i64(member).is_some_and(|n| {
+            if v.len() <= 8 {
+               v.contains(&n)
+            } else {
+               v.binary_search(&n).is_ok()
+            }
+         }),
+         Self::Compact(v) => {
+            let m_bytes = member.as_bytes();
+            if v.len() <= 8 {
+               v.iter().any(|m| m.as_bytes() == m_bytes)
+            } else {
+               v.binary_search_by(|m| m.as_str().cmp(member)).is_ok()
+            }
+         }
          Self::Full(s) => s.contains(member),
       }
    }
@@ -484,10 +545,11 @@ impl SetMemberRef<'_> {
    pub fn len(self) -> usize {
       match self {
          Self::String(s) => s.len(),
-         Self::Integer(n) => {
-            let mut buf = [0u8; 20];
-            crate::storage::value::write_int_to(&mut buf, n).len()
-         }
+         Self::Integer(n) => match n {
+            0 => 1,
+            1.. => n.ilog10() as usize + 1,
+            _ => n.unsigned_abs().ilog10() as usize + 2,
+         },
       }
    }
    pub fn is_empty(self) -> bool {
@@ -507,7 +569,7 @@ impl SetMemberRef<'_> {
          Self::String(s) => s.write_resp(out),
          Self::Integer(n) => {
             let mut buf = [0u8; 20];
-            let s = crate::storage::value::write_int_to(&mut buf, n);
+            let s = crate::utils::int_format::write_i64_to(&mut buf, n);
             crate::utils::resp::write_bulk(out, s);
          }
       }
@@ -523,19 +585,20 @@ impl std::fmt::Display for SetMemberRef<'_> {
    }
 }
 
-#[inline]
+#[inline(always)]
 pub fn canonical_i64(value: &str) -> Option<i64> {
    let bytes = value.as_bytes();
    if bytes.is_empty() {
       return None;
    }
-   if bytes[0] == b'0' && bytes.len() > 1 {
+   let b0 = bytes[0];
+   if !b0.is_ascii_digit() && b0 != b'-' {
       return None;
    }
-   if bytes.len() >= 2 && bytes[0] == b'-' && bytes[1] == b'0' {
+   if b0 == b'0' && bytes.len() > 1 {
       return None;
    }
-   if bytes[0] == b'+' {
+   if bytes.len() >= 2 && b0 == b'-' && bytes[1] == b'0' {
       return None;
    }
    value.parse::<i64>().ok()

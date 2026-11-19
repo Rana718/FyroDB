@@ -1,22 +1,33 @@
 use super::value::StoreValue;
 use crossbeam_utils::CachePadded;
 use customhash::CustomMap;
+use parking_lot::Mutex;
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 mod cluster;
 mod dbcache;
 mod fence;
+pub mod isolation;
 mod memory;
 mod ttl;
+mod watch;
 
 use cluster::ClusterMetrics;
 use fence::WriteFence;
 pub use fence::{WriteFenceGuard, WriteTicket};
+pub use isolation::CommandGuard;
 pub use memory::*;
 use ttl::TtlCounters;
+pub use watch::WatchedKey;
+
+// Per-thread script snapshot: (epoch, normalized sha1, script). Re-entrant
+// callers (nested EVAL) fall back to the shared map.
+thread_local! {
+   static SCRIPT_TL: std::cell::RefCell<Option<(u64, String, Arc<str>)>> =
+      const { std::cell::RefCell::new(None) };
+}
 
 pub struct Store {
    pub(crate) data: CustomMap<StoreValue>,
@@ -40,6 +51,8 @@ pub struct Store {
    dbcache_manager: OnceLock<std::sync::Arc<fyro_dbcache::DbCacheManager>>,
    pub(crate) script_cache: parking_lot::RwLock<foldhash::HashMap<Arc<str>, Arc<str>>>,
    pub(crate) script_epoch: std::sync::atomic::AtomicU64,
+   isolation: isolation::Isolation,
+   watches: Arc<watch::WatchRegistry>,
 }
 
 impl Default for Store {
@@ -77,11 +90,12 @@ impl Store {
       let failure_quorum = cluster.failure_quorum;
       let data = CustomMap::with_capacity(shards, max_keys);
       let search = crate::search::SearchState::new();
-      // Incremental index maintenance: the map reports every write to the
-      // search hooks, gated by a flag that is on only while an index exists.
-      data.set_observer(Box::new(crate::search::hooks::HookObserver(
-         std::sync::Arc::clone(&search.hooks),
-      )));
+      // Enable the existing write hook only for active indexes or watches.
+      let watches = Arc::new(watch::WatchRegistry::new(data.observing_handle()));
+      data.set_observer(Box::new(watch::StoreObserver {
+         search: crate::search::hooks::HookObserver(Arc::clone(&search.hooks)),
+         watches: Arc::clone(&watches),
+      }));
       search.hooks.attach(data.observing_handle());
       Self {
          data,
@@ -112,6 +126,8 @@ impl Store {
          dbcache_manager: OnceLock::new(),
          script_cache: Default::default(),
          script_epoch: std::sync::atomic::AtomicU64::new(0),
+         isolation: isolation::Isolation::new(workers),
+         watches,
       }
    }
 
@@ -128,6 +144,10 @@ impl Store {
             return;
          }
       }
+      // Invalidate per-thread snapshots so the next lookup repopulates.
+      self
+         .script_epoch
+         .fetch_add(1, std::sync::atomic::Ordering::Release);
       self
          .script_cache
          .write()
@@ -137,8 +157,32 @@ impl Store {
    pub fn with_script<R>(&self, sha1: &str, f: impl FnOnce(&str) -> R) -> Option<R> {
       let mut buf = [0u8; 40];
       let norm = crate::scripting::normalize_sha1(sha1, &mut buf);
+      // Per-thread snapshot to avoid RwLock contention in steady-state EVALSHA.
+      let mut f = Some(f);
+      let fast = SCRIPT_TL.try_with(|cell| {
+         let mut slot = cell.try_borrow_mut().ok()?;
+         let epoch = self.script_epoch.load(std::sync::atomic::Ordering::Acquire);
+         if let Some((cached_epoch, key, script)) = slot.as_ref()
+            && *cached_epoch == epoch
+            && key.as_str() == norm
+         {
+            let script = Arc::clone(script);
+            return Some((f.take().unwrap())(script.as_ref()));
+         }
+         let script = {
+            let read = self.script_cache.read();
+            read.get(norm).map(Arc::clone)?
+         };
+         *slot = Some((epoch, norm.to_owned(), Arc::clone(&script)));
+         Some((f.take().unwrap())(script.as_ref()))
+      });
+      if let Ok(Some(result)) = fast {
+         return Some(result);
+      }
+      // Re-entrant (nested EVAL) or miss inside the snapshot path: the
+      // shared map. `f` is only consumed when a script was actually found.
       let read = self.script_cache.read();
-      read.get(norm).map(|s| f(s.as_ref()))
+      read.get(norm).map(|s| f.take().unwrap()(s.as_ref()))
    }
 
    pub fn get_script(&self, sha1: &str) -> Option<String> {
@@ -148,7 +192,22 @@ impl Store {
    pub fn script_exists(&self, sha1: &str) -> bool {
       let mut buf = [0u8; 40];
       let norm = crate::scripting::normalize_sha1(sha1, &mut buf);
-      self.script_cache.read().contains_key(norm)
+      SCRIPT_TL.with(|cell| {
+         let mut slot = cell.borrow_mut();
+         let epoch = self.script_epoch.load(std::sync::atomic::Ordering::Acquire);
+         if let Some((cached_epoch, key, _)) = slot.as_ref()
+            && *cached_epoch == epoch
+            && key.as_str() == norm
+         {
+            return true;
+         }
+         let read = self.script_cache.read();
+         let hit = read.contains_key(norm);
+         if hit && let Some(script) = read.get(norm).map(Arc::clone) {
+            *slot = Some((epoch, norm.to_owned(), script));
+         }
+         hit
+      })
    }
 
    pub fn flush_scripts(&self) {
@@ -293,6 +352,165 @@ mod tests {
    use crate::storage::value::StoreValue;
    use std::sync::atomic::Ordering;
    use std::time::{Duration, Instant};
+
+   #[test]
+   fn embedded_get_pipeline_preserves_replies_with_and_without_a_read_epoch() {
+      let store = Store::with_config(2, usize::MAX);
+      let keys: [&[u8]; 5] = [b"key", b"absent", b"expired", b"list", b"\xff"];
+      store.set_string("key", "v", 0);
+      store.set_string("expired", "old", 1);
+      store.set("list", StoreValue::list(Default::default()));
+      store.set_string_auto_bytes(b"\xff", None, std::ptr::null(), b"\x00\xff", 0);
+      let keys = keys.repeat(15);
+      for writer_active in [false, true] {
+         let _writer = writer_active.then(|| store.data.write_epoch());
+         let mut out = b"+OK\r\n".to_vec();
+         store.write_get_pipeline(&keys[..0], &mut out);
+         store.write_get_pipeline(&keys, &mut out);
+         let mut expected = b"+OK\r\n".to_vec();
+         expected.extend(b"$1\r\nv\r\n$-1\r\n$-1\r\n$-1\r\n$2\r\n\x00\xff\r\n".repeat(15));
+         assert_eq!(out, expected);
+      }
+   }
+
+   #[test]
+   fn embedded_repeated_get_replies_track_overwrites_and_expiry() {
+      let store = Store::with_config(2, usize::MAX);
+      let key = b"\xffkey".as_slice();
+      let batch = [key; 65];
+      for (bytes, expiry, expected) in [
+         (&b"\x00v"[..], 0, &b"$2\r\n\x00v\r\n"[..]),
+         (b"later", u64::MAX, b"$5\r\nlater\r\n"),
+         (b"gone", 1, b"$-1\r\n"),
+      ] {
+         store.set_string_auto_bytes(key, None, std::ptr::null(), bytes, expiry);
+         let mut out = b"+OK\r\n".to_vec();
+         store.write_get_pipeline(&batch, &mut out);
+         assert_eq!(out, [b"+OK\r\n".as_slice(), &expected.repeat(65)].concat());
+      }
+      store.set("list", StoreValue::list(Default::default()));
+      for key in ["absent", "list"] {
+         let mut out = Vec::new();
+         store.write_get_pipeline(&[key; 64], &mut out);
+         assert_eq!(out, b"$-1\r\n".repeat(64));
+      }
+   }
+
+   fn binary_set_protocol(logging: bool) {
+      use crate::handler::{Conn, net::Stream};
+      use crate::pubsub::{PubSub, WorkerNotifier};
+      use std::sync::Arc;
+      let mut base = Store::with_config(2, usize::MAX);
+      if logging {
+         base.replication = Some(crate::cluster::ReplicationCoordinator::new(128));
+      }
+      let store = Arc::new(base);
+      let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+      let client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+      let (_peer, _) = listener.accept().unwrap();
+      client.set_nonblocking(true).unwrap();
+      let poll = mio::Poll::new().unwrap();
+      let notifier = WorkerNotifier::new(
+         Arc::new(mio::Waker::new(poll.registry(), mio::Token(1)).unwrap()),
+         0,
+      );
+      let bus = PubSub::new();
+      let mut conn = Conn::new(
+         Stream::Tcp(mio::net::TcpStream::from_std(client)),
+         &store,
+         &bus,
+         1,
+         &notifier,
+         None,
+         0,
+      );
+      fn frame(key: &str, value: &[u8]) -> Vec<u8> {
+         let mut out = format!(
+            "*3\r\n$3\r\nSET\r\n${}\r\n{key}\r\n${}\r\n",
+            key.len(),
+            value.len()
+         )
+         .into_bytes();
+         out.extend_from_slice(value);
+         out.extend_from_slice(b"\r\n");
+         out
+      }
+      for size in [5, 23, 24, 64, 1024, 10240] {
+         let mut value = vec![b'a'; size];
+         value[..4].copy_from_slice(&[255, 0, 13, 10]);
+         let one = frame("binary:one", &value);
+         for (wire, count) in [
+            (one, 1),
+            (
+               [
+                  frame("binary:one", &value),
+                  frame(&format!("binary:new:{size}"), &value),
+               ]
+               .concat(),
+               2,
+            ),
+         ] {
+            conn.parser.rbuf = wire;
+            conn.parser.filled = conn.parser.rbuf.len();
+            conn.parser.pos = 0;
+            conn.parser.wbuf.clear();
+            assert!(conn.process_buffered());
+            assert_eq!(conn.parser.wbuf, b"+OK\r\n".repeat(count));
+            assert_eq!(
+               store
+                  .data
+                  .get_ref("binary:one")
+                  .unwrap()
+                  .value
+                  .as_string()
+                  .unwrap()
+                  .as_bytes(),
+               value
+            );
+         }
+      }
+      if let Some(log) = &store.replication {
+         let records = log.replay_from(0).unwrap();
+         assert_eq!(records.len(), 18);
+         let replica = Store::with_config(2, usize::MAX);
+         for record in records {
+            let value = crate::storage::rdb::decode_single_value(&record.value).unwrap();
+            assert_eq!(
+               &value.value.as_string().unwrap().as_bytes()[..4],
+               &[255, 0, 13, 10]
+            );
+            replica.apply_replica_mutation(&record).unwrap();
+         }
+         assert_eq!(
+            replica
+               .data
+               .get_ref("binary:one")
+               .unwrap()
+               .value
+               .as_string()
+               .unwrap()
+               .as_bytes(),
+            store
+               .data
+               .get_ref("binary:one")
+               .unwrap()
+               .value
+               .as_string()
+               .unwrap()
+               .as_bytes()
+         );
+      }
+   }
+
+   #[test]
+   fn binary_set_scalar_and_pipeline_preserve_every_byte() {
+      binary_set_protocol(false);
+   }
+
+   #[test]
+   fn binary_set_logged_scalar_and_pipeline_replay_without_loss() {
+      binary_set_protocol(true);
+   }
 
    #[test]
    fn replica_mutations_validate_slot_and_apply_without_logging() {

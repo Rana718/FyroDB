@@ -1,4 +1,14 @@
 #[test]
+#[cfg(target_pointer_width = "64")]
+fn database_values_keep_their_memory_budget() {
+   use crate::storage::value::{FyroDB, SmallStr, StoreValue};
+   assert!(std::mem::size_of::<SmallStr>() <= 24);
+   assert!(std::mem::size_of::<FyroDB>() <= 24);
+   assert!(std::mem::size_of::<StoreValue>() <= 32);
+   assert!(std::mem::size_of::<customhash::Entry<StoreValue>>() <= 64);
+}
+
+#[test]
 fn binary_values_round_trip_across_inline_and_heap_storage() {
    for size in [0, 1, 23, 24, 4096] {
       let bytes: Vec<u8> = (0..size).map(|i| (i % 256) as u8).collect();
@@ -12,7 +22,75 @@ fn binary_values_round_trip_across_inline_and_heap_storage() {
    }
 }
 
+#[test]
+fn raw_bulk_replies_preserve_binary_values_and_destination_bounds() {
+   for size in [
+      0,
+      1,
+      9,
+      10,
+      23,
+      24,
+      64,
+      99,
+      100,
+      999,
+      1000,
+      65536,
+      1024 * 1024,
+   ] {
+      let bytes: Vec<u8> = (0..size).map(|i| (i % 256) as u8).collect();
+      let value = super::SmallStr::from_slice(&bytes);
+      let capacity = (size + 32).max(64);
+      let mut destination = vec![0xa5; capacity + 16];
+      let used = unsafe { value.write_resp_raw(destination.as_mut_ptr()) };
+      let mut expected = Vec::new();
+      crate::utils::resp::write_bulk_bytes(&mut expected, &bytes);
+      assert_eq!(&destination[..used], expected);
+      assert!(destination[capacity..].iter().all(|b| *b == 0xa5));
+   }
+}
+
 use super::SmallStr;
+
+#[test]
+fn large_copies_preserve_every_alignment_tail_and_surrounding_byte() {
+   for size in [8191, 8192, 8193, 10239, 10240, 10241, 65535, 65536, 65537] {
+      for shift in 0..64 {
+         let mut source = vec![0; size + 128];
+         for (i, byte) in source.iter_mut().enumerate() {
+            *byte = (i.wrapping_mul(137) % 256) as u8;
+         }
+         let before = source.clone();
+         let mut destination = vec![0xa5; size + 128];
+         let start = 32 + shift;
+         let input = &source[63 - shift..63 - shift + size];
+         super::copy_large_payload(&mut destination[start..start + size], input);
+         assert_eq!(&destination[start..start + size], input);
+         assert!(destination[..start].iter().all(|b| *b == 0xa5));
+         assert!(destination[start + size..].iter().all(|b| *b == 0xa5));
+         assert_eq!(source, before);
+      }
+   }
+}
+
+#[test]
+fn streaming_overwrites_reuse_storage_without_changing_captured_values() {
+   for size in [1024, 8191, 8192, 8193, 10240, 65536] {
+      let mut value = SmallStr::from_slice(&vec![17; size]);
+      let captured = value.clone();
+      let address = value.as_bytes().as_ptr();
+      for byte in [0, 255, 73] {
+         let input = vec![byte; size];
+         value.overwrite_bytes_streaming(&input);
+         assert_eq!(value.as_bytes(), input);
+         assert_eq!(value.as_bytes().as_ptr(), address);
+         assert_eq!(captured.as_bytes(), vec![17; size]);
+      }
+      value.overwrite_bytes_streaming(b"short");
+      assert_eq!(value.as_bytes(), b"short");
+   }
+}
 
 #[test]
 fn clone_is_an_independent_copy() {
@@ -51,4 +129,120 @@ fn push_str_stays_inline_when_it_fits() {
    let mut s = SmallStr::new("hello");
    s.push_str(" world"); // 11 bytes total, fits inline
    assert_eq!(s.as_str(), "hello world");
+}
+
+#[test]
+fn same_size_heap_overwrites_reuse_storage_and_preserve_clones() {
+   for size in (24..=258).chain([512, 1024, 4096, 65536]) {
+      let mut value = SmallStr::from_slice(&vec![b'a'; size]);
+      let snapshot = value.clone();
+      let allocation = value.as_bytes().as_ptr();
+      for byte in [0, 255, b'z'] {
+         let replacement: Vec<_> = (0..size)
+            .map(|offset| byte.wrapping_add(offset as u8))
+            .collect();
+         value.overwrite_bytes(&replacement);
+         assert_eq!(value.as_bytes(), replacement);
+         assert_eq!(value.as_bytes().as_ptr(), allocation);
+         assert_eq!(snapshot.as_bytes(), vec![b'a'; size]);
+         let mut reply = Vec::new();
+         value.write_resp(&mut reply);
+         let mut expected = format!("${size}\r\n").into_bytes();
+         expected.extend_from_slice(&replacement);
+         expected.extend_from_slice(b"\r\n");
+         assert_eq!(reply, expected);
+      }
+   }
+}
+
+#[test]
+fn overwrites_cross_inline_heap_and_size_boundaries() {
+   let mut value = SmallStr::default();
+   for size in [0, 23, 24, 64, 4096, 24, 23, 1, 0, 65536, 64] {
+      let bytes: Vec<u8> = (0..size).map(|i| (i % 256) as u8).collect();
+      value.overwrite_bytes(&bytes);
+      assert_eq!(value.len(), size);
+      assert_eq!(value.as_bytes(), bytes);
+      assert_eq!(value.clone().into_bytes(), bytes);
+   }
+}
+
+#[test]
+fn binary_replies_are_safe_with_empty_and_tightly_sized_output_buffers() {
+   for size in 0..=24 {
+      let bytes = vec![255; size];
+      let value = SmallStr::from_slice(&bytes);
+      let mut expected = format!("${size}\r\n").into_bytes();
+      expected.extend_from_slice(&bytes);
+      expected.extend_from_slice(b"\r\n");
+      for prefix in [0, 7, 15] {
+         let mut output = Vec::with_capacity(prefix + expected.len());
+         output.resize(prefix, b'x');
+         value.write_resp(&mut output);
+         assert_eq!(&output[..prefix], vec![b'x'; prefix]);
+         assert_eq!(&output[prefix..], expected);
+      }
+   }
+}
+
+#[test]
+fn binary_growth_preserves_bytes_and_zero_fills_inline_and_heap_tails() {
+   let mut value = SmallStr::from_slice(&[255, 128]);
+   for size in [3, 23, 24, 64, 4096] {
+      value.ensure_len(size);
+      assert_eq!(&value.as_bytes()[..2], &[255, 128]);
+      assert!(value.as_bytes()[2..].iter().all(|byte| *byte == 0));
+      if size <= 23 {
+         assert_ne!(value.len, super::Tag::Heap);
+      }
+   }
+}
+
+#[test]
+fn appending_to_binary_values_preserves_the_prefix_and_utf8_suffix_bytes() {
+   for size in [2, 23, 24, 4096] {
+      let mut value = SmallStr::from_slice(&vec![255; size]);
+      value.push_str("é");
+      let mut expected = vec![255; size];
+      expected.extend_from_slice("é".as_bytes());
+      assert_eq!(value.into_bytes(), expected);
+   }
+}
+
+#[test]
+fn overwrites_reuse_bounded_slack_and_preserve_owned_lengths() {
+   for n in [32, 4096, 65536] {
+      let mut v = SmallStr::from_slice(&vec![7; n]);
+      let ptr = v.as_bytes().as_ptr();
+      for len in [n - 1, n, n - 2] {
+         v.overwrite_bytes(&vec![0xff; len]);
+         assert_eq!(v.as_bytes().as_ptr(), ptr);
+         assert_eq!(v.as_bytes(), vec![0xff; len]);
+         assert_eq!(v.clone().into_bytes(), vec![0xff; len]);
+      }
+      let owned = v.into_bytes();
+      assert_eq!(owned.len(), n - 2);
+      assert_eq!(owned.capacity(), n);
+   }
+   let mut v = SmallStr::from_slice(&[8; 4096]);
+   v.overwrite_bytes(&[3; 128]);
+   assert_eq!(v.into_bytes().capacity(), 128);
+}
+
+#[test]
+fn megabyte_copies_preserve_unaligned_edges() {
+   for len in [(1 << 20) - 1, 1 << 20, (1 << 20) + 31] {
+      let source: Vec<u8> = (0..len + 1).map(|i| (i % 251) as u8).collect();
+      for offset in [0, 1, 7, 16, 31] {
+         let mut dst = vec![0xa5; len + 64];
+         super::copy_large_payload(&mut dst[offset..offset + len], &source[1..]);
+         assert_eq!(&dst[offset..offset + len], &source[1..]);
+         assert!(
+            dst[..offset]
+               .iter()
+               .chain(&dst[offset + len..])
+               .all(|&x| x == 0xa5)
+         );
+      }
+   }
 }

@@ -77,6 +77,12 @@ pub fn xadd(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
    if field_parts.is_empty() || field_parts.len() % 2 != 0 {
       return resp::write_wrong_args(out, "xadd");
    }
+   let mut run_xadd =
+      |fields: &[(&str, &str)]| match store.xadd(key, id_str, fields, trim, nomkstream) {
+         Ok(Some(id)) => resp::write_bulk(out, &id),
+         Ok(None) => resp::write_nil(out),
+         Err(e) => resp::write_store_err(out, e),
+      };
    const STACK_FIELDS: usize = 16;
    let n_pairs = field_parts.len() / 2;
    if n_pairs <= STACK_FIELDS {
@@ -84,11 +90,7 @@ pub fn xadd(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
       for (idx, c) in field_parts.as_chunks::<2>().0.iter().enumerate() {
          stack_fields[idx] = (c[0], c[1]);
       }
-      match store.xadd(key, id_str, &stack_fields[..n_pairs], trim, nomkstream) {
-         Ok(Some(id)) => resp::write_bulk(out, &id),
-         Ok(None) => resp::write_nil(out),
-         Err(e) => resp::write_store_err(out, e),
-      }
+      run_xadd(&stack_fields[..n_pairs]);
    } else {
       let fields: Vec<(&str, &str)> = field_parts
          .as_chunks::<2>()
@@ -96,11 +98,7 @@ pub fn xadd(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
          .iter()
          .map(|c| (c[0], c[1]))
          .collect();
-      match store.xadd(key, id_str, &fields, trim, nomkstream) {
-         Ok(Some(id)) => resp::write_bulk(out, &id),
-         Ok(None) => resp::write_nil(out),
-         Err(e) => resp::write_store_err(out, e),
-      }
+      run_xadd(&fields);
    }
 }
 
@@ -132,9 +130,12 @@ fn parse_count(out: &mut Vec<u8>, rest: &[&str]) -> Option<usize> {
    Some(count)
 }
 
-pub fn xrange(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
-   let [_, key, start, end, rest @ ..] = parts else {
-      return resp::write_wrong_args(out, "xrange");
+fn stream_range_impl<F>(parts: &[&str], out: &mut Vec<u8>, cmd: &'static str, fetch: F)
+where
+   F: FnOnce(&str, &str, &str, usize) -> Result<Vec<StreamEntry>, &'static str>,
+{
+   let [_, key, a, b, rest @ ..] = parts else {
+      return resp::write_wrong_args(out, cmd);
    };
    let Some(count) = parse_count(out, rest) else {
       return;
@@ -142,22 +143,18 @@ pub fn xrange(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
    if rest.len() >= 2 && count == 0 {
       return resp::write_array_header(out, 0);
    }
-   let items = st!(out, store.xrange(key, start, end, count));
+   let items = st!(out, fetch(key, a, b, count));
    write_stream_entries(out, &items);
 }
 
+pub fn xrange(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
+   stream_range_impl(parts, out, "xrange", |k, s, e, c| store.xrange(k, s, e, c));
+}
+
 pub fn xrevrange(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
-   let [_, key, end, start, rest @ ..] = parts else {
-      return resp::write_wrong_args(out, "xrevrange");
-   };
-   let Some(count) = parse_count(out, rest) else {
-      return;
-   };
-   if rest.len() >= 2 && count == 0 {
-      return resp::write_array_header(out, 0);
-   }
-   let items = st!(out, store.xrevrange(key, end, start, count));
-   write_stream_entries(out, &items);
+   stream_range_impl(parts, out, "xrevrange", |k, e, s, c| {
+      store.xrevrange(k, e, s, c)
+   });
 }
 
 pub fn xtrim(parts: &[&str], store: &Store, out: &mut Vec<u8>) {

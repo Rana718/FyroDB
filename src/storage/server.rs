@@ -10,6 +10,7 @@ fn record_peak_allocated(current: usize) -> usize {
 
 impl Store {
    pub fn cleanup_expired(&self) {
+      let _guard = self.command_guard(usize::MAX);
       tick_clock();
       let now = now_ms();
       let generation = self.ttl_generation();
@@ -33,6 +34,7 @@ impl Store {
       start_slot: usize,
       max_slots: usize,
    ) -> (usize, usize, usize, usize) {
+      let _guard = self.command_guard(usize::MAX);
       if !self.has_ttl_keys() {
          return (0, start_slot, 0, 0);
       }
@@ -127,6 +129,24 @@ impl Store {
          String::new()
       };
 
+      let persistence_info = format!(
+         "# Persistence\r\n\
+             aof_enabled:{}\r\n\
+             aof_failed:{}\r\n\
+             aof_fsync:{}\r\n\
+             isolation_exclusive_total:{}\r\n\
+             \r\n",
+         crate::storage::persistence::aof::enabled(),
+         crate::storage::persistence::aof::failed(),
+         match crate::storage::persistence::aof::get().map(|a| a.fsync_policy()) {
+            Some(crate::storage::persistence::aof::Fsync::Always) => "always",
+            Some(crate::storage::persistence::aof::Fsync::EverySec) => "everysec",
+            Some(crate::storage::persistence::aof::Fsync::No) => "no",
+            None => "none",
+         },
+         self.isolation_exclusive_total()
+      );
+
       format!(
          "# Server\r\n\
              redis_version:8.2.0\r\n\
@@ -136,7 +156,8 @@ impl Store {
              \r\n\
              # Clients\r\n\
              connected_clients:{connected}\r\n\
-             \r\n\
+             blocked_clients:{blocked}\r\n\
+             {persistence_info}\r\n\
              # Memory\r\n\
              used_memory:{allocated}\r\n\
              used_memory_human:{allocated_human}\r\n\
@@ -163,6 +184,8 @@ impl Store {
          peak_allocated_human = format_bytes(peak_allocated),
          cgroup_human = format_bytes(cgroup),
          cluster_info = cluster_info,
+         persistence_info = persistence_info,
+         blocked = self.blocking.blocked_clients(),
       )
    }
 

@@ -1,3 +1,5 @@
+mod access;
+pub use access::{ReadEpochGuard, ReadStamp, WriteEpochGuard};
 mod ebr;
 mod key;
 mod ops;
@@ -7,13 +9,33 @@ pub use snap::SnapSink;
 
 #[repr(align(128))]
 #[derive(Default)]
-pub struct Flag(AtomicBool);
+pub struct Flag(AtomicUsize);
 
-impl Deref for Flag {
-   type Target = AtomicBool;
+impl Flag {
    #[inline(always)]
-   fn deref(&self) -> &AtomicBool {
-      &self.0
+   pub fn load(&self, order: Ordering) -> bool {
+      self.0.load(order) != 0
+   }
+
+   pub fn store(&self, on: bool, order: Ordering) {
+      self.set_bit(1, on, order);
+   }
+
+   pub fn set_watching(&self, on: bool) {
+      self.set_bit(2, on, Ordering::Release);
+   }
+
+   #[inline]
+   pub fn is_watching(&self) -> bool {
+      self.0.load(Ordering::Relaxed) & 2 != 0
+   }
+
+   fn set_bit(&self, bit: usize, on: bool, order: Ordering) {
+      if on {
+         self.0.fetch_or(bit, order);
+      } else {
+         self.0.fetch_and(!bit, order);
+      }
    }
 }
 
@@ -21,16 +43,17 @@ pub use ebr::{Guard, force_collect, force_collect_quiescent, pin, retire_raw};
 
 use std::marker::PhantomData;
 use std::ops::Deref;
-use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+use crossbeam_utils::CachePadded;
 use foldhash::fast::RandomState;
 pub use key::CompactKey;
-use std::hash::BuildHasher;
+use std::hash::{BuildHasher, Hasher};
 
 use shard::*;
 pub use shard::{
-   Entry, FastSet, InsertFastResult, STATE_LOCK, STATE_MATCH_MASK, STATE_OCCUPIED, bump_seq,
-   unlock_write,
+   Entry, EntryReadGuard, FastSet, InsertFastResult, STATE_LOCK, STATE_MATCH_MASK, STATE_OCCUPIED,
+   STATE_SEQ_MASK, bump_seq, unlock_write,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,8 +66,25 @@ impl std::fmt::Display for Full {
 }
 impl std::error::Error for Full {}
 
+/// A pinned view of one map while its writers are excluded.
+pub struct ReadView<'a, V> {
+   map: &'a CustomMap<V>,
+   _epoch: ReadEpochGuard<'a>,
+   _pin: ebr::Guard,
+}
+
+impl<V: Clone + Send + Sync + 'static> ReadView<'_, V> {
+   #[inline]
+   pub fn get(&self, key: &str) -> Option<&V> {
+      let (hash, idx) = self.map.locate(key);
+      let entry = self.map.shards[idx].find(key, hash)?;
+      // The view pins this occupied entry and excludes value mutation for the returned borrow.
+      Some(unsafe { (*entry.value.get()).assume_init_ref() })
+   }
+}
+
 pub struct ValueRef<'a, V> {
-   ptr: *const V,
+   read: EntryReadGuard<'a, V>,
    _guard: ebr::Guard,
    _map: PhantomData<&'a CustomMap<V>>,
 }
@@ -53,7 +93,7 @@ impl<V> Deref for ValueRef<'_, V> {
    type Target = V;
    #[inline(always)]
    fn deref(&self) -> &V {
-      unsafe { &*self.ptr }
+      &self.read
    }
 }
 
@@ -65,6 +105,7 @@ pub trait WriteObserver: Send + Sync + 'static {
 }
 
 pub struct CustomMap<V> {
+   access: access::Access,
    shards: Box<[Shard<V>]>,
    shard_fast: Box<[ShardFast<V>]>,
    shift: u32,
@@ -75,12 +116,52 @@ pub struct CustomMap<V> {
    /// One relaxed load on every write when nothing observes. Shared so
    /// the observer's owner can toggle it without a map reference.
    observing: std::sync::Arc<Flag>,
-   observing_ptr: *const AtomicBool,
+   observing_ptr: *const Flag,
    snap_active: AtomicBool,
    snap: std::sync::Arc<snap::SnapCtl<V>>,
+   /// Net insert/remove count across all shards.
+   approx: CachePadded<AtomicUsize>,
 }
 
 impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
+   #[inline]
+   pub fn write_epoch(&self) -> WriteEpochGuard<'_> {
+      self.access.write()
+   }
+
+   #[inline]
+   /// Protect a read-only batch; retain an EBR pin when using raw pointers.
+   pub fn try_read_epoch(&self) -> Option<ReadEpochGuard<'_>> {
+      self.access.try_read()
+   }
+
+   /// Wait for a stable map view. The caller must hold no map read or write guard.
+   pub fn read_epoch(&self) -> ReadEpochGuard<'_> {
+      self.access.read()
+   }
+
+   pub fn read_stamp(&self) -> Option<ReadStamp> {
+      self.access.stamp()
+   }
+
+   #[inline]
+   pub fn stamp_is_current(&self, stamp: &ReadStamp) -> bool {
+      self.access.matches(stamp)
+   }
+
+   pub fn read_view(&self) -> ReadView<'_, V> {
+      ReadView {
+         map: self,
+         _epoch: self.read_epoch(),
+         _pin: ebr::pin(),
+      }
+   }
+
+   #[inline(always)]
+   pub fn read_epoch_active(&self) -> bool {
+      self.access.reading()
+   }
+
    /// Install the write observer (once); enable it with `set_observing`.
    pub fn set_observer(&self, observer: Box<dyn WriteObserver>) {
       let _ = self.observer.set(observer);
@@ -98,7 +179,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
    }
 
    #[inline(always)]
-   fn observing(&self) -> bool {
+   pub fn observing(&self) -> bool {
       unsafe { (*self.observing_ptr).load(Ordering::Relaxed) }
    }
 
@@ -134,7 +215,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
       }
    }
 
-   pub const DEFAULT_SHARDS: usize = 128;
+   pub const DEFAULT_SHARDS: usize = 512;
 
    pub fn new() -> Self {
       Self::with_shards(Self::DEFAULT_SHARDS)
@@ -167,9 +248,11 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
          .collect();
       let shard_fast: Box<[ShardFast<V>]> = shards
          .iter()
-         .map(|s| ShardFast {
-            slots: AtomicPtr::new(s.slots.load(Ordering::Relaxed)),
-            mask: AtomicUsize::new(s.mask.load(Ordering::Relaxed)),
+         .map(|s| {
+            ShardFast::new(
+               s.slots.load(Ordering::Relaxed),
+               s.mask.load(Ordering::Relaxed),
+            )
          })
          .collect::<Vec<_>>()
          .into_boxed_slice();
@@ -178,8 +261,9 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
          s.fast.store(sf_ptr, Ordering::Relaxed);
       }
       let observing = std::sync::Arc::new(Flag::default());
-      let observing_ptr: *const AtomicBool = (&*observing) as &AtomicBool as *const AtomicBool;
+      let observing_ptr = std::sync::Arc::as_ptr(&observing);
       CustomMap {
+         access: access::Access::new(),
          shift: (u64::BITS - n.trailing_zeros()).min(63),
          shard_mask: n - 1,
          shards: shards.into_boxed_slice(),
@@ -191,13 +275,22 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
          observing,
          snap_active: AtomicBool::new(false),
          snap,
+         approx: CachePadded::new(AtomicUsize::new(0)),
       }
    }
 
    #[inline(always)]
    fn locate(&self, key: &str) -> (u64, usize) {
-      let h = self.hasher.hash_one(key);
-      (h, ((h >> self.shift) as usize) & self.shard_mask)
+      self.locate_bytes(key.as_bytes())
+   }
+
+   #[inline(always)]
+   pub fn locate_bytes(&self, key: &[u8]) -> (u64, usize) {
+      let mut hasher = self.hasher.build_hasher();
+      hasher.write(key);
+      hasher.write_u8(0xff);
+      let h = hasher.finish();
+      (h, self.shard_of(h))
    }
 
    #[inline(always)]
@@ -213,8 +306,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
    #[inline(always)]
    pub fn probe_slot_entry(&self, hash: u64, idx: usize) -> *mut Entry<V> {
       let sf = unsafe { &*self.shard_fast.as_ptr().add(idx) };
-      let slots = sf.slots.load(Ordering::Relaxed);
-      let mask = sf.mask.load(Ordering::Relaxed);
+      let (slots, mask) = sf.layout();
       let base = unsafe { slots.add((hash as usize) & mask) };
       unsafe { TaggedSlot::probe_from_base(base, hash, 16) }
    }
@@ -234,21 +326,14 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
       let mut i = 0;
       while i + 8 <= n {
          unsafe {
-            let (h0, idx0) = self.locate(std::str::from_utf8_unchecked((*k_ptr.add(i)).as_ref()));
-            let (h1, idx1) =
-               self.locate(std::str::from_utf8_unchecked((*k_ptr.add(i + 1)).as_ref()));
-            let (h2, idx2) =
-               self.locate(std::str::from_utf8_unchecked((*k_ptr.add(i + 2)).as_ref()));
-            let (h3, idx3) =
-               self.locate(std::str::from_utf8_unchecked((*k_ptr.add(i + 3)).as_ref()));
-            let (h4, idx4) =
-               self.locate(std::str::from_utf8_unchecked((*k_ptr.add(i + 4)).as_ref()));
-            let (h5, idx5) =
-               self.locate(std::str::from_utf8_unchecked((*k_ptr.add(i + 5)).as_ref()));
-            let (h6, idx6) =
-               self.locate(std::str::from_utf8_unchecked((*k_ptr.add(i + 6)).as_ref()));
-            let (h7, idx7) =
-               self.locate(std::str::from_utf8_unchecked((*k_ptr.add(i + 7)).as_ref()));
+            let (h0, idx0) = self.locate_bytes((*k_ptr.add(i)).as_ref());
+            let (h1, idx1) = self.locate_bytes((*k_ptr.add(i + 1)).as_ref());
+            let (h2, idx2) = self.locate_bytes((*k_ptr.add(i + 2)).as_ref());
+            let (h3, idx3) = self.locate_bytes((*k_ptr.add(i + 3)).as_ref());
+            let (h4, idx4) = self.locate_bytes((*k_ptr.add(i + 4)).as_ref());
+            let (h5, idx5) = self.locate_bytes((*k_ptr.add(i + 5)).as_ref());
+            let (h6, idx6) = self.locate_bytes((*k_ptr.add(i + 6)).as_ref());
+            let (h7, idx7) = self.locate_bytes((*k_ptr.add(i + 7)).as_ref());
 
             *h_ptr.add(i) = h0;
             *h_ptr.add(i + 1) = h1;
@@ -268,38 +353,22 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
             let sf6 = &*sf_base.add(idx6);
             let sf7 = &*sf_base.add(idx7);
 
-            let s0 = sf0
-               .slots
-               .load(Ordering::Relaxed)
-               .add((h0 as usize) & sf0.mask.load(Ordering::Relaxed));
-            let s1 = sf1
-               .slots
-               .load(Ordering::Relaxed)
-               .add((h1 as usize) & sf1.mask.load(Ordering::Relaxed));
-            let s2 = sf2
-               .slots
-               .load(Ordering::Relaxed)
-               .add((h2 as usize) & sf2.mask.load(Ordering::Relaxed));
-            let s3 = sf3
-               .slots
-               .load(Ordering::Relaxed)
-               .add((h3 as usize) & sf3.mask.load(Ordering::Relaxed));
-            let s4 = sf4
-               .slots
-               .load(Ordering::Relaxed)
-               .add((h4 as usize) & sf4.mask.load(Ordering::Relaxed));
-            let s5 = sf5
-               .slots
-               .load(Ordering::Relaxed)
-               .add((h5 as usize) & sf5.mask.load(Ordering::Relaxed));
-            let s6 = sf6
-               .slots
-               .load(Ordering::Relaxed)
-               .add((h6 as usize) & sf6.mask.load(Ordering::Relaxed));
-            let s7 = sf7
-               .slots
-               .load(Ordering::Relaxed)
-               .add((h7 as usize) & sf7.mask.load(Ordering::Relaxed));
+            let (slots0, mask0) = sf0.layout();
+            let s0 = slots0.add((h0 as usize) & mask0);
+            let (slots1, mask1) = sf1.layout();
+            let s1 = slots1.add((h1 as usize) & mask1);
+            let (slots2, mask2) = sf2.layout();
+            let s2 = slots2.add((h2 as usize) & mask2);
+            let (slots3, mask3) = sf3.layout();
+            let s3 = slots3.add((h3 as usize) & mask3);
+            let (slots4, mask4) = sf4.layout();
+            let s4 = slots4.add((h4 as usize) & mask4);
+            let (slots5, mask5) = sf5.layout();
+            let s5 = slots5.add((h5 as usize) & mask5);
+            let (slots6, mask6) = sf6.layout();
+            let s6 = slots6.add((h6 as usize) & mask6);
+            let (slots7, mask7) = sf7.layout();
+            let s7 = slots7.add((h7 as usize) & mask7);
 
             prefetch_line(s0);
             prefetch_line(s1);
@@ -323,11 +392,10 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
       }
       while i < n {
          unsafe {
-            let (h, idx) = self.locate(std::str::from_utf8_unchecked((*k_ptr.add(i)).as_ref()));
+            let (h, idx) = self.locate_bytes((*k_ptr.add(i)).as_ref());
             *h_ptr.add(i) = h;
             let sf = &*sf_base.add(idx);
-            let slots = sf.slots.load(Ordering::Relaxed);
-            let mask = sf.mask.load(Ordering::Relaxed);
+            let (slots, mask) = sf.layout();
             let s = slots.add((h as usize) & mask);
             prefetch_line(s);
             *t_ptr.add(i) = s.cast();
@@ -351,21 +419,14 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
       let mut i = 0;
       while i + 8 <= n {
          unsafe {
-            let (h0, idx0) = self.locate(std::str::from_utf8_unchecked((*k_ptr.add(i)).as_ref()));
-            let (h1, idx1) =
-               self.locate(std::str::from_utf8_unchecked((*k_ptr.add(i + 1)).as_ref()));
-            let (h2, idx2) =
-               self.locate(std::str::from_utf8_unchecked((*k_ptr.add(i + 2)).as_ref()));
-            let (h3, idx3) =
-               self.locate(std::str::from_utf8_unchecked((*k_ptr.add(i + 3)).as_ref()));
-            let (h4, idx4) =
-               self.locate(std::str::from_utf8_unchecked((*k_ptr.add(i + 4)).as_ref()));
-            let (h5, idx5) =
-               self.locate(std::str::from_utf8_unchecked((*k_ptr.add(i + 5)).as_ref()));
-            let (h6, idx6) =
-               self.locate(std::str::from_utf8_unchecked((*k_ptr.add(i + 6)).as_ref()));
-            let (h7, idx7) =
-               self.locate(std::str::from_utf8_unchecked((*k_ptr.add(i + 7)).as_ref()));
+            let (h0, idx0) = self.locate_bytes((*k_ptr.add(i)).as_ref());
+            let (h1, idx1) = self.locate_bytes((*k_ptr.add(i + 1)).as_ref());
+            let (h2, idx2) = self.locate_bytes((*k_ptr.add(i + 2)).as_ref());
+            let (h3, idx3) = self.locate_bytes((*k_ptr.add(i + 3)).as_ref());
+            let (h4, idx4) = self.locate_bytes((*k_ptr.add(i + 4)).as_ref());
+            let (h5, idx5) = self.locate_bytes((*k_ptr.add(i + 5)).as_ref());
+            let (h6, idx6) = self.locate_bytes((*k_ptr.add(i + 6)).as_ref());
+            let (h7, idx7) = self.locate_bytes((*k_ptr.add(i + 7)).as_ref());
 
             *h_ptr.add(i) = h0;
             *h_ptr.add(i + 1) = h1;
@@ -385,38 +446,22 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
             let sf6 = &*sf_base.add(idx6);
             let sf7 = &*sf_base.add(idx7);
 
-            let s0 = sf0
-               .slots
-               .load(Ordering::Relaxed)
-               .add((h0 as usize) & sf0.mask.load(Ordering::Relaxed));
-            let s1 = sf1
-               .slots
-               .load(Ordering::Relaxed)
-               .add((h1 as usize) & sf1.mask.load(Ordering::Relaxed));
-            let s2 = sf2
-               .slots
-               .load(Ordering::Relaxed)
-               .add((h2 as usize) & sf2.mask.load(Ordering::Relaxed));
-            let s3 = sf3
-               .slots
-               .load(Ordering::Relaxed)
-               .add((h3 as usize) & sf3.mask.load(Ordering::Relaxed));
-            let s4 = sf4
-               .slots
-               .load(Ordering::Relaxed)
-               .add((h4 as usize) & sf4.mask.load(Ordering::Relaxed));
-            let s5 = sf5
-               .slots
-               .load(Ordering::Relaxed)
-               .add((h5 as usize) & sf5.mask.load(Ordering::Relaxed));
-            let s6 = sf6
-               .slots
-               .load(Ordering::Relaxed)
-               .add((h6 as usize) & sf6.mask.load(Ordering::Relaxed));
-            let s7 = sf7
-               .slots
-               .load(Ordering::Relaxed)
-               .add((h7 as usize) & sf7.mask.load(Ordering::Relaxed));
+            let (slots0, mask0) = sf0.layout();
+            let s0 = slots0.add((h0 as usize) & mask0);
+            let (slots1, mask1) = sf1.layout();
+            let s1 = slots1.add((h1 as usize) & mask1);
+            let (slots2, mask2) = sf2.layout();
+            let s2 = slots2.add((h2 as usize) & mask2);
+            let (slots3, mask3) = sf3.layout();
+            let s3 = slots3.add((h3 as usize) & mask3);
+            let (slots4, mask4) = sf4.layout();
+            let s4 = slots4.add((h4 as usize) & mask4);
+            let (slots5, mask5) = sf5.layout();
+            let s5 = slots5.add((h5 as usize) & mask5);
+            let (slots6, mask6) = sf6.layout();
+            let s6 = slots6.add((h6 as usize) & mask6);
+            let (slots7, mask7) = sf7.layout();
+            let s7 = slots7.add((h7 as usize) & mask7);
 
             prefetch_line_write(s0);
             prefetch_line_write(s1);
@@ -440,11 +485,10 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
       }
       while i < n {
          unsafe {
-            let (h, idx) = self.locate(std::str::from_utf8_unchecked((*k_ptr.add(i)).as_ref()));
+            let (h, idx) = self.locate_bytes((*k_ptr.add(i)).as_ref());
             *h_ptr.add(i) = h;
             let sf = &*sf_base.add(idx);
-            let slots = sf.slots.load(Ordering::Relaxed);
-            let mask = sf.mask.load(Ordering::Relaxed);
+            let (slots, mask) = sf.layout();
             let s = slots.add((h as usize) & mask);
             prefetch_line_write(s);
             *t_ptr.add(i) = s.cast();
@@ -494,14 +538,14 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
             *e_ptr.add(i + 6) = p6.cast();
             *e_ptr.add(i + 7) = p7.cast();
 
-            prefetch_line(p0);
-            prefetch_line(p1);
-            prefetch_line(p2);
-            prefetch_line(p3);
-            prefetch_line(p4);
-            prefetch_line(p5);
-            prefetch_line(p6);
-            prefetch_line(p7);
+            prefetch_entry(p0);
+            prefetch_entry(p1);
+            prefetch_entry(p2);
+            prefetch_entry(p3);
+            prefetch_entry(p4);
+            prefetch_entry(p5);
+            prefetch_entry(p6);
+            prefetch_entry(p7);
          }
          i += 8;
       }
@@ -514,7 +558,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
                let base = s_ptr.cast::<TaggedSlot<V>>();
                let p = TaggedSlot::probe_from_base(base, *h_ptr.add(i), 16);
                *e_ptr.add(i) = p.cast();
-               prefetch_line(p);
+               prefetch_entry(p);
             }
          }
          i += 1;
@@ -562,14 +606,14 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
             *e_ptr.add(i + 6) = p6.cast();
             *e_ptr.add(i + 7) = p7.cast();
 
-            prefetch_line_write(p0);
-            prefetch_line_write(p1);
-            prefetch_line_write(p2);
-            prefetch_line_write(p3);
-            prefetch_line_write(p4);
-            prefetch_line_write(p5);
-            prefetch_line_write(p6);
-            prefetch_line_write(p7);
+            prefetch_entry_write(p0);
+            prefetch_entry_write(p1);
+            prefetch_entry_write(p2);
+            prefetch_entry_write(p3);
+            prefetch_entry_write(p4);
+            prefetch_entry_write(p5);
+            prefetch_entry_write(p6);
+            prefetch_entry_write(p7);
          }
          i += 8;
       }
@@ -582,13 +626,14 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
                let base = s_ptr.cast::<TaggedSlot<V>>();
                let p = TaggedSlot::probe_from_base(base, *h_ptr.add(i), 16);
                *e_ptr.add(i) = p.cast();
-               prefetch_line_write(p);
+               prefetch_entry_write(p);
             }
          }
          i += 1;
       }
    }
 
+   /// Hold a caller-owned pin across this call and any subsequent use of the returned entry hints.
    pub fn prefetch_batch_entries<K: AsRef<[u8]>>(
       &self,
       keys: &[K],
@@ -603,6 +648,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
       if n == 0 {
          return;
       }
+      let _pin = ebr::pin();
       let mut tables: [*const (); PREFETCH_BATCH] = [std::ptr::null(); PREFETCH_BATCH];
       self.prefetch_slots(&keys[..n], &mut hashes[..n], &mut tables[..n]);
       self.probe_and_prefetch_entries(&tables[..n], &hashes[..n], &mut entries[..n]);
@@ -617,8 +663,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
    #[inline(always)]
    pub fn probe_entry_fast(&self, key: &str, hash: u64, idx: usize) -> Option<*const Entry<V>> {
       let sf = unsafe { &*self.shard_fast.as_ptr().add(idx) };
-      let slots = sf.slots.load(Ordering::Relaxed);
-      let mask = sf.mask.load(Ordering::Relaxed);
+      let (slots, mask) = sf.layout();
       let base = unsafe { slots.add((hash as usize) & mask) };
       let p = unsafe { TaggedSlot::probe_from_base(base, hash, 16) };
       if !p.is_null() {
@@ -626,21 +671,123 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
          let state = e.state.load(Ordering::Relaxed);
          let expected = ((hash as u32 as u64) << 32) | STATE_OCCUPIED;
          if (state & (0xFFFF_FFFF_0000_0000 | STATE_OCCUPIED)) == expected && e.key.eq_str(key) {
-            if state & STATE_LOCK != 0 {
-               let mut cur = state;
-               while cur & STATE_LOCK != 0 {
-                  std::hint::spin_loop();
-                  cur = e.state.load(Ordering::Acquire);
-               }
-               if cur & STATE_OCCUPIED != 0 {
-                  return Some(p as *const Entry<V>);
-               }
-            } else {
-               return Some(p as *const Entry<V>);
-            }
+            return Some(p as *const Entry<V>);
          }
       }
       None
+   }
+
+   /// Bytes-key twin of the probe chain (audit S-2): probes by tag and
+   /// validates the full key bytes.
+   #[inline(always)]
+   pub fn probe_entry_fast_bytes(
+      &self,
+      key: &[u8],
+      hash: u64,
+      idx: usize,
+   ) -> Option<*const Entry<V>> {
+      let sf = unsafe { &*self.shard_fast.as_ptr().add(idx) };
+      let (slots, mask) = sf.layout();
+      let base = unsafe { slots.add((hash as usize) & mask) };
+      let p = unsafe { TaggedSlot::probe_from_base(base, hash, 16) };
+      if !p.is_null() {
+         let e = unsafe { &*p };
+         let state = e.state.load(Ordering::Relaxed);
+         let expected = ((hash as u32 as u64) << 32) | STATE_OCCUPIED;
+         if (state & (0xFFFF_FFFF_0000_0000 | STATE_OCCUPIED)) == expected && e.key.eq_bytes(key) {
+            return Some(p as *const Entry<V>);
+         }
+      }
+      None
+   }
+
+   /// Bytes-key pinned read: find by full byte comparison under an EBR pin.
+   pub fn with_entry_pinned_bytes<R>(
+      &self,
+      key: &[u8],
+      hash: u64,
+      idx: usize,
+      f: impl FnOnce(&V) -> R,
+   ) -> Option<R> {
+      let _guard = ebr::pin();
+      let sf = unsafe { &*self.shard_fast.as_ptr().add(idx) };
+      let (slots, mask) = sf.layout();
+      let entry = Shard::find_fast_bytes(slots, mask, key, hash)?;
+      let read = entry.read()?;
+      Some(f(&read))
+   }
+
+   /// Bytes-key in-place update (update_with_hinted twin).
+   pub fn update_with_hinted_bytes<R>(
+      &self,
+      key: &[u8],
+      hash: Option<u64>,
+      mut f: impl FnMut(&mut V) -> R,
+   ) -> Option<R> {
+      let _write_epoch = self.write_epoch();
+      let (h, idx) = match hash {
+         Some(h) => (h, self.shard_of(h)),
+         None => self.locate_bytes(key),
+      };
+      let _guard = ebr::pin();
+      let entry = {
+         let shard = unsafe { self.shards.get_unchecked(idx) };
+         let table = shard.table();
+         Shard::find_fast_bytes(table.slots, table.mask, key, h)?
+      };
+
+      state_lock(&entry.state);
+      if !state_occupied(&entry.state, Ordering::Relaxed) {
+         state_unlock(&entry.state);
+         return None;
+      }
+      self.snap_before_write(entry);
+      write_begin(&entry.state);
+      let result = f(unsafe { (*entry.value.get()).assume_init_mut() });
+      write_end(&entry.state, true);
+      self.touched_bytes(key);
+      Some(result)
+   }
+
+   /// Bytes-key remove (remove_no_clone twin).
+   #[inline]
+   pub fn remove_no_clone_bytes(&self, key: &[u8]) -> bool {
+      self.remove_if_bytes(key, |_| true)
+   }
+
+   /// Bytes-key conditional remove.
+   #[inline]
+   pub fn remove_if_bytes(&self, key: &[u8], predicate: impl FnOnce(&V) -> bool) -> bool {
+      let _write_epoch = self.write_epoch();
+      let (h, idx) = self.locate_bytes(key);
+      let _guard = ebr::pin();
+      let entry = {
+         let shard = unsafe { self.shards.get_unchecked(idx) };
+         let table = shard.table();
+         match Shard::find_fast_bytes(table.slots, table.mask, key, h) {
+            Some(e) => e,
+            None => return false,
+         }
+      };
+      if !state_occupied(&entry.state, Ordering::Acquire) {
+         return false;
+      }
+      state_lock(&entry.state);
+      if !state_occupied(&entry.state, Ordering::Relaxed) {
+         state_unlock(&entry.state);
+         return false;
+      }
+      if !predicate(unsafe { (*entry.value.get()).assume_init_ref() }) {
+         state_unlock(&entry.state);
+         return false;
+      }
+      self.snap_before_write(entry);
+      write_begin(&entry.state);
+      unsafe { (*entry.value.get()).assume_init_drop() };
+      write_end(&entry.state, false);
+      self.bump(idx, false);
+      self.touched_bytes(key);
+      true
    }
 
    #[inline(always)]
@@ -651,13 +798,12 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
       idx: usize,
       f: impl FnOnce(&V) -> R,
    ) -> Option<R> {
+      let _guard = ebr::pin();
       let sf = unsafe { &*self.shard_fast.as_ptr().add(idx) };
-      let slots = sf.slots.load(Ordering::Relaxed);
-      let mask = sf.mask.load(Ordering::Relaxed);
+      let (slots, mask) = sf.layout();
       let entry = Shard::find_fast(slots, mask, key, hash)?;
-      // Synchronize subsequent value read.
-      std::sync::atomic::fence(Ordering::Acquire);
-      Some(f(unsafe { (*entry.value.get()).assume_init_ref() }))
+      let read = entry.read()?;
+      Some(f(&read))
    }
 
    #[inline(always)]
@@ -674,18 +820,8 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
          let state = e.state.load(Ordering::Relaxed);
          let expected = ((hash as u32 as u64) << 32) | STATE_OCCUPIED;
          if (state & (0xFFFF_FFFF_0000_0000 | STATE_OCCUPIED)) == expected && e.key.eq_str(key) {
-            if state & STATE_LOCK != 0 {
-               let mut cur = state;
-               while cur & STATE_LOCK != 0 {
-                  std::hint::spin_loop();
-                  cur = e.state.load(Ordering::Acquire);
-               }
-               if cur & STATE_OCCUPIED != 0 {
-                  return Some(f(unsafe { (*e.value.get()).assume_init_ref() }));
-               }
-            } else {
-               return Some(f(unsafe { (*e.value.get()).assume_init_ref() }));
-            }
+            let read = e.read()?;
+            return Some(f(&read));
          }
       }
       let idx = self.shard_of(hash);
@@ -706,9 +842,9 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
    #[inline(always)]
    pub fn contains_key(&self, key: &str) -> bool {
       let (h, idx) = self.locate(key);
+      let _guard = ebr::pin();
       let sf = unsafe { &*self.shard_fast.as_ptr().add(idx) };
-      let slots = sf.slots.load(Ordering::Relaxed);
-      let mask = sf.mask.load(Ordering::Relaxed);
+      let (slots, mask) = sf.layout();
       ebr::with_pin(|_| {
          Shard::find_fast(slots, mask, key, h)
             .is_some_and(|e| state_occupied(&e.state, Ordering::Acquire))
@@ -718,10 +854,10 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
    #[inline(always)]
    pub fn get(&self, key: &str) -> Option<V> {
       let (h, idx) = self.locate(key);
+      let _guard = ebr::pin();
       let sf = unsafe { &*self.shard_fast.as_ptr().add(idx) };
-      let slots = sf.slots.load(Ordering::Relaxed);
-      let mask = sf.mask.load(Ordering::Relaxed);
-      ebr::with_pin(|_| Shard::get_pinned_fast(slots, mask, key, h))
+      let (slots, mask) = sf.layout();
+      Shard::get_pinned_fast(slots, mask, key, h)
    }
 
    /// Like `get` without re-pinning EBR when caller already holds a Guard.
@@ -729,8 +865,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
    pub fn get_pinned(&self, key: &str, _guard: &ebr::Guard) -> Option<V> {
       let (h, idx) = self.locate(key);
       let sf = unsafe { &*self.shard_fast.as_ptr().add(idx) };
-      let slots = sf.slots.load(Ordering::Relaxed);
-      let mask = sf.mask.load(Ordering::Relaxed);
+      let (slots, mask) = sf.layout();
       Shard::get_pinned_fast(slots, mask, key, h)
    }
 
@@ -743,14 +878,11 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
    ) -> Option<ValueRef<'g, V>> {
       let (h, idx) = self.locate(key);
       let sf = unsafe { &*self.shard_fast.as_ptr().add(idx) };
-      let slots = sf.slots.load(Ordering::Relaxed);
-      let mask = sf.mask.load(Ordering::Relaxed);
+      let (slots, mask) = sf.layout();
       let e = Shard::find_fast(slots, mask, key, h)?;
-      if !state_occupied(&e.state, Ordering::Acquire) {
-         return None;
-      }
+      let read = e.read()?;
       Some(ValueRef {
-         ptr: unsafe { (*e.value.get()).as_ptr() },
+         read,
          _guard: ebr::pin(),
          _map: PhantomData,
       })
@@ -761,14 +893,38 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
       let (h, idx) = self.locate(key);
       let guard = ebr::pin();
       let sf = unsafe { &*self.shard_fast.as_ptr().add(idx) };
-      let slots = sf.slots.load(Ordering::Relaxed);
-      let mask = sf.mask.load(Ordering::Relaxed);
+      let (slots, mask) = sf.layout();
       let e = Shard::find_fast(slots, mask, key, h)?;
-      if !state_occupied(&e.state, Ordering::Acquire) {
-         return None;
-      }
+      let read = e.read()?;
       Some(ValueRef {
-         ptr: unsafe { (*e.value.get()).as_ptr() },
+         read,
+         _guard: guard,
+         _map: PhantomData,
+      })
+   }
+
+   #[inline]
+   pub fn read_pinned_bytes<'g>(
+      &'g self,
+      key: &[u8],
+      _pin: &'g Guard,
+   ) -> Option<EntryReadGuard<'g, V>> {
+      let (hash, idx) = self.locate_bytes(key);
+      let (slots, mask) = self.shard_fast[idx].layout();
+      Shard::find_fast_bytes(slots, mask, key, hash)?.read()
+   }
+
+   /// Bytes-key twin of `get_ref` (audit S-2).
+   #[inline]
+   pub fn get_ref_bytes(&self, key: &[u8]) -> Option<ValueRef<'_, V>> {
+      let (h, idx) = self.locate_bytes(key);
+      let guard = ebr::pin();
+      let sf = unsafe { &*self.shard_fast.as_ptr().add(idx) };
+      let (slots, mask) = sf.layout();
+      let e = Shard::find_fast_bytes(slots, mask, key, h)?;
+      let read = e.read()?;
+      Some(ValueRef {
+         read,
          _guard: guard,
          _map: PhantomData,
       })
@@ -776,6 +932,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
 
    #[inline]
    pub fn insert(&self, key: String, value: V) -> bool {
+      let _write_epoch = self.write_epoch();
       let (h, idx) = self.locate(&key);
       let observed = self.observing().then(|| key.clone());
       let is_new = unsafe { self.shards.get_unchecked(idx) }.insert_hashed(key, value, h);
@@ -798,8 +955,10 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
 
    #[inline(always)]
    pub fn insert_str_hashed(&self, key: &str, value: V, h: u64, idx: usize) -> bool {
+      let pin = ebr::pin();
+      let _write_epoch = self.write_epoch();
       let shard = unsafe { self.shards.get_unchecked(idx) };
-      match shard.insert_or_update_slot_fast(h, key, value) {
+      match shard.insert_or_update_slot_fast(h, key, value, &pin) {
          InsertFastResult::Inserted => {
             self.bump(idx, true);
             self.touched(key);
@@ -861,7 +1020,24 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
    /// and only when actually absent.
    #[inline]
    pub fn set_str(&self, key: &str, value: V) -> bool {
-      self.set_compact(key, value, || CompactKey::from_str(key))
+      let (h, idx) = self.locate(key);
+      let pin = ebr::pin();
+      let _write_epoch = self.write_epoch();
+      let shard = unsafe { self.shards.get_unchecked(idx) };
+      match shard.insert_or_update_slot_fast(h, key, value, &pin) {
+         InsertFastResult::Inserted => {
+            self.bump(idx, true);
+            self.touched(key);
+            true
+         }
+         InsertFastResult::Updated => {
+            self.touched(key);
+            false
+         }
+         InsertFastResult::Fallback(val) => {
+            self.set_located_pinned(key, h, idx, val, || CompactKey::from_str(key))
+         }
+      }
    }
 
    #[inline]
@@ -881,8 +1057,40 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
 
    #[inline(always)]
    pub fn insert_slot_fast_located(&self, hash: u64, idx: usize, key: &str, value: V) -> bool {
+      let epoch = self.write_epoch();
+      let pin = ebr::pin();
+      unsafe { self.insert_slot_fast_located_pinned(hash, idx, key, value, &epoch, &pin) }
+   }
+
+   /// Bytes-key twin of `insert_slot_fast_located` (audit S-2).
+   #[inline(always)]
+   pub fn insert_slot_fast_located_bytes(
+      &self,
+      hash: u64,
+      idx: usize,
+      key: &[u8],
+      value: V,
+   ) -> bool {
+      let epoch = self.write_epoch();
+      let pin = ebr::pin();
+      unsafe { self.insert_slot_fast_located_pinned_bytes(hash, idx, key, value, &epoch, &pin) }
+   }
+
+   /// # Safety
+   /// idx must be valid, with this map's write epoch and an active EBR pin.
+   #[inline(always)]
+   pub unsafe fn insert_slot_fast_located_pinned(
+      &self,
+      hash: u64,
+      idx: usize,
+      key: &str,
+      value: V,
+      epoch: &WriteEpochGuard<'_>,
+      pin: &ebr::Guard,
+   ) -> bool {
+      debug_assert!(epoch.guards(&self.access));
       let shard = unsafe { self.shards.get_unchecked(idx) };
-      match shard.insert_or_update_slot_fast(hash, key, value) {
+      match shard.insert_or_update_slot_fast(hash, key, value, pin) {
          InsertFastResult::Inserted => {
             self.bump(idx, true);
             true
@@ -892,12 +1100,87 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
       }
    }
 
+   /// # Safety
+   /// Bytes-key twin of `insert_slot_fast_located_pinned` (audit S-2).
+   #[inline(always)]
+   pub unsafe fn insert_slot_fast_located_pinned_bytes(
+      &self,
+      hash: u64,
+      idx: usize,
+      key: &[u8],
+      value: V,
+      epoch: &WriteEpochGuard<'_>,
+      pin: &ebr::Guard,
+   ) -> bool {
+      debug_assert!(epoch.guards(&self.access));
+      let shard = unsafe { self.shards.get_unchecked(idx) };
+      match shard.insert_or_update_slot_fast_bytes(hash, key, value, pin) {
+         InsertFastResult::Inserted => {
+            self.bump(idx, true);
+            true
+         }
+         InsertFastResult::Updated => true,
+         InsertFastResult::Fallback(_) => false,
+      }
+   }
+
+   /// Bytes-key fused probe-or-insert (probe_or_insert_fast twin).
+   #[inline(always)]
+   pub fn probe_or_insert_fast_bytes<F>(&self, hash: u64, key: &[u8], make_value: F) -> FastSet<V>
+   where
+      F: FnOnce() -> V,
+   {
+      self.probe_or_insert_pinned_bytes(hash, key, &ebr::pin(), &self.write_epoch(), make_value)
+   }
+
+   #[inline(always)]
+   pub fn probe_or_insert_pinned_bytes<F>(
+      &self,
+      hash: u64,
+      key: &[u8],
+      _pin: &Guard,
+      epoch: &WriteEpochGuard<'_>,
+      make_value: F,
+   ) -> FastSet<V>
+   where
+      F: FnOnce() -> V,
+   {
+      assert!(epoch.guards(&self.access));
+      let idx = self.shard_of(hash);
+      let shard = unsafe { self.shards.get_unchecked(idx) };
+      let outcome = shard.probe_or_insert_bytes(hash, key, make_value);
+      if matches!(outcome, FastSet::Inserted) {
+         self.bump(idx, true);
+      }
+      outcome
+   }
+
+   /// Bytes-key insert-if-absent (insert_if_absent_str_hinted twin).
+   #[inline]
+   pub fn insert_if_absent_bytes_hinted(&self, key: &[u8], hash: Option<u64>, value: V) -> bool {
+      let _write_epoch = self.write_epoch();
+      let (h, idx) = match hash {
+         Some(h) => (h, self.shard_of(h)),
+         None => self.locate_bytes(key),
+      };
+      let _guard = ebr::pin();
+      let shard = unsafe { self.shards.get_unchecked(idx) };
+      let is_new = shard.set_key_with_overwrite_bytes(key, h, value, false);
+      if is_new {
+         self.bump(idx, true);
+      }
+      self.touched_bytes(key);
+      is_new
+   }
+
    /// Probes for key; inserts make_value() on miss or returns existing entry.
    #[inline(always)]
    pub fn probe_or_insert_fast<F>(&self, hash: u64, key: &str, make_value: F) -> FastSet<V>
    where
       F: FnOnce() -> V,
    {
+      let _pin = ebr::pin();
+      let _write_epoch = self.write_epoch();
       let idx = self.shard_of(hash);
       let shard = unsafe { self.shards.get_unchecked(idx) };
       let outcome = shard.probe_or_insert(hash, key, make_value);
@@ -916,8 +1199,31 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
       self.set_located_pinned(key, h, idx, value, || CompactKey::from_str(key))
    }
 
+   /// Bytes-key set (set_str_hinted_pinned twin, audit S-2).
+   #[inline(always)]
+   pub fn set_bytes_hinted_pinned(&self, key: &[u8], hash: Option<u64>, value: V) -> bool {
+      let (h, idx) = match hash {
+         Some(h) => (h, self.shard_of(h)),
+         None => self.locate_bytes(key),
+      };
+      self.set_located_pinned_bytes(key, h, idx, value)
+   }
+
+   #[inline(always)]
+   pub(crate) fn set_located_pinned_bytes(&self, key: &[u8], h: u64, idx: usize, value: V) -> bool {
+      let _write_epoch = self.write_epoch();
+      let shard = unsafe { self.shards.get_unchecked(idx) };
+      let is_new = shard.set_key_with_overwrite_bytes(key, h, value, true);
+      if is_new {
+         self.bump(idx, true);
+      }
+      self.touched_bytes(key);
+      is_new
+   }
+
    #[inline(always)]
    pub fn set_with_hint(&self, key: &str, hash: u64, entry_hint: *const (), value: V) -> bool {
+      let _write_epoch = self.write_epoch();
       if !entry_hint.is_null() {
          let p = entry_hint.cast::<Entry<V>>();
          let e = unsafe { &*p };
@@ -951,6 +1257,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
       entry_hint: *const (),
       f: impl FnOnce(&mut V) -> R,
    ) -> Option<R> {
+      let _write_epoch = self.write_epoch();
       if !entry_hint.is_null() {
          let p = entry_hint.cast::<Entry<V>>();
          let e = unsafe { &*p };
@@ -1019,6 +1326,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
       value: V,
       key_owned: impl FnOnce() -> CompactKey,
    ) -> bool {
+      let _write_epoch = self.write_epoch();
       let shard = unsafe { self.shards.get_unchecked(idx) };
       let is_new = shard.set_key(key, h, value, key_owned);
       if is_new {
@@ -1069,6 +1377,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
 
    #[inline]
    pub fn remove(&self, key: &str) -> Option<V> {
+      let _write_epoch = self.write_epoch();
       let (h, idx) = self.locate(key);
       let _guard = ebr::pin();
       let entry = unsafe { self.shards.get_unchecked(idx) }.find(key, h)?;
@@ -1092,6 +1401,12 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
 
    #[inline]
    pub fn remove_no_clone(&self, key: &str) -> bool {
+      self.remove_if(key, |_| true)
+   }
+
+   #[inline]
+   pub fn remove_if(&self, key: &str, predicate: impl FnOnce(&V) -> bool) -> bool {
+      let _write_epoch = self.write_epoch();
       let (h, idx) = self.locate(key);
       let _guard = ebr::pin();
       let entry = match unsafe { self.shards.get_unchecked(idx) }.find(key, h) {
@@ -1106,6 +1421,10 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
          state_unlock(&entry.state);
          return false;
       }
+      if !predicate(unsafe { (*entry.value.get()).assume_init_ref() }) {
+         state_unlock(&entry.state);
+         return false;
+      }
       self.snap.before_write(entry);
       write_begin(&entry.state);
       unsafe { (*entry.value.get()).assume_init_drop() };
@@ -1117,6 +1436,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
 
    #[inline]
    pub fn remove_with<R>(&self, key: &str, f: impl FnOnce(&V) -> R) -> Option<R> {
+      let _write_epoch = self.write_epoch();
       let (h, idx) = self.locate(key);
       let _guard = ebr::pin();
       let entry = unsafe { self.shards.get_unchecked(idx) }.find(key, h)?;
@@ -1140,6 +1460,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
 
    #[inline]
    pub fn update<R>(&self, key: &str, mut f: impl FnMut(&V) -> (V, R)) -> Option<R> {
+      let _write_epoch = self.write_epoch();
       let (h, idx) = self.locate(key);
       let _guard = ebr::pin();
       let entry = unsafe { self.shards.get_unchecked(idx) }.find(key, h)?;
@@ -1161,6 +1482,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
 
    #[inline]
    pub fn try_update<R>(&self, key: &str, mut f: impl FnMut(&V) -> Option<(V, R)>) -> Option<R> {
+      let _write_epoch = self.write_epoch();
       let (h, idx) = self.locate(key);
       let _guard = ebr::pin();
       let entry = unsafe { self.shards.get_unchecked(idx) }.find(key, h)?;
@@ -1200,6 +1522,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
       hash: Option<u64>,
       mut f: impl FnMut(&mut V) -> R,
    ) -> Option<R> {
+      let _write_epoch = self.write_epoch();
       let (h, idx) = match hash {
          Some(h) => (h, self.shard_of(h)),
          None => self.locate(key),
@@ -1226,42 +1549,18 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
       let _guard = ebr::pin();
       let entry = unsafe { self.shards.get_unchecked(idx) }.find(key, h)?;
 
-      state_lock(&entry.state);
-      if !state_occupied(&entry.state, Ordering::Relaxed) {
-         state_unlock(&entry.state);
-         return None;
-      }
-      let result = f(unsafe { (*entry.value.get()).assume_init_ref() });
-      state_unlock(&entry.state);
-      Some(result)
+      let read = entry.read()?;
+      Some(f(&read))
    }
 
    #[inline]
-   pub fn read_consistent<R>(&self, key: &str, mut f: impl FnMut(&V) -> R) -> Option<R> {
-      let (h, idx) = self.locate(key);
-      let _guard = ebr::pin();
-      let entry = unsafe { self.shards.get_unchecked(idx) }.find(key, h)?;
-
-      loop {
-         let seq1 = state_seq(entry.state.load(Ordering::Acquire));
-         if seq1 & 1 != 0 {
-            std::hint::spin_loop();
-            continue;
-         }
-         if !state_occupied(&entry.state, Ordering::Acquire) {
-            return None;
-         }
-         let result = f(unsafe { (*entry.value.get()).assume_init_ref() });
-         std::sync::atomic::fence(Ordering::Acquire);
-         let seq2 = state_seq(entry.state.load(Ordering::Acquire));
-         if seq1 == seq2 {
-            return Some(result);
-         }
-      }
+   pub fn read_consistent<R>(&self, key: &str, f: impl FnOnce(&V) -> R) -> Option<R> {
+      self.get_locked(key, f)
    }
 
    #[inline]
    pub fn insert_if_absent(&self, key: String, value: V) -> bool {
+      let _write_epoch = self.write_epoch();
       let (h, idx) = self.locate(&key);
       let _guard = ebr::pin();
       let shard = unsafe { self.shards.get_unchecked(idx) };
@@ -1285,6 +1584,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
 
    #[inline]
    pub fn insert_if_absent_str_hinted(&self, key: &str, hash: Option<u64>, value: V) -> bool {
+      let _write_epoch = self.write_epoch();
       let (h, idx) = match hash {
          Some(h) => (h, self.shard_of(h)),
          None => self.locate(key),
@@ -1314,15 +1614,17 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
       let live = &unsafe { self.shards.get_unchecked(idx) }.live;
       if up {
          live.fetch_add(1, Ordering::Relaxed);
+         self.approx.fetch_add(1, Ordering::Relaxed);
       } else {
          live.fetch_sub(1, Ordering::Relaxed);
+         self.approx.fetch_sub(1, Ordering::Relaxed);
       }
    }
 
-   /// One relaxed load; trivially false with no limit configured.
+   /// Returns true if the map has reached its configured key limit.
    #[inline(always)]
    pub fn is_full(&self) -> bool {
-      self.max_keys != usize::MAX && self.len() >= self.max_keys
+      self.max_keys != usize::MAX && self.approx.load(Ordering::Relaxed) >= self.max_keys
    }
 
    /// The configured key ceiling, or `usize::MAX` when unlimited.
@@ -1347,6 +1649,28 @@ impl<V: Clone + Send + Sync + 'static> Default for CustomMap<V> {
 }
 
 pub const PREFETCH_BATCH: usize = 32;
+
+#[inline(always)]
+fn prefetch_entry<V>(p: *const Entry<V>) {
+   prefetch_line(p);
+   if std::mem::size_of::<Entry<V>>() > 32 {
+      prefetch_line(
+         p.cast::<u8>()
+            .wrapping_add(std::mem::size_of::<Entry<V>>() - 1),
+      );
+   }
+}
+
+#[inline(always)]
+fn prefetch_entry_write<V>(p: *const Entry<V>) {
+   prefetch_line_write(p);
+   if std::mem::size_of::<Entry<V>>() > 32 {
+      prefetch_line_write(
+         p.cast::<u8>()
+            .wrapping_add(std::mem::size_of::<Entry<V>>() - 1),
+      );
+   }
+}
 
 #[inline(always)]
 fn prefetch_line<T>(p: *const T) {
@@ -1382,6 +1706,18 @@ pub const fn entry_size<V>() -> usize {
 
 #[cfg(test)]
 mod tests {
+
+   #[test]
+   fn reused_tombstones_do_not_inflate_table_occupancy() {
+      let map = super::CustomMap::with_capacity(1, 8);
+      let table = map.shards[0].table.load(super::Ordering::Relaxed);
+      for value in 0..1000 {
+         map.insert_str("key", value);
+         assert_eq!(map.shards[0].len.load(super::Ordering::Relaxed), 1);
+         assert!(map.remove_no_clone("key"));
+      }
+      assert_eq!(map.shards[0].table.load(super::Ordering::Relaxed), table);
+   }
    use super::CustomMap;
    use std::collections::HashSet;
    use std::sync::Arc;
@@ -1469,12 +1805,9 @@ mod tests {
             let map = Arc::clone(&map);
             scope.spawn(move || {
                for _ in 0..20_000 {
-                  // update-then-create-if-missing, the INCR pattern
                   if map.update_with("counter", |v: &mut i64| *v += 1).is_none() {
                      let created = map.insert_if_absent("counter".into(), 1);
                      if !created {
-                        // Lost the create race; the increment still
-                        // must happen via a retried update.
                         let mut spins = 0;
                         while map.update_with("counter", |v| *v += 1).is_none() {
                            spins += 1;

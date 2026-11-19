@@ -120,6 +120,7 @@ impl Store {
       paths: &[&str],
       out: &mut Vec<u8>,
    ) -> Result<bool, &'static str> {
+      let _guard = customhash::pin();
       let is_root = paths.is_empty()
          || (paths.len() == 1 && (paths[0] == "." || paths[0] == "$" || paths[0].is_empty()));
       if is_root {
@@ -130,7 +131,9 @@ impl Store {
             let state = e.state.load(std::sync::atomic::Ordering::Acquire);
             let expected = ((h as u32 as u64) << 32) | customhash::STATE_OCCUPIED;
             if (state & customhash::STATE_MATCH_MASK) == expected && e.key.eq_str(key) {
-               let val = unsafe { (*e.value.get()).assume_init_ref() };
+               let Some(val) = e.read() else {
+                  return Ok(false);
+               };
                if val.expires_ms == 0 || !val.is_expired() {
                   let raw = match val.value.as_json_str() {
                      Some(s) => s,
@@ -139,7 +142,10 @@ impl Store {
                   crate::utils::resp::write_bulk(out, raw);
                   return Ok(true);
                } else {
-                  self.data.remove(key);
+                  drop(val);
+                  if !self.data.read_epoch_active() {
+                     self.data.remove_if(key, |value| value.is_expired());
+                  }
                   return Ok(false);
                }
             }
@@ -225,7 +231,16 @@ impl Store {
       }
    }
 
-   pub fn json_type(&self, key: &str, path: &str) -> Result<Option<&'static str>, &'static str> {
+   #[inline]
+   pub(crate) fn with_json_target<R, F>(
+      &self,
+      key: &str,
+      path: &str,
+      f: F,
+   ) -> Result<Option<R>, &'static str>
+   where
+      F: FnOnce(&JsonValue) -> Result<R, &'static str>,
+   {
       match self.data.get_ref(key) {
          None => Ok(None),
          Some(e) if e.is_expired() => Ok(None),
@@ -242,9 +257,43 @@ impl Store {
                   None => return Ok(None),
                }
             };
-            Ok(Some(target.type_name()))
+            f(target).map(Some)
          }
       }
+   }
+
+   #[inline]
+   pub(crate) fn mutate_json_target<R, F>(
+      &self,
+      key: &str,
+      path: &str,
+      mut f: F,
+   ) -> Result<Option<R>, &'static str>
+   where
+      F: FnMut(&mut JsonValue) -> Result<R, &'static str>,
+   {
+      let result = self.data.update_with(key, |val| {
+         if val.is_expired() {
+            return Err("ERR no such key");
+         }
+         if val.value.as_json_str().is_none() {
+            return Err("WRONGTYPE");
+         }
+         let mut json = val.value.parse_json().unwrap();
+         let target = json.get_path_mut(path).ok_or("ERR path does not exist")?;
+         let ret = f(target)?;
+         val.value.set_json(json);
+         Ok(Some(ret))
+      });
+
+      match result {
+         Some(r) => r,
+         None => Err("ERR no such key"),
+      }
+   }
+
+   pub fn json_type(&self, key: &str, path: &str) -> Result<Option<&'static str>, &'static str> {
+      self.with_json_target(key, path, |target| Ok(target.type_name()))
    }
 
    pub fn json_numincrby(
@@ -253,30 +302,13 @@ impl Store {
       path: &str,
       by: f64,
    ) -> Result<Option<f64>, &'static str> {
-      let result = self.data.update_with(key, |val| {
-         if val.is_expired() {
-            return Err("ERR no such key");
+      self.mutate_json_target(key, path, |target| match target {
+         JsonValue::Number(n) => {
+            *n += by;
+            Ok(*n)
          }
-         if val.value.as_json_str().is_none() {
-            return Err("WRONGTYPE");
-         }
-         let mut json = val.value.parse_json().unwrap();
-         let target = json.get_path_mut(path).ok_or("ERR path does not exist")?;
-         match target {
-            JsonValue::Number(n) => {
-               *n += by;
-               let result = *n;
-               val.value.set_json(json);
-               Ok(Some(result))
-            }
-            _ => Err("ERR path value is not a number"),
-         }
-      });
-
-      match result {
-         Some(r) => r,
-         None => Err("ERR no such key"),
-      }
+         _ => Err("ERR path value is not a number"),
+      })
    }
 
    pub fn json_strappend(
@@ -285,55 +317,20 @@ impl Store {
       path: &str,
       append: &str,
    ) -> Result<Option<usize>, &'static str> {
-      let result = self.data.update_with(key, |val| {
-         if val.is_expired() {
-            return Err("ERR no such key");
+      self.mutate_json_target(key, path, |target| match target {
+         JsonValue::String(s) => {
+            s.push_str(append);
+            Ok(s.len())
          }
-         if val.value.as_json_str().is_none() {
-            return Err("WRONGTYPE");
-         }
-         let mut json = val.value.parse_json().unwrap();
-         let target = json.get_path_mut(path).ok_or("ERR path does not exist")?;
-         match target {
-            JsonValue::String(s) => {
-               s.push_str(append);
-               let len = s.len();
-               val.value.set_json(json);
-               Ok(Some(len))
-            }
-            _ => Err("ERR path value is not a string"),
-         }
-      });
-
-      match result {
-         Some(r) => r,
-         None => Err("ERR no such key"),
-      }
+         _ => Err("ERR path value is not a string"),
+      })
    }
 
    pub fn json_strlen(&self, key: &str, path: &str) -> Result<Option<usize>, &'static str> {
-      match self.data.get_ref(key) {
-         None => Ok(None),
-         Some(e) if e.is_expired() => Ok(None),
-         Some(e) => {
-            if e.value.as_json_str().is_none() {
-               return Err("WRONGTYPE");
-            }
-            let json = e.value.parse_json().unwrap();
-            let target = if path.is_empty() || path == "." || path == "$" {
-               &json
-            } else {
-               match json.get_path(path) {
-                  Some(v) => v,
-                  None => return Ok(None),
-               }
-            };
-            match target {
-               JsonValue::String(s) => Ok(Some(s.len())),
-               _ => Err("ERR path value is not a string"),
-            }
-         }
-      }
+      self.with_json_target(key, path, |target| match target {
+         JsonValue::String(s) => Ok(s.len()),
+         _ => Err("ERR path value is not a string"),
+      })
    }
 
    pub fn json_arrappend(
@@ -347,55 +344,20 @@ impl Store {
          .map(|v| JsonValue::parse(v).ok_or("ERR invalid JSON"))
          .collect::<Result<Vec<_>, _>>()?;
 
-      let result = self.data.update_with(key, |val| {
-         if val.is_expired() {
-            return Err("ERR no such key");
+      self.mutate_json_target(key, path, |target| match target {
+         JsonValue::Array(arr) => {
+            arr.extend(parsed.iter().cloned());
+            Ok(arr.len())
          }
-         if val.value.as_json_str().is_none() {
-            return Err("WRONGTYPE");
-         }
-         let mut json = val.value.parse_json().unwrap();
-         let target = json.get_path_mut(path).ok_or("ERR path does not exist")?;
-         match target {
-            JsonValue::Array(arr) => {
-               arr.extend(parsed.iter().cloned());
-               let len = arr.len();
-               val.value.set_json(json);
-               Ok(Some(len))
-            }
-            _ => Err("ERR path value is not an array"),
-         }
-      });
-
-      match result {
-         Some(r) => r,
-         None => Err("ERR no such key"),
-      }
+         _ => Err("ERR path value is not an array"),
+      })
    }
 
    pub fn json_arrlen(&self, key: &str, path: &str) -> Result<Option<usize>, &'static str> {
-      match self.data.get_ref(key) {
-         None => Ok(None),
-         Some(e) if e.is_expired() => Ok(None),
-         Some(e) => {
-            if e.value.as_json_str().is_none() {
-               return Err("WRONGTYPE");
-            }
-            let json = e.value.parse_json().unwrap();
-            let target = if path.is_empty() || path == "." || path == "$" {
-               &json
-            } else {
-               match json.get_path(path) {
-                  Some(v) => v,
-                  None => return Ok(None),
-               }
-            };
-            match target {
-               JsonValue::Array(arr) => Ok(Some(arr.len())),
-               _ => Err("ERR path value is not an array"),
-            }
-         }
-      }
+      self.with_json_target(key, path, |target| match target {
+         JsonValue::Array(arr) => Ok(arr.len()),
+         _ => Err("ERR path value is not an array"),
+      })
    }
 
    pub fn json_arrpop(
@@ -440,80 +402,27 @@ impl Store {
    }
 
    pub fn json_objkeys(&self, key: &str, path: &str) -> Result<Option<Vec<String>>, &'static str> {
-      match self.data.get_ref(key) {
-         None => Ok(None),
-         Some(e) if e.is_expired() => Ok(None),
-         Some(e) => {
-            if e.value.as_json_str().is_none() {
-               return Err("WRONGTYPE");
-            }
-            let json = e.value.parse_json().unwrap();
-            let target = if path.is_empty() || path == "." || path == "$" {
-               &json
-            } else {
-               match json.get_path(path) {
-                  Some(v) => v,
-                  None => return Ok(None),
-               }
-            };
-            match target {
-               JsonValue::Object(obj) => Ok(Some(obj.iter().map(|(k, _)| k.to_string()).collect())),
-               _ => Err("ERR path value is not an object"),
-            }
-         }
-      }
+      self.with_json_target(key, path, |target| match target {
+         JsonValue::Object(obj) => Ok(obj.iter().map(|(k, _)| k.to_string()).collect()),
+         _ => Err("ERR path value is not an object"),
+      })
    }
 
    pub fn json_objlen(&self, key: &str, path: &str) -> Result<Option<usize>, &'static str> {
-      match self.data.get_ref(key) {
-         None => Ok(None),
-         Some(e) if e.is_expired() => Ok(None),
-         Some(e) => {
-            if e.value.as_json_str().is_none() {
-               return Err("WRONGTYPE");
-            }
-            let json = e.value.parse_json().unwrap();
-            let target = if path.is_empty() || path == "." || path == "$" {
-               &json
-            } else {
-               match json.get_path(path) {
-                  Some(v) => v,
-                  None => return Ok(None),
-               }
-            };
-            match target {
-               JsonValue::Object(obj) => Ok(Some(obj.len())),
-               _ => Err("ERR path value is not an object"),
-            }
-         }
-      }
+      self.with_json_target(key, path, |target| match target {
+         JsonValue::Object(obj) => Ok(obj.len()),
+         _ => Err("ERR path value is not an object"),
+      })
    }
 
    pub fn json_toggle(&self, key: &str, path: &str) -> Result<Option<bool>, &'static str> {
-      let result = self.data.update_with(key, |val| {
-         if val.is_expired() {
-            return Err("ERR no such key");
+      self.mutate_json_target(key, path, |target| match target {
+         JsonValue::Bool(b) => {
+            *b = !*b;
+            Ok(*b)
          }
-         if val.value.as_json_str().is_none() {
-            return Err("WRONGTYPE");
-         }
-         let mut json = val.value.parse_json().unwrap();
-         let target = json.get_path_mut(path).ok_or("ERR path does not exist")?;
-         match target {
-            JsonValue::Bool(b) => {
-               *b = !*b;
-               let result = *b;
-               val.value.set_json(json);
-               Ok(Some(result))
-            }
-            _ => Err("ERR path value is not a boolean"),
-         }
-      });
-
-      match result {
-         Some(r) => r,
-         None => Err("ERR no such key"),
-      }
+         _ => Err("ERR path value is not a boolean"),
+      })
    }
 
    pub fn json_clear(&self, key: &str, path: &str) -> Result<usize, &'static str> {

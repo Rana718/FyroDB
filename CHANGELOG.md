@@ -7,9 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+## [0.4.0] - 2026-11-19
+
+### Fixed
+- Preserve atomic multi-key snapshots and complete binary values during concurrent writes, Lua scripts, transactions, and persistence.
+- Fix worker wakeups, blocking-command delivery, listener draining, and full-width vector searches.
+- Protect CustomHash reclamation and nested writer admission, including wrapped-slot probes.
+
+### Optimized
+- Reduce repeated GET and SET work, use bounded heap reuse, and stream eligible large overwrites.
+- Batch tombstone reclamation and avoid unnecessary allocations on repeated replies.
+
+### Verification
+- Add protocol, isolation, binary integrity, persistence, and blocking-client regressions for single- and multi-worker configurations.
+
+
+### Tests and documentation — 2026-11-13
+
+- Retain six new regressions for deep binary SET pipelines, GET/EVAL/WATCH/MULTI/EXEC/NX boundaries, partial/malformed protocol cleanup, nested admission scopes, expiry/large-value transitions and concurrent SET/read/SAVE. Expand WATCH abort checks to 64- and 1024-command pipelines.
+- Publish the retained d5a178b runtime's normal Go TCP suite first, plus independent redis-benchmark/Dragonfly comparisons, earlier standalone Redis and memtier results, payload/RSS/container memory, hot-key and capacity diagnostics. Preserve higher historical best-of-three rates as historical, separately from current medians.
+- Commit hashed measurement evidence, summaries, CSV/JSON downloads, ten SVG comparisons, a graph viewer and a deterministic documentation generator.
+- Correct architecture claims: values use read/write guards, map admission and EBR; Lua/transactions also require command isolation. Document the 56-byte entry layout and retained bounded scatter/gather, duplicate-owner indexing, partial-write ownership and fenced large-SET copies.
+- The later small-SET admission-reuse experiment was reverted after mixed/slower throughput results. This update adds tests/docs; it introduces no new runtime optimization. Recorded retained-source validation: 789 workspace passes, zero failures, three existing probes ignored; 14 io-uring-feature large-reply passes and Clippy clean.
+
+
 ## [0.3.1] - 2026-11-09
 
 ### Added
+- **Unix Domain Socket Support (`unix-sockets`)** — Added high-performance Unix domain socket transport support via the `unix-sockets` feature. Clients can connect over local IPC sockets via `unix:/path/to/socket.sock` or `--unix-socket <path>`, reducing localhost round-trip latency to a third compared to loopback TCP. Features multi-worker listener cloning (`dup`) allowing all worker threads to accept incoming Unix connections concurrently.
 - **Redis Lua Scripting Engine (`EVAL`, `EVALSHA`, `SCRIPT`)** — Full Redis-compatible Lua 5.4 scripting runtime powered by `mlua` 0.12.2. Features re-entrant `redis.call` and `redis.pcall` dispatch directly into FyroDB's command pipeline, pre-compiled SHA1 digest caching, generational garbage collection, isolated script execution state, and zero-allocation RESP type conversions.
 - **In-Process L1 Cache Routing for DB Cache** — Direct memory-mapped query result routing between the PostgreSQL proxy and the KV storage engine. Cache hits bypass TCP loopback overhead entirely, serving warm PostgreSQL query results at raw in-process memory speeds.
 - **Pipelined `JSON.GET` Run Dispatcher** — Fast-path parser `try_fast_json_get_key_at` with batch slot and entry prefetching (`dispatch_json_get_run`) and direct raw bulk byte emission (`write_bulk_raw`). Batch window for `JSON.SET` expanded to 256.

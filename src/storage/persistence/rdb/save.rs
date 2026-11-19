@@ -1,20 +1,22 @@
 use super::*;
 
-fn write_record(w: &mut impl Write, key: &str, val: &StoreValue) -> io::Result<()> {
+fn write_record<W: Write>(w: &mut W, key: &str, val: &StoreValue) -> io::Result<()> {
    let ttl_ms = val.expires_ms;
-   let head = |w: &mut dyn Write, ty: u8| -> io::Result<()> {
-      w.write_all(&[ty])?;
-      w.write_all(&ttl_ms.to_le_bytes())?;
-      w.write_all(&(key.len() as u32).to_le_bytes())?;
+   let write_head = |w: &mut W, ty: u8| -> io::Result<()> {
+      let mut head_buf = [0u8; 13];
+      head_buf[0] = ty;
+      head_buf[1..9].copy_from_slice(&ttl_ms.to_le_bytes());
+      head_buf[9..13].copy_from_slice(&(key.len() as u32).to_le_bytes());
+      w.write_all(&head_buf)?;
       w.write_all(key.as_bytes())
    };
    match &val.value {
       FyroDB::String(s) => {
-         head(w, TYPE_STRING)?;
+         write_head(w, TYPE_STRING)?;
          write_bytes(w, s.as_bytes())
       }
       FyroDB::Hash(h) => {
-         head(w, TYPE_HASH)?;
+         write_head(w, TYPE_HASH)?;
          write_u32(w, h.len() as u32)?;
          for (f, v) in h.iter() {
             write_bytes(w, f.as_bytes())?;
@@ -23,7 +25,7 @@ fn write_record(w: &mut impl Write, key: &str, val: &StoreValue) -> io::Result<(
          Ok(())
       }
       FyroDB::List(l) => {
-         head(w, TYPE_LIST)?;
+         write_head(w, TYPE_LIST)?;
          write_u32(w, l.len() as u32)?;
          for item in l.iter() {
             write_bytes(w, item.as_bytes())?;
@@ -31,15 +33,22 @@ fn write_record(w: &mut impl Write, key: &str, val: &StoreValue) -> io::Result<(
          Ok(())
       }
       FyroDB::Set(s) => {
-         head(w, TYPE_SET)?;
+         write_head(w, TYPE_SET)?;
          write_u32(w, s.len() as u32)?;
+         let mut int_buf = [0u8; 20];
          for member in s.iter() {
-            write_bytes(w, member.to_string().as_bytes())?;
+            match member {
+               crate::storage::value::SetMemberRef::String(sm) => write_bytes(w, sm.as_bytes())?,
+               crate::storage::value::SetMemberRef::Integer(n) => {
+                  let s = crate::utils::int_format::write_i64_to(&mut int_buf, n);
+                  write_bytes(w, s.as_bytes())?;
+               }
+            }
          }
          Ok(())
       }
       FyroDB::ZSet(z) => {
-         head(w, TYPE_ZSET)?;
+         write_head(w, TYPE_ZSET)?;
          write_u32(w, z.len() as u32)?;
          for entry in z.iter() {
             write_bytes(w, entry.member.as_bytes())?;
@@ -48,17 +57,17 @@ fn write_record(w: &mut impl Write, key: &str, val: &StoreValue) -> io::Result<(
          Ok(())
       }
       FyroDB::Json(j) => {
-         head(w, TYPE_JSON)?;
+         write_head(w, TYPE_JSON)?;
          write_bytes(w, j.as_bytes())
       }
       FyroDB::Stream(s) => {
-         head(w, TYPE_STREAM2)?;
+         write_head(w, TYPE_STREAM2)?;
          write_stream(w, s)
       }
    }
 }
 
-static SAVE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static SAVE_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 static AOF_MARK: parking_lot::Mutex<Option<(u64, u64)>> = parking_lot::Mutex::new(None);
 
 struct SnapshotGuard<'a>(&'a Store);
@@ -69,7 +78,11 @@ impl Drop for SnapshotGuard<'_> {
    }
 }
 
-fn write_keyspace(w: &mut impl Write, store: &Store) -> io::Result<()> {
+fn write_keyspace(
+   w: &mut impl Write,
+   store: &Store,
+   boundary: crate::storage::store::CommandGuard<'_>,
+) -> io::Result<()> {
    let side: std::sync::Arc<parking_lot::Mutex<Vec<u8>>> = Default::default();
    let sink_buf = std::sync::Arc::clone(&side);
    let sink: customhash::SnapSink<StoreValue> =
@@ -83,6 +96,7 @@ fn write_keyspace(w: &mut impl Write, store: &Store) -> io::Result<()> {
    }
    let guard = SnapshotGuard(store);
    *AOF_MARK.lock() = crate::storage::persistence::aof::get().map(|a| a.rotate());
+   drop(boundary);
    for shard in 0..store.data.shard_count() {
       let mut result = Ok(());
       store.data.snapshot_shard(shard, |k, v| {
@@ -100,14 +114,15 @@ fn write_keyspace(w: &mut impl Write, store: &Store) -> io::Result<()> {
 }
 
 pub fn save(store: &Store, path: &str) -> io::Result<()> {
-   let _serial = SAVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+   let boundary = store.command_guard(usize::MAX);
+   let _serial = SAVE_LOCK.lock();
    let tmp = format!("{path}.tmp");
    {
       let f = File::create(&tmp)?;
       let mut w = BufWriter::with_capacity(1 << 20, f);
       w.write_all(MAGIC)?;
       w.write_all(&[VERSION])?;
-      write_keyspace(&mut w, store)?;
+      write_keyspace(&mut w, store, boundary)?;
       write_search_indexes(&mut w, store)?;
       write_vector_graphs(&mut w, store)?;
       write_u8(&mut w, TYPE_EOF)?;
@@ -129,6 +144,14 @@ pub fn save(store: &Store, path: &str) -> io::Result<()> {
       eprintln!("[aof] rewrite after snapshot failed: {e}");
    }
    Ok(())
+}
+
+pub fn encode_string_value(bytes: &[u8], expires_ms: u64) -> Vec<u8> {
+   let mut out = Vec::with_capacity(13 + bytes.len());
+   let _ = write_u64(&mut out, expires_ms);
+   let _ = write_u8(&mut out, TYPE_STRING);
+   let _ = write_bytes(&mut out, bytes);
+   out
 }
 
 /// Encode/decode one StoreValue using the same bounded representation as RDB.
@@ -190,6 +213,9 @@ pub fn encode_single_value(value: &StoreValue) -> io::Result<Vec<u8>> {
 }
 
 pub fn background_save_loop(store: &Store, path: &str, interval: Duration) {
+   if interval.is_zero() {
+      return;
+   }
    loop {
       std::thread::sleep(interval);
       match save(store, path) {

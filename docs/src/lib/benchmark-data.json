@@ -1,0 +1,244 @@
+[
+  {
+    "label": "Pipeline-64 SET",
+    "values": [
+      4.921,
+      7.159,
+      9.105,
+      13.24,
+      14.561
+    ],
+    "unit": "M/s"
+  },
+  {
+    "label": "Pipelined SET",
+    "values": [
+      17.382,
+      27.605,
+      32.251,
+      37.704,
+      43.347
+    ],
+    "unit": "M/s"
+  },
+  {
+    "label": "Pipelined GET",
+    "values": [
+      20.13,
+      32.962,
+      44.616,
+      47.419,
+      55.897
+    ],
+    "unit": "M/s"
+  },
+  {
+    "label": "Pub/Sub publish",
+    "values": [
+      1.522,
+      2.373,
+      2.845,
+      2.36,
+      2.142
+    ],
+    "unit": "M/s"
+  },
+  {
+    "label": "Pub/Sub delivery",
+    "values": [
+      73.6,
+      116.457,
+      141.007,
+      116.361,
+      104.294
+    ],
+    "unit": "M/s"
+  },
+  {
+    "label": "Mixed SET/GET (50/50)",
+    "values": [
+      17.033,
+      27.566,
+      33.515,
+      37.984,
+      46.372
+    ],
+    "unit": "M/s"
+  },
+  {
+    "label": "INCR (atomic counters)",
+    "values": [
+      13.96,
+      27.313,
+      30.386,
+      45.858,
+      73.887
+    ],
+    "unit": "M/s"
+  },
+  {
+    "label": "HSET/HGET (sessions)",
+    "values": [
+      17.075,
+      26.454,
+      35.959,
+      39.977,
+      59.965
+    ],
+    "unit": "M/s"
+  },
+  {
+    "label": "LPUSH/RPOP (queue)",
+    "values": [
+      9.923,
+      11.811,
+      21.439,
+      30.177,
+      38.505
+    ],
+    "unit": "M/s"
+  },
+  {
+    "label": "SADD (per-client sets)",
+    "values": [
+      15.789,
+      29.493,
+      37.847,
+      39.432,
+      48.798
+    ],
+    "unit": "M/s"
+  },
+  {
+    "label": "ZADD (per-client zsets)",
+    "values": [
+      4.975,
+      8.77,
+      11.491,
+      8.444,
+      10.61
+    ],
+    "unit": "M/s"
+  },
+  {
+    "label": "JSON.SET (documents)",
+    "values": [
+      4.427,
+      6.876,
+      8.852,
+      7.322,
+      10.31
+    ],
+    "unit": "M/s"
+  },
+  {
+    "label": "JSON.GET (documents)",
+    "values": [
+      11.826,
+      18.387,
+      22.298,
+      25.001,
+      28.341
+    ],
+    "unit": "M/s"
+  },
+  {
+    "label": "SET+EXPIRE (cache TTL)",
+    "values": [
+      3.292,
+      5.377,
+      7.996,
+      7.808,
+      9.769
+    ],
+    "unit": "M/s"
+  },
+  {
+    "label": "Hot Key (1 key, contention)",
+    "values": [
+      39.328,
+      67.387,
+      107.014,
+      118.612,
+      160.608
+    ],
+    "unit": "M/s"
+  },
+  {
+    "label": "Producer/Consumer (50+50)",
+    "values": [
+      8.962,
+      15.407,
+      16.372,
+      3.27,
+      13.421
+    ],
+    "unit": "M/s"
+  },
+  {
+    "label": "XADD (streams)",
+    "values": [
+      4.595,
+      7.902,
+      10.441,
+      15.041,
+      15.792
+    ],
+    "unit": "M/s"
+  },
+  {
+    "label": "SETBIT/BITCOUNT (bitmap)",
+    "values": [
+      4.54,
+      8.126,
+      12.902,
+      14.912,
+      23.238
+    ],
+    "unit": "M/s"
+  },
+  {
+    "label": "PFADD/PFCOUNT (HyperLogLog)",
+    "values": [
+      17.717,
+      35.047,
+      34.333,
+      53.095,
+      59.769
+    ],
+    "unit": "M/s"
+  },
+  {
+    "label": "GEOADD/GEODIST (geospatial)",
+    "values": [
+      1.694,
+      3.122,
+      4.064,
+      5.178,
+      5.667
+    ],
+    "unit": "M/s"
+  },
+  {
+    "label": "Peak RSS (MiB)",
+    "values": [
+      782.3,
+      794.6,
+      797.1,
+      1296.5,
+      1596.8
+    ],
+    "unit": "MiB"
+  },
+  {
+    "label": "Peak container (MiB)",
+    "values": [
+      805.7,
+      818.0,
+      821.8,
+      1308.2,
+      1609.2
+    ],
+    "unit": "MiB"
+  }
+]

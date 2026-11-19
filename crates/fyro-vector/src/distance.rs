@@ -2,10 +2,32 @@ use crate::DistanceMetric;
 use crate::kernels as simd;
 
 #[inline(always)]
+pub fn fast_rsqrt(x: f32) -> f32 {
+   if x <= 0.0 {
+      return 0.0;
+   }
+   #[cfg(target_arch = "x86_64")]
+   unsafe {
+      use core::arch::x86_64::{_mm_cvtss_f32, _mm_rsqrt_ss, _mm_set_ss};
+      let r = _mm_rsqrt_ss(_mm_set_ss(x));
+      let y = _mm_cvtss_f32(r);
+      y * (1.5 - 0.5 * x * y * y)
+   }
+   #[cfg(not(target_arch = "x86_64"))]
+   {
+      1.0 / x.sqrt()
+   }
+}
+
+#[inline(always)]
 pub fn cosine_f32(a: &[f32], b: &[f32]) -> f32 {
    let ds = simd::dot_self_f32(a, b);
    let na = simd::norm_sq_f32(a);
-   1.0 - ds.dot / (na.sqrt() * ds.b_norm_sq.sqrt())
+   let prod = na * ds.b_norm_sq;
+   if prod <= 0.0 {
+      return 1.0;
+   }
+   1.0 - ds.dot * fast_rsqrt(prod)
 }
 
 #[inline(always)]
@@ -57,16 +79,16 @@ pub fn distance_bytes(metric: DistanceMetric, a: &[u8], b: &[u8]) -> f32 {
 #[derive(Clone, Copy)]
 pub struct QueryDist {
    metric: DistanceMetric,
-   qnorm: f32,
+   inv_qnorm: f32,
 }
 
 impl QueryDist {
    pub fn new(metric: DistanceMetric, query: &[f32]) -> Self {
-      let qnorm = match metric {
-         DistanceMetric::Cosine => simd::norm_sq_f32(query).sqrt().max(1e-10),
+      let inv_qnorm = match metric {
+         DistanceMetric::Cosine => fast_rsqrt(simd::norm_sq_f32(query)),
          _ => 1.0,
       };
-      Self { metric, qnorm }
+      Self { metric, inv_qnorm }
    }
 
    #[inline(always)]
@@ -75,7 +97,7 @@ impl QueryDist {
          DistanceMetric::L2 => simd::l2_f32(query, doc),
          DistanceMetric::Cosine => {
             let ds = simd::dot_self_f32(query, doc);
-            1.0 - ds.dot / (self.qnorm * ds.b_norm_sq.sqrt())
+            1.0 - ds.dot * (self.inv_qnorm * fast_rsqrt(ds.b_norm_sq))
          }
          DistanceMetric::Ip => -simd::dot_f32(query, doc),
       }

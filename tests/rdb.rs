@@ -32,6 +32,33 @@ fn rdb_string_roundtrip() {
 }
 
 #[test]
+fn rdb_preserves_full_width_key_bytes_and_heap_fallback_endings() {
+   let path = tmp_path("full_width_keys");
+   cleanup(&path);
+   let original = store();
+   let mut expected = Vec::new();
+   for terminal in 0..128u8 {
+      let key = format!("{}{}", "k".repeat(15), terminal as char);
+      let value = format!("value:{terminal}");
+      set_str(&original, &key, &value);
+      expected.push((key, value));
+   }
+   for suffix in ['é', '€', '😊'] {
+      let key = format!("{}{suffix}", "u".repeat(16 - suffix.len_utf8()));
+      set_str(&original, &key, "unicode");
+      expected.push((key, "unicode".to_owned()));
+   }
+   rdb::save(&original, &path).unwrap();
+   drop(original);
+   let loaded = store();
+   assert_eq!(rdb::load(&loaded, &path).unwrap(), expected.len());
+   for (key, value) in expected {
+      assert_eq!(loaded.get(&key), Some(value));
+   }
+   cleanup(&path);
+}
+
+#[test]
 fn rdb_hash_roundtrip() {
    let path = tmp_path("hash_roundtrip");
    cleanup(&path);

@@ -11,7 +11,9 @@ use super::key::CompactKey;
 pub const STATE_LOCK: u64 = 1;
 pub const STATE_OCCUPIED: u64 = 1 << 1;
 pub(crate) const STATE_SEQ_ONE: u64 = 1 << 2;
-pub(crate) const STATE_SEQ_MASK: u64 = ((1 << 29) - 1) << 2;
+pub const STATE_SEQ_MASK: u64 = ((1 << 14) - 1) << 2;
+const STATE_READER_ONE: u64 = 1 << 16;
+const STATE_READER_MASK: u64 = ((1 << 15) - 1) << 16;
 pub(crate) const STATE_SNAP: u64 = 1 << 31;
 pub(crate) const STATE_HASH_SHIFT: u32 = 32;
 pub const STATE_MATCH_MASK: u64 = 0xFFFF_FFFF_0000_0000 | STATE_OCCUPIED | STATE_LOCK;
@@ -30,7 +32,7 @@ pub(crate) fn stored_hash(state: u64) -> u64 {
 pub(crate) const LOAD_NUM: usize = 2;
 pub(crate) const LOAD_DEN: usize = 3;
 // Keep idle shards tiny; tables grow lock-free as keys arrive.
-pub(crate) const INITIAL_SHARD_CAPACITY: usize = 32_768;
+pub(crate) const INITIAL_SHARD_CAPACITY: usize = 8_192;
 pub(crate) const GROWING: usize = 1usize << (usize::BITS - 1);
 
 /// Smallest power-of-two capacity holding `live + 1` entries below load factor.
@@ -47,11 +49,51 @@ pub(crate) fn dead_estimate(len: usize, live: usize) -> usize {
    len.saturating_sub(live)
 }
 
-#[repr(C)]
+// Cache-align Entry to 64 bytes to eliminate split-cache-line fetches.
+#[repr(C, align(64))]
 pub struct Entry<V> {
    pub key: CompactKey,
    pub state: AtomicU64,
    pub value: UnsafeCell<std::mem::MaybeUninit<V>>,
+}
+
+pub struct EntryReadGuard<'a, V> {
+   entry: &'a Entry<V>,
+}
+
+impl<V> std::ops::Deref for EntryReadGuard<'_, V> {
+   type Target = V;
+
+   #[inline(always)]
+   fn deref(&self) -> &V {
+      unsafe { (*self.entry.value.get()).assume_init_ref() }
+   }
+}
+
+impl<V> Drop for EntryReadGuard<'_, V> {
+   #[inline(always)]
+   fn drop(&mut self) {
+      // Atomic CAS decrement and last-reader unlock to prevent races
+      // with concurrent readers joining under the lock.
+      let mut current = self.entry.state.load(Ordering::Acquire);
+      loop {
+         let readers = current & STATE_READER_MASK;
+         let next = if readers == STATE_READER_ONE {
+            (current - STATE_READER_ONE) & !STATE_LOCK
+         } else {
+            current - STATE_READER_ONE
+         };
+         match self.entry.state.compare_exchange_weak(
+            current,
+            next,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+         ) {
+            Ok(_) => return,
+            Err(observed) => current = observed,
+         }
+      }
+   }
 }
 
 /// Result of a fused fast slot insert-or-update probe.
@@ -101,6 +143,41 @@ pub(crate) fn alloc_entry<V>(key: CompactKey, state: u64, value: V) -> *mut Entr
 
 impl<V> Entry<V> {
    #[inline(always)]
+   pub fn read(&self) -> Option<EntryReadGuard<'_, V>> {
+      let mut current = self.state.load(Ordering::Relaxed);
+      let mut backoff = 1;
+      loop {
+         if current & STATE_OCCUPIED == 0 {
+            return None;
+         }
+         let readers = current & STATE_READER_MASK;
+         if (current & STATE_LOCK != 0 && readers == 0) || readers == STATE_READER_MASK {
+            for _ in 0..backoff {
+               std::hint::spin_loop();
+            }
+            if backoff < MAX_SPIN_BACKOFF {
+               backoff <<= 1;
+            } else {
+               std::thread::yield_now();
+               backoff = 1;
+            }
+            current = self.state.load(Ordering::Relaxed);
+            continue;
+         }
+         // Readers share the existing lock bit; writers cannot enter until
+         // the final reader releases it. No per-entry allocation is needed.
+         let next = (current + STATE_READER_ONE) | STATE_LOCK;
+         match self
+            .state
+            .compare_exchange_weak(current, next, Ordering::Acquire, Ordering::Relaxed)
+         {
+            Ok(_) => return Some(EntryReadGuard { entry: self }),
+            Err(observed) => current = observed,
+         }
+      }
+   }
+
+   #[inline(always)]
    #[allow(dead_code)]
    pub(crate) fn new(key: CompactKey, state: u64, value: V) -> Self {
       Self {
@@ -121,11 +198,6 @@ impl<V> Drop for Entry<V> {
 
 unsafe impl<V: Send> Send for Entry<V> {}
 unsafe impl<V: Send + Sync> Sync for Entry<V> {}
-
-#[inline]
-pub(crate) fn state_seq(state: u64) -> u32 {
-   ((state & STATE_SEQ_MASK) >> 2) as u32
-}
 
 #[inline(always)]
 pub fn bump_seq(state: u64) -> u64 {
@@ -166,7 +238,7 @@ pub(crate) fn state_lock(state: &AtomicU64) {
    }
 }
 
-const MAX_SPIN_BACKOFF: u32 = 64;
+const MAX_SPIN_BACKOFF: u32 = 1024;
 
 #[cold]
 fn state_lock_slow(state: &AtomicU64) {
@@ -180,6 +252,7 @@ fn state_lock_slow(state: &AtomicU64) {
             backoff <<= 1;
          } else {
             std::thread::yield_now();
+            backoff = 1;
          }
       }
       let current = state.load(Ordering::Relaxed);
@@ -195,6 +268,7 @@ fn state_lock_slow(state: &AtomicU64) {
       {
          return;
       }
+      backoff = 1;
    }
 }
 
@@ -226,6 +300,7 @@ pub(crate) fn write_end(state: &AtomicU64, occupied: bool) {
 
 #[inline(always)]
 pub fn unlock_write(state: &AtomicU64, locked: u64, occupied: bool) {
+   let locked = (locked & !STATE_SNAP) | (state.load(Ordering::Relaxed) & STATE_SNAP);
    let next = if occupied {
       bump_seq(locked) & !STATE_LOCK
    } else {
@@ -331,6 +406,7 @@ impl<V> TaggedSlot<V> {
          .is_ok()
    }
 
+   // Probing loads with Relaxed ordering; issues Acquire fence only upon discovering match.
    #[inline(always)]
    pub(crate) unsafe fn probe_from_base(
       base: *const TaggedSlot<V>,
@@ -340,6 +416,7 @@ impl<V> TaggedSlot<V> {
       let expected_hi = (hash_tag(hash) | (1 << TAG_BITS)) as u16;
       let word0 = unsafe { (*base).0.load(Ordering::Relaxed) } as usize;
       if (word0 >> TAG_SHIFT) as u16 == expected_hi {
+         std::sync::atomic::fence(Ordering::Acquire);
          return (word0 & PTR_MASK) as *mut Entry<V>;
       }
       if word0 == 0 {
@@ -347,6 +424,7 @@ impl<V> TaggedSlot<V> {
       }
       let word1 = unsafe { (*base.add(1)).0.load(Ordering::Relaxed) } as usize;
       if (word1 >> TAG_SHIFT) as u16 == expected_hi {
+         std::sync::atomic::fence(Ordering::Acquire);
          return (word1 & PTR_MASK) as *mut Entry<V>;
       }
       if word1 == 0 {
@@ -354,6 +432,7 @@ impl<V> TaggedSlot<V> {
       }
       let word2 = unsafe { (*base.add(2)).0.load(Ordering::Relaxed) } as usize;
       if (word2 >> TAG_SHIFT) as u16 == expected_hi {
+         std::sync::atomic::fence(Ordering::Acquire);
          return (word2 & PTR_MASK) as *mut Entry<V>;
       }
       if word2 == 0 {
@@ -361,6 +440,7 @@ impl<V> TaggedSlot<V> {
       }
       let word3 = unsafe { (*base.add(3)).0.load(Ordering::Relaxed) } as usize;
       if (word3 >> TAG_SHIFT) as u16 == expected_hi {
+         std::sync::atomic::fence(Ordering::Acquire);
          return (word3 & PTR_MASK) as *mut Entry<V>;
       }
       if word3 == 0 {
@@ -369,6 +449,7 @@ impl<V> TaggedSlot<V> {
       for j in 4..max_probes {
          let word = unsafe { (*base.add(j)).0.load(Ordering::Relaxed) } as usize;
          if (word >> TAG_SHIFT) as u16 == expected_hi {
+            std::sync::atomic::fence(Ordering::Acquire);
             return (word & PTR_MASK) as *mut Entry<V>;
          }
          if word == 0 {
@@ -387,8 +468,9 @@ impl<V> Drop for SlotTable<V> {
       if self.slots.is_null() {
          return;
       }
-      let layout =
-         Layout::array::<TaggedSlot<V>>(self.capacity + 16).expect("slot array layout overflow");
+      let layout = Layout::array::<TaggedSlot<V>>(self.capacity + 16)
+         .and_then(|layout| layout.align_to(64))
+         .expect("slot array layout overflow");
       unsafe {
          rust_zmalloc::dealloc_raw(self.slots.cast(), layout);
       }
@@ -433,7 +515,9 @@ pub(crate) fn alloc_table<V>(table: SlotTable<V>) -> *mut SlotTable<V> {
 impl<V> SlotTable<V> {
    pub(crate) fn new(cap: usize) -> Self {
       let cap = cap.next_power_of_two().max(8);
-      let layout = Layout::array::<TaggedSlot<V>>(cap + 16).expect("slot array layout overflow");
+      let layout = Layout::array::<TaggedSlot<V>>(cap + 16)
+         .and_then(|layout| layout.align_to(64))
+         .expect("slot array layout overflow");
       let slots = unsafe { rust_zmalloc::alloc_raw_zeroed(layout) }.cast::<TaggedSlot<V>>();
       if slots.is_null() {
          std::alloc::handle_alloc_error(layout);
@@ -463,8 +547,39 @@ impl<V> SlotTable<V> {
 
 #[repr(C)]
 pub(crate) struct ShardFast<V> {
-   pub(crate) slots: AtomicPtr<TaggedSlot<V>>,
-   pub(crate) mask: AtomicUsize,
+   packed: AtomicUsize,
+   marker: std::marker::PhantomData<fn() -> V>,
+}
+
+impl<V> ShardFast<V> {
+   fn pack(slots: *mut TaggedSlot<V>, mask: usize) -> usize {
+      debug_assert_eq!(slots as usize & 63, 0);
+      let shift = mask.trailing_ones() as usize;
+      assert!(shift < usize::BITS as usize);
+      slots as usize | shift
+   }
+
+   pub(crate) fn new(slots: *mut TaggedSlot<V>, mask: usize) -> Self {
+      Self {
+         packed: AtomicUsize::new(Self::pack(slots, mask)),
+         marker: std::marker::PhantomData,
+      }
+   }
+
+   #[inline(always)]
+   pub(crate) fn layout(&self) -> (*mut TaggedSlot<V>, usize) {
+      let packed = self.packed.load(Ordering::Acquire);
+      (
+         (packed & !63) as *mut TaggedSlot<V>,
+         (1usize << (packed & 63)) - 1,
+      )
+   }
+
+   pub(crate) fn publish(&self, slots: *mut TaggedSlot<V>, mask: usize) {
+      self
+         .packed
+         .store(Self::pack(slots, mask), Ordering::Release);
+   }
 }
 
 #[repr(align(128))]
@@ -477,7 +592,7 @@ pub(crate) struct Shard<V> {
    pub(crate) len: CachePadded<AtomicUsize>,
    pub(crate) live: CachePadded<AtomicUsize>,
    pub(crate) insert_gate: CachePadded<AtomicUsize>,
-   pub(crate) grow_lock: std::sync::Mutex<()>,
+   pub(crate) grow_lock: parking_lot::Mutex<()>,
    pub(crate) snap: std::sync::Arc<crate::snap::SnapCtl<V>>,
    pub(crate) initial_capacity: usize,
 }
@@ -509,7 +624,7 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
          len: CachePadded::new(AtomicUsize::new(0)),
          live: CachePadded::new(AtomicUsize::new(0)),
          insert_gate: CachePadded::new(AtomicUsize::new(0)),
-         grow_lock: std::sync::Mutex::new(()),
+         grow_lock: parking_lot::Mutex::new(()),
          snap,
          initial_capacity: cap,
       }
@@ -530,10 +645,18 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
 
    #[inline(always)]
    fn enter_insert(&self) -> InsertGuard<'_> {
+      let mut spins: u32 = 0;
       loop {
          let gate = self.insert_gate.load(Ordering::Relaxed);
          if gate & GROWING != 0 {
-            std::hint::spin_loop();
+            spins += 1;
+            // A rehash holds GROWING for the whole rebuild; yield instead of
+            // burning the core once the spin window is spent.
+            if spins <= 64 {
+               std::hint::spin_loop();
+            } else {
+               std::thread::yield_now();
+            }
             continue;
          }
          let val = self.insert_gate.fetch_add(1, Ordering::Acquire);
@@ -544,15 +667,21 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
          }
          self.insert_gate.fetch_sub(1, Ordering::Release);
          while self.insert_gate.load(Ordering::Relaxed) & GROWING != 0 {
-            std::hint::spin_loop();
+            spins += 1;
+            if spins <= 64 {
+               std::hint::spin_loop();
+            } else {
+               std::thread::yield_now();
+            }
          }
       }
    }
 
    #[inline(always)]
    pub(crate) fn find(&self, key: &str, hash: u64) -> Option<&Entry<V>> {
-      let slots = self.slots.load(Ordering::Relaxed);
-      let mask = self.mask.load(Ordering::Relaxed);
+      let table = self.table();
+      let slots = table.slots;
+      let mask = table.mask;
       Self::find_fast(slots, mask, key, hash)
    }
 
@@ -563,44 +692,22 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
       expected_match: u64,
       key: &str,
    ) -> Option<Option<&'a Entry<V>>> {
-      if (w >> TAG_SHIFT) as u16 == expected_hi {
-         let e = unsafe { &*((w & PTR_MASK) as *mut Entry<V>) };
-         let state = e.state.load(Ordering::Relaxed);
-         if (state & STATE_HASH_OCCUPIED_MASK) == expected_match && e.key.eq_str(key) {
-            if state & STATE_LOCK != 0 {
-               let mut cur = state;
-               while cur & STATE_LOCK != 0 {
-                  std::hint::spin_loop();
-                  cur = e.state.load(Ordering::Acquire);
-               }
-               if cur & STATE_OCCUPIED != 0 {
-                  return Some(Some(e));
-               }
-            } else {
-               return Some(Some(e));
-            }
-         }
+      let p = if (w >> TAG_SHIFT) as u16 == expected_hi {
+         (w & PTR_MASK) as *mut Entry<V>
       } else if w == 0 {
          return Some(None);
       } else if (w & TAG_FLAG) == 0 {
-         let e = unsafe { &*(w as *mut Entry<V>) };
-         let state = e.state.load(Ordering::Relaxed);
-         if (state & STATE_HASH_OCCUPIED_MASK) == expected_match && e.key.eq_str(key) {
-            if state & STATE_LOCK != 0 {
-               let mut cur = state;
-               while cur & STATE_LOCK != 0 {
-                  std::hint::spin_loop();
-                  cur = e.state.load(Ordering::Acquire);
-               }
-               if cur & STATE_OCCUPIED != 0 {
-                  return Some(Some(e));
-               }
-            } else {
-               return Some(Some(e));
-            }
-         }
+         w as *mut Entry<V>
+      } else {
+         return None;
+      };
+      let e = unsafe { &*p };
+      let state = e.state.load(Ordering::Relaxed);
+      if (state & STATE_HASH_OCCUPIED_MASK) == expected_match && e.key.eq_str(key) {
+         Some(Some(e))
+      } else {
+         None
       }
-      None
    }
 
    pub(crate) fn find_fast<'a>(
@@ -618,13 +725,90 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
       let base_ptr = unsafe { slots.add(base_idx) };
 
       for j in 0..16 {
-         let w = unsafe { (*base_ptr.add(j)).0.load(Ordering::Relaxed) } as usize;
+         let w = unsafe { (*base_ptr.add(j)).0.load(Ordering::Acquire) } as usize;
          if let Some(res) = unsafe { Self::check_slot_entry(w, expected_hi, expected_match, key) } {
             return res;
          }
       }
 
       Self::find_slow(key, mask, slots, base_idx + 16, expected_hi, expected_match)
+   }
+
+   /// Bytes-key variant of `find_fast`.
+   pub(crate) fn find_fast_bytes<'a>(
+      slots: *mut TaggedSlot<V>,
+      mask: usize,
+      key: &[u8],
+      hash: u64,
+   ) -> Option<&'a Entry<V>> {
+      let expected_hi = (hash_tag(hash) | (1 << TAG_BITS)) as u16;
+      let expected_match = hash_bits(hash) | STATE_OCCUPIED;
+      let base_idx = (hash as usize) & mask;
+      if base_idx + 16 > mask + 1 {
+         return Self::find_slow_bytes(key, mask, slots, base_idx, expected_hi, expected_match);
+      }
+      let base_ptr = unsafe { slots.add(base_idx) };
+
+      for j in 0..16 {
+         let w = unsafe { (*base_ptr.add(j)).0.load(Ordering::Acquire) } as usize;
+         if let Some(res) =
+            unsafe { Self::check_slot_entry_bytes(w, expected_hi, expected_match, key) }
+         {
+            return res;
+         }
+      }
+
+      Self::find_slow_bytes(key, mask, slots, base_idx + 16, expected_hi, expected_match)
+   }
+
+   #[cold]
+   fn find_slow_bytes<'a>(
+      key: &[u8],
+      mask: usize,
+      slots: *mut TaggedSlot<V>,
+      start_idx: usize,
+      expected_hi: u16,
+      expected_match: u64,
+   ) -> Option<&'a Entry<V>> {
+      let cap = mask + 1;
+      let mut i = start_idx & mask;
+      let mut probes = 0;
+      while probes < cap {
+         let w = unsafe { (*slots.add(i)).0.load(Ordering::Acquire) } as usize;
+         if let Some(res) =
+            unsafe { Self::check_slot_entry_bytes(w, expected_hi, expected_match, key) }
+         {
+            return res;
+         }
+         i = (i + 1) & mask;
+         probes += 1;
+      }
+      None
+   }
+
+   #[inline(always)]
+   unsafe fn check_slot_entry_bytes<'a>(
+      w: usize,
+      expected_hi: u16,
+      expected_match: u64,
+      key: &[u8],
+   ) -> Option<Option<&'a Entry<V>>> {
+      let p = if (w >> TAG_SHIFT) as u16 == expected_hi {
+         (w & PTR_MASK) as *mut Entry<V>
+      } else if w == 0 {
+         return Some(None);
+      } else if (w & TAG_FLAG) == 0 {
+         w as *mut Entry<V>
+      } else {
+         return None;
+      };
+      let e = unsafe { &*p };
+      let state = e.state.load(Ordering::Relaxed);
+      if (state & STATE_HASH_OCCUPIED_MASK) == expected_match && e.key.eq_bytes(key) {
+         Some(Some(e))
+      } else {
+         None
+      }
    }
 
    #[cold]
@@ -640,7 +824,7 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
       let mut i = start_idx & mask;
       let mut probes = 0;
       while probes < cap {
-         let w = unsafe { (*slots.add(i)).0.load(Ordering::Relaxed) } as usize;
+         let w = unsafe { (*slots.add(i)).0.load(Ordering::Acquire) } as usize;
          if let Some(res) = unsafe { Self::check_slot_entry(w, expected_hi, expected_match, key) } {
             return res;
          }
@@ -660,8 +844,9 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
    #[allow(dead_code)]
    #[inline(always)]
    pub(crate) fn get_pinned(&self, key: &str, hash: u64) -> Option<V> {
-      let slots = self.slots.load(Ordering::Relaxed);
-      let mask = self.mask.load(Ordering::Relaxed);
+      let table = self.table();
+      let slots = table.slots;
+      let mask = table.mask;
       Self::get_pinned_fast(slots, mask, key, hash)
    }
 
@@ -680,119 +865,109 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
       }
       let base_ptr = unsafe { slots.add(base_idx) };
 
-      let w0 = unsafe { (*base_ptr).0.load(Ordering::Relaxed) } as usize;
+      let w0 = unsafe { (*base_ptr).0.load(Ordering::Acquire) } as usize;
       if (w0 >> TAG_SHIFT) as u16 == expected_hi {
          let p = (w0 & PTR_MASK) as *mut Entry<V>;
          let e = unsafe { &*p };
-         if (e.state.load(Ordering::Relaxed) & STATE_MATCH_MASK) == expected_match
+         if (e.state.load(Ordering::Relaxed) & STATE_HASH_OCCUPIED_MASK) == expected_match
             && e.key.eq_str(key)
          {
-            std::sync::atomic::fence(Ordering::Acquire);
-            return Some(unsafe { (*e.value.get()).assume_init_ref().clone() });
+            return e.read().map(|value| value.clone());
          }
       } else if w0 == 0 {
          return None;
       } else if (w0 & TAG_FLAG) == 0 {
          let p = w0 as *mut Entry<V>;
          let e = unsafe { &*p };
-         if (e.state.load(Ordering::Relaxed) & STATE_MATCH_MASK) == expected_match
+         if (e.state.load(Ordering::Relaxed) & STATE_HASH_OCCUPIED_MASK) == expected_match
             && e.key.eq_str(key)
          {
-            std::sync::atomic::fence(Ordering::Acquire);
-            return Some(unsafe { (*e.value.get()).assume_init_ref().clone() });
+            return e.read().map(|value| value.clone());
          }
       }
 
-      let w1 = unsafe { (*base_ptr.add(1)).0.load(Ordering::Relaxed) } as usize;
+      let w1 = unsafe { (*base_ptr.add(1)).0.load(Ordering::Acquire) } as usize;
       if (w1 >> TAG_SHIFT) as u16 == expected_hi {
          let p = (w1 & PTR_MASK) as *mut Entry<V>;
          let e = unsafe { &*p };
-         if (e.state.load(Ordering::Relaxed) & STATE_MATCH_MASK) == expected_match
+         if (e.state.load(Ordering::Relaxed) & STATE_HASH_OCCUPIED_MASK) == expected_match
             && e.key.eq_str(key)
          {
-            std::sync::atomic::fence(Ordering::Acquire);
-            return Some(unsafe { (*e.value.get()).assume_init_ref().clone() });
+            return e.read().map(|value| value.clone());
          }
       } else if w1 == 0 {
          return None;
       } else if (w1 & TAG_FLAG) == 0 {
          let p = w1 as *mut Entry<V>;
          let e = unsafe { &*p };
-         if (e.state.load(Ordering::Relaxed) & STATE_MATCH_MASK) == expected_match
+         if (e.state.load(Ordering::Relaxed) & STATE_HASH_OCCUPIED_MASK) == expected_match
             && e.key.eq_str(key)
          {
-            std::sync::atomic::fence(Ordering::Acquire);
-            return Some(unsafe { (*e.value.get()).assume_init_ref().clone() });
+            return e.read().map(|value| value.clone());
          }
       }
 
-      let w2 = unsafe { (*base_ptr.add(2)).0.load(Ordering::Relaxed) } as usize;
+      let w2 = unsafe { (*base_ptr.add(2)).0.load(Ordering::Acquire) } as usize;
       if (w2 >> TAG_SHIFT) as u16 == expected_hi {
          let p = (w2 & PTR_MASK) as *mut Entry<V>;
          let e = unsafe { &*p };
-         if (e.state.load(Ordering::Relaxed) & STATE_MATCH_MASK) == expected_match
+         if (e.state.load(Ordering::Relaxed) & STATE_HASH_OCCUPIED_MASK) == expected_match
             && e.key.eq_str(key)
          {
-            std::sync::atomic::fence(Ordering::Acquire);
-            return Some(unsafe { (*e.value.get()).assume_init_ref().clone() });
+            return e.read().map(|value| value.clone());
          }
       } else if w2 == 0 {
          return None;
       } else if (w2 & TAG_FLAG) == 0 {
          let p = w2 as *mut Entry<V>;
          let e = unsafe { &*p };
-         if (e.state.load(Ordering::Relaxed) & STATE_MATCH_MASK) == expected_match
+         if (e.state.load(Ordering::Relaxed) & STATE_HASH_OCCUPIED_MASK) == expected_match
             && e.key.eq_str(key)
          {
-            std::sync::atomic::fence(Ordering::Acquire);
-            return Some(unsafe { (*e.value.get()).assume_init_ref().clone() });
+            return e.read().map(|value| value.clone());
          }
       }
 
-      let w3 = unsafe { (*base_ptr.add(3)).0.load(Ordering::Relaxed) } as usize;
+      let w3 = unsafe { (*base_ptr.add(3)).0.load(Ordering::Acquire) } as usize;
       if (w3 >> TAG_SHIFT) as u16 == expected_hi {
          let p = (w3 & PTR_MASK) as *mut Entry<V>;
          let e = unsafe { &*p };
-         if (e.state.load(Ordering::Relaxed) & STATE_MATCH_MASK) == expected_match
+         if (e.state.load(Ordering::Relaxed) & STATE_HASH_OCCUPIED_MASK) == expected_match
             && e.key.eq_str(key)
          {
-            std::sync::atomic::fence(Ordering::Acquire);
-            return Some(unsafe { (*e.value.get()).assume_init_ref().clone() });
+            return e.read().map(|value| value.clone());
          }
       } else if w3 == 0 {
          return None;
       } else if (w3 & TAG_FLAG) == 0 {
          let p = w3 as *mut Entry<V>;
          let e = unsafe { &*p };
-         if (e.state.load(Ordering::Relaxed) & STATE_MATCH_MASK) == expected_match
+         if (e.state.load(Ordering::Relaxed) & STATE_HASH_OCCUPIED_MASK) == expected_match
             && e.key.eq_str(key)
          {
-            std::sync::atomic::fence(Ordering::Acquire);
-            return Some(unsafe { (*e.value.get()).assume_init_ref().clone() });
+            return e.read().map(|value| value.clone());
          }
       }
 
       for j in 4..16 {
-         let w = unsafe { (*base_ptr.add(j)).0.load(Ordering::Relaxed) } as usize;
+         let w = unsafe { (*base_ptr.add(j)).0.load(Ordering::Acquire) } as usize;
          if (w >> TAG_SHIFT) as u16 == expected_hi {
             let p = (w & PTR_MASK) as *mut Entry<V>;
             let e = unsafe { &*p };
-            if (e.state.load(Ordering::Relaxed) & STATE_MATCH_MASK) == expected_match
+            if (e.state.load(Ordering::Relaxed) & STATE_HASH_OCCUPIED_MASK) == expected_match
                && e.key.eq_str(key)
             {
-               std::sync::atomic::fence(Ordering::Acquire);
-               return Some(unsafe { (*e.value.get()).assume_init_ref().clone() });
+               return e.read().map(|value| value.clone());
             }
          } else if w == 0 {
             return None;
          } else if (w & TAG_FLAG) == 0 {
             let p = w as *mut Entry<V>;
             let e = unsafe { &*p };
-            if (e.state.load(Ordering::Relaxed) & STATE_MATCH_MASK) == expected_match
+            if (e.state.load(Ordering::Relaxed) & STATE_HASH_OCCUPIED_MASK) == expected_match
                && e.key.eq_str(key)
             {
-               std::sync::atomic::fence(Ordering::Acquire);
-               return Some(unsafe { (*e.value.get()).assume_init_ref().clone() });
+               return e.read().map(|value| value.clone());
             }
          }
       }
@@ -813,26 +988,24 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
       let mut i = start_idx & mask;
       let mut probes = 0;
       while probes < cap {
-         let w = unsafe { (*slots.add(i)).0.load(Ordering::Relaxed) } as usize;
+         let w = unsafe { (*slots.add(i)).0.load(Ordering::Acquire) } as usize;
          if (w >> TAG_SHIFT) as u16 == expected_hi {
             let p = (w & PTR_MASK) as *mut Entry<V>;
             let e = unsafe { &*p };
-            if (e.state.load(Ordering::Relaxed) & STATE_MATCH_MASK) == expected_match
+            if (e.state.load(Ordering::Relaxed) & STATE_HASH_OCCUPIED_MASK) == expected_match
                && e.key.eq_str(key)
             {
-               std::sync::atomic::fence(Ordering::Acquire);
-               return Some(unsafe { (*e.value.get()).assume_init_ref().clone() });
+               return e.read().map(|value| value.clone());
             }
          } else if w == 0 {
             return None;
          } else if (w & TAG_FLAG) == 0 {
             let p = w as *mut Entry<V>;
             let e = unsafe { &*p };
-            if (e.state.load(Ordering::Relaxed) & STATE_MATCH_MASK) == expected_match
+            if (e.state.load(Ordering::Relaxed) & STATE_HASH_OCCUPIED_MASK) == expected_match
                && e.key.eq_str(key)
             {
-               std::sync::atomic::fence(Ordering::Acquire);
-               return Some(unsafe { (*e.value.get()).assume_init_ref().clone() });
+               return e.read().map(|value| value.clone());
             }
          }
          i = (i + 1) & mask;
@@ -847,215 +1020,203 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
       hash: u64,
       key: &str,
       value: V,
+      _pin: &ebr::Guard,
    ) -> InsertFastResult<V> {
       if self.insert_gate.load(Ordering::Relaxed) & GROWING != 0 {
          return InsertFastResult::Fallback(value);
       }
-      let mask = self.mask.load(Ordering::Relaxed);
-      let slots = self.slots.load(Ordering::Relaxed);
-      let base_idx = (hash as usize) & mask;
+      let table_ptr = self.table.load(Ordering::Acquire);
+      let table = unsafe { &*table_ptr };
+      let base = (hash as usize) & table.mask;
       let expected_hi = (hash_tag(hash) | (1 << TAG_BITS)) as u16;
-      let expected_match = hash_bits(hash) | STATE_OCCUPIED;
-
-      // Fast unrolled probe 0: check primary base slot directly
-      let slot0 = unsafe { &*slots.add(base_idx) };
-      let word0 = slot0.0.load(Ordering::Relaxed) as usize;
-      if word0 == 0 {
-         let entry = alloc_entry(
-            CompactKey::from_str(key),
-            self.snap.fresh_state() | hash_bits(hash),
-            value,
-         );
-         if slot0.claim(entry, hash) {
-            let new_len = self.len.fetch_add(1, Ordering::Relaxed) + 1;
-            if new_len >= self.threshold.load(Ordering::Relaxed) {
-               self.grow();
-            }
-            return InsertFastResult::Inserted;
-         }
-         return self.insert_or_update_remaining(
-            hash,
-            key,
-            entry,
-            base_idx,
-            mask,
-            slots,
-            expected_hi,
-            expected_match,
-         );
-      } else if (word0 >> TAG_SHIFT) as u16 == expected_hi {
-         let p = (word0 & PTR_MASK) as *mut Entry<V>;
-         let e = unsafe { &*p };
-         let current = e.state.load(Ordering::Relaxed);
-         if (current & STATE_MATCH_MASK) == expected_match && e.key.eq_str(key) {
-            let locked = bump_seq(current) | STATE_LOCK;
-            if e
-               .state
-               .compare_exchange_weak(current, locked, Ordering::Acquire, Ordering::Relaxed)
-               .is_ok()
-            {
-               self.snap.before_write(e);
-               unsafe { (*e.value.get()).assume_init_drop() };
-               unsafe { (*e.value.get()).write(value) };
-               unlock_write(&e.state, locked, true);
-               return InsertFastResult::Updated;
-            }
-         }
-      }
-
-      self.insert_or_update_from_offset1(
-         hash,
-         key,
-         value,
-         base_idx,
-         mask,
-         slots,
-         expected_hi,
-         expected_match,
-      )
-   }
-
-   #[allow(clippy::too_many_arguments)]
-   #[inline(always)]
-   fn insert_or_update_from_offset1(
-      &self,
-      hash: u64,
-      key: &str,
-      value: V,
-      base_idx: usize,
-      mask: usize,
-      slots: *mut TaggedSlot<V>,
-      expected_hi: u16,
-      expected_match: u64,
-   ) -> InsertFastResult<V> {
-      let mut allocated: *mut Entry<V> = ptr::null_mut();
-      let mut val_opt = Some(value);
-      for offset in 1..16usize {
-         let slot = unsafe { &*slots.add((base_idx + offset) & mask) };
-         let word = slot.0.load(Ordering::Relaxed) as usize;
+      for offset in 0..16 {
+         let slot = unsafe { table.slot((base + offset) & table.mask) };
+         let word = slot.0.load(Ordering::Acquire) as usize;
          if word == 0 {
-            let entry = if !allocated.is_null() {
-               allocated
-            } else {
-               let e = alloc_entry(
-                  CompactKey::from_str(key),
-                  self.snap.fresh_state() | hash_bits(hash),
-                  val_opt.take().expect("value taken once"),
-               );
-               allocated = e;
-               e
-            };
+            let insert_guard = self.enter_insert();
+            if self.table.load(Ordering::Acquire) != table_ptr
+               || self.len.load(Ordering::Relaxed) >= table.threshold
+            {
+               return InsertFastResult::Fallback(value);
+            }
+            let entry = alloc_entry(
+               CompactKey::from_str(key),
+               self.snap.fresh_state() | hash_bits(hash),
+               value,
+            );
             if slot.claim(entry, hash) {
                let new_len = self.len.fetch_add(1, Ordering::Relaxed) + 1;
-               if new_len >= self.threshold.load(Ordering::Relaxed) {
+               drop(insert_guard);
+               if new_len >= table.threshold {
                   self.grow();
                }
                return InsertFastResult::Inserted;
             }
-         } else if (word >> TAG_SHIFT) as u16 == expected_hi {
-            let p = (word & PTR_MASK) as *mut Entry<V>;
-            let e = unsafe { &*p };
-            let current = e.state.load(Ordering::Relaxed);
-            if (current & STATE_MATCH_MASK) == expected_match && e.key.eq_str(key) {
-               let upd_val = if !allocated.is_null() {
-                  let v = unsafe { (*(*allocated).value.get()).assume_init_read() };
-                  unsafe {
-                     rust_zmalloc::dealloc_raw(allocated.cast(), Layout::new::<Entry<V>>());
-                  }
-                  allocated = ptr::null_mut();
-                  v
-               } else {
-                  val_opt.take().expect("value taken once")
-               };
-               let locked = bump_seq(current) | STATE_LOCK;
-               if e
-                  .state
-                  .compare_exchange_weak(current, locked, Ordering::Acquire, Ordering::Relaxed)
-                  .is_ok()
-               {
-                  self.snap.before_write(e);
-                  unsafe { (*e.value.get()).assume_init_drop() };
-                  unsafe { (*e.value.get()).write(upd_val) };
-                  unlock_write(&e.state, locked, true);
+            let value = unsafe { (*(*entry).value.get()).assume_init_read() };
+            unsafe {
+               state_set_occupied(&(*entry).state, false, Ordering::Relaxed);
+               drop_raw_entry::<V>(entry.cast());
+            }
+            return InsertFastResult::Fallback(value);
+         }
+         let p = if (word >> TAG_SHIFT) as u16 == expected_hi {
+            (word & PTR_MASK) as *mut Entry<V>
+         } else if word & TAG_FLAG == 0 {
+            word as *mut Entry<V>
+         } else {
+            continue;
+         };
+         let entry = unsafe { &*p };
+         let state = entry.state.load(Ordering::Relaxed);
+         if stored_hash(state) != hash as u32 as u64 || !entry.key.eq_str(key) {
+            continue;
+         }
+         let mut current_state = state;
+         let mut backoff = 1u32;
+         for _ in 0..256 {
+            while current_state & STATE_LOCK != 0 {
+               for _ in 0..backoff {
+                  std::hint::spin_loop();
+               }
+               if backoff < 64 {
+                  backoff <<= 1;
+               }
+               current_state = entry.state.load(Ordering::Relaxed);
+            }
+            if current_state & STATE_OCCUPIED == 0 {
+               break;
+            }
+            let locked = bump_seq(current_state) | STATE_LOCK;
+            match entry.state.compare_exchange_weak(
+               current_state,
+               locked,
+               Ordering::Acquire,
+               Ordering::Relaxed,
+            ) {
+               Ok(_) => {
+                  self.snap.before_write(entry);
+                  unsafe { (*entry.value.get()).assume_init_drop() };
+                  unsafe { (*entry.value.get()).write(value) };
+                  unlock_write(&entry.state, locked, true);
                   return InsertFastResult::Updated;
                }
-               val_opt = Some(upd_val);
+               Err(observed) => {
+                  current_state = observed;
+                  for _ in 0..backoff {
+                     std::hint::spin_loop();
+                  }
+                  if backoff < 64 {
+                     backoff <<= 1;
+                  }
+               }
             }
          }
+         return InsertFastResult::Fallback(value);
       }
-      if !allocated.is_null() {
-         let val = unsafe { (*(*allocated).value.get()).assume_init_read() };
-         unsafe {
-            rust_zmalloc::dealloc_raw(allocated.cast(), Layout::new::<Entry<V>>());
-         }
-         return InsertFastResult::Fallback(val);
-      }
-      InsertFastResult::Fallback(val_opt.expect("value intact"))
+      InsertFastResult::Fallback(value)
    }
 
-   #[allow(clippy::too_many_arguments)]
+   /// Bytes-key variant of `insert_or_update_slot_fast`.
    #[inline(always)]
-   fn insert_or_update_remaining(
+   pub(crate) fn insert_or_update_slot_fast_bytes(
       &self,
       hash: u64,
-      key: &str,
-      allocated: *mut Entry<V>,
-      base_idx: usize,
-      mask: usize,
-      slots: *mut TaggedSlot<V>,
-      expected_hi: u16,
-      expected_match: u64,
+      key: &[u8],
+      value: V,
+      _pin: &ebr::Guard,
    ) -> InsertFastResult<V> {
-      for offset in 1..16usize {
-         let slot = unsafe { &*slots.add((base_idx + offset) & mask) };
-         let word = slot.0.load(Ordering::Relaxed) as usize;
+      if self.insert_gate.load(Ordering::Relaxed) & GROWING != 0 {
+         return InsertFastResult::Fallback(value);
+      }
+      let table_ptr = self.table.load(Ordering::Acquire);
+      let table = unsafe { &*table_ptr };
+      let base = (hash as usize) & table.mask;
+      let expected_hi = (hash_tag(hash) | (1 << TAG_BITS)) as u16;
+      for offset in 0..16 {
+         let slot = unsafe { table.slot((base + offset) & table.mask) };
+         let word = slot.0.load(Ordering::Acquire) as usize;
          if word == 0 {
-            if slot.claim(allocated, hash) {
+            let insert_guard = self.enter_insert();
+            if self.table.load(Ordering::Acquire) != table_ptr
+               || self.len.load(Ordering::Relaxed) >= table.threshold
+            {
+               return InsertFastResult::Fallback(value);
+            }
+            let entry = alloc_entry(
+               CompactKey::from_bytes(key),
+               self.snap.fresh_state() | hash_bits(hash),
+               value,
+            );
+            if slot.claim(entry, hash) {
                let new_len = self.len.fetch_add(1, Ordering::Relaxed) + 1;
-               if new_len >= self.threshold.load(Ordering::Relaxed) {
+               drop(insert_guard);
+               if new_len >= table.threshold {
                   self.grow();
                }
                return InsertFastResult::Inserted;
             }
-         } else if (word >> TAG_SHIFT) as u16 == expected_hi {
-            let p = (word & PTR_MASK) as *mut Entry<V>;
-            let e = unsafe { &*p };
-            let current = e.state.load(Ordering::Relaxed);
-            if (current & STATE_MATCH_MASK) == expected_match && e.key.eq_str(key) {
-               let val = unsafe { (*(*allocated).value.get()).assume_init_read() };
-               unsafe {
-                  rust_zmalloc::dealloc_raw(allocated.cast(), Layout::new::<Entry<V>>());
+            let value = unsafe { (*(*entry).value.get()).assume_init_read() };
+            unsafe {
+               state_set_occupied(&(*entry).state, false, Ordering::Relaxed);
+               drop_raw_entry::<V>(entry.cast());
+            }
+            return InsertFastResult::Fallback(value);
+         }
+         let p = if (word >> TAG_SHIFT) as u16 == expected_hi {
+            (word & PTR_MASK) as *mut Entry<V>
+         } else if word & TAG_FLAG == 0 {
+            word as *mut Entry<V>
+         } else {
+            continue;
+         };
+         let entry = unsafe { &*p };
+         let state = entry.state.load(Ordering::Relaxed);
+         if stored_hash(state) != hash as u32 as u64 || !entry.key.eq_bytes(key) {
+            continue;
+         }
+         let mut current_state = state;
+         let mut backoff = 1u32;
+         for _ in 0..256 {
+            while current_state & STATE_LOCK != 0 {
+               for _ in 0..backoff {
+                  std::hint::spin_loop();
                }
-               let locked = bump_seq(current) | STATE_LOCK;
-               if e
-                  .state
-                  .compare_exchange_weak(current, locked, Ordering::Acquire, Ordering::Relaxed)
-                  .is_ok()
-               {
-                  self.snap.before_write(e);
-                  unsafe { (*e.value.get()).assume_init_drop() };
-                  unsafe { (*e.value.get()).write(val) };
-                  unlock_write(&e.state, locked, true);
+               if backoff < 64 {
+                  backoff <<= 1;
+               }
+               current_state = entry.state.load(Ordering::Relaxed);
+            }
+            if current_state & STATE_OCCUPIED == 0 {
+               break;
+            }
+            let locked = bump_seq(current_state) | STATE_LOCK;
+            match entry.state.compare_exchange_weak(
+               current_state,
+               locked,
+               Ordering::Acquire,
+               Ordering::Relaxed,
+            ) {
+               Ok(_) => {
+                  self.snap.before_write(entry);
+                  unsafe { (*entry.value.get()).assume_init_drop() };
+                  unsafe { (*entry.value.get()).write(value) };
+                  unlock_write(&entry.state, locked, true);
                   return InsertFastResult::Updated;
                }
-               return InsertFastResult::Fallback(val);
+               Err(observed) => {
+                  current_state = observed;
+                  for _ in 0..backoff {
+                     std::hint::spin_loop();
+                  }
+                  if backoff < 64 {
+                     backoff <<= 1;
+                  }
+               }
             }
          }
+         return InsertFastResult::Fallback(value);
       }
-      let val = unsafe { (*(*allocated).value.get()).assume_init_read() };
-      unsafe {
-         rust_zmalloc::dealloc_raw(allocated.cast(), Layout::new::<Entry<V>>());
-      }
-      InsertFastResult::Fallback(val)
-   }
-
-   #[allow(dead_code)]
-   #[inline(always)]
-   pub(crate) fn insert_slot_fast(&self, hash: u64, key: &str, value: V) -> bool {
-      match self.insert_or_update_slot_fast(hash, key, value) {
-         InsertFastResult::Inserted | InsertFastResult::Updated => true,
-         InsertFastResult::Fallback(_) => false,
-      }
+      InsertFastResult::Fallback(value)
    }
 
    /// Single-pass lookup-or-insert: returns existing entry or claims empty slot.
@@ -1064,49 +1225,44 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
    where
       F: FnOnce() -> V,
    {
+      self.probe_or_insert_bytes(hash, key.as_bytes(), make_value)
+   }
+
+   /// Bytes-key variant of `probe_or_insert`.
+   #[inline(always)]
+   pub(crate) fn probe_or_insert_bytes<F>(&self, hash: u64, key: &[u8], make_value: F) -> FastSet<V>
+   where
+      F: FnOnce() -> V,
+   {
       let table_ptr = self.table.load(Ordering::Acquire);
       let t = unsafe { &*table_ptr };
       let base_idx = (hash as usize) & t.mask;
-      let base_ptr = unsafe { t.slots.add(base_idx) };
       let expected_hi = (hash_tag(hash) | (1 << TAG_BITS)) as u16;
-      let expected_match = hash_bits(hash) | STATE_OCCUPIED;
-      let mut vacant = usize::MAX;
-
-      let w0 = unsafe { (*base_ptr).0.load(Ordering::Relaxed) } as usize;
-      if (w0 >> TAG_SHIFT) as u16 == expected_hi {
-         let p = (w0 & PTR_MASK) as *mut Entry<V>;
-         let e = unsafe { &*p };
-         let state = e.state.load(Ordering::Relaxed);
-         if (state & STATE_MATCH_MASK) == expected_match && e.key.eq_str(key) {
-            return FastSet::Existing(p);
+      let mut vacant = None;
+      for offset in 0..16.min(t.capacity) {
+         let idx = (base_idx + offset) & t.mask;
+         let word = unsafe { t.slot(idx) }.0.load(Ordering::Acquire) as usize;
+         if word == 0 {
+            vacant = Some(idx);
+            break;
          }
-      } else if w0 == 0 && base_idx < t.capacity {
-         vacant = 0;
-      }
-
-      if vacant == usize::MAX && w0 != 0 {
-         for j in 1..16usize {
-            let slot = unsafe { &*base_ptr.add(j) };
-            let word = slot.0.load(Ordering::Relaxed) as usize;
-            if (word >> TAG_SHIFT) as u16 == expected_hi {
-               let p = (word & PTR_MASK) as *mut Entry<V>;
-               let e = unsafe { &*p };
-               let state = e.state.load(Ordering::Relaxed);
-               if (state & STATE_MATCH_MASK) == expected_match && e.key.eq_str(key) {
-                  return FastSet::Existing(p);
-               }
-            } else if word == 0 {
-               if base_idx + j < t.capacity {
-                  vacant = j;
-               }
-               break;
-            }
+         if word & TAG_FLAG != 0 && (word >> TAG_SHIFT) as u16 != expected_hi {
+            continue;
+         }
+         let ptr = TaggedSlot::<V>::decode(word);
+         let entry = unsafe { &*ptr };
+         let state = entry.state.load(Ordering::Relaxed);
+         if stored_hash(state) == hash as u32 as u64 && entry.key.eq_bytes(key) {
+            return if state & STATE_OCCUPIED != 0 {
+               FastSet::Existing(ptr)
+            } else {
+               FastSet::Retry
+            };
          }
       }
-
-      if vacant == usize::MAX {
+      let Some(vacant) = vacant else {
          return FastSet::Retry;
-      }
+      };
 
       let insert_guard = self.enter_insert();
       if self.table.load(Ordering::Acquire) != table_ptr {
@@ -1120,11 +1276,11 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
       }
 
       let entry = alloc_entry(
-         CompactKey::from_str(key),
+         CompactKey::from_bytes(key),
          self.snap.fresh_state() | hash_bits(hash),
          make_value(),
       );
-      let slot = unsafe { t.slot((base_idx + vacant) & t.mask) };
+      let slot = unsafe { t.slot(vacant) };
       if slot.claim(entry, hash) {
          let new_len = self.len.fetch_add(1, Ordering::Relaxed) + 1;
          drop(insert_guard);
@@ -1133,7 +1289,7 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
          }
          return FastSet::Inserted;
       }
-      unsafe { rust_zmalloc::dealloc_raw(entry.cast(), std::alloc::Layout::new::<Entry<V>>()) };
+      unsafe { drop_raw_entry::<V>(entry.cast()) };
       drop(insert_guard);
       FastSet::Retry
    }
@@ -1267,7 +1423,134 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
                drop(insert_guard);
 
                if !was_occupied {
-                  self.len.fetch_add(1, Ordering::Relaxed);
+                  return true;
+               }
+               return false;
+            }
+
+            i = (i + 1) & t.mask;
+         }
+      }
+   }
+
+   /// Bytes-key variant of `set_key_with_overwrite`.
+   pub(crate) fn set_key_with_overwrite_bytes(
+      &self,
+      key: &[u8],
+      hash: u64,
+      value: V,
+      overwrite: bool,
+   ) -> bool {
+      let expected_tag = TAG_FLAG | (hash_tag(hash) << TAG_SHIFT);
+      let expected_hash = hash as u32 as u64;
+      let mut value = Some(value);
+
+      loop {
+         let insert_guard = self.enter_insert();
+         let t = self.table();
+         if self.len.load(Ordering::Relaxed) >= t.threshold {
+            drop(insert_guard);
+            self.grow();
+            continue;
+         }
+
+         let mut i = (hash as usize) & t.mask;
+         let mut entry: *mut Entry<V> = ptr::null_mut();
+         let mut probes = 0usize;
+
+         loop {
+            if probes >= t.capacity {
+               if !entry.is_null() {
+                  let owned_key = unsafe { std::ptr::read(&(*entry).key) };
+                  let extracted_val = unsafe { (*(*entry).value.get()).assume_init_read() };
+                  unsafe {
+                     rust_zmalloc::dealloc_raw(entry.cast(), std::alloc::Layout::new::<Entry<V>>());
+                  }
+                  value = Some(extracted_val);
+                  let _ = owned_key;
+               }
+               drop(insert_guard);
+               self.rehash(t);
+               break;
+            }
+            probes += 1;
+
+            let slot = unsafe { t.slot(i) };
+            let word = slot.0.load(Ordering::Acquire) as usize;
+
+            if word == 0 {
+               if entry.is_null() {
+                  let val = value.take().expect("value taken once");
+                  entry = alloc_entry(
+                     CompactKey::from_bytes(key),
+                     self.snap.fresh_state() | hash_bits(hash),
+                     val,
+                  );
+               }
+
+               if slot.claim(entry, hash) {
+                  let new_len = self.len.fetch_add(1, Ordering::Relaxed) + 1;
+                  drop(insert_guard);
+                  if new_len >= t.threshold {
+                     self.grow();
+                  }
+                  return true;
+               }
+               continue;
+            }
+
+            let is_match = if (word & RESERVED_MASK) == expected_tag {
+               let p = (word & PTR_MASK) as *mut Entry<V>;
+               let e = unsafe { &*p };
+               if stored_hash(e.state.load(Ordering::Relaxed)) == expected_hash
+                  && e.key.eq_bytes(key)
+               {
+                  Some(e)
+               } else {
+                  None
+               }
+            } else if word & TAG_FLAG == 0 {
+               let p = word as *mut Entry<V>;
+               let e = unsafe { &*p };
+               if stored_hash(e.state.load(Ordering::Relaxed)) == expected_hash
+                  && e.key.eq_bytes(key)
+               {
+                  Some(e)
+               } else {
+                  None
+               }
+            } else {
+               None
+            };
+
+            if let Some(e) = is_match {
+               let val = if !entry.is_null() {
+                  let extracted_val = unsafe { (*(*entry).value.get()).assume_init_read() };
+                  unsafe {
+                     state_set_occupied(&(*entry).state, false, Ordering::Relaxed);
+                     drop_raw_entry::<V>(entry.cast());
+                  }
+                  extracted_val
+               } else {
+                  value.take().expect("value taken once")
+               };
+               state_lock(&e.state);
+               let was_occupied = state_occupied(&e.state, Ordering::Relaxed);
+               if !overwrite && was_occupied {
+                  state_unlock(&e.state);
+                  drop(insert_guard);
+                  return false;
+               }
+               self.snap.before_write(e);
+               write_begin(&e.state);
+               if was_occupied {
+                  unsafe { (*e.value.get()).assume_init_drop() };
+               }
+               unsafe { (*e.value.get()).write(val) };
+               write_end(&e.state, true);
+               drop(insert_guard);
+
+               if !was_occupied {
                   return true;
                }
                return false;
@@ -1402,7 +1685,6 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
                drop(insert_guard);
 
                if !was_occupied {
-                  self.len.fetch_add(1, Ordering::Relaxed);
                   return true;
                }
                return false;
@@ -1441,7 +1723,7 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
    }
 
    fn grow(&self) {
-      let _lock = self.grow_lock.lock().unwrap_or_else(|e| e.into_inner());
+      let _lock = self.grow_lock.lock();
 
       let cur_table = self.table();
       if self.len.load(Ordering::Relaxed) < cur_table.threshold {
@@ -1449,8 +1731,14 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
       }
 
       self.insert_gate.fetch_or(GROWING, Ordering::AcqRel);
+      let mut spins: u32 = 0;
       while (self.insert_gate.load(Ordering::Acquire) & !GROWING) != 0 {
-         std::hint::spin_loop();
+         spins += 1;
+         if spins <= 64 {
+            std::hint::spin_loop();
+         } else {
+            std::thread::yield_now();
+         }
       }
       if self.len.load(Ordering::Relaxed) >= self.table().threshold {
          let old_ptr = self.table.load(Ordering::Acquire);
@@ -1471,13 +1759,19 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
    /// Rebuild at current capacity when table is full of tombstones.
    fn rehash(&self, observed: &SlotTable<V>) {
       let observed = observed as *const SlotTable<V>;
-      let _lock = self.grow_lock.lock().unwrap_or_else(|e| e.into_inner());
+      let _lock = self.grow_lock.lock();
       if !std::ptr::eq(self.table.load(Ordering::Acquire), observed) {
          return;
       }
       self.insert_gate.fetch_or(GROWING, Ordering::AcqRel);
+      let mut spins: u32 = 0;
       while (self.insert_gate.load(Ordering::Acquire) & !GROWING) != 0 {
-         std::hint::spin_loop();
+         spins += 1;
+         if spins <= 64 {
+            std::hint::spin_loop();
+         } else {
+            std::thread::yield_now();
+         }
       }
       if std::ptr::eq(self.table.load(Ordering::Acquire), observed) {
          let old_ptr = self.table.load(Ordering::Acquire);
@@ -1494,6 +1788,7 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
       let old_table = unsafe { &*old_ptr };
       let new_table = SlotTable::<V>::new(new_cap);
       let mut live_count = 0usize;
+      let mut retired = Vec::new();
       let old_slots = old_table.slots;
       let old_cap = old_table.capacity;
       let new_slots = new_table.slots;
@@ -1505,7 +1800,7 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
             let next_word = unsafe {
                (*old_slots.add(idx + PREFETCH_AHEAD))
                   .0
-                  .load(Ordering::Relaxed)
+                  .load(Ordering::Acquire)
             } as usize;
             if next_word != 0 {
                let next_p = TaggedSlot::<V>::decode(next_word);
@@ -1520,7 +1815,7 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
          }
 
          let slot = unsafe { &*old_slots.add(idx) };
-         let word = slot.0.load(Ordering::Relaxed) as usize;
+         let word = slot.0.load(Ordering::Acquire) as usize;
          if word == 0 {
             continue;
          }
@@ -1528,7 +1823,7 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
          let e = unsafe { &*p };
          let state = e.state.load(Ordering::Relaxed);
          if (state & STATE_OCCUPIED) == 0 {
-            unsafe { ebr::retire_raw(p.cast(), drop_raw_entry::<V>) };
+            retired.push(p);
             continue;
          }
 
@@ -1538,7 +1833,7 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
          let mut i = (h as usize) & new_mask;
          loop {
             let target_slot = unsafe { &*new_slots.add(i) };
-            if target_slot.0.load(Ordering::Relaxed).is_null() {
+            if target_slot.0.load(Ordering::Acquire).is_null() {
                target_slot.0.store(encoded, Ordering::Relaxed);
                break;
             }
@@ -1558,12 +1853,18 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
       let fast_ptr = self.fast.load(Ordering::Relaxed);
       if !fast_ptr.is_null() {
          unsafe {
-            (*fast_ptr).slots.store(new_slots, Ordering::Release);
-            (*fast_ptr).mask.store(new_mask, Ordering::Release);
+            (*fast_ptr).publish(new_slots, new_mask);
          }
       }
       self.table.store(new_ptr, Ordering::Release);
-      unsafe { ebr::retire_raw(old_ptr.cast(), drop_raw_table::<V>) };
+      unsafe {
+         ebr::retire_with(move || {
+            for entry in retired {
+               drop_raw_entry::<V>(entry.cast());
+            }
+            drop_raw_table::<V>(old_ptr.cast());
+         });
+      }
    }
 }
 
@@ -1590,6 +1891,16 @@ unsafe impl<V: Send> Send for Shard<V> {}
 
 #[cfg(test)]
 mod tests {
+
+   #[test]
+   fn packed_layout_publishes_the_slot_address_and_mask_together() {
+      for capacity in [8, 16, 32, 1024, 32768] {
+         let table = super::SlotTable::<u64>::new(capacity);
+         let fast = super::ShardFast::new(table.slots, table.mask);
+         assert_eq!(fast.layout(), (table.slots, capacity - 1));
+         assert_eq!(table.slots as usize & 63, 0);
+      }
+   }
    use super::*;
 
    /// Contended overwrites must not enter the insert gate: it is a shared

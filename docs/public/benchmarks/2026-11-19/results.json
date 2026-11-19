@@ -1,0 +1,889 @@
+{
+  "metadata": {
+    "date": "2026-11-19",
+    "revision": "021baed488cb023f7f2e84bb3f36c7304dac53f0",
+    "cpu": "Intel Core i5-11400H, 6 physical cores / 12 logical CPUs",
+    "platform": "Linux x86_64",
+    "workers": 12,
+    "rounds": 3,
+    "round_order": [
+      "tcp",
+      "embedded",
+      "repeated_get",
+      "postgres_smoke"
+    ],
+    "method": "Fresh processes per round on a shared workstation. Native TCP uses scripts/bench_local.sh with the release server and the compiled Go client. Embedded uses the Cargo bench profile. No discarded full-suite warmup. Rates shown in docs are medians.",
+    "tcp_rss": "50 ms process sampling. Printed MB and GB are MiB and GiB. Precision reflects the monitor display.",
+    "embedded_rss": "Linux wait4 ru_maxrss, benchmark process including store and driver.",
+    "embedded_counts": "The benchmark credits logical operations for batched calls. Where 12-way integer division truncates the workload, operations is the count scheduled by the loops and harness_reported_operations preserves the printed numerator.",
+    "postgres_note": "The smoke harness uses two cache workers or two TCP clients. Rates are taken from its rounded output."
+  },
+  "throughput": {
+    "tcp": {
+      "Pipeline-64 SET": {
+        "operations": 10000000,
+        "elapsed_ns": [
+          636846526,
+          600325512,
+          628076448
+        ],
+        "ops_per_sec": [
+          15702370.338438496,
+          16657629.569472637,
+          15921628.69956875
+        ]
+      },
+      "Pipelined SET": {
+        "operations": 10000000,
+        "elapsed_ns": [
+          225890665,
+          211874405,
+          229363021
+        ],
+        "ops_per_sec": [
+          44269204.3073139,
+          47197772.661591664,
+          43599007.182592005
+        ]
+      },
+      "Pipelined GET": {
+        "operations": 10000000,
+        "elapsed_ns": [
+          201011339,
+          177259805,
+          202654001
+        ],
+        "ops_per_sec": [
+          49748437.32571723,
+          56414368.72843226,
+          49345189.09399672
+        ]
+      },
+      "Pub/Sub publish": {
+        "operations": 200000,
+        "elapsed_ns": [
+          66515196,
+          59687209,
+          61603444
+        ],
+        "ops_per_sec": [
+          3006831.7020369302,
+          3350801.6767880702,
+          3246571.7338790344
+        ]
+      },
+      "Pub/Sub delivery": {
+        "operations": 10000000,
+        "elapsed_ns": [
+          88872777,
+          72707815,
+          82149321
+        ],
+        "ops_per_sec": [
+          112520395.30620271,
+          137536797.11046192,
+          121729551.48345049
+        ]
+      },
+      "Mixed SET/GET (50/50)": {
+        "operations": 2000000,
+        "elapsed_ns": [
+          56596706,
+          44931125,
+          43836592
+        ],
+        "ops_per_sec": [
+          35337745.62781092,
+          44512573.41097068,
+          45623984.638221875
+        ]
+      },
+      "INCR (atomic counters)": {
+        "operations": 2000000,
+        "elapsed_ns": [
+          18314221,
+          19451135,
+          19064510
+        ],
+        "ops_per_sec": [
+          109204754.05424015,
+          102821763.35725395,
+          104906971.12068446
+        ]
+      },
+      "HSET/HGET (sessions)": {
+        "operations": 2000000,
+        "elapsed_ns": [
+          42389110,
+          40164864,
+          39800970
+        ],
+        "ops_per_sec": [
+          47181929.509725496,
+          49794765.89289584,
+          50250031.59470736
+        ]
+      },
+      "LPUSH/RPOP (queue)": {
+        "operations": 2000000,
+        "elapsed_ns": [
+          29864634,
+          34389906,
+          38816292
+        ],
+        "ops_per_sec": [
+          66968843.48222717,
+          58156599.78832161,
+          51524756.66660793
+        ]
+      },
+      "SADD (per-client sets)": {
+        "operations": 2000000,
+        "elapsed_ns": [
+          36439252,
+          43835199,
+          34978566
+        ],
+        "ops_per_sec": [
+          54885868.67809471,
+          45625434.48245781,
+          57177872.87220408
+        ]
+      },
+      "ZADD (per-client zsets)": {
+        "operations": 2000000,
+        "elapsed_ns": [
+          174019947,
+          112658548,
+          138531729
+        ],
+        "ops_per_sec": [
+          11492935.347233498,
+          17752758.539014723,
+          14437125.80819662
+        ]
+      },
+      "JSON.SET (documents)": {
+        "operations": 2000000,
+        "elapsed_ns": [
+          181839208,
+          144499073,
+          144638393
+        ],
+        "ops_per_sec": [
+          10998728.063091872,
+          13840919.24243694,
+          13827587.257554777
+        ]
+      },
+      "JSON.GET (documents)": {
+        "operations": 2000000,
+        "elapsed_ns": [
+          95787982,
+          66830324,
+          67396469
+        ],
+        "ops_per_sec": [
+          20879446.024867713,
+          29926534.547400966,
+          29675145.147440884
+        ]
+      },
+      "SET+EXPIRE (cache TTL)": {
+        "operations": 2000000,
+        "elapsed_ns": [
+          337105098,
+          334360383,
+          194608225
+        ],
+        "ops_per_sec": [
+          5932867.855946812,
+          5981569.891909114,
+          10277057.919828415
+        ]
+      },
+      "Hot Key (1 key, contention)": {
+        "operations": 10000000,
+        "elapsed_ns": [
+          53736462,
+          55822898,
+          51394066
+        ],
+        "ops_per_sec": [
+          186093382.92498675,
+          179137958.76380333,
+          194574992.37363318
+        ]
+      },
+      "Producer/Consumer (50+50)": {
+        "operations": 2000000,
+        "elapsed_ns": [
+          66149465,
+          57158519,
+          81609244
+        ],
+        "ops_per_sec": [
+          30234560.476037107,
+          34990409.741022155,
+          24507027.65975874
+        ]
+      },
+      "XADD (streams)": {
+        "operations": 2000000,
+        "elapsed_ns": [
+          81072864,
+          82389605,
+          93365094
+        ],
+        "ops_per_sec": [
+          24669166.738700632,
+          24274907.010417152,
+          21421281.919343434
+        ]
+      },
+      "SETBIT/BITCOUNT (bitmap)": {
+        "operations": 2000000,
+        "elapsed_ns": [
+          73192770,
+          62252455,
+          68713357
+        ],
+        "ops_per_sec": [
+          27325103.28547478,
+          32127247.029856093,
+          29106422.496575158
+        ]
+      },
+      "PFADD/PFCOUNT (HyperLogLog)": {
+        "operations": 2000000,
+        "elapsed_ns": [
+          29096947,
+          27321405,
+          33719872
+        ],
+        "ops_per_sec": [
+          68735733.68367478,
+          73202677.53433618,
+          59312206.167330645
+        ]
+      },
+      "GEOADD/GEODIST (geospatial)": {
+        "operations": 2000000,
+        "elapsed_ns": [
+          240743376,
+          197637955,
+          247732501
+        ],
+        "ops_per_sec": [
+          8307601.368853447,
+          10119513.734090196,
+          8073224.1103883255
+        ]
+      },
+      "Vector HSET load": {
+        "operations": 50000,
+        "elapsed_ns": [
+          385560913,
+          346585151,
+          372192096
+        ],
+        "ops_per_sec": [
+          129681.1951474967,
+          144264.69182460735,
+          134339.23110500444
+        ]
+      },
+      "Vector KNN-10": {
+        "operations": 2000,
+        "elapsed_ns": [
+          12133948847,
+          10539225882,
+          12706180082
+        ],
+        "ops_per_sec": [
+          164.8268033118073,
+          189.7672582780307,
+          157.4037190637072
+        ]
+      },
+      "Vector KNN-10 +tag filter": {
+        "operations": 1000,
+        "elapsed_ns": [
+          2700259974,
+          2141919607,
+          2330622226
+        ],
+        "ops_per_sec": [
+          370.33471207539367,
+          466.8709305110722,
+          429.06996631379417
+        ]
+      },
+      "Filter Tag+Num": {
+        "operations": 1000,
+        "elapsed_ns": [
+          267742504,
+          245385639,
+          249353732
+        ],
+        "ops_per_sec": [
+          3734.9318283808984,
+          4075.2181100541097,
+          4010.367087668052
+        ]
+      },
+      "Text term": {
+        "operations": 1000,
+        "elapsed_ns": [
+          17854163,
+          18194352,
+          17917996
+        ],
+        "ops_per_sec": [
+          56009.34639165107,
+          54962.11131894118,
+          55809.812659853254
+        ]
+      },
+      "Text + Tag": {
+        "operations": 1000,
+        "elapsed_ns": [
+          36184432,
+          36021759,
+          35500752
+        ],
+        "ops_per_sec": [
+          27636.194482754352,
+          27760.998567560237,
+          28168.4173901443
+        ]
+      },
+      "Text negation": {
+        "operations": 1000,
+        "elapsed_ns": [
+          50291080,
+          50242754,
+          49622621
+        ],
+        "ops_per_sec": [
+          19884.24189737027,
+          19903.367558235364,
+          20152.09958377652
+        ]
+      },
+      "Vector KNN-10 (8 clients)": {
+        "operations": 2000,
+        "elapsed_ns": [
+          5131037373,
+          5093102641,
+          5775815778
+        ],
+        "ops_per_sec": [
+          389.78472667616643,
+          392.6879430820409,
+          346.27143192793153
+        ]
+      },
+      "Vector HNSW KNN-10": {
+        "operations": 2000,
+        "elapsed_ns": [
+          491250026,
+          416926910,
+          563296494
+        ],
+        "ops_per_sec": [
+          4071.2466038627754,
+          4797.003868136024,
+          3550.528045715122
+        ]
+      },
+      "Vector HNSW M=32 KNN-10": {
+        "operations": 2000,
+        "elapsed_ns": [
+          936145302,
+          1000427341,
+          925087986
+        ],
+        "ops_per_sec": [
+          2136.4204848618683,
+          1999.1456830846448,
+          2161.9565168582785
+        ]
+      }
+    },
+    "embedded": {
+      "Pipeline-64 SET": {
+        "operations": 10000000,
+        "elapsed_ns": [
+          488315591,
+          483572742,
+          515945868
+        ],
+        "ops_per_sec": [
+          20478559.7353577,
+          20679412.0748849,
+          19381878.25549172
+        ]
+      },
+      "Pipelined SET": {
+        "operations": 10000000,
+        "elapsed_ns": [
+          121073272,
+          119146871,
+          124432703
+        ],
+        "ops_per_sec": [
+          82594612.62432885,
+          83930026.16073737,
+          80364725.34073298
+        ]
+      },
+      "Pipelined GET": {
+        "operations": 10000000,
+        "elapsed_ns": [
+          72342487,
+          77673720,
+          80937466
+        ],
+        "ops_per_sec": [
+          138231354.97124946,
+          128743672.89219572,
+          123552175.45357795
+        ]
+      },
+      "Pub/Sub publish": {
+        "operations": 200000,
+        "elapsed_ns": [
+          979207,
+          1026545,
+          1161650
+        ],
+        "ops_per_sec": [
+          204246905.91468403,
+          194828283.2218753,
+          172168897.68863255
+        ]
+      },
+      "Pub/Sub delivery": {
+        "operations": 10000000,
+        "elapsed_ns": [
+          1457746,
+          1494129,
+          1684315
+        ],
+        "ops_per_sec": [
+          6859905635.138083,
+          6692862530.61148,
+          5937131712.298471
+        ]
+      },
+      "Mixed SET/GET (50/50)": {
+        "operations": 2000000,
+        "elapsed_ns": [
+          53889088,
+          53919600,
+          53245504
+        ],
+        "ops_per_sec": [
+          37113264.934080906,
+          37092263.29572178,
+          37561856.86588674
+        ]
+      },
+      "INCR (atomic counters)": {
+        "operations": 2000000,
+        "elapsed_ns": [
+          717325,
+          710870,
+          725906
+        ],
+        "ops_per_sec": [
+          2788136479.2806606,
+          2813453936.725421,
+          2755177667.6318974
+        ]
+      },
+      "HSET/HGET (sessions)": {
+        "operations": 2000000,
+        "elapsed_ns": [
+          6258747,
+          5767296,
+          5998738
+        ],
+        "ops_per_sec": [
+          319552779.4940425,
+          346782963.8014071,
+          333403459.1942505
+        ]
+      },
+      "LPUSH/RPOP (queue)": {
+        "operations": 2000000,
+        "elapsed_ns": [
+          6470144,
+          5998442,
+          5990495
+        ],
+        "ops_per_sec": [
+          309112131.04376036,
+          333419911.3703192,
+          333862226.7442006
+        ]
+      },
+      "SADD (per-client sets)": {
+        "operations": 2000000,
+        "elapsed_ns": [
+          11778709,
+          11587764,
+          10999571
+        ],
+        "ops_per_sec": [
+          169797895.50790328,
+          172595851.96937045,
+          181825273.00382897
+        ]
+      },
+      "ZADD (per-client zsets)": {
+        "operations": 2000000,
+        "elapsed_ns": [
+          74990931,
+          77789936,
+          74460076
+        ],
+        "ops_per_sec": [
+          26669891.589957725,
+          25710266.685397454,
+          26860031.676572558
+        ]
+      },
+      "JSON.SET (documents)": {
+        "operations": 2000000,
+        "elapsed_ns": [
+          100070118,
+          95692187,
+          120352540
+        ],
+        "ops_per_sec": [
+          19985986.226177927,
+          20900347.904056158,
+          16617846.204159878
+        ]
+      },
+      "JSON.GET (documents)": {
+        "operations": 2000000,
+        "elapsed_ns": [
+          37564469,
+          31381451,
+          42657765
+        ],
+        "ops_per_sec": [
+          53241801.44806519,
+          63731916.02899432,
+          46884781.70387033
+        ]
+      },
+      "SET+EXPIRE (cache TTL)": {
+        "operations": 2000000,
+        "elapsed_ns": [
+          91213388,
+          92549787,
+          96290598
+        ],
+        "ops_per_sec": [
+          21926605.774143595,
+          21609990.307162996,
+          20770459.853203945
+        ]
+      },
+      "Hot Key (1 key, contention)": {
+        "operations": 9999996,
+        "elapsed_ns": [
+          516557027,
+          524435123,
+          540038624
+        ],
+        "ops_per_sec": [
+          19358939.047014456,
+          19068127.89882496,
+          18517186.65219027
+        ],
+        "harness_reported_operations": 10000000
+      },
+      "Producer/Consumer (50+50)": {
+        "operations": 1999992,
+        "elapsed_ns": [
+          19250531,
+          19098648,
+          20066861
+        ],
+        "ops_per_sec": [
+          103892822.48889653,
+          104719035.60922219,
+          99666410.2073563
+        ],
+        "harness_reported_operations": 2000000
+      },
+      "XADD (streams)": {
+        "operations": 2000000,
+        "elapsed_ns": [
+          349718143,
+          349465109,
+          288568249
+        ],
+        "ops_per_sec": [
+          5718891.170024313,
+          5723031.995162642,
+          6930769.43472045
+        ]
+      },
+      "SETBIT/BITCOUNT (bitmap)": {
+        "operations": 2000000,
+        "elapsed_ns": [
+          25677322,
+          28135280,
+          25838823
+        ],
+        "ops_per_sec": [
+          77889742.55181284,
+          71085128.70673403,
+          77402906.47139771
+        ]
+      },
+      "PFADD/PFCOUNT (HyperLogLog)": {
+        "operations": 2000000,
+        "elapsed_ns": [
+          6397684,
+          9638010,
+          6372584
+        ],
+        "ops_per_sec": [
+          312613126.875288,
+          207511716.63030022,
+          313844431.081646
+        ]
+      },
+      "GEOADD/GEODIST (geospatial)": {
+        "operations": 2000000,
+        "elapsed_ns": [
+          103615941,
+          133569050,
+          97237289
+        ],
+        "ops_per_sec": [
+          19302049.286026366,
+          14973528.672997225,
+          20568241.058222014
+        ]
+      },
+      "Vector HSET load": {
+        "operations": 49992,
+        "elapsed_ns": [
+          43088800,
+          50637050,
+          44773045
+        ],
+        "ops_per_sec": [
+          1160208.685319619,
+          987261.3037291864,
+          1116564.6651908532
+        ],
+        "harness_reported_operations": 50000
+      },
+      "Vector KNN-10": {
+        "operations": 2000,
+        "elapsed_ns": [
+          10719143600,
+          10732589294,
+          10508557205
+        ],
+        "ops_per_sec": [
+          186.58206985864058,
+          186.34832147337363,
+          190.32108413973276
+        ]
+      },
+      "Vector KNN-10 +tag filter": {
+        "operations": 1000,
+        "elapsed_ns": [
+          578755333,
+          598784500,
+          569731481
+        ],
+        "ops_per_sec": [
+          1727.8458494999302,
+          1670.0499094415436,
+          1755.2128210377057
+        ]
+      },
+      "Filter Tag+Num": {
+        "operations": 1000,
+        "elapsed_ns": [
+          269980818,
+          272528080,
+          272219123
+        ],
+        "ops_per_sec": [
+          3703.9668499708005,
+          3669.346659617607,
+          3673.5112103053834
+        ]
+      },
+      "Text term": {
+        "operations": 1000,
+        "elapsed_ns": [
+          6328312,
+          6325879,
+          6409673
+        ],
+        "ops_per_sec": [
+          158020.0217688382,
+          158080.79794128216,
+          156014.19916429435
+        ]
+      },
+      "Text + Tag": {
+        "operations": 1000,
+        "elapsed_ns": [
+          12049152,
+          12031302,
+          12466935
+        ],
+        "ops_per_sec": [
+          82993.39239807084,
+          83116.5238807903,
+          80212.17725126505
+        ]
+      },
+      "Text negation": {
+        "operations": 1000,
+        "elapsed_ns": [
+          41285795,
+          39297289,
+          41260849
+        ],
+        "ops_per_sec": [
+          24221.405933929575,
+          25447.04801392279,
+          24236.050014385306
+        ]
+      },
+      "Vector KNN-10 (12 clients)": {
+        "operations": 1992,
+        "elapsed_ns": [
+          1869847482,
+          1751417096,
+          1817572577
+        ],
+        "ops_per_sec": [
+          1065.3275302803547,
+          1137.364711438217,
+          1095.9672396069607
+        ],
+        "harness_reported_operations": 2000
+      },
+      "Vector HNSW KNN-10": {
+        "operations": 2000,
+        "elapsed_ns": [
+          333944517,
+          335246968,
+          380140373
+        ],
+        "ops_per_sec": [
+          5989.018828537915,
+          5965.751195101039,
+          5261.214388296505
+        ]
+      },
+      "Vector HNSW M=32 KNN-10": {
+        "operations": 2000,
+        "elapsed_ns": [
+          779504817,
+          1231031612,
+          833983862
+        ],
+        "ops_per_sec": [
+          2565.731418693722,
+          1624.6536486180828,
+          2398.127938835344
+        ]
+      }
+    }
+  },
+  "memory": {
+    "tcp_peak_server_mib": [
+      1085.44,
+      1095.68,
+      1177.6
+    ],
+    "tcp_avg_server_mib": [
+      564.9,
+      544.62,
+      537.92
+    ],
+    "embedded_peak_process_mib": [
+      860.7265625,
+      862.5546875,
+      862.91796875
+    ]
+  },
+  "tcp_recall_at_10": {
+    "flat": [
+      1.0,
+      1.0,
+      1.0
+    ],
+    "flat+tag": [
+      1.0,
+      1.0,
+      1.0
+    ],
+    "hnsw": [
+      0.1,
+      0.3,
+      0.1
+    ],
+    "hnsw M=32": [
+      0.3,
+      0.5,
+      0.4
+    ]
+  },
+  "tcp_recipient_deliveries_per_round": 10000000,
+  "repeated_get": {
+    "operations": 25165824,
+    "keys": 65536,
+    "gets_per_batch": 64,
+    "value_bytes": 5,
+    "ops_per_sec": [
+      1007025901.5067679,
+      868284112.1665583,
+      993709018.989191
+    ]
+  },
+  "postgres_smoke_ops_per_sec": {
+    "In-memory cache lookup": [
+      40990000.0,
+      33400000.0,
+      32640000.0
+    ],
+    "Encoded cache lookup": [
+      35290000.0,
+      37580000.0,
+      39230000.0
+    ],
+    "JOIN parse + cache lookup": [
+      27480000.0,
+      26690000.0,
+      24520000.0
+    ],
+    "Extended protocol TCP": [
+      1170000.0,
+      1450000.0,
+      1610000.0
+    ],
+    "Simple query TCP": [
+      1310000.0,
+      1820000.0,
+      1750000.0
+    ]
+  }
+}

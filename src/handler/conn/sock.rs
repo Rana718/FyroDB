@@ -1,9 +1,8 @@
 use super::*;
 
 impl<'a> Conn<'a> {
-   /// Parse between reads once this much unparsed input has accumulated, so a
-   /// deep pipeline cannot drag the read buffer up to the whole pipeline size.
-   const MAX_READ_AHEAD: usize = 256 * 1024;
+   /// Dispatch buffered pipelines at this size. Incomplete frames can grow past it.
+   const MAX_READ_AHEAD: usize = 128 * 1024;
 
    #[inline]
    fn recv_raw(&self, ptr: *mut u8, len: usize) -> io::Result<usize> {
@@ -31,12 +30,23 @@ impl<'a> Conn<'a> {
          let n = match self.recv_raw(ptr, cap) {
             Ok(0) => return false,
             Ok(n) => n,
+            Err(ref e) if e.kind() == io::ErrorKind::Interrupted => continue,
             Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => break,
             Err(_) => return false,
          };
          self.parser.did_fill(n);
-         if !raw_only && self.parser.pending() >= Self::MAX_READ_AHEAD && !self.process_buffered() {
+         if !raw_only
+            && self.parser.pending() >= Self::MAX_READ_AHEAD
+            && self.parser.filled >= self.parser.min_needed
+            && !self.process_buffered_inner::<true>()
+         {
             return false;
+         }
+         // For large frames or pipelined bursts, continue draining non-blockingly.
+         if (self.parser.min_needed > 0 && self.parser.filled < self.parser.min_needed)
+            || (n >= 8192 && self.parser.pending() < Self::MAX_READ_AHEAD)
+         {
+            continue;
          }
          if n < cap {
             break;
@@ -51,7 +61,7 @@ impl<'a> Conn<'a> {
          return true;
       }
 
-      if !self.process_buffered() {
+      if !self.process_buffered_inner::<true>() {
          return false;
       }
       #[cfg(not(feature = "io-uring"))]
@@ -67,11 +77,21 @@ impl<'a> Conn<'a> {
    /// Parse and execute commands in read buffer, pausing if parked and
    /// preserving unparsed bytes. Returns false on protocol error.
    pub fn process_buffered(&mut self) -> bool {
-      let _guard = customhash::pin();
+      self.process_buffered_inner::<false>()
+   }
+
+   fn process_buffered_inner<const STREAM_IO: bool>(&mut self) -> bool {
+      let pin = customhash::pin();
+      let store = self.store;
+      let mut batch_guard = Some(store.command_guard(self.worker));
       let mut prefetched = 0usize;
-      self.hint_n = 0;
+      let mut read_only = true;
       loop {
+         if batch_guard.is_none() {
+            batch_guard = Some(store.command_guard(self.worker));
+         }
          if self.park.is_some() {
+            drop(batch_guard.take());
             return true;
          }
          if self.parser.pos >= prefetched && !self.parser.in_partial() {
@@ -82,17 +102,43 @@ impl<'a> Conn<'a> {
                let raw_ptr = self.parser.parts_raw.as_ptr();
                let raw_len = self.parser.parts_raw.len();
                let raw = unsafe { std::slice::from_raw_parts(raw_ptr, raw_len) };
-               if self.authenticated && !self.store.cluster.enabled && !self.store.at_key_capacity()
+               let cmd = if raw.is_empty() {
+                  &[][..]
+               } else {
+                  unsafe { part_bytes(raw[0]) }
+               };
+               let id = cmd_id(cmd);
+               read_only &= matches!(id, CmdId::Get | CmdId::JsonGet | CmdId::Hget | CmdId::Ping);
+               if self.authenticated
+                  && (id == CmdId::Other || id == CmdId::Quit || self.mode.in_transaction())
+                  && !matches!(self.mode, ConnMode::Subscribed { .. })
+                  && !raw.is_empty()
                {
-                  let cmd = if raw.is_empty() {
-                     &[][..]
-                  } else {
-                     unsafe { part_bytes(raw[0]) }
-                  };
-                  let id = cmd_id(cmd);
-
+                  if cmd.eq_ignore_ascii_case(b"RESET") || cmd.eq_ignore_ascii_case(b"QUIT") {
+                     self.mode.clear_transaction();
+                  }
+                  if self.mode.in_transaction() || transaction::is_control(cmd) {
+                     if transaction::is_atomic(cmd) {
+                        drop(batch_guard.take());
+                     }
+                     transaction::handle(self, raw);
+                     prefetched = self.parser.pos;
+                     continue;
+                  }
+                  if transaction::is_atomic(cmd) {
+                     drop(batch_guard.take());
+                     dispatch_raw(self, raw);
+                     prefetched = self.parser.pos;
+                     continue;
+                  }
+               }
+               if self.authenticated
+                  && !matches!(self.mode, ConnMode::Subscribed { .. })
+                  && !self.store.cluster.enabled
+                  && !self.store.at_key_capacity()
+               {
                   if id == CmdId::Get && raw.len() == 2 {
-                     dispatch_get_run(self, raw[1]);
+                     dispatch_get_run::<STREAM_IO>(self, raw[1], read_only, &pin);
                      prefetched = self.parser.pos;
                      continue;
                   }
@@ -104,7 +150,7 @@ impl<'a> Conn<'a> {
                            PairOutcome::ConnError => return false,
                         }
                      }
-                     dispatch_set_run(self, raw[1], raw[2]);
+                     dispatch_set_run(self, raw[1], raw[2], &pin);
                      prefetched = self.parser.pos;
                      continue;
                   }
@@ -112,7 +158,25 @@ impl<'a> Conn<'a> {
                      prefetched = self.parser.pos;
                      continue;
                   }
-                  if id == CmdId::JsonGet && dispatch_json_get_run(self, raw) {
+                  if id == CmdId::Hget && raw.len() == 3 {
+                     dispatch_hget_run(self, raw);
+                     prefetched = self.parser.pos;
+                     continue;
+                  }
+                  if id == CmdId::JsonGet && dispatch_json_get_run(self, raw, read_only) {
+                     prefetched = self.parser.pos;
+                     continue;
+                  }
+
+                  if id == CmdId::Setbit && raw.len() == 4 {
+                     dispatch_setbit_run(self, raw);
+                     prefetched = self.parser.pos;
+                     continue;
+                  }
+                  if matches!(id, CmdId::Bitcount | CmdId::Pfcount | CmdId::Geodist)
+                     && raw.len() <= 8
+                  {
+                     dispatch_repeated_read_run(self, raw);
                      prefetched = self.parser.pos;
                      continue;
                   }
@@ -146,13 +210,25 @@ impl<'a> Conn<'a> {
          }
       }
 
-      self.hint_n = 0;
       self.parser.release_read_buffer();
 
       true
    }
 
+   fn retained_write_capacity(&self) -> usize {
+      if self.parser.rbuf.capacity() <= RETAINED_WRITE_BUFFER {
+         RETAINED_WRITE_BUFFER * 2
+      } else {
+         RETAINED_WRITE_BUFFER
+      }
+   }
+
    pub fn do_write(&mut self) -> bool {
+      if let ConnMode::Subscribed { slot, .. } = &self.mode
+         && slot.limit_exceeded(self.parser.wbuf.len().saturating_sub(self.write_offset))
+      {
+         return false;
+      }
       if let ConnMode::Subscribed { ref slot, .. } = self.mode
          && self.parser.wbuf.len() < SUB_WRITE_BATCH_BYTES
       {
@@ -181,7 +257,7 @@ impl<'a> Conn<'a> {
                   }
                   let retained = match self.mode {
                      ConnMode::Subscribed { .. } => SUB_WRITE_BATCH_BYTES,
-                     ConnMode::Normal => RETAINED_WRITE_BUFFER,
+                     ConnMode::Normal | ConnMode::Transaction(_) => self.retained_write_capacity(),
                   };
                   if self.parser.wbuf.capacity() > retained {
                      self.parser.wbuf.shrink_to(retained);
@@ -189,9 +265,14 @@ impl<'a> Conn<'a> {
                   return true;
                }
             }
+            Err(ref e) if e.kind() == io::ErrorKind::Interrupted => continue,
             Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-               // Only compact if write_offset has advanced past a threshold to avoid memmove churn.
-               if self.write_offset > 512 * 1024 && self.write_offset > self.parser.wbuf.len() / 2 {
+               // Avoid memmove compaction thrashing on large partial buffers.
+               let remaining = self.parser.wbuf.len().saturating_sub(self.write_offset);
+               if self.write_offset > 512 * 1024
+                  && (remaining <= 64 * 1024
+                     || self.write_offset > (self.parser.wbuf.len() * 3) / 4)
+               {
                   self.parser.wbuf.drain(..self.write_offset);
                   self.write_offset = 0;
                }
@@ -204,6 +285,11 @@ impl<'a> Conn<'a> {
 
    #[cfg(feature = "io-uring")]
    pub fn prepare_send(&mut self) -> Option<(std::os::fd::RawFd, *const u8, usize)> {
+      if let ConnMode::Subscribed { slot, .. } = &self.mode
+         && slot.limit_exceeded(self.parser.wbuf.len().saturating_sub(self.write_offset))
+      {
+         return None;
+      }
       use std::os::fd::AsRawFd;
       if let ConnMode::Subscribed { ref slot, .. } = self.mode
          && self.parser.wbuf.len() < SUB_WRITE_BATCH_BYTES
@@ -229,8 +315,12 @@ impl<'a> Conn<'a> {
       if self.write_offset >= self.parser.wbuf.len() {
          self.parser.wbuf.clear();
          self.write_offset = 0;
-         if self.parser.wbuf.capacity() > RETAINED_WRITE_BUFFER {
-            self.parser.wbuf.shrink_to(RETAINED_WRITE_BUFFER);
+         let retained = match self.mode {
+            ConnMode::Subscribed { .. } => SUB_WRITE_BATCH_BYTES,
+            ConnMode::Normal | ConnMode::Transaction(_) => self.retained_write_capacity(),
+         };
+         if self.parser.wbuf.capacity() > retained {
+            self.parser.wbuf.shrink_to(retained);
          }
       } else if self.write_offset > 512 * 1024 && self.write_offset > self.parser.wbuf.len() / 2 {
          self.parser.wbuf.drain(..self.write_offset);
@@ -242,5 +332,127 @@ impl<'a> Conn<'a> {
    pub fn has_pending_write(&self) -> bool {
       self.write_offset < self.parser.wbuf.len()
          || matches!(&self.mode, ConnMode::Subscribed { slot, .. } if slot.has_pending())
+   }
+}
+
+#[cfg(test)]
+mod tests {
+   use super::*;
+
+   fn process(store: &Arc<Store>, wire: Vec<u8>) -> bool {
+      let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+      let client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+      let (_peer, _) = listener.accept().unwrap();
+      client.set_nonblocking(true).unwrap();
+      let poll = mio::Poll::new().unwrap();
+      let waker = Arc::new(mio::Waker::new(poll.registry(), mio::Token(1)).unwrap());
+      let notifier = WorkerNotifier::new(waker, 0);
+      let pubsub = PubSub::new();
+      let mut conn = Conn::new(
+         Stream::Tcp(mio::net::TcpStream::from_std(client)),
+         store,
+         &pubsub,
+         1,
+         &notifier,
+         None,
+         0,
+      );
+      conn.parser.filled = wire.len();
+      conn.parser.rbuf = wire;
+      conn.process_buffered()
+   }
+
+   fn deep_writes() -> Vec<u8> {
+      b"*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n".repeat(4096)
+   }
+
+   #[test]
+   fn incomplete_and_invalid_packets_release_write_admission() {
+      for incomplete in [false, true] {
+         let store = Arc::new(Store::with_config_workers(2, usize::MAX, 6));
+         let mut wire = deep_writes();
+         wire.extend_from_slice(if incomplete {
+            b"*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nval"
+         } else {
+            b"*2\r\n$-2\r\n"
+         });
+         assert_eq!(process(&store, wire), incomplete);
+         assert!(store.data.try_read_epoch().is_some());
+         assert_eq!(store.get("key").as_deref(), Some("value"));
+      }
+   }
+
+   #[test]
+   fn buffered_set_admission_preserves_an_existing_writer_scope() {
+      let store = Arc::new(Store::with_config_workers(2, usize::MAX, 6));
+      let writer = store.data.write_epoch();
+      assert!(process(&store, deep_writes()));
+      assert!(store.data.try_read_epoch().is_none());
+      drop(writer);
+      assert!(store.data.try_read_epoch().is_some());
+   }
+
+   #[test]
+   fn test_repro_parking_issue() {
+      let store = Arc::new(Store::with_config_workers(2, usize::MAX, 6));
+      let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+      let client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+      let (_peer, _) = listener.accept().unwrap();
+      client.set_nonblocking(true).unwrap();
+      let poll = mio::Poll::new().unwrap();
+      let waker = Arc::new(mio::Waker::new(poll.registry(), mio::Token(1)).unwrap());
+      let notifier = WorkerNotifier::new(waker, 0);
+      let pubsub = PubSub::new();
+      let mut conn = Conn::new(
+         Stream::Tcp(mio::net::TcpStream::from_std(client)),
+         &store,
+         &pubsub,
+         1,
+         &notifier,
+         None,
+         0,
+      );
+
+      // 1. Prepare pipeline: BLPOP key 0 + EVAL "return 1" 0
+      let blpop = b"*3\r\n$5\r\nBLPOP\r\n$3\r\nkey\r\n$1\r\n0\r\n";
+      let eval = b"*3\r\n$4\r\nEVAL\r\n$8\r\nreturn 1\r\n$1\r\n0\r\n";
+
+      let mut wire = Vec::new();
+      wire.extend_from_slice(blpop);
+      wire.extend_from_slice(eval);
+
+      conn.parser.filled = wire.len();
+      conn.parser.rbuf = wire;
+      conn.authenticated = true;
+
+      // 2. Process: BLPOP should park
+      let result = conn.process_buffered();
+
+      // Should be true (successful processing, even though it parked)
+      assert!(result, "process_buffered failed");
+
+      // Verify it is parked
+      assert!(conn.is_parked(), "Connection should be parked");
+
+      // 3. Verify that EVAL was not processed
+      // Parser position should NOT have advanced past the BLPOP command.
+      assert!(
+         conn.parser.pos < blpop.len() + eval.len(),
+         "Parser pos advanced too far"
+      );
+
+      // 4. Simulate wakeup and verify EVAL is processed
+      store.lpush("key", &["value"]).unwrap();
+      conn.on_completion(crate::pubsub::Completion::Retry {
+         token: conn.token,
+         uid: conn.uid,
+      });
+
+      // Check if EVAL was processed.
+      assert!(
+         conn.parser.wbuf.windows(4).any(|w| w == b":1\r\n"),
+         "EVAL result not found in wbuf: {:?}",
+         conn.parser.wbuf
+      );
    }
 }

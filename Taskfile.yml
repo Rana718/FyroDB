@@ -30,6 +30,17 @@ tasks:
       desc: Release build
       cmds:
          - cargo build --release --bin {{.BINARY}}
+   verus:
+      desc: Run Verus formal invariant testcase validations and protocol proofs
+      cmds:
+         - cargo test --test verus_safety_invariants -- --nocapture {{.CLI_ARGS}}
+         - sh -c 'if [ -x "$HOME/tools/verus/verus" ]; then for f in proofs/verus/*.rs; do "$HOME/tools/verus/verus" --crate-type=lib "$f" || exit 1; done; fi'
+
+   verify:proofs:
+      desc: Verify the formal concurrency-protocol proofs (Verus; needs VERUS_BIN, dev-only)
+      cmds:
+         - sh -c 'for f in proofs/verus/*.rs; do ~/tools/verus/verus --crate-type=lib "$f" || exit 1; done'
+
    fmt:
       desc: Format entire codebase (all workspace crates) with rustfmt
       cmds:
@@ -139,6 +150,14 @@ tasks:
       desc: "Diff two bench JSON files; exits 1 on >5% regressions (task bench-compare -- base.json cand.json)"
       cmds:
          - python3 scripts/bench_compare.py {{.CLI_ARGS}}
+
+   bench-stable:
+      desc: "Pinned TCP samples with warmups, alternating binaries, variability, and README references"
+      cmds:
+         - task: build
+         - mkdir -p temp/bench
+         - cd bench && go build -o ../temp/bench/fyrobench .
+         - python3 scripts/bench_stable.py --server current=target/release/fyro_db --tcp-bench temp/bench/fyrobench --wait-idle 60 --out temp/bench/stable {{.CLI_ARGS}}
 
    bench-rust:
       desc: "Criterion micro-benchmarks: RESP parse, GET/SET, distance kernels, HNSW build/search"

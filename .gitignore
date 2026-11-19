@@ -5,3 +5,18 @@ temp/
 .claude/
 fyrodb_*
 bench/fyrodb-test
+
+**/__pycache__/
+
+# Internal audit documents (local-only)
+AUDIT.md
+continue_audit.md
+performance_audit.md
+booksprotection.json
+dev_protection.json
+audit_peromfnces_books.md
+BENCHMARKS.md
+
+/books/
+
+*.log

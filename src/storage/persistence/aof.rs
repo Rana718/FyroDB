@@ -24,6 +24,12 @@ const KIND_SET: u8 = 0;
 const KIND_DEL: u8 = 1;
 const KIND_FLUSH: u8 = 2;
 const FLUSH_BYTES: usize = 64 * 1024;
+/// Sequence numbers are allocated in per-writer windows.
+const SEQ_WINDOW: u64 = 64;
+/// Bit 31 of the record length marks CRC'd records; old (uncrc'd) files
+/// never set it, so both formats replay from the same directory.
+const LEN_CRC_FLAG: u32 = 0x8000_0000;
+const MAX_BODY_LEN: u32 = 512 << 20;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Fsync {
@@ -37,6 +43,9 @@ struct Writer {
    epoch: u64,
    file: Option<File>,
    buf: Vec<u8>,
+   /// Range of sequence numbers handed out by this writer.
+   seq_base: u64,
+   seq_next: u64,
 }
 
 pub struct Aof {
@@ -64,6 +73,12 @@ pub fn get() -> Option<&'static Aof> {
    AOF.get()
 }
 
+/// True once an AOF open or write has failed since startup; surfaced via
+/// INFO so silent durability loss is visible to operators.
+pub fn failed() -> bool {
+   AOF.get().is_some_and(|a| a.failed())
+}
+
 fn file_name(epoch: u64, id: usize) -> String {
    format!("aof-{epoch:08}-{id:04}.log")
 }
@@ -75,6 +90,10 @@ fn parse_name(name: &str) -> Option<(u64, String)> {
 }
 
 fn encode(buf: &mut Vec<u8>, seq: u64, key: &str, value: Option<&[u8]>) {
+   encode_bytes(buf, seq, key.as_bytes(), value)
+}
+
+fn encode_bytes(buf: &mut Vec<u8>, seq: u64, key: &[u8], value: Option<&[u8]>) {
    encode_kind(
       buf,
       seq,
@@ -84,16 +103,73 @@ fn encode(buf: &mut Vec<u8>, seq: u64, key: &str, value: Option<&[u8]>) {
    );
 }
 
-fn encode_kind(buf: &mut Vec<u8>, seq: u64, kind: u8, key: &str, value: Option<&[u8]>) {
+fn encode_kind(buf: &mut Vec<u8>, seq: u64, kind: u8, key: &[u8], value: Option<&[u8]>) {
    let body = 8 + 1 + 4 + key.len() + value.map_or(0, <[u8]>::len);
-   buf.extend_from_slice(&(body as u32).to_le_bytes());
+   // The length field counts everything after it: body + trailing CRC.
+   buf.extend_from_slice(&(((body + 4) as u32) | LEN_CRC_FLAG).to_le_bytes());
+   let body_at = buf.len();
    buf.extend_from_slice(&seq.to_le_bytes());
    buf.push(kind);
    buf.extend_from_slice(&(key.len() as u32).to_le_bytes());
-   buf.extend_from_slice(key.as_bytes());
+   buf.extend_from_slice(key);
    if let Some(v) = value {
       buf.extend_from_slice(v);
    }
+   let crc = crc32_ieee(&buf[body_at..]);
+   buf.extend_from_slice(&crc.to_le_bytes());
+}
+
+/// Slice-by-8 accelerated CRC-32 (IEEE 802.3).
+fn crc32_ieee(data: &[u8]) -> u32 {
+   static TABLE: std::sync::LazyLock<[[u32; 256]; 8]> = std::sync::LazyLock::new(|| {
+      let mut table = [[0u32; 256]; 8];
+      let mut i = 0;
+      while i < 256 {
+         let mut c = i as u32;
+         let mut k = 0;
+         while k < 8 {
+            c = if c & 1 != 0 {
+               0xEDB8_8320 ^ (c >> 1)
+            } else {
+               c >> 1
+            };
+            k += 1;
+         }
+         table[0][i] = c;
+         i += 1;
+      }
+      let mut j = 1;
+      while j < 8 {
+         let mut i = 0;
+         while i < 256 {
+            let prev = table[j - 1][i];
+            table[j][i] = (prev >> 8) ^ table[0][(prev & 0xFF) as usize];
+            i += 1;
+         }
+         j += 1;
+      }
+      table
+   });
+   let table = &*TABLE;
+   let mut crc = 0xFFFF_FFFFu32;
+   #[allow(clippy::chunks_exact_to_as_chunks)]
+   let mut chunks = data.chunks_exact(8);
+   for chunk in chunks.by_ref() {
+      let w1 = u32::from_le_bytes(chunk[..4].try_into().unwrap()) ^ crc;
+      let w2 = u32::from_le_bytes(chunk[4..8].try_into().unwrap());
+      crc = table[7][(w1 & 0xFF) as usize]
+         ^ table[6][((w1 >> 8) & 0xFF) as usize]
+         ^ table[5][((w1 >> 16) & 0xFF) as usize]
+         ^ table[4][(w1 >> 24) as usize]
+         ^ table[3][(w2 & 0xFF) as usize]
+         ^ table[2][((w2 >> 8) & 0xFF) as usize]
+         ^ table[1][((w2 >> 16) & 0xFF) as usize]
+         ^ table[0][(w2 >> 24) as usize];
+   }
+   for &b in chunks.remainder() {
+      crc = table[0][((crc ^ b as u32) & 0xFF) as usize] ^ (crc >> 8);
+   }
+   crc ^ 0xFFFF_FFFF
 }
 
 struct Record {
@@ -110,18 +186,35 @@ fn read_record(r: &mut impl Read) -> io::Result<Option<Record>> {
       Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
       Err(e) => return Err(e),
    }
-   let len = u32::from_le_bytes(len) as usize;
-   if !(13..=(512 << 20)).contains(&len) {
+   let raw_len = u32::from_le_bytes(len);
+   let has_crc = raw_len & LEN_CRC_FLAG != 0;
+   let len = (raw_len & !LEN_CRC_FLAG) as usize;
+   let min_body = if has_crc { 13 + 4 } else { 13 };
+   if !(min_body..=(MAX_BODY_LEN as usize)).contains(&len) {
       return Ok(None);
    }
    let mut body = vec![0u8; len];
    if r.read_exact(&mut body).is_err() {
       return Ok(None);
    }
+   let payload_len = if has_crc { len - 4 } else { len };
+   if has_crc {
+      let stored = u32::from_le_bytes(body[payload_len..].try_into().unwrap());
+      if crc32_ieee(&body[..payload_len]) != stored {
+         // Corruption mid-file: records after this point cannot be trusted.
+         // Loudly stop here rather than silently truncating the rest.
+         eprintln!(
+            "[aof] record checksum mismatch at sequence {} — stopping replay of this file",
+            u64::from_le_bytes(body[0..8].try_into().unwrap_or([0; 8]))
+         );
+         return Ok(None);
+      }
+   }
+   let body = &body[..payload_len];
    let seq = u64::from_le_bytes(body[0..8].try_into().unwrap());
    let kind = body[8];
    let klen = u32::from_le_bytes(body[9..13].try_into().unwrap()) as usize;
-   if 13 + klen > len {
+   if 13 + klen > payload_len {
       return Ok(None);
    }
    let Ok(key) = String::from_utf8(body[13..13 + klen].to_vec()) else {
@@ -277,11 +370,27 @@ impl Aof {
             epoch: 0,
             file: None,
             buf: Vec::with_capacity(FLUSH_BYTES),
+            seq_base: 0,
+            seq_next: 0,
          }));
          self.writers.lock().push(Arc::clone(&w));
          *l = Some(Arc::clone(&w));
          w
       })
+   }
+
+   /// Allocate the next sequence number, refilling this writer's window.
+   #[inline]
+   fn next_seq(w: &mut Writer, global: &AtomicU64) -> u64 {
+      if w.seq_next == w.seq_base {
+         let base = global.fetch_add(SEQ_WINDOW, Ordering::AcqRel);
+         w.seq_next = base;
+         w.seq_base = base + SEQ_WINDOW;
+         return base;
+      }
+      let seq = w.seq_next;
+      w.seq_next += 1;
+      seq
    }
 
    fn write_out(&self, w: &mut Writer) {
@@ -300,15 +409,18 @@ impl Aof {
                if !self.failed.swap(true, Ordering::Relaxed) {
                   eprintln!("[aof] open {}: {e}", path.display());
                }
+               // Buffer stays intact; the next flush retries the open.
                return;
             }
          }
       }
       let f = w.file.as_mut().expect("file");
-      if let Err(e) = f.write_all(&w.buf)
-         && !self.failed.swap(true, Ordering::Relaxed)
-      {
-         eprintln!("[aof] write: {e}");
+      if let Err(e) = f.write_all(&w.buf) {
+         if !self.failed.swap(true, Ordering::Relaxed) {
+            eprintln!("[aof] write: {e} — records buffered for retry");
+         }
+         // Keep the buffer: the next write_out retries the full batch.
+         return;
       }
       w.buf.clear();
       if self.fsync == Fsync::Always {
@@ -317,22 +429,50 @@ impl Aof {
    }
 
    pub fn record(&self, key: &str, read: impl FnOnce() -> Option<Vec<u8>>) {
-      let seq = self.seq.fetch_add(1, Ordering::AcqRel);
       let encoded = read();
       let w = self.local();
       let mut w = w.lock();
+      let seq = Self::next_seq(&mut w, &self.seq);
       encode(&mut w.buf, seq, key, encoded.as_deref());
       if w.buf.len() >= FLUSH_BYTES || self.fsync == Fsync::Always {
          self.write_out(&mut w);
       }
    }
 
-   pub fn record_flush(&self) {
-      let seq = self.seq.fetch_add(1, Ordering::AcqRel);
+   /// `record` with an already-captured value: lets the caller reuse one
+   /// map lookup and one encoding for both the AOF and the replication log.
+   pub fn record_encoded(&self, key: &str, encoded: Option<&[u8]>) {
+      self.record_encoded_bytes(key.as_bytes(), encoded)
+   }
+
+   /// Bytes-key variant of `record_encoded`.
+   pub fn record_encoded_bytes(&self, key: &[u8], encoded: Option<&[u8]>) {
       let w = self.local();
       let mut w = w.lock();
-      encode_kind(&mut w.buf, seq, KIND_FLUSH, "", None);
+      let seq = Self::next_seq(&mut w, &self.seq);
+      encode_bytes(&mut w.buf, seq, key, encoded);
+      if w.buf.len() >= FLUSH_BYTES || self.fsync == Fsync::Always {
+         self.write_out(&mut w);
+      }
+   }
+
+   pub fn record_flush(&self) {
+      let w = self.local();
+      let mut w = w.lock();
+      let seq = Self::next_seq(&mut w, &self.seq);
+      encode_kind(&mut w.buf, seq, KIND_FLUSH, b"", None);
       self.write_out(&mut w);
+   }
+
+   /// True once an AOF open or write has failed since startup; surfaced
+   /// through INFO so silent durability loss is visible to operators.
+   pub fn failed(&self) -> bool {
+      self.failed.load(Ordering::Relaxed)
+   }
+
+   /// The configured fsync policy, for INFO.
+   pub fn fsync_policy(&self) -> Fsync {
+      self.fsync
    }
 
    pub fn flush_local(&self) {
@@ -382,7 +522,7 @@ impl Aof {
                &mut carry,
                rec.seq,
                rec.kind,
-               &rec.key,
+               rec.key.as_bytes(),
                rec.value.as_deref(),
             );
          }

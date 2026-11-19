@@ -44,8 +44,11 @@ struct L1Entry {
    result: Arc<crate::row::DbResultSet>,
 }
 
+struct L1Storage(std::cell::UnsafeCell<[Option<L1Entry>; 256]>);
+unsafe impl Sync for L1Storage {}
+
 thread_local! {
-   static L1_CACHE: std::cell::RefCell<[Option<L1Entry>; 256]> = const { std::cell::RefCell::new([const { None }; 256]) };
+   static L1_CACHE: L1Storage = const { L1Storage(std::cell::UnsafeCell::new([const { None }; 256])) };
    static HIT_BATCH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 
@@ -303,8 +306,8 @@ impl DbCacheManager {
       let is_local = self.storage.is_local();
       if is_local
          && let Some(cached) = L1_CACHE.with(|c| {
-            let b = c.borrow();
-            if let Some(slot) = &b[idx]
+            let slot = unsafe { &*c.0.get() };
+            if let Some(slot) = &slot[idx]
                && slot.manager_id == mgr_id
                && slot.epoch == epoch
                && slot.fp == fingerprint
@@ -347,8 +350,8 @@ impl DbCacheManager {
          return None;
       }
       record_hit(&self.metrics);
-      L1_CACHE.with(|c| {
-         c.borrow_mut()[idx] = Some(L1Entry {
+      L1_CACHE.with(|c| unsafe {
+         (*c.0.get())[idx] = Some(L1Entry {
             manager_id: mgr_id,
             epoch,
             fp: fingerprint,
@@ -371,8 +374,8 @@ impl DbCacheManager {
       let is_local = self.storage.is_local();
       if is_local
          && let Some(res) = L1_CACHE.with(|c| {
-            let b = c.borrow();
-            if let Some(slot) = &b[idx]
+            let slot = unsafe { &*c.0.get() };
+            if let Some(slot) = &slot[idx]
                && slot.manager_id == mgr_id
                && slot.epoch == epoch
                && slot.fp == fingerprint
@@ -747,15 +750,21 @@ impl DbCacheManager {
       let Some(slot) = slot else {
          return false;
       };
-      let mut done = slot.done.lock();
-      if *done {
+      if slot.done.load(Ordering::Acquire) {
          return true;
       }
       self.metrics.coalesced_waits.fetch_add(1, Ordering::Relaxed);
-      slot
-         .cond
-         .wait_for(&mut done, Duration::from_millis(FILL_WAIT_MS));
-      *done
+      let mut lock = slot.lock.lock();
+      while !slot.done.load(Ordering::Acquire) {
+         if slot
+            .cond
+            .wait_for(&mut lock, Duration::from_millis(FILL_WAIT_MS))
+            .timed_out()
+         {
+            break;
+         }
+      }
+      slot.done.load(Ordering::Acquire)
    }
 
    // --------------------------------------------------------------- stats
