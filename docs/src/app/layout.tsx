@@ -8,7 +8,7 @@ import "@fontsource-variable/jetbrains-mono";
 
 const BASE_URL = "https://fyrodb.vercel.app";
 
-const description = "FyroDB is a Redis-compatible in-memory database written in Rust. Explore setup guides, commands, and measured GET and SET throughput over TCP and in-process.";
+const description = "FyroDB is a Redis-compatible database in Rust. In 12-worker tests, pipelined TCP GET rose 41.6%, SET rose 38.4%, and peak server RSS fell 36.3%.";
 
 export const metadata: Metadata = {
    title: {

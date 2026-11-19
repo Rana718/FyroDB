@@ -1,6 +1,6 @@
 ---
 title: Benchmarks
-description: Native TCP and in-process throughput, peak memory, and historical worker-scaling results.
+description: In 12-worker tests, pipelined TCP GET rose 41.6%, SET rose 38.4%, and peak server RSS fell 36.3%. Explore before-and-after measurements and current throughput.
 order: 17
 ---
 
@@ -11,6 +11,24 @@ With 12 workers, FyroDB served **49.75M GET/s** and **44.27M SET/s** over loopba
 ![Median throughput in millions of operations per second for pipelined GET and SET over TCP and in-process](/benchmarks/2026-11-19/throughput.svg)
 
 The TCP server reached **1,096 MiB peak RSS** and averaged **545 MiB**. The embedded benchmark process, which includes the driver and store, peaked at **863 MiB**. These are medians of whole-suite measurements from three fresh runs of revision `021baed` on an Intel Core i5-11400H. The server and Go client shared all six physical cores and twelve hardware threads.
+
+## Performance improvements
+
+Each row compares medians before and after the named change on the same 12-worker workstation. The November 19 chart above shows a separate three-run measurement of the finished build.
+
+| Change | Workload | Before | After | Change in median |
+| --- | --- | ---: | ---: | ---: |
+| Grow connection buffers on demand | Pipelined TCP GET | 34.17M/s | 48.40M/s | +41.6% |
+| Grow connection buffers on demand | Pipelined TCP SET | 33.39M/s | 46.21M/s | +38.4% |
+| Grow connection buffers on demand | Peak server RSS | 1,464 MiB | 933 MiB | −36.3% |
+| Grow connection buffers on demand | Average server RSS | 564 MiB | 600 MiB | +6.3% |
+| Reuse buffers for consecutive large reads | 1 MiB SET, pipeline 8 | 1,869/s | 2,802/s | +49.9% |
+| Protect a batch of embedded reads with one guard | Distinct-key GET | 82.81M/s | 132.36M/s | +59.8% |
+| Reuse a protected reply across 64 GETs | Same-key GET | 780.73M replies/s | 1,002.67M replies/s | +28.4% |
+
+The TCP suite used two full runs per build. The 1 MiB measurement used stock `redis-benchmark` with 16 clients. The embedded pipeline comparison used five runs per build. In eight runs per build, the same-key optimization’s distinct-key control moved from 146.32M to 145.30M GET/s (−0.7%). [Download per-run samples, including the 64 KiB and 1 MiB payload sweeps](/benchmarks/2026-11-19/improvements.json).
+
+The update also fixes a crash during concurrent hash-table resizing. Batch prefetch and the SET fallback keep the table alive until access finishes. The isolation and restart checks below cover transactions, snapshots, and persisted binary values.
 
 ### Repeated-key GET
 
