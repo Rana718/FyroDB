@@ -23,7 +23,7 @@ export function BenchmarkDashboard() {
    const memory = data.find((item) => item.label === "Peak RSS (MiB)");
    return (
       <section className="benchmark-dashboard" aria-label="Benchmark explorer">
-         <div className="benchmark-intro"><span className="benchmark-kicker">Performance explorer</span><h2>See how the workload scales.</h2><p>Explore recorded results across worker configurations. These measurements are from the November 2026 checkpoint, not the current release.</p></div>
+         <div className="benchmark-intro"><span className="benchmark-kicker">Checkpoint d5a178b</span><h2>Throughput by worker count</h2><p>Explore the archived Go TCP measurements across five Docker CPU configurations on the Intel i5-11400H.</p></div>
          <div className="benchmark-meta"><span><strong>3 runs</strong> median</span><span><strong>5 bytes</strong> KV values</span><span><strong>Go client</strong> TCP suite</span></div>
          <div className="benchmark-panel">
             <div className="benchmark-panel-header"><div><p className="benchmark-overline">Throughput</p><h3>{row.label}</h3><p>{row.label === "Pub/Sub delivery" ? "Millions of recipient messages per second" : "Millions of operations per second"}</p></div><div className="benchmark-selector">

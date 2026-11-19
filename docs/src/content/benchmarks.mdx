@@ -1,16 +1,107 @@
 ---
 title: Benchmarks
-description: Explore historical throughput and memory measurements across worker configurations.
+description: Native TCP and in-process throughput, peak memory, and historical worker-scaling results.
 order: 17
 ---
+
+## Native results · November 19, 2026
+
+With 12 workers, FyroDB served **49.75M GET/s** and **44.27M SET/s** over loopback TCP. Calling the engine directly reached **128.74M GET/s** and **82.59M SET/s**. Each KV phase processed ten million operations on five-byte values.
+
+![Median throughput in millions of operations per second for pipelined GET and SET over TCP and in-process](/benchmarks/2026-11-19/throughput.svg)
+
+The TCP server reached **1,096 MiB peak RSS** and averaged **545 MiB**. The embedded benchmark process, which includes the driver and store, peaked at **863 MiB**. These are medians of whole-suite measurements from three fresh runs of revision `021baed` on an Intel Core i5-11400H. The server and Go client shared all six physical cores and twelve hardware threads.
+
+### Repeated-key GET
+
+A separate embedded run issued 64 GETs for the same key per batch, changing keys between batches across 65,536 populated keys. It produced **993.71M logical GET replies/s** across 25,165,824 replies per run. For a non-expiring value in a protected batch, the engine can look it up once and emit a complete RESP reply for every GET. The chart above uses distinct keys.
+
+<details className="benchmark-details">
+<summary>All native workload medians</summary>
+
+Rates are operations per second. Pub/Sub delivery counts recipient messages. The embedded suite credits logical operations for batched storage calls. Each TCP run verified ten million recipient deliveries.
+
+| Workload | Go TCP | Rust in-process |
+| --- | ---: | ---: |
+| Pipeline-64 SET | 15.92M | 20.48M |
+| Pipelined SET | 44.27M | 82.59M |
+| Pipelined GET | 49.75M | 128.74M |
+| Pub/Sub publish | 3.25M | 194.83M |
+| Pub/Sub delivery | 121.73M | 6.693B |
+| Mixed SET/GET (50/50) | 44.51M | 37.11M |
+| INCR (atomic counters) | 104.91M | 2.788B |
+| HSET/HGET (sessions) | 49.79M | 333.40M |
+| LPUSH/RPOP (queue) | 58.16M | 333.42M |
+| SADD (per-client sets) | 54.89M | 172.60M |
+| ZADD (per-client zsets) | 14.44M | 26.67M |
+| JSON.SET (documents) | 13.83M | 19.99M |
+| JSON.GET (documents) | 29.68M | 53.24M |
+| SET+EXPIRE (cache TTL) | 5.98M | 21.61M |
+| Hot Key (1 key, contention) | 186.09M | 19.07M |
+| Producer/Consumer (50+50) | 30.23M | 103.89M |
+| XADD (streams) | 24.27M | 5.72M |
+| SETBIT/BITCOUNT (bitmap) | 29.11M | 77.40M |
+| PFADD/PFCOUNT (HyperLogLog) | 68.74M | 312.61M |
+| GEOADD/GEODIST (geospatial) | 8.31M | 19.30M |
+| Vector HSET load | 134.34k | 1.12M |
+| Vector KNN-10 | 165 | 187 |
+| Vector KNN-10 +tag filter | 429 | 1.73k |
+| Filter Tag+Num | 4.01k | 3.67k |
+| Text term | 55.81k | 158.02k |
+| Text + Tag | 27.76k | 82.99k |
+| Text negation | 19.90k | 24.24k |
+| Vector KNN-10 (8 clients) | 390 | — |
+| Vector HNSW KNN-10 | 4.07k | 5.97k |
+| Vector HNSW M=32 KNN-10 | 2.14k | 2.40k |
+| Vector KNN-10 (12 clients) | — | 1.10k |
+
+The Go vector suite loaded 50,000 documents with 768-dimensional vectors. Its sampled recall@10 was 1.0 for both FLAT queries in every run. HNSW recall@10 ranged from 0.1 to 0.3 at M=16 and from 0.3 to 0.5 at M=32. These recall samples use one query per index.
+
+For embedded vector load, parallel KNN, the hot-key workload and the producer/consumer workload, the table uses the counts scheduled across all 12 workers. The sample file also records the harness's original counts.
+
+</details>
+
+<details className="benchmark-details">
+<summary>PostgreSQL cache-path smoke results</summary>
+
+The smoke benchmark uses two cache workers or two TCP clients and reduced iteration counts. These short runs are sensitive to host activity.
+
+| Path | Median ops/s |
+| --- | ---: |
+| In-memory cache lookup | 33.40M |
+| Encoded cache lookup | 37.58M |
+| JOIN parse + cache lookup | 26.69M |
+| Extended protocol TCP | 1.45M |
+| Simple query TCP | 1.75M |
+
+</details>
+
+### Correctness checks
+
+The same source tree passed 836 Rust workspace tests, with three performance probes ignored. All six native end-to-end suites passed. With 12 workers, Lua and MULTI/EXEC each preserved the 64,000 balance with zero inconsistent snapshots, and WATCH accounted for every committed update. Binary values through 1 MiB survived restart.
+
+### Reproduce the native runs
+
+Run from the repository root on a host with twelve logical CPUs. The TCP measurements use the native launcher’s allocator settings and 100 loopback clients. The deep pipeline sends batches of 2,500 requests per connection with a separate reply reader. Each round used a fresh process for each suite. Repeat three times and take the median of each workload.
+
+```bash
+cargo build --release --locked --bin fyro_db
+FYRODB_BIND=127.0.0.1 FYRODB_WORKERS=12 ./scripts/bench_local.sh -m all -json tcp.json
+FYRODB_WORKERS=12 cargo bench --locked --bench without_tcp -- all --json embedded.json
+cargo bench --locked --bench pg_cache_bench -- --smoke
+```
+
+Save each round under a separate filename to retain its samples. To reproduce the repeated-key run from this checkout, copy `docs/public/benchmarks/2026-11-19/repeated_get.rs` to `examples/repeated_get.rs` and run `cargo run --locked --profile bench --example repeated_get`. [Per-run measurements and operation counts](/benchmarks/2026-11-19/results.json) · [Repeated-key driver](/benchmarks/2026-11-19/repeated_get.rs)
+
+## Historical Docker benchmarks
 
 <BenchmarkDashboard />
 
 <details className="benchmark-details">
-<summary>View full results and methodology</summary>
+<summary>Archived results and methodology</summary>
 
 
-## Current results: our normal TCP suite
+### Docker TCP suite at d5a178b
 
 Wide graphs and tables scroll horizontally on small screens. Select a graph to open its full-size SVG.
 
@@ -59,11 +150,11 @@ The KV phases each execute **10 million operations**, with 100 clients and 100,0
 
 
 
-### Historical peaks and current medians
+### Earlier peaks and Docker medians
 
 The previously published **53.38M GET**, **39.62M SET**, **108.56M INCR** and **113.98M subscriber deliveries/s** remain available in [historical benchmarks](/docs/benchmark-history). They were reported as best-of-three results, and some were duplicated under both TCP and direct-engine headings. Their original workload/build details are incomplete.
 
-Higher historical values are preserved as historical references; they are not substituted for slower current medians. The current twelve-worker GET median is **55.897M/s**, but that shared-client run is not a matched before/after speedup over the older 53.38M figure. Compare like-for-like runs, payloads, clients and CPU budgets.
+Higher historical values are preserved as historical references; they are not substituted for slower current medians. The archived twelve-worker GET median was **55.897M/s**, but that shared-client run is not a matched before/after speedup over the older 53.38M figure. Compare like-for-like runs, payloads, clients and CPU budgets.
 
 ### Why client methods report different rates
 
@@ -99,13 +190,13 @@ Six independent processes, each running the unmodified official client without c
 - **Independent memtier cross-check:** an earlier 64 B probe used four threads, sixteen clients per thread, pipeline 64, a one-million-key random workload and five-second GET/SET windows. It has one measured attempt per command/build and is a smoke cross-check, not a statistically established current speedup.
 - **Direct Rust engine:** `without_tcp` removes sockets and client parsing. Batched APIs may credit equivalent logical operations. Its ops/s and inverse-throughput ns/op are not TCP request/reply rates or measured latency percentiles. Earlier direct and stable campaigns are listed in the downloadable campaign index.
 - **Custom RESP and hot-key clients:** used for targeted copying, concurrency, aliasing and capacity diagnostics; they are labeled separately from the standard client.
-- **Latency, memory, ANN and proxy modes:** the Go client supplies `lat`, `mem`, `ann`, `vec` and `pgcache` modes. These are supported measurement tools; the current KV campaign does not claim new ANN recall, open-loop latency or PostgreSQL results. Historical vector/proxy figures remain historical.
+- **Latency, memory, ANN and proxy modes:** the Go client supplies `lat`, `mem`, `ann`, `vec` and `pgcache` modes. These are supported measurement tools; the archived KV campaign measured throughput separately from ANN recall, open-loop latency and PostgreSQL performance. Historical vector/proxy figures remain historical.
 - **Hardware counters:** instruction, cache and locked-access diagnostics investigate mechanisms. They do not establish end-to-end server throughput on their own.
 
 
 ## Algorithms retained in the runtime
 
-The current implementation retains guarded value access, script/transaction isolation, snapshot pre-images and WATCH invalidation. [Architecture](/docs/architecture) explains the protection layers.
+The checkpoint retained guarded value access, script/transaction isolation, snapshot pre-images and WATCH invalidation. [Architecture](/docs/architecture) explains the protection layers.
 
 The retained large-payload changes use bounded scatter/gather replies, one guard per unique entry, a stack ownership index for duplicate entries, partial-write copying before guards drop, tiled SET prefetch and conditionally streaming large overwrites. The streaming path fences stores before publishing completion; repeated hashes conservatively select ordinary cached copying. It adds no persistent per-key or per-connection field.
 
