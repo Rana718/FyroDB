@@ -1,47 +1,57 @@
 import Image from "next/image";
 import Link from "next/link";
-import { FiBookOpen, FiCode, FiDatabase, FiLayers, FiTerminal, FiZap } from "react-icons/fi";
+import { FiArrowRight, FiArrowUpRight, FiBox, FiCode, FiGithub, FiLayers, FiTerminal } from "react-icons/fi";
+import { EngineComparison } from "@/components/EngineComparison";
+import "./landing.css";
 
 const guides = [
-   { href: "/docs/getting-started", title: "Get started", text: "Install FyroDB and run your first commands.", icon: FiZap },
-   { href: "/docs/docker", title: "Run with Docker", text: "Start a container, connect a client, and persist data.", icon: FiTerminal },
-   { href: "/docs/commands-strings", title: "Command reference", text: "Explore the Redis-compatible command set.", icon: FiCode },
-   { href: "/docs/architecture", title: "Architecture", text: "Understand storage, concurrency, and persistence.", icon: FiLayers },
-   { href: "/docs/benchmarks", title: "Benchmarks", text: "Explore recorded workloads and their methodology.", icon: FiDatabase },
-   { href: "/docs/changelog-0-4-0", title: "What's new", text: "Read the latest changes in FyroDB 0.4.0.", icon: FiBookOpen },
+   { href: "/docs/getting-started", title: "Getting started", text: "Install FyroDB and connect your first client.", icon: FiTerminal },
+   { href: "/docs/docker", title: "Docker deployment", text: "Run a container and persist your data.", icon: FiBox },
+   { href: "/docs/commands-strings", title: "Command reference", text: "Look up commands and their arguments.", icon: FiCode },
+   { href: "/docs/architecture", title: "Architecture", text: "Explore storage, concurrency, and isolation.", icon: FiLayers },
 ];
 
 export default function HomePage() {
    return (
-      <main className="home-docs">
-         <section className="home-hero">
-            <p className="home-eyebrow">FYRODB DOCUMENTATION <span> / </span> v0.4.0</p>
-            <h1>In-memory data,<br /><span>ready to build with.</span></h1>
-            <p className="home-description">A Redis-compatible database built in Rust. Find the guides, commands, and architecture you need to get started.</p>
-            <div className="home-actions"><Link className="home-button-primary" href="/docs/getting-started">Get started</Link><a className="home-button-secondary" href="https://github.com/Rana718/FyroDB">View on GitHub</a></div>
-         </section>
-         <div className="home-panels">
-            <section className="home-quickstart" aria-label="Quick start">
-               <div className="home-code-header"><span>QUICK START</span><span>TERMINAL</span></div>
-               <pre><code><span>$</span> docker run -p 8000:8000 rana718/fyrodb:latest{"\n"}<span>$</span> redis-cli -p 8000{"\n"}<span>›</span> SET hello world{"\n"}<b>OK</b>{"\n"}<span>›</span> GET hello{"\n"}<b>"world"</b></code></pre>
-            </section>
-            <section className="home-benchmarks" aria-labelledby="home-benchmark-title">
-               <h2 id="home-benchmark-title">Pipelined GET and SET</h2>
-               <p>12 workers on an Intel i5-11400H · Median of three runs with five-byte values.</p>
-               <Image
-                  src="/benchmarks/2026-11-19/throughput.svg"
-                  width={580}
-                  height={280}
-                  alt="Loopback TCP: 49.75M GET/s and 44.27M SET/s. In-process: 128.74M GET/s and 82.59M SET/s."
-               />
-               <Link href="/docs/benchmarks">Full benchmark results <span aria-hidden="true">→</span></Link>
+      <main className="landing">
+         <div className="landing-mast">
+            <section className="landing-hero landing-wrap">
+               <div className="landing-lead">
+                  <Link className="landing-version" href="/docs/changelog-0-4-0"><i aria-hidden="true" />FyroDB v0.4.0 <FiArrowUpRight /></Link>
+                  <h1>In-memory database<br /><span>built in Rust.</span></h1>
+                  <p>Use your Redis client to store key-value data, run transactions, and search vectors with FyroDB.</p>
+                  <div className="landing-actions">
+                     <Link className="landing-primary" href="/docs/getting-started">Get started <FiArrowRight /></Link>
+                     <Link className="landing-secondary" href="#benchmarks">Go benchmarks</Link>
+                  </div>
+               </div>
+               <Image className="landing-illustration" src="/engine-layers.svg" width={560} height={410} alt="" priority />
             </section>
          </div>
-         <section className="home-guides">
-            <div className="home-section-heading"><div><p>EXPLORE</p><h2>Everything you need.</h2></div><p>From your first command to the details under the hood.</p></div>
-            <div className="home-guide-grid">{guides.map(({ href, title, text, icon: Icon }) => <Link href={href} className="home-guide" key={href}><Icon size={19} aria-hidden="true"/><h3>{title}</h3><p>{text}</p></Link>)}</div>
-         </section>
-         <footer className="home-footer"><span>FyroDB · Built with Rust</span><a href="https://github.com/Rana718/FyroDB">GitHub</a></footer>
+         <div className="landing-wrap">
+            <EngineComparison />
+            <section className="landing-native" aria-labelledby="native-title">
+               <h2 id="native-title">FyroDB with 12 workers</h2>
+               <dl>
+                  <div><dt>Pipelined GET / sec</dt><dd>49.75<span>M</span></dd></div>
+                  <div><dt>Pipelined SET / sec</dt><dd>44.27<span>M</span></dd></div>
+                  <div><dt>Peak server RSS</dt><dd>1,096<span> MiB</span></dd></div>
+               </dl>
+            </section>
+            <div className="landing-resources">
+               <section className="landing-start" aria-labelledby="start-title">
+                  <h2 id="start-title">Run locally</h2>
+                  <div className="landing-terminal">
+                     <div><FiTerminal aria-hidden="true" /> Terminal</div>
+                     <pre tabIndex={0} aria-label="Docker quick start commands"><code><span>$</span> docker run -d -p 127.0.0.1:8000:8000 rana718/fyrodb:latest{"\n"}<span>$</span> redis-cli -p 8000 SET hello world{"\n"}<b>OK</b>{"\n"}<span>$</span> redis-cli -p 8000 GET hello{"\n"}<b>"world"</b></code></pre>
+                  </div>
+               </section>
+               <section className="landing-guides" aria-label="Documentation guides">
+                  {guides.map(({ href, title, text, icon: Icon }) => <Link key={href} href={href}><Icon aria-hidden="true" /><div><h3>{title}</h3><p>{text}</p></div><FiArrowUpRight aria-hidden="true" /></Link>)}
+               </section>
+            </div>
+            <footer className="landing-footer"><span>FyroDB</span><a className="landing-text-link" href="https://github.com/Rana718/FyroDB"><FiGithub /> GitHub</a></footer>
+         </div>
       </main>
    );
 }

@@ -3,7 +3,9 @@
 FyroDB is a high-performance database optimized for low latency and high concurrency.
 
 ## CI/CD Status
-The CI pipeline is fully automated and requires the following checks for all PRs:
+
+PRs to `main` run the following required checks for changes to Rust code (including tests, benchmarks, and proofs), Cargo manifests and lockfiles, or workspace Cargo and toolchain configuration. Docs-only and Go-client-only PRs skip these jobs after a changed-file check. Mixed PRs with Rust changes run the full suite.
+
 - **Test**: Workspace-wide integration and unit tests.
 - **Lint**: Clippy with strict warning enforcement.
 - **Verus**: Formal safety invariant verification.

@@ -66,7 +66,9 @@ export function getSearchRecords(): SearchRecord[] {
       let heading = "";
       let lines: string[] = [doc.description];
       const addSection = () => {
-         const text = lines.join(" ").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+         const text = lines.join(" ")
+            .replace(/!?\[([^\]]*)\]\([^\s)]+\)/g, "$1")
+            .replace(/<[^>]+>/g, " ").replace(/[`*_#|]/g, " ").replace(/\s+/g, " ").trim();
          if (text || heading) records.push({ slug: doc.slug, title: doc.title, heading, text });
       };
       for (const line of content.split("\n")) {
@@ -76,7 +78,7 @@ export function getSearchRecords(): SearchRecord[] {
             heading = match[1].replace(/[`*_]/g, "").trim();
             lines = [];
          } else {
-            lines.push(line.replace(/[`*_#|]/g, " "));
+            lines.push(line);
          }
       }
       addSection();

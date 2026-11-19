@@ -4,7 +4,7 @@ description: Native TCP and in-process throughput, peak memory, and historical w
 order: 17
 ---
 
-## Native results · November 19, 2026
+## Native benchmark results
 
 With 12 workers, FyroDB served **49.75M GET/s** and **44.27M SET/s** over loopback TCP. Calling the engine directly reached **128.74M GET/s** and **82.59M SET/s**. Each KV phase processed ten million operations on five-byte values.
 
@@ -91,7 +91,7 @@ FYRODB_WORKERS=12 cargo bench --locked --bench without_tcp -- all --json embedde
 cargo bench --locked --bench pg_cache_bench -- --smoke
 ```
 
-Save each round under a separate filename to retain its samples. To reproduce the repeated-key run from this checkout, copy `docs/public/benchmarks/2026-11-19/repeated_get.rs` to `examples/repeated_get.rs` and run `cargo run --locked --profile bench --example repeated_get`. [Per-run measurements and operation counts](/benchmarks/2026-11-19/results.json) · [Repeated-key driver](/benchmarks/2026-11-19/repeated_get.rs)
+Save each round under a separate filename to retain its samples. To reproduce the repeated-key run from this checkout, save the linked driver as `examples/repeated_get.rs` and run `cargo run --locked --profile bench --example repeated_get`. [Per-run measurements and operation counts](/benchmarks/2026-11-19/results.json) · [Repeated-key driver](/benchmarks/2026-11-19/repeated_get.rs)
 
 ## Historical Docker benchmarks
 
