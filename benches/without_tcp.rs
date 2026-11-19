@@ -312,94 +312,6 @@ fn exec_pipelined_set<const N: usize>(
    }
 }
 
-#[inline(always)]
-fn exec_pipelined_get<const N: usize>(
-   store: &fyro_db::storage::store::Store,
-   keys: &[FastKey; N],
-   hashes: &[u64; N],
-   entries: &[*const (); N],
-   len: usize,
-   out: &mut Vec<u8>,
-) {
-   let k_ptr = keys.as_ptr();
-   let h_ptr = hashes.as_ptr();
-   let e_ptr = entries.as_ptr();
-   let mut j = 0;
-   while j + 8 <= len {
-      unsafe {
-         out.clear();
-         let _ = store.get_to_buf_with_hint_bytes(
-            (*k_ptr.add(j)).as_bytes(),
-            *h_ptr.add(j),
-            *e_ptr.add(j),
-            out,
-         );
-         out.clear();
-         let _ = store.get_to_buf_with_hint_bytes(
-            (*k_ptr.add(j + 1)).as_bytes(),
-            *h_ptr.add(j + 1),
-            *e_ptr.add(j + 1),
-            out,
-         );
-         out.clear();
-         let _ = store.get_to_buf_with_hint_bytes(
-            (*k_ptr.add(j + 2)).as_bytes(),
-            *h_ptr.add(j + 2),
-            *e_ptr.add(j + 2),
-            out,
-         );
-         out.clear();
-         let _ = store.get_to_buf_with_hint_bytes(
-            (*k_ptr.add(j + 3)).as_bytes(),
-            *h_ptr.add(j + 3),
-            *e_ptr.add(j + 3),
-            out,
-         );
-         out.clear();
-         let _ = store.get_to_buf_with_hint_bytes(
-            (*k_ptr.add(j + 4)).as_bytes(),
-            *h_ptr.add(j + 4),
-            *e_ptr.add(j + 4),
-            out,
-         );
-         out.clear();
-         let _ = store.get_to_buf_with_hint_bytes(
-            (*k_ptr.add(j + 5)).as_bytes(),
-            *h_ptr.add(j + 5),
-            *e_ptr.add(j + 5),
-            out,
-         );
-         out.clear();
-         let _ = store.get_to_buf_with_hint_bytes(
-            (*k_ptr.add(j + 6)).as_bytes(),
-            *h_ptr.add(j + 6),
-            *e_ptr.add(j + 6),
-            out,
-         );
-         out.clear();
-         let _ = store.get_to_buf_with_hint_bytes(
-            (*k_ptr.add(j + 7)).as_bytes(),
-            *h_ptr.add(j + 7),
-            *e_ptr.add(j + 7),
-            out,
-         );
-      }
-      j += 8;
-   }
-   while j < len {
-      unsafe {
-         out.clear();
-         let _ = store.get_to_buf_with_hint_bytes(
-            (*k_ptr.add(j)).as_bytes(),
-            *h_ptr.add(j),
-            *e_ptr.add(j),
-            out,
-         );
-      }
-      j += 1;
-   }
-}
-
 fn print_summary_table(results: &[BenchResult]) {
    println!();
    println!("── Summary ─────────────────────────────────────────────────────");
@@ -710,117 +622,15 @@ fn run_kv(store: &Arc<Store>, workers: usize, results: &mut Vec<BenchResult>) {
          let op_end = (w + 1) * (clients * ops_client) / workers;
          let worker_ops = op_end - op_start;
          scope.spawn(move || {
-            let _guard = customhash::pin();
-            let mut out = Vec::with_capacity(256);
-            let mut keys = [[FastKey::new(b"", 0); BATCH]; 3];
-            let mut hashes = [[0u64; BATCH]; 3];
-            let mut tables = [[std::ptr::null(); BATCH]; 3];
-            let mut entries = [[std::ptr::null(); BATCH]; 3];
-            let mut lens = [0usize; 3];
-
-            let mut fill_idx = 0usize;
-            let mut sent = 0usize;
-
-            let b0 = BATCH.min(worker_ops - sent);
-            fill_batch_keys(&mut keys[fill_idx], op_start + sent, b0);
-            store.prefetch_slots(
-               &keys[fill_idx][..b0],
-               &mut hashes[fill_idx][..b0],
-               &mut tables[fill_idx][..b0],
-            );
-            lens[fill_idx] = b0;
-            sent += b0;
-            let mut probe_idx = fill_idx;
-            fill_idx = (fill_idx + 1) % 3;
-            let mut exec_idx;
-
-            if sent < worker_ops {
-               let b1 = BATCH.min(worker_ops - sent);
-               fill_batch_keys(&mut keys[fill_idx], op_start + sent, b1);
-               store.prefetch_slots(
-                  &keys[fill_idx][..b1],
-                  &mut hashes[fill_idx][..b1],
-                  &mut tables[fill_idx][..b1],
-               );
-               lens[fill_idx] = b1;
-               sent += b1;
-               store.probe_and_prefetch_entries(
-                  &tables[probe_idx][..lens[probe_idx]],
-                  &hashes[probe_idx][..lens[probe_idx]],
-                  &mut entries[probe_idx][..lens[probe_idx]],
-               );
-               exec_idx = probe_idx;
-               probe_idx = fill_idx;
-               fill_idx = (fill_idx + 1) % 3;
-            } else {
-               store.probe_and_prefetch_entries(
-                  &tables[probe_idx][..lens[probe_idx]],
-                  &hashes[probe_idx][..lens[probe_idx]],
-                  &mut entries[probe_idx][..lens[probe_idx]],
-               );
-               exec_idx = probe_idx;
-               probe_idx = usize::MAX;
-            }
-
-            while sent < worker_ops {
-               let b_nxt = BATCH.min(worker_ops - sent);
-               fill_batch_keys(&mut keys[fill_idx], op_start + sent, b_nxt);
-               store.prefetch_slots(
-                  &keys[fill_idx][..b_nxt],
-                  &mut hashes[fill_idx][..b_nxt],
-                  &mut tables[fill_idx][..b_nxt],
-               );
-               lens[fill_idx] = b_nxt;
-               sent += b_nxt;
-
-               store.probe_and_prefetch_entries(
-                  &tables[probe_idx][..lens[probe_idx]],
-                  &hashes[probe_idx][..lens[probe_idx]],
-                  &mut entries[probe_idx][..lens[probe_idx]],
-               );
-
-               exec_pipelined_get(
-                  &store,
-                  &keys[exec_idx],
-                  &hashes[exec_idx],
-                  &entries[exec_idx],
-                  lens[exec_idx],
-                  &mut out,
-               );
-
-               exec_idx = probe_idx;
-               probe_idx = fill_idx;
-               fill_idx = (fill_idx + 1) % 3;
-            }
-
-            if probe_idx != usize::MAX {
-               store.probe_and_prefetch_entries(
-                  &tables[probe_idx][..lens[probe_idx]],
-                  &hashes[probe_idx][..lens[probe_idx]],
-                  &mut entries[probe_idx][..lens[probe_idx]],
-               );
-               if exec_idx != usize::MAX {
-                  out.clear();
-                  exec_pipelined_get(
-                     &store,
-                     &keys[exec_idx],
-                     &hashes[exec_idx],
-                     &entries[exec_idx],
-                     lens[exec_idx],
-                     &mut out,
-                  );
-               }
-               exec_idx = probe_idx;
-            }
-            if exec_idx != usize::MAX {
-               exec_pipelined_get(
-                  &store,
-                  &keys[exec_idx],
-                  &hashes[exec_idx],
-                  &entries[exec_idx],
-                  lens[exec_idx],
-                  &mut out,
-               );
+            let mut keys = [FastKey::new(b"", 0); BATCH];
+            let mut out = Vec::with_capacity(BATCH * 11 + 16);
+            for offset in (0..worker_ops).step_by(BATCH) {
+               let count = BATCH.min(worker_ops - offset);
+               fill_batch_keys(&mut keys, op_start + offset, count);
+               out.clear();
+               store.write_get_pipeline(&keys[..count], &mut out);
+               assert_eq!(out.len(), count * 11);
+               std::hint::black_box(out.as_slice());
             }
          });
       }

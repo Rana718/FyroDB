@@ -353,6 +353,49 @@ mod tests {
    use std::sync::atomic::Ordering;
    use std::time::{Duration, Instant};
 
+   #[test]
+   fn embedded_get_pipeline_preserves_replies_with_and_without_a_read_epoch() {
+      let store = Store::with_config(2, usize::MAX);
+      let keys: [&[u8]; 5] = [b"key", b"absent", b"expired", b"list", b"\xff"];
+      store.set_string("key", "v", 0);
+      store.set_string("expired", "old", 1);
+      store.set("list", StoreValue::list(Default::default()));
+      store.set_string_auto_bytes(b"\xff", None, std::ptr::null(), b"\x00\xff", 0);
+      let keys = keys.repeat(15);
+      for writer_active in [false, true] {
+         let _writer = writer_active.then(|| store.data.write_epoch());
+         let mut out = b"+OK\r\n".to_vec();
+         store.write_get_pipeline(&keys[..0], &mut out);
+         store.write_get_pipeline(&keys, &mut out);
+         let mut expected = b"+OK\r\n".to_vec();
+         expected.extend(b"$1\r\nv\r\n$-1\r\n$-1\r\n$-1\r\n$2\r\n\x00\xff\r\n".repeat(15));
+         assert_eq!(out, expected);
+      }
+   }
+
+   #[test]
+   fn embedded_repeated_get_replies_track_overwrites_and_expiry() {
+      let store = Store::with_config(2, usize::MAX);
+      let key = b"\xffkey".as_slice();
+      let batch = [key; 65];
+      for (bytes, expiry, expected) in [
+         (&b"\x00v"[..], 0, &b"$2\r\n\x00v\r\n"[..]),
+         (b"later", u64::MAX, b"$5\r\nlater\r\n"),
+         (b"gone", 1, b"$-1\r\n"),
+      ] {
+         store.set_string_auto_bytes(key, None, std::ptr::null(), bytes, expiry);
+         let mut out = b"+OK\r\n".to_vec();
+         store.write_get_pipeline(&batch, &mut out);
+         assert_eq!(out, [b"+OK\r\n".as_slice(), &expected.repeat(65)].concat());
+      }
+      store.set("list", StoreValue::list(Default::default()));
+      for key in ["absent", "list"] {
+         let mut out = Vec::new();
+         store.write_get_pipeline(&[key; 64], &mut out);
+         assert_eq!(out, b"$-1\r\n".repeat(64));
+      }
+   }
+
    fn binary_set_protocol(logging: bool) {
       use crate::handler::{Conn, net::Stream};
       use crate::pubsub::{PubSub, WorkerNotifier};

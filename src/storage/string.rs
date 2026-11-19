@@ -203,6 +203,59 @@ impl Store {
       }
    }
 
+   /// Append one RESP GET reply per key, preserving key order and existing output.
+   pub fn write_get_pipeline<K: AsRef<[u8]>>(&self, keys: &[K], out: &mut Vec<u8>) {
+      const BATCH: usize = 64;
+      let mut hashes = [0; BATCH];
+      let mut slots = [std::ptr::null(); BATCH];
+      let mut entries = [std::ptr::null(); BATCH];
+      for batch in keys.chunks(BATCH) {
+         let _command = self.command_guard(usize::MAX);
+         if let Some(epoch) = self.data.try_read_epoch() {
+            let pin = customhash::pin();
+            let n = batch.len();
+            let first = batch[0].as_ref();
+            if n > 1 && batch[1..].iter().all(|key| key.as_ref() == first) {
+               let read = self.data.read_pinned_bytes(first, &pin);
+               if read.as_deref().is_none_or(|value| value.expires_ms == 0) {
+                  let start = out.len();
+                  match read.as_deref().and_then(|value| value.value.as_string()) {
+                     Some(value) => value.write_resp(out),
+                     None => crate::utils::resp::write_nil(out),
+                  }
+                  drop(read);
+                  drop(pin);
+                  drop(epoch);
+                  crate::utils::resp::repeat_reply(out, start, n);
+                  continue;
+               }
+            }
+            self.prefetch_slots(batch, &mut hashes, &mut slots);
+            self.probe_and_prefetch_entries(&slots[..n], &hashes[..n], &mut entries[..n]);
+            for (i, key) in batch.iter().enumerate() {
+               // Both guards cover the slot probe and the copy into the caller's reply buffer.
+               if !unsafe {
+                  self.get_to_buf_epoch_entry_bytes(
+                     key.as_ref(),
+                     hashes[i],
+                     entries[i].cast(),
+                     &epoch,
+                     out,
+                  )
+               } {
+                  crate::utils::resp::write_nil(out);
+               }
+            }
+         } else {
+            for key in batch {
+               if !self.get_to_buf_hinted_bytes(key.as_ref(), None, out) {
+                  crate::utils::resp::write_nil(out);
+               }
+            }
+         }
+      }
+   }
+
    #[inline]
    pub fn get_to_buf(&self, key: &str, out: &mut Vec<u8>) -> bool {
       self.get_to_buf_hinted(key, None, out)
@@ -372,17 +425,15 @@ impl Store {
       key: &[u8],
       hash: u64,
       p: *const customhash::Entry<StoreValue>,
-      epoch: &customhash::ReadEpochGuard<'_>,
+      _epoch: &customhash::ReadEpochGuard<'_>,
       out: &mut Vec<u8>,
    ) -> bool {
-      let _ = epoch;
       debug_assert!(self.data.read_epoch_active());
       if !p.is_null() {
          let entry = unsafe { &*p };
-         let seq1 = entry.state.load(std::sync::atomic::Ordering::Acquire);
+         let state = entry.state.load(std::sync::atomic::Ordering::Acquire);
          let expected = ((hash as u32 as u64) << 32) | customhash::STATE_OCCUPIED;
-         if (seq1 & (0xFFFF_FFFF_0000_0000 | customhash::STATE_OCCUPIED | customhash::STATE_LOCK))
-            == expected
+         if state & (customhash::STATE_MATCH_MASK & !customhash::STATE_LOCK) == expected
             && entry.key.eq_bytes(key)
          {
             let value = unsafe { (*entry.value.get()).assume_init_ref() };
@@ -390,14 +441,10 @@ impl Store {
                return false;
             }
             if let crate::storage::value::FyroDB::String(value) = &value.value {
-               let start = out.len();
                value.write_resp(out);
-               let seq2 = entry.state.load(std::sync::atomic::Ordering::Acquire);
-               if seq1 == seq2 {
-                  return true;
-               }
-               out.truncate(start);
+               return true;
             }
+            return false;
          }
       }
       unsafe { self.get_to_buf_fast_entry_bytes(key, hash, p, out) }

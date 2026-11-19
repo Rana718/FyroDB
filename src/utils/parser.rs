@@ -12,6 +12,7 @@ pub struct RespParser {
    /// Set when the last parse consumed an empty inline line (Redis skips
    /// bare CRLF lines instead of erroring).
    inline_skipped: bool,
+   last_read_was_large: bool,
    /// Earliest filled byte offset required before the in-flight command can complete.
    pub min_needed: usize,
 }
@@ -165,6 +166,8 @@ impl Default for RespParser {
 impl RespParser {
    /// Idle size of the read buffer, and the size it is reclaimed to.
    const IDLE_READ_BUFFER: usize = 32 * 1024;
+   const LARGE_READ: usize = 256 * 1024;
+   const MAX_REUSED_READ_BUFFER: usize = 1280 * 1024;
 
    /// Buffers start unallocated and are created on first use.
    pub fn new() -> Self {
@@ -176,6 +179,7 @@ impl RespParser {
          parts_raw: Vec::new(),
          partial: None,
          inline_skipped: false,
+         last_read_was_large: false,
          min_needed: 0,
       }
    }
@@ -196,24 +200,25 @@ impl RespParser {
       if self.pos == self.filled && self.partial.is_none() {
          self.pos = 0;
          self.filled = 0;
+         self.min_needed = 0;
       } else if self.rbuf.capacity() - self.filled < 16 * 1024 && self.pos > 0 {
          self.rbuf.copy_within(self.pos..self.filled, 0);
+         self.min_needed = self.min_needed.saturating_sub(self.pos);
          self.filled -= self.pos;
          self.pos = 0;
       }
-      if self.min_needed > self.filled {
-         let needed = self.min_needed - self.filled;
-         if self.rbuf.capacity() - self.filled < needed {
-            self.rbuf.reserve(needed);
-         }
-      } else if self.rbuf.capacity() - self.filled < 16 * 1024 {
-         const TARGET_CAP: usize = 1280 * 1024;
-         if self.rbuf.capacity() < TARGET_CAP {
-            let additional = (TARGET_CAP - self.rbuf.capacity()).max(Self::IDLE_READ_BUFFER);
-            self.rbuf.reserve(additional);
+      let frame_fits = self.min_needed > self.filled && self.min_needed <= self.rbuf.capacity();
+      if self.rbuf.capacity() - self.filled < 16 * 1024 && !frame_fits {
+         self.rbuf.truncate(self.filled);
+         let target = self.min_needed.min(Self::MAX_REUSED_READ_BUFFER);
+         let grow = if self.filled >= Self::IDLE_READ_BUFFER {
+            target
+               .saturating_sub(self.filled)
+               .max(Self::IDLE_READ_BUFFER)
          } else {
-            self.rbuf.reserve(Self::IDLE_READ_BUFFER);
-         }
+            Self::IDLE_READ_BUFFER
+         };
+         self.rbuf.reserve(grow);
       }
    }
 
@@ -1713,15 +1718,22 @@ impl RespParser {
    pub fn release_read_buffer(&mut self) {
       if self.pos == self.filled && self.partial.is_none() {
          self.parts_raw.clear();
+         if self.filled != 0 {
+            let large = self.filled > Self::LARGE_READ;
+            let retained = if large && self.last_read_was_large {
+               Self::MAX_REUSED_READ_BUFFER
+            } else {
+               Self::IDLE_READ_BUFFER
+            };
+            self.last_read_was_large = large;
+            self.rbuf.truncate(Self::IDLE_READ_BUFFER);
+            if self.rbuf.capacity() > Self::LARGE_READ {
+               self.rbuf.shrink_to(retained);
+            }
+         }
          self.filled = 0;
          self.pos = 0;
          self.min_needed = 0;
-         self.rbuf.truncate(Self::IDLE_READ_BUFFER);
-         // Retain capacity up to 1280KB for 1MB+framed pipelines without realloc/madvise thrashing
-         // while preventing bloated 4MB multi-megabyte RSS retention across idle/steady conns.
-         if self.rbuf.capacity() > 1280 * 1024 {
-            self.rbuf.shrink_to(1280 * 1024);
-         }
       }
       if self.wbuf.is_empty() && self.wbuf.capacity() > 1280 * 1024 {
          self.wbuf.shrink_to(64 * 1024);
@@ -1847,6 +1859,7 @@ mod tests {
 
       parser.release_read_buffer();
       assert_eq!(parser.rbuf.len(), RespParser::IDLE_READ_BUFFER);
+      assert_eq!(parser.rbuf.capacity(), RespParser::IDLE_READ_BUFFER);
       assert!(parser.parts_raw.is_empty());
       assert_eq!(parser.pos, 0);
       assert_eq!(parser.filled, 0);
@@ -1861,6 +1874,29 @@ mod tests {
    }
 
    #[test]
+   fn repeated_large_reads_reuse_a_bounded_buffer_until_a_small_command() {
+      let mut parser = RespParser::new();
+      let value = "a".repeat(1024 * 1024);
+      let command = format!(
+         "*3\r\n$3\r\nSET\r\n$1\r\nk\r\n${}\r\n{value}\r\n",
+         value.len()
+      );
+      for _ in 0..2 {
+         feed(&mut parser, command.as_bytes());
+         assert!(matches!(parser.parse_one(), ParseResult::Complete));
+         parser.release_read_buffer();
+      }
+      let cap = parser.rbuf.capacity();
+      assert!((command.len()..=RespParser::MAX_REUSED_READ_BUFFER).contains(&cap));
+      parser.release_read_buffer();
+      assert_eq!(parser.rbuf.capacity(), cap);
+      feed(&mut parser, b"*1\r\n$4\r\nPING\r\n");
+      assert!(matches!(parser.parse_one(), ParseResult::Complete));
+      parser.release_read_buffer();
+      assert_eq!(parser.rbuf.capacity(), RespParser::IDLE_READ_BUFFER);
+   }
+
+   #[test]
    fn the_first_read_establishes_the_idle_buffer_size() {
       let mut parser = RespParser::new();
       let buf = parser.read_buf();
@@ -1869,7 +1905,28 @@ mod tests {
          "first read_buf handed back only {} bytes",
          buf.len()
       );
-      assert_eq!(parser.rbuf.len(), RespParser::IDLE_READ_BUFFER);
+      assert_eq!(parser.rbuf.capacity(), RespParser::IDLE_READ_BUFFER);
+   }
+
+   #[test]
+   fn fragmented_set_after_consumed_command_grows_with_received_bytes() {
+      let mut parser = RespParser::new();
+      let prefix = format!("*2\r\n$3\r\nGET\r\n$20000\r\n{}\r\n", "a".repeat(20_000));
+      let header = b"*3\r\n$3\r\nSET\r\n$1\r\nk\r\n$524288\r\n";
+      feed(&mut parser, &[prefix.as_bytes(), header].concat());
+      assert!(matches!(parser.parse_one(), ParseResult::Complete));
+      assert!(matches!(parser.parse_one(), ParseResult::Incomplete));
+
+      parser.read_spare();
+      assert_eq!(parser.pos, 0);
+      assert_eq!(parser.min_needed, header.len() + 524_288 + 2);
+      assert_eq!(parser.rbuf.capacity(), RespParser::IDLE_READ_BUFFER);
+
+      let value = "b".repeat(524_288);
+      feed(&mut parser, value.as_bytes());
+      feed(&mut parser, b"\r\n");
+      assert!(matches!(parser.parse_one(), ParseResult::Complete));
+      assert_eq!(parts_of(&parser), ["SET", "k", value.as_str()]);
    }
 
    fn big_hset(fields: usize) -> (Vec<u8>, Vec<String>) {

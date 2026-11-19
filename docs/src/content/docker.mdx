@@ -4,11 +4,52 @@ description: Run FyroDB with Docker and Docker Compose — KV engine and DB cach
 order: 3
 ---
 
-## Quick Run
+## Quick start
+
+Start FyroDB with its data stored in a named Docker volume:
 
 ```bash
-docker run -d --name fyrodb -p 8000:8000 rana718/fyrodb:latest
+docker run -d --name fyrodb \
+  -p 127.0.0.1:8000:8000 \
+  -v fyrodb-data:/data \
+  -e FYRODB_RDB_PATH=/data/fyrodb.rdb \
+  rana718/fyrodb:latest
 ```
+
+Check that it is ready and try a key using the Redis-compatible client inside the container:
+
+```bash
+docker exec fyrodb redis-cli -p 8000 PING
+docker exec fyrodb redis-cli -p 8000 SET greeting "Hello from FyroDB"
+docker exec fyrodb redis-cli -p 8000 GET greeting
+```
+
+Expected replies are `PONG`, `OK`, and `Hello from FyroDB`. The port mapping binds to localhost. For other machines to connect, choose a suitable network interface and access controls.
+
+Save the current dataset and inspect logs when needed:
+
+```bash
+docker exec fyrodb redis-cli -p 8000 SAVE
+docker logs -f fyrodb
+```
+
+Restart the container with `docker restart fyrodb`. The named volume retains `/data` across container replacement. To build the image from this checkout, run `docker build -t fyrodb:local .` and substitute `fyrodb:local` in the commands above.
+
+## Limit CPU and memory
+
+For an isolated one-worker test, use a different container name and host port:
+
+```bash
+docker run -d --name fyrodb-limited \
+  --cpus=1 --memory=512m \
+  -p 127.0.0.1:8001:8000 \
+  -e FYRODB_WORKERS=1 \
+  rana718/fyrodb:latest
+
+docker exec fyrodb-limited redis-cli -p 8000 PING
+```
+
+The `--cpus` quota limits total CPU time. Add `--cpuset-cpus` with a CPU available on your host if you also need to pin execution to a specific core.
 
 ## With Persistent Data
 

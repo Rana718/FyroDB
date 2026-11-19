@@ -17,7 +17,7 @@ FyroDB is a two-engine system in a single Rust binary:
 - **Performance**: Optimized concurrency and memory paths.
 - The blocking regression in `blocking_e2e.py` checks that 200 clients each receive one distinct item. The first queued completion wakes the worker even when it arrives before the worker enters poll.
 
-The retained runtime is checkpoint **d5a178b**, Docker image **3d5ef33d50f9**. Performance depends on client implementation, payload, key distribution, pipeline depth and CPU placement. [BENCHMARKS.md](BENCHMARKS.md) records the normal TCP suite first, then independent standard-client, payload, memory and historical comparisons with graphs, ranges and source hashes. Inverse aggregate throughput is not measured request latency.
+The descriptions below reflect the current source tree. Throughput and latency depend on payloads, client concurrency, CPU placement and workload; compare measurements only when their conditions match.
 
 FyroDB is not end-to-end lock-free. Atomic table probing avoids a table-wide lookup mutex, but mutable values require protection. Entry guards, map read/write admission, script/transaction isolation and shard growth synchronization serve different purposes.
 
@@ -77,11 +77,11 @@ Unrelated keys still share admission counters, allocator/cache/memory bandwidth 
 
 Implementation: [fast_path.rs](src/handler/conn/fast_path.rs), [bulk.rs](src/handler/conn/bulk.rs), [small_str.rs](src/storage/value/small_str.rs), [access.rs](crates/customhash/src/access.rs), [shard.rs](crates/customhash/src/shard.rs), [isolation.rs](src/storage/store/isolation.rs) and [watch.rs](src/storage/store/watch.rs).
 
-### Rejected experiments
+### Earlier experiments
 
 Counter-striping variants and a later handler that retained write admission across adjacent deep small-SET batches passed correctness checks but did not establish acceptable end-to-end gains. They are not in the retained runtime. The latter reduced one diagnostic locked-access instruction count by about 0.48%, while TCP medians were mixed, including slower cases. No new speedup is credited to it.
 
-The six added regressions cover deep binary pipelines and command boundaries, malformed/partial packets, nested admission cleanup, expiry/large-payload transitions, concurrent SET/read/SAVE and WATCH aborts. The retained source passed 789 workspace tests, zero failures, and 14 io-uring-feature large-reply tests. [Evidence, full coverage and graphs](BENCHMARKS.md#safety-and-regression-coverage).
+Regression suites cover deep binary pipelines, malformed and partial packets, nested admission, expiry, concurrent SET/read/SAVE and WATCH aborts.
 
 ### Dynamic Growth
 
@@ -97,14 +97,9 @@ Every shard starts with eight slots and grows only as keys arrive. When a shard 
 
 ### Epoch-Based Reclamation (EBR)
 
-When an entry or slot table is retired:
+Crossbeam epoch pins keep retired entries and slot tables alive while readers can still reference them. A table rebuild publishes a replacement table, then schedules the old table and its tombstones together for deferred destruction. The final pin drop may drive collection; explicit quiescent collection is used during maintenance. A long-lived pin can delay reclamation and increase retained memory.
 
-- Stamped with the current reclamation epoch
-- Added to thread-local garbage list
-- Freed only after all threads have advanced past epoch + 2
-- Raw entry/table memory is released through the tracked allocator
-
-Updates can reuse existing value capacity. Payload or representation growth, snapshot capture, observer work and fallback buffering can still allocate.
+EBR protects lifetime, not mutable value access. Writers still acquire entry protection, and readers use an entry guard or an admitted read epoch. Overwrites may allocate when representation or capacity changes.
 
 ### Compact Values
 
@@ -780,15 +775,11 @@ src/cluster/
 
 ---
 
-## Performance evidence and algorithm validation
+## Performance and verification
 
-[BENCHMARKS.md](BENCHMARKS.md) is the measurement reference. It separates the current normal Go TCP suite, official redis-benchmark scores, multi-process capacity diagnostics, scalar guards, historical memtier/direct-engine runs, large-payload/hot-key sweeps and rejected trials. It includes all twenty normal workloads and RSS/container peaks, with medians, ranges, exact images and committed evidence.
+The E2E runner exercises concurrent binary values, multi-key isolation, transactions, blocking wakeups, connection bursts and persistence across restart. The same suite can run against a Docker image with explicit CPU limits. `cargo test --workspace` and the Verus job cover additional invariants. These checks do not prove the absence of every race.
 
-The retained runtime's dedicated-client sweep measured pipelined GET medians of 20.130M, 32.962M, 44.616M and 47.419M ops/s for one/two/three/six workers. Six workers occupy three physical cores with SMT. The separate twelve-worker shared-client case measured 55.897M GET/s; it is a different resource budget, not evidence of linear scaling. Historical peaks are preserved in their own section rather than rebranded as current results.
-
-
-
-Throughput is completed operations divided by elapsed time under a stated workload. Its reciprocal is aggregate spacing, not a latency percentile. Read latency percentiles from the client histogram and compare ANN throughput together with recall; the current KV documentation update does not supply new vector or proxy measurements.
+Benchmark rates are workload-specific. Record client settings, payload size, key distribution, core allocation, memory and latency alongside throughput; aggregate throughput is not a latency percentile.
 
 ---
 
@@ -796,9 +787,10 @@ Throughput is completed operations divided by elapsed time under a stated worklo
 
 | Operation                     | Time                                                                                                       | Mechanism                                                                                                                         |
 | ----------------------------- | ---------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| GET / HGET / SISMEMBER        | O(1)                                                                                                       | Tag-filtered probe, EBR pin and guarded value access; raw-byte key comparison avoids decoding on eligible paths      |
-| SET / DEL / EXPIRE            | O(1) average                                                                                               | Tag-filtered probe + in-place atomic mutation via `SmallStr::overwrite_bytes` under per-key spinlock                              |
-| INCR / LPUSH / SADD           | O(1)                                                                                                       | Per-key spinlock + in-place mutate                                                                                                |
+| GET / HGET / SISMEMBER        | O(key bytes + value bytes) average                                                                                                       | Tag-filtered probe, EBR pin and guarded value access; raw-byte key comparison avoids decoding on eligible paths      |
+| SET / DEL / EXPIRE            | O(key bytes + value bytes) average for SET; O(key bytes) average for DEL/EXPIRE                                                                                               | Tag-filtered probe + in-place atomic mutation via `SmallStr::overwrite_bytes` under per-key spinlock                              |
+| INCR / LPUSH / SADD           | O(key bytes + input bytes) average                                                                                                       | Per-key spinlock + in-place mutate                                                                                                |
+| MGET | O(total key bytes + total reply bytes + K) average | K keys; distinct-key reads hold one map epoch, while repeated identical keys reuse the serialized reply |
 | HGETALL / SMEMBERS            | O(N)                                                                                                       | Guarded collection iteration                                                                                                       |
 | ZADD                          | O(log N) + O(C) | Hash-index probe for an existing member; chunk located by binary search, C ≤ 256-entry memmove; direct RESP output buffers         |
 | ZRANGE                        | O(N/C + K)    | Walk chunk lengths to the start rank, then iterate K entries                                                     |
@@ -838,8 +830,8 @@ Throughput is completed operations divided by elapsed time under a stated worklo
 | Command dispatch (fast-path)  | O(1)                                                                                                       | First-byte + `cmd_eq` for 13 hot commands (GET/SET/HGET/HSET/LPUSH/LPOP/LRANGE/RPUSH/RPOP/EXPIRE/ZADD/JSON.GET/JSON.SET)          |
 | Command dispatch (all others) | O(1)                                                                                                       | Static `OnceLock<foldhash::HashMap>` — uppercase to 32-byte stack buf + one hash probe; built once, zero allocation per call      |
 | Hash probe (avg)              | O(1)                                                                                                       | Open addressing at 75% load factor; a slot's hash tag rejects non-matches without dereferencing the entry                         |
-| Hash probe (worst)            | O(N/S)                                                                                                     | N = keys in shard, linear probe                                                                                                   |
-| Growth / Resize               | O(N/S)                                                                                                     | Per-shard, copies live pointers only                                                                                              |
+| Hash probe (worst)            | O(capacity per shard)                                                                                     | Linear probing may inspect every slot                                                                                                   |
+| Growth / Resize               | O(old capacity + new capacity)                                                                              | Per-shard rebuild copies live pointers and retires the old table                                                                                              |
 | EBR collect                   | O(G)                                                                                                       | G = garbage list length                                                                                                           |
 | Cluster slot routing          | O(1)                                                                                                       | Key CRC16 once, then one index into the shared 16384-entry owner table                                                            |
 | Cluster topology refresh      | O(1)                                                                                                       | One `Acquire` load of a version counter; only a change pays for the lock and `Arc` clone                                          |
@@ -847,9 +839,9 @@ Throughput is completed operations divided by elapsed time under a stated worklo
 | Active expiry                 | O(budget) per tick | 32K-slot chunks, repeated while >10% of sampled TTL keys expired, ≤25 ms per 100 ms tick                   |
 | Blocking wake                 | O(W_k)        | W_k = waiters on the written key; empty queues are removed from the shard                                         |
 | XREADGROUP `>` / XACK         | O(log N + K) / O(log P) | Deliver after `last_delivered`, PEL is a BTreeMap plus per-consumer BTreeSet                          |
-| FT.SEARCH KNN (HNSW)          | O(ef · log N) | Graph traversal on the pool; quantized distances, exact rerank of the candidates                                 |
+| FT.SEARCH KNN (HNSW)          | Workload-dependent; worst case scans reachable graph | Graph traversal on the pool; quantized distances, exact rerank of the candidates                                 |
 | FT.SEARCH KNN (FLAT)          | O(N × dims)   | Full-precision distance scan with bounded top-k heaps, batched across concurrent queries  |
-| FT.SEARCH filtered KNN        | O(A) … O(ef · log N) | A = allowed ids; brute-force, ACORN-1 or in-traversal chosen by filter selectivity                          |
+| FT.SEARCH filtered KNN        | O(A × dims) scan or workload-dependent traversal | A = allowed ids; brute-force, ACORN-1 or in-traversal chosen by filter selectivity                          |
 | FT.SEARCH text filter         | O(P + K)      | P = postings for the term; negations resolve as O(total − matched) sorted merge                                   |
 | FT.AGGREGATE cursor           | O(page)       | Rows are split off the cursor Vec with split_off; no full-cursor clone per page                                   |
 | Index maintenance per write   | O(1) + O(fields) at query | Write hook marks the key dirty; the next query applies exactly the dirty keys                      |
@@ -880,8 +872,8 @@ Throughput is completed operations divided by elapsed time under a stated worklo
 | Pub/Sub channels       | Arc-snapshot Vec per shard                                                | Lock-free publish, copy-on-write subscribe                                                                |
 | Worker-local subs      | `HashMap<String, Vec<usize>>` per worker                                  | Grouped fan-out resolves recipients without atomics; only the owning worker touches it                     |
 | Subscriber queue       | `crossbeam::SegQueue`                                                     | Lock-free MPMC, bounded backpressure; also carries per-worker `FanEntry` frame batches                      |
-| EBR garbage            | Thread-local `Vec<Garbage>`                                               | Batched collection every 512 retires                                                                      |
-| Allocator accounting   | `rust-zmalloc` + mimalloc                                                 | Zero-overhead allocator; RSS tracked periodically via /proc, explicit page release via mi_collect         |
+| EBR garbage            | Crossbeam deferred callbacks and a pending counter                         | Retired objects wait for pinned readers; rebuilds batch tombstones                                                                      |
+| Allocator accounting   | `rust-zmalloc` + mimalloc                                                 | Thread-local deltas and striped counters; RSS from /proc and explicit mi_collect         |
 | Shard selection        | Bit shift + mask (foldhash)                                               | Single instruction, no modulo                                                                             |
 | RESP newline scan      | `memchr` (SIMD AVX2)                                                      | 32 bytes per cycle                                                                                        |
 | Vector graph           | Fixed-stride level-0 blocks (`u32` ids) + sparse upper layers             | Cache-line-aligned neighbour lists, parallel insert with per-node locks                                   |

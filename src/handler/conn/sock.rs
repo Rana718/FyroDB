@@ -1,9 +1,8 @@
 use super::*;
 
 impl<'a> Conn<'a> {
-   /// Scaled read-ahead window allows deep pipelined streams and
-   /// large bulk frames (up to 2MB) to be ingested without pipeline chopping.
-   const MAX_READ_AHEAD: usize = 2 * 1024 * 1024;
+   /// Dispatch buffered pipelines at this size. Incomplete frames can grow past it.
+   const MAX_READ_AHEAD: usize = 128 * 1024;
 
    #[inline]
    fn recv_raw(&self, ptr: *mut u8, len: usize) -> io::Result<usize> {
@@ -217,11 +216,7 @@ impl<'a> Conn<'a> {
    }
 
    fn retained_write_capacity(&self) -> usize {
-      if self.parser.wbuf.capacity() > 1280 * 1024 {
-         1280 * 1024
-      } else if self.parser.wbuf.capacity() > RETAINED_WRITE_BUFFER * 2 {
-         self.parser.wbuf.capacity()
-      } else if self.parser.rbuf.capacity() <= RETAINED_WRITE_BUFFER {
+      if self.parser.rbuf.capacity() <= RETAINED_WRITE_BUFFER {
          RETAINED_WRITE_BUFFER * 2
       } else {
          RETAINED_WRITE_BUFFER
