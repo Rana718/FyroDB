@@ -6,6 +6,7 @@ import {
    FiBookOpen,
    FiBox,
    FiCode,
+   FiChevronRight,
    FiDatabase,
    FiFileText,
    FiSettings,
@@ -67,6 +68,8 @@ const sections = [
       title: "Changelog",
       items: [
          { label: "v0.4.0 — Latest", slug: "changelog-0-4-0", icon: FiFileText },
+      ],
+      history: [
          { label: "v0.3.1", slug: "changelog-0-3-1", icon: FiFileText },
          { label: "v0.3.0", slug: "changelog-0-3-0", icon: FiFileText },
          { label: "v0.2.4", slug: "changelog-0-2-4", icon: FiFileText },
@@ -83,25 +86,37 @@ const sections = [
 export function Sidebar() {
    const pathname = usePathname();
 
+   function navItem(item: (typeof sections)[number]["items"][number]) {
+      const href = `/docs/${item.slug}`;
+      const active = pathname === href;
+      return (
+         <li key={item.slug}>
+            <Link href={href} aria-current={active ? "page" : undefined} className={`docs-nav-link ${active ? "is-active" : ""}`}>
+               <item.icon size={16} aria-hidden="true" />
+               <span>{item.label}</span>
+            </Link>
+         </li>
+      );
+   }
+
    const navigation = (
       <nav aria-label="Documentation">
          {sections.map((section) => (
             <div key={section.title} className="docs-nav-section">
                <p className="docs-nav-heading">{section.title}</p>
                <ul>
-                  {section.items.map((item) => {
-                     const href = `/docs/${item.slug}`;
-                     const active = pathname === href;
-                     return (
-                        <li key={item.slug}>
-                           <Link href={href} aria-current={active ? "page" : undefined} className={`docs-nav-link ${active ? "is-active" : ""}`}>
-                              <item.icon size={16} aria-hidden="true" />
-                              <span>{item.label}</span>
-                           </Link>
-                        </li>
-                     );
-                  })}
+                  {section.items.map(navItem)}
                </ul>
+               {section.history && (
+                  <details
+                     key={pathname}
+                     className="changelog-history"
+                     open={section.history.some((item) => pathname === `/docs/${item.slug}`)}
+                  >
+                     <summary className="docs-nav-link"><FiChevronRight size={16} aria-hidden="true" />History</summary>
+                     <ul>{section.history.map(navItem)}</ul>
+                  </details>
+               )}
             </div>
          ))}
       </nav>

@@ -219,7 +219,7 @@ body {
    .docs-shell { display: block; }
    .docs-sidebar { display: none; }
    .docs-mobile-nav { display: block; border-bottom: 1px solid var(--border); background: var(--sidebar-bg); }
-   .docs-mobile-nav summary { cursor: pointer; padding: 1rem 1.5rem; font-weight: 600; color: var(--fg); }
+   .docs-mobile-nav > summary { cursor: pointer; padding: 1rem 1.5rem; font-weight: 600; color: var(--fg); }
    .docs-mobile-nav nav { max-height: 55vh; overflow-y: auto; padding: .75rem 1rem; }
    .docs-main { padding-top: 2.5rem; }
 }
@@ -289,6 +289,10 @@ body {
 .docs-nav-heading { font-size: .75rem; color: var(--fg); letter-spacing: .025em; text-transform: none; }
 .docs-nav-link { border-radius: .35rem; padding: .48rem .7rem; }
 .docs-nav-link svg { opacity: .72; }
+.changelog-history > summary { cursor: pointer; list-style: none; }
+.changelog-history > summary::-webkit-details-marker { display: none; }
+.changelog-history[open] > summary svg { transform: rotate(90deg); }
+.changelog-history > ul { margin-left: 1.2rem; border-left: 1px solid var(--border); }
 .docs-nav-link.is-active { background: var(--card); color: var(--fg); box-shadow: inset 2px 0 0 var(--primary); }
 .docs-page-header { padding-bottom: 1.7rem; margin-bottom: 2rem; }
 .docs-page-header h1 { font-size: clamp(2rem, 3vw, 2.75rem); }
