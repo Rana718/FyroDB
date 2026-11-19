@@ -17,7 +17,7 @@ export default function HomePage() {
          <section className="home-hero">
             <p className="home-eyebrow">FYRODB DOCUMENTATION <span> / </span> v0.4.0</p>
             <h1>In-memory data,<br /><span>ready to build with.</span></h1>
-            <p className="home-description">FyroDB is a Redis-compatible database written in Rust. In 12-worker tests, smaller connection buffers cut peak server memory by 36.3% while pipelined GET and SET throughput over TCP rose 41.6% and 38.4%.</p>
+            <p className="home-description">A Redis-compatible database built in Rust. Find the guides, commands, and architecture you need to get started.</p>
             <div className="home-actions"><Link className="home-button-primary" href="/docs/getting-started">Get started</Link><a className="home-button-secondary" href="https://github.com/Rana718/FyroDB">View on GitHub</a></div>
          </section>
          <div className="home-panels">
@@ -34,8 +34,7 @@ export default function HomePage() {
                   height={280}
                   alt="Loopback TCP: 49.75M GET/s and 44.27M SET/s. In-process: 128.74M GET/s and 82.59M SET/s."
                />
-               <p>Protected in-process pipelines increased distinct-key GET throughput by 59.8%. Reusing replies within same-key batches added 28.4% in a separate test.</p>
-               <Link href="/docs/benchmarks#performance-improvements">Compare before and after <span aria-hidden="true">→</span></Link>
+               <Link href="/docs/benchmarks">Full benchmark results <span aria-hidden="true">→</span></Link>
             </section>
          </div>
          <section className="home-guides">
