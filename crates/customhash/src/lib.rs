@@ -633,6 +633,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
       }
    }
 
+   /// Hold a caller-owned pin across this call and any subsequent use of the returned entry hints.
    pub fn prefetch_batch_entries<K: AsRef<[u8]>>(
       &self,
       keys: &[K],
@@ -647,6 +648,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
       if n == 0 {
          return;
       }
+      let _pin = ebr::pin();
       let mut tables: [*const (); PREFETCH_BATCH] = [std::ptr::null(); PREFETCH_BATCH];
       self.prefetch_slots(&keys[..n], &mut hashes[..n], &mut tables[..n]);
       self.probe_and_prefetch_entries(&tables[..n], &hashes[..n], &mut entries[..n]);

@@ -3,6 +3,24 @@ use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
 #[test]
+fn batch_prefetch_pins_the_table_for_callers_without_a_guard() {
+   struct Key;
+   impl AsRef<[u8]> for Key {
+      fn as_ref(&self) -> &[u8] {
+         assert!(crossbeam_epoch::is_pinned());
+         b"key"
+      }
+   }
+
+   let map = CustomMap::<u64>::with_capacity(1, 8);
+   let mut hashes = [0; 9];
+   let keys = [const { Key }; 9];
+   map.prefetch_batch(&keys, &mut hashes);
+   assert_eq!(hashes, [map.locate_key("key").0; 9]);
+   assert!(!crossbeam_epoch::is_pinned());
+}
+
+#[test]
 fn hinted_and_slot_updates_capture_each_snapshot_value_once() {
    for route in 0..3 {
       let map = CustomMap::with_capacity(2, 100);

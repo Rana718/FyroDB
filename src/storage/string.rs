@@ -106,7 +106,7 @@ impl Store {
          value: crate::storage::value::FyroDB::String(SmallStr::new(value)),
          expires_ms,
       };
-      self.data.set_str_hinted_pinned(key, hash, store_val);
+      self.data.set_str_hinted(key, hash, store_val);
       if expires_ms != 0 {
          self.add_ttl();
       }
