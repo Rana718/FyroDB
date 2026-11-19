@@ -1,8 +1,14 @@
 ---
 title: Benchmarks
-description: Current Go TCP results, independent Redis clients, payload and memory sweeps, safety checks, and historical measurements.
+description: Explore historical throughput and memory measurements across worker configurations.
 order: 17
 ---
+
+<BenchmarkDashboard />
+
+<details className="benchmark-details">
+<summary>View full results and methodology</summary>
+
 
 ## Current results: our normal TCP suite
 
@@ -182,3 +188,5 @@ cargo clippy --workspace --all-targets --features io-uring -- -D warnings
 ```
 
 The generator verifies evidence hashes, checks the normal-summary medians against the raw equal-priority samples, validates retained-image identities and emits deterministic SVGs, JSON and CSV. The evidence archive includes historical summaries without relabeling them as current results.
+
+</details>

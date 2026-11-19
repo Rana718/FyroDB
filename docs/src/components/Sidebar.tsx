@@ -83,25 +83,20 @@ const sections = [
 export function Sidebar() {
    const pathname = usePathname();
 
-   return (
-      <aside className="hidden lg:block w-64 shrink-0 border-r border-border bg-sidebar-bg/70 overflow-y-auto h-[calc(100vh-4rem)] sticky top-16 p-5">
+   const navigation = (
+      <nav aria-label="Documentation">
          {sections.map((section) => (
-            <div key={section.title} className="mb-7">
-               <p className="text-xs font-semibold uppercase tracking-wider text-muted mb-2">
-                  {section.title}
-               </p>
-               <ul className="space-y-0.5">
+            <div key={section.title} className="docs-nav-section">
+               <p className="docs-nav-heading">{section.title}</p>
+               <ul>
                   {section.items.map((item) => {
                      const href = `/docs/${item.slug}`;
                      const active = pathname === href;
                      return (
                         <li key={item.slug}>
-                           <Link
-                              href={href}
-                              className={`flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm transition-colors ${active ? "bg-primary/10 text-primary font-medium" : "text-muted hover:bg-card hover:text-fg"}`}
-                           >
-                              <item.icon size={15} />
-                              {item.label}
+                           <Link href={href} aria-current={active ? "page" : undefined} className={`docs-nav-link ${active ? "is-active" : ""}`}>
+                              <item.icon size={16} aria-hidden="true" />
+                              <span>{item.label}</span>
                            </Link>
                         </li>
                      );
@@ -109,6 +104,16 @@ export function Sidebar() {
                </ul>
             </div>
          ))}
-      </aside>
+      </nav>
+   );
+
+   return (
+      <>
+         <aside className="docs-sidebar">{navigation}</aside>
+         <details className="docs-mobile-nav">
+            <summary>Browse documentation</summary>
+            {navigation}
+         </details>
+      </>
    );
 }

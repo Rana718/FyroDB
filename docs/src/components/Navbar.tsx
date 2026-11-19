@@ -2,9 +2,9 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useTheme } from "next-themes";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
    FiArrowUpRight,
    FiBarChart2,
@@ -17,7 +17,7 @@ import {
    FiZap,
 } from "react-icons/fi";
 import { FaGithub } from "react-icons/fa";
-import type { DocMeta } from "@/lib/docs";
+import type { DocMeta, SearchRecord } from "@/lib/docs";
 
 const navLinks = [
    { href: "/docs/getting-started",    label: "Get started", icon: FiZap       },
@@ -31,7 +31,10 @@ function isLinkActive(href: string, pathname: string) {
    return pathname === href || pathname.startsWith(href);
 }
 
-export function Navbar({ docs }: { docs: DocMeta[] }) {
+export function Navbar({ docs, searchRecords }: { docs: DocMeta[]; searchRecords: SearchRecord[] }) {
+   const router = useRouter();
+   const searchButton = useRef<HTMLButtonElement>(null);
+   const [activeResult, setActiveResult] = useState(0);
    const pathname = usePathname();
    const { theme, setTheme } = useTheme();
    const [mounted, setMounted] = useState(false);
@@ -44,14 +47,23 @@ export function Navbar({ docs }: { docs: DocMeta[] }) {
    useEffect(() => { setMenuOpen(false); }, [pathname]);
 
    const results = useMemo(() => {
-      const value = query.trim().toLowerCase();
-      if (!value) return docs;
-      return docs.filter((doc) =>
-         `${doc.title} ${doc.description} ${doc.slug}`
-            .toLowerCase()
-            .includes(value),
-      );
-   }, [docs, query]);
+      const terms = query.toLowerCase().trim().split(/\s+/).filter(Boolean);
+      if (!terms.length) return docs.slice(0, 8).map((doc) => ({ ...doc, heading: "", text: doc.description }));
+      return searchRecords.map((record) => {
+         const title = record.title.toLowerCase();
+         const heading = record.heading.toLowerCase();
+         const text = record.text.toLowerCase();
+         if (!terms.every((term) => `${title} ${heading} ${text}`.includes(term))) return null;
+         const score = terms.reduce((sum, term) => sum + (title.includes(term) ? 8 : 0) + (heading.includes(term) ? 5 : 0) + (text.includes(term) ? 1 : 0), 0);
+         const first = text.indexOf(terms[0]);
+         const snippet = first < 0 ? record.text.slice(0, 160) : record.text.slice(Math.max(0, first - 60), first + 140);
+         return { ...record, snippet, score };
+      }).filter((item) => item !== null).sort((a, b) => b.score - a.score).slice(0, 12);
+   }, [docs, searchRecords, query]);
+
+   useEffect(() => {
+      if (searchOpen) document.getElementById(`search-result-${activeResult}`)?.scrollIntoView({ block: "nearest" });
+   }, [activeResult, searchOpen]);
 
    useEffect(() => setMounted(true), []);
    useEffect(() => {
@@ -84,6 +96,8 @@ export function Navbar({ docs }: { docs: DocMeta[] }) {
    const closeSearch = () => {
       setSearchOpen(false);
       setQuery("");
+      setActiveResult(0);
+      searchButton.current?.focus();
    };
 
    return (
@@ -108,7 +122,7 @@ export function Navbar({ docs }: { docs: DocMeta[] }) {
                            className={[
                               "flex items-center gap-1.5 rounded-lg px-3 py-2 transition-colors",
                               active
-                                 ? "bg-primary/10 font-medium text-primary"
+                                 ? "bg-card font-medium text-fg"
                                  : "text-muted hover:bg-card hover:text-fg",
                            ].join(" ")}
                         >
@@ -123,8 +137,9 @@ export function Navbar({ docs }: { docs: DocMeta[] }) {
                <div className="ml-auto flex items-center gap-2">
                   {/* Search — desktop */}
                   <button
+                     ref={searchButton}
                      onClick={() => setSearchOpen(true)}
-                     className="hidden h-9 items-center gap-2 rounded-lg border border-border bg-card/70 px-3 text-sm text-muted transition-colors hover:border-primary/50 hover:text-fg sm:flex"
+                     className="hidden h-9 items-center gap-2 rounded-lg border border-border bg-bg px-3 text-sm text-muted transition-colors hover:border-primary/50 hover:text-fg sm:flex"
                      aria-label="Search documentation"
                   >
                      <FiSearch size={14} />
@@ -192,7 +207,7 @@ export function Navbar({ docs }: { docs: DocMeta[] }) {
                               className={[
                                  "flex items-center gap-3 rounded-lg px-3 py-3 text-sm transition-colors",
                                  active
-                                    ? "bg-primary/10 font-medium text-primary"
+                                    ? "bg-card font-medium text-fg"
                                     : "text-muted hover:bg-card hover:text-fg",
                               ].join(" ")}
                            >
@@ -213,6 +228,7 @@ export function Navbar({ docs }: { docs: DocMeta[] }) {
                onMouseDown={closeSearch}
             >
                <div
+                  role="dialog" aria-modal="true" aria-label="Search documentation"
                   className="mx-auto max-w-2xl overflow-hidden rounded-xl border border-border bg-bg shadow-2xl"
                   onMouseDown={(e) => e.stopPropagation()}
                >
@@ -221,27 +237,34 @@ export function Navbar({ docs }: { docs: DocMeta[] }) {
                      <input
                         autoFocus
                         value={query}
-                        onChange={(e) => setQuery(e.target.value)}
+                        onChange={(e) => { setQuery(e.target.value); setActiveResult(0); }}
+                        onKeyDown={(event) => {
+                           if (event.key === "ArrowDown" && results.length) { event.preventDefault(); setActiveResult((i) => (i + 1) % results.length); }
+                           if (event.key === "ArrowUp" && results.length) { event.preventDefault(); setActiveResult((i) => (i + results.length - 1) % results.length); }
+                           if (event.key === "Enter" && results[activeResult]) { event.preventDefault(); router.push(`/docs/${results[activeResult].slug}`); closeSearch(); }
+                        }}
+                        role="combobox" aria-expanded="true" aria-controls="docs-search-results" aria-activedescendant={results.length ? `search-result-${activeResult}` : undefined}
                         placeholder="Search every documentation page..."
                         className="flex-1 bg-transparent text-base text-fg outline-none placeholder:text-muted"
                      />
                      <kbd className="rounded border border-border px-2 py-1 text-xs text-muted">ESC</kbd>
                   </div>
-                  <div className="max-h-[55vh] overflow-y-auto p-2">
+                  <div id="docs-search-results" role="listbox" className="max-h-[55vh] overflow-y-auto p-2">
                      {results.length ? (
-                        results.map((doc) => (
+                        results.map((doc, index) => (
                            <Link
-                              key={doc.slug}
+                              key={`${doc.slug}-${doc.heading}`}
+                              id={`search-result-${index}`} role="option" aria-selected={index === activeResult}
                               href={`/docs/${doc.slug}`}
                               onClick={closeSearch}
-                              className="group flex items-center justify-between gap-6 rounded-lg px-3 py-3 hover:bg-card"
+                              className={`group flex items-center justify-between gap-6 rounded-lg px-3 py-3 hover:bg-card ${index === activeResult ? "bg-card" : ""}`}
                            >
                               <span>
                                  <span className="block text-sm font-medium text-fg group-hover:text-primary">
-                                    {doc.title}
+                                    {doc.title}{doc.heading && ` · ${doc.heading}`}
                                  </span>
                                  <span className="mt-0.5 block text-xs text-muted">
-                                    {doc.description}
+                                    {"snippet" in doc ? doc.snippet : doc.text}
                                  </span>
                               </span>
                               <FiArrowUpRight className="shrink-0 text-muted" />

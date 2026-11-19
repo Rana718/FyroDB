@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { ThemeProvider } from "@/components/ThemeProvider";
 import { Navbar } from "@/components/Navbar";
-import { getAllDocs } from "@/lib/docs";
+import { getAllDocs, getSearchRecords } from "@/lib/docs";
 import "./globals.css";
 import "@fontsource-variable/inter";
 import "@fontsource-variable/jetbrains-mono";
@@ -85,7 +85,7 @@ export default function RootLayout({
       <html lang="en" suppressHydrationWarning className="font-sans">
          <body className="min-h-screen flex flex-col" suppressHydrationWarning>
             <ThemeProvider>
-               <Navbar docs={docs} />
+               <Navbar docs={docs} searchRecords={getSearchRecords()} />
                {children}
             </ThemeProvider>
          </body>

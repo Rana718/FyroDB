@@ -1,275 +1,33 @@
 import Link from "next/link";
-import type { IconType } from "react-icons";
-import {
-   FiArrowRight as ArrowRight,
-   FiCheck as Check,
-   FiCpu as Cpu,
-   FiDatabase as Database,
-   FiLock as Lock,
-   FiRadio as Radio,
-   FiShield as ShieldCheck,
-   FiZap as Zap,
-} from "react-icons/fi";
-import { HiOutlineChartBar as Gauge } from "react-icons/hi2";
+import { FiBookOpen, FiCode, FiDatabase, FiLayers, FiTerminal, FiZap } from "react-icons/fi";
 
-import { normalBenchmark } from "@/lib/benchmark-summary";
-
-const current = normalBenchmark.configurations[3];
-const benchmarks = normalBenchmark.configurations
-   .filter((c) => [1, 3, 6].includes(c.workers))
-   .map((c) => ({
-      name: c.workers + " worker" + (c.workers === 1 ? "" : "s"),
-      value: c.set_mops,
-      color: c.workers === 6 ? "bg-primary" : "bg-muted",
-      detail: c.set_mops.toFixed(2) + "M",
-   }));
-
-function BenchmarkRows() {
-   return (
-      <div className="space-y-5">
-         {benchmarks.map((item) => (
-            <div
-               key={item.name}
-               className="grid grid-cols-[108px_1fr_58px] items-center gap-3 text-sm"
-            >
-               <span
-                  className={
-                     item.name === "6 workers"
-                        ? "font-semibold text-fg"
-                        : "text-muted"
-                  }
-               >
-                  {item.name}
-               </span>
-               <div className="h-3 overflow-hidden rounded-full bg-code-bg">
-                  <div
-                     className={`h-full rounded-full ${item.color}`}
-                     style={{ width: `${(item.value / current.set_mops) * 100}%` }}
-                  />
-               </div>
-               <span className="text-right font-mono text-xs text-muted">
-                  {item.detail}
-               </span>
-            </div>
-         ))}
-      </div>
-   );
-}
-function Feature({
-   icon: Icon,
-   title,
-   text,
-}: {
-   icon: IconType;
-   title: string;
-   text: string;
-}) {
-   return (
-      <div className="border-t border-border pt-5">
-         <Icon size={19} className="text-primary" />
-         <h3 className="mt-4 font-semibold text-fg">{title}</h3>
-         <p className="mt-2 text-sm leading-6 text-muted">{text}</p>
-      </div>
-   );
-}
+const guides = [
+   { href: "/docs/getting-started", title: "Get started", text: "Install FyroDB and run your first commands.", icon: FiZap },
+   { href: "/docs/docker", title: "Run with Docker", text: "Start a container, connect a client, and persist data.", icon: FiTerminal },
+   { href: "/docs/commands-strings", title: "Command reference", text: "Explore the Redis-compatible command set.", icon: FiCode },
+   { href: "/docs/architecture", title: "Architecture", text: "Understand storage, concurrency, and persistence.", icon: FiLayers },
+   { href: "/docs/benchmarks", title: "Benchmarks", text: "Explore recorded workloads and their methodology.", icon: FiDatabase },
+   { href: "/docs/changelog-0-4-0", title: "What's new", text: "Read the latest changes in FyroDB 0.4.0.", icon: FiBookOpen },
+];
 
 export default function HomePage() {
    return (
-      <main className="overflow-hidden">
-         <section className="mx-auto grid max-w-7xl gap-14 px-5 pb-20 pt-20 lg:grid-cols-[1.1fr_.9fr] lg:items-center lg:px-8 lg:pb-28 lg:pt-28">
-            <div>
-               <div className="mb-6 inline-flex items-center gap-2 rounded-full border border-primary/25 bg-primary/10 px-3 py-1.5 text-xs font-medium text-primary">
-                  <span className="h-1.5 w-1.5 rounded-full bg-accent-green" />
-                  v0.3.1 · Open source · Rust-powered
-               </div>
-               <h1 className="max-w-3xl text-5xl font-semibold tracking-[-0.04em] text-fg sm:text-7xl">
-                  The fast path to{" "}
-                  <span className="text-primary">in-memory data.</span>
-               </h1>
-               <p className="mt-6 max-w-xl text-lg leading-8 text-muted">
-                  FyroDB is a Redis-compatible, concurrent key-value store built
-                  in Rust, with guarded values, compact storage, and a familiar
-                  protocol.
-               </p>
-               <div className="mt-9 flex flex-wrap items-center gap-3">
-                  <Link
-                     href="/docs/getting-started"
-                     className="inline-flex items-center gap-2 rounded-lg bg-primary px-5 py-3 text-sm font-semibold text-primary-fg shadow-lg shadow-primary/20 transition-transform hover:-translate-y-0.5"
-                  >
-                     Start building <ArrowRight size={16} />
-                  </Link>
-                  <Link
-                     href="/docs/benchmarks"
-                     className="inline-flex items-center gap-2 rounded-lg border border-border px-5 py-3 text-sm font-medium text-fg hover:bg-card"
-                  >
-                     See the benchmarks
-                  </Link>
-               </div>
-               <div className="mt-10 flex flex-wrap gap-x-6 gap-y-2 text-xs text-muted">
-                  <span className="inline-flex items-center gap-1.5">
-                     <Check size={14} className="text-accent-green" />
-                     Redis clients work out of the box
-                  </span>
-                  <span className="inline-flex items-center gap-1.5">
-                     <Check size={14} className="text-accent-green" />
-                     Single-node simplicity
-                  </span>
-               </div>
-            </div>
-            <div className="relative rounded-2xl border border-border bg-card/60 p-6 shadow-2xl shadow-primary/5">
-               <div className="mb-7 flex items-center justify-between border-b border-border pb-4">
-                  <div>
-                     <p className="text-xs font-medium uppercase tracking-[.18em] text-muted">
-                        Measured normal TCP suite
-                     </p>
-                     <p className="mt-1 text-sm text-fg">
-                        SET · pipeline 100 · median of 3
-                     </p>
-                  </div>
-                  <Gauge size={20} className="text-primary" />
-               </div>
-               <div className="mb-8 flex items-end gap-3">
-                  <span className="text-6xl font-semibold tracking-tight text-fg">
-                     {current.set_mops.toFixed(2)}
-                  </span>
-                  <span className="mb-2 font-mono text-lg text-primary">
-                     M ops/s
-                  </span>
-               </div>
-               <BenchmarkRows />
-               <div className="mt-7 flex items-center justify-between border-t border-border pt-4 text-xs text-muted">
-                  <span>100 clients · 10M operations · dedicated clients</span>
-                  <Link
-                     href="/docs/benchmarks"
-                     className="text-primary hover:underline"
-                  >
-                     Methodology{" "}
-                     <ArrowRight size={12} className="ml-1 inline" />
-                  </Link>
-               </div>
-            </div>
+      <main className="home-docs">
+         <section className="home-hero">
+            <p className="home-eyebrow">FYRODB DOCUMENTATION <span> / </span> v0.4.0</p>
+            <h1>In-memory data,<br /><span>ready to build with.</span></h1>
+            <p className="home-description">A Redis-compatible database built in Rust. Find the guides, commands, and architecture you need to get started.</p>
+            <div className="home-actions"><Link className="home-button-primary" href="/docs/getting-started">Get started</Link><a className="home-button-secondary" href="https://github.com/Rana718/FyroDB">View on GitHub</a></div>
          </section>
-         <section className="border-y border-border bg-card/30">
-            <div className="mx-auto grid max-w-7xl grid-cols-2 divide-x divide-border lg:grid-cols-4">
-               <div className="p-6 lg:p-8">
-                  <p className="text-3xl font-semibold text-fg">{current.get_mops.toFixed(2)}M</p>
-                  <p className="mt-1 text-xs text-muted">GET ops/sec · 6 workers</p>
-               </div>
-               <div className="p-6 lg:p-8">
-                  <p className="text-3xl font-semibold text-fg">{current.rss_mib.toFixed(1)} MiB</p>
-                  <p className="mt-1 text-xs text-muted">peak RSS (full suite)</p>
-               </div>
-               <div className="p-6 lg:p-8">
-                  <p className="text-3xl font-semibold text-fg">{current.incr_mops.toFixed(2)}M</p>
-                  <p className="mt-1 text-xs text-muted">INCR ops/sec</p>
-               </div>
-               <div className="p-6 lg:p-8">
-                  <p className="text-3xl font-semibold text-fg">{current.list_mops.toFixed(2)}M</p>
-                  <p className="mt-1 text-xs text-muted">LPUSH/RPOP ops/sec</p>
-               </div>
-            </div>
+         <section className="home-quickstart" aria-label="Quick start">
+            <div className="home-code-header"><span>QUICK START</span><span>TERMINAL</span></div>
+            <pre><code><span>$</span> docker run -p 8000:8000 rana718/fyrodb:latest{"\n"}<span>$</span> redis-cli -p 8000{"\n"}<span>›</span> SET hello world{"\n"}<b>OK</b>{"\n"}<span>›</span> GET hello{"\n"}<b>"world"</b></code></pre>
          </section>
-         <section className="mx-auto max-w-7xl px-5 py-20 lg:px-8 lg:py-28">
-            <div className="max-w-2xl">
-               <p className="text-sm font-medium text-primary">
-                  Built for real workloads
-               </p>
-               <h2 className="mt-3 text-3xl font-semibold tracking-tight text-fg sm:text-4xl">
-                  A focused engine with fewer tradeoffs.
-               </h2>
-            </div>
-            <div className="mt-14 grid gap-x-10 gap-y-12 sm:grid-cols-2 lg:grid-cols-3">
-               <Feature
-                  icon={Lock}
-                  title="Concurrent with data guards"
-                  text="Entry guards, map admission and epoch reclamation protect values during concurrent reads and writes."
-               />
-               <Feature
-                  icon={Zap}
-                  title="Direct, guarded replies"
-                  text="Serialize protected values directly, with bounded scatter/gather for eligible large reply batches."
-               />
-               <Feature
-                  icon={Cpu}
-                  title="Thread-per-core"
-                  text="One event loop per core with SO_REUSEPORT for predictable connection distribution."
-               />
-               <Feature
-                  icon={Database}
-                  title="Redis compatible"
-                  text="Use redis-cli, ioredis, redis-py, go-redis, or any RESP-compatible client."
-               />
-               <Feature
-                  icon={Radio}
-                  title="Fast Pub/Sub"
-                  text="Shared encoded frames and grouped worker delivery; the normal suite verifies every subscriber delivery."
-               />
-               <Feature
-                  icon={ShieldCheck}
-                  title="Crash-safe persistence"
-                  text="Automatic RDB snapshots, atomic writes, and a straightforward operational model."
-               />
-            </div>
+         <section className="home-guides">
+            <div className="home-section-heading"><div><p>EXPLORE</p><h2>Everything you need.</h2></div><p>From your first command to the details under the hood.</p></div>
+            <div className="home-guide-grid">{guides.map(({ href, title, text, icon: Icon }) => <Link href={href} className="home-guide" key={href}><Icon size={19} aria-hidden="true"/><h3>{title}</h3><p>{text}</p></Link>)}</div>
          </section>
-         <section className="mx-auto max-w-7xl px-5 pb-24 lg:px-8">
-            <div className="grid gap-8 rounded-2xl border border-border bg-card/50 p-6 sm:p-10 lg:grid-cols-[1fr_1.1fr] lg:items-center">
-               <div>
-                  <p className="text-sm font-medium text-primary">
-                     Five minutes to first command
-                  </p>
-                  <h2 className="mt-3 text-3xl font-semibold tracking-tight text-fg">
-                     Drop FyroDB into your stack.
-                  </h2>
-                  <p className="mt-4 max-w-md leading-7 text-muted">
-                     Start a server, connect with your existing Redis tooling,
-                     and keep moving.
-                  </p>
-                  <Link
-                     href="/docs/getting-started"
-                     className="mt-7 inline-flex items-center gap-2 text-sm font-semibold text-primary hover:underline"
-                  >
-                     Read the quickstart <ArrowRight size={15} />
-                  </Link>
-               </div>
-               <pre className="overflow-x-auto rounded-xl border border-border bg-code-bg p-5 text-sm leading-7 text-fg">
-                  <code>
-                     <span className="text-muted">$</span> docker run -p
-                     8000:8000 rana718/fyrodb:latest{"\n"}
-                     <span className="text-muted">$</span> redis-cli -p 8000
-                     {"\n"}
-                     <span className="text-accent-blue">
-                        127.0.0.1:8000&gt;
-                     </span>{" "}
-                     SET hello world{"\n"}
-                     <span className="text-accent-green">OK</span>
-                     {"\n"}
-                     <span className="text-accent-blue">
-                        127.0.0.1:8000&gt;
-                     </span>{" "}
-                     GET hello{"\n"}
-                     <span className="text-primary">"world"</span>
-                  </code>
-               </pre>
-            </div>
-         </section>
-         <footer className="border-t border-border px-5 py-8 text-center text-xs text-muted">
-            Built on a 6-core Intel i5-11400H ·{" "}
-            <Link
-               href="/docs/benchmarks"
-               className="text-primary hover:underline"
-            >
-               Full benchmark details
-            </Link>{" "}
-            ·{" "}
-            <a
-               href="https://github.com/Rana718/FyroDB"
-               target="_blank"
-               rel="noopener"
-               className="text-primary hover:underline"
-            >
-               Star FyroDB on GitHub
-            </a>
-         </footer>
+         <footer className="home-footer"><span>FyroDB · Built with Rust</span><a href="https://github.com/Rana718/FyroDB">GitHub</a></footer>
       </main>
    );
 }
