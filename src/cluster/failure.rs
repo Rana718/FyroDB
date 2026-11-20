@@ -31,15 +31,16 @@ impl FailureTracker {
    }
 
    pub fn report(&mut self, report: FailureReport) -> bool {
-      self.expire();
+      let now = Instant::now();
+      self.expire_at(now);
       let evidence = self
          .evidence
          .entry((report.target_id, report.epoch))
          .or_insert_with(|| Evidence {
             reporters: HashSet::new(),
-            updated_at: Instant::now(),
+            updated_at: now,
          });
-      evidence.updated_at = Instant::now();
+      evidence.updated_at = now;
       evidence.reporters.insert(report.reporter_id);
       evidence.reporters.len() >= self.quorum
    }
@@ -56,10 +57,14 @@ impl FailureTracker {
    }
 
    pub fn expire(&mut self) {
+      self.expire_at(Instant::now());
+   }
+
+   fn expire_at(&mut self, now: Instant) {
       let retention = self.retention;
       self
          .evidence
-         .retain(|_, value| value.updated_at.elapsed() <= retention);
+         .retain(|_, value| now.duration_since(value.updated_at) <= retention);
    }
 }
 

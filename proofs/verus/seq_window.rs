@@ -1,6 +1,4 @@
-// Verified model of the AOF sequence-window allocator in
-// src/storage/persistence/aof.rs (`Writer.seq_base/seq_next` +
-
+// Historical model of disjoint windows. AOF now uses one atomic allocation per record.
 use vstd::prelude::*;
 verus! {
 

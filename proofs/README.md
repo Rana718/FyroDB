@@ -67,14 +67,13 @@ false→true issues the wake; the consumer's disarm-then-recheck closes the
 race with pushes that land while it is finishing. Full liveness requires
 the standard fairness assumption (noted in the file).
 
-### `seq_window.rs` — AOF sequence windows (`src/storage/persistence/aof.rs`)
+### `aof_sequence.rs` — per-record sequence allocation
 
-Theorem: **two writers can never hand out the same sequence number.**
-Every refill carves a disjoint W-wide range from the global counter (the
-only global RMW), all handed-out numbers sit inside their writer's range,
-and the ranges tile the sequence space without gaps or reuse — exactly
-what the replay `merged()` ordering relies on. Window width is a spec
-parameter (2 here, 64 in the code); the proofs are size-generic.
+Two ordered atomic allocations below counter exhaustion issue distinct, increasing sequences. Mutation capture and filesystem durability are outside this model.
+
+### `seq_window.rs` — historical window allocation model
+
+This model checks disjoint abstract reservations. AOF now assigns a shared atomic sequence to each record. The model does not establish end-to-end recovery order.
 
 ## Running the proofs
 

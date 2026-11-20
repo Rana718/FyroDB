@@ -2,7 +2,7 @@ use crate::storage::{
    store::Store,
    value::{FyroDB, HashInner, ListInner, SetInner, SmallStr, StoreValue, now_ms},
 };
-use foldhash::{HashMap, HashMapExt, HashSetExt};
+use foldhash::{HashMap, HashMapExt};
 use std::fs::{self, File};
 use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::os::unix::io::AsRawFd;

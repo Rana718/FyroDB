@@ -764,7 +764,11 @@ fn dispatch_set_batch<const BATCH: usize, const STREAMING: bool>(
    }
 }
 
-pub(super) fn dispatch_json_set_run(conn: &mut Conn<'_>, first_raw: &[(*const u8, usize)]) -> bool {
+pub(super) fn dispatch_json_set_run(
+   conn: &mut Conn<'_>,
+   first_raw: &[(*const u8, usize)],
+   pin: &customhash::Guard,
+) -> bool {
    if first_raw.len() != 4 {
       return false;
    }
@@ -777,7 +781,6 @@ pub(super) fn dispatch_json_set_run(conn: &mut Conn<'_>, first_raw: &[(*const u8
    let mut vals: [(*const u8, usize); BATCH] = [(std::ptr::null(), 0); BATCH];
    let mut hashes = [0u64; BATCH];
    let mut tables = [std::ptr::null(); BATCH];
-   let mut entries = [std::ptr::null(); BATCH];
 
    keys[0] = unsafe { part_bytes(first_raw[1]) };
    vals[0] = first_raw[3];
@@ -802,10 +805,10 @@ pub(super) fn dispatch_json_set_run(conn: &mut Conn<'_>, first_raw: &[(*const u8
       let (hint, entry) = conn.hint_for(first_raw[1]);
       let out = &mut conn.parser.wbuf;
       let Some(key) = part_str(out, first_raw[1]) else {
-         return false;
+         return true;
       };
       let Some(val) = part_str(out, first_raw[3]) else {
-         return false;
+         return true;
       };
       conn.store.set_json_auto(key, hint, entry, val);
       if conn.store.has_replication() {
@@ -818,50 +821,36 @@ pub(super) fn dispatch_json_set_run(conn: &mut Conn<'_>, first_raw: &[(*const u8
    conn
       .store
       .prefetch_slots_write(&keys[..count], &mut hashes[..count], &mut tables[..count]);
-   conn.store.probe_and_prefetch_entries_write(
-      &tables[..count],
-      &hashes[..count],
-      &mut entries[..count],
-   );
-
    let store = conn.store;
-   let _write_epoch = store.data.write_epoch();
+   let epoch = store.data.write_epoch();
    let out = &mut conn.parser.wbuf;
    out.reserve(count * 5);
-   let old_len = out.len();
-   let mut success = true;
 
    for i in 0..count {
       let Ok(key_str) = std::str::from_utf8(keys[i]) else {
          crate::utils::resp::write_err(out, "invalid UTF-8 in request");
-         success = false;
          continue;
       };
       let val_bytes = unsafe { std::slice::from_raw_parts(vals[i].0, vals[i].1) };
       let Ok(val_str) = std::str::from_utf8(val_bytes) else {
          crate::utils::resp::write_err(out, "invalid UTF-8 in request");
-         success = false;
          continue;
       };
-      conn
-         .store
-         .set_json_auto(key_str, Some(hashes[i]), entries[i], val_str);
+      let hash = hashes[i];
+      store.data.insert_str_hashed_pinned(
+         key_str,
+         crate::storage::value::StoreValue::json_str(val_str),
+         hash,
+         store.data.shard_of(hash),
+         &epoch,
+         pin,
+      );
+      crate::utils::resp::write_ok(out);
       if conn.store.has_replication() {
          conn.store.record_current_value(key_str);
       }
    }
 
-   if success {
-      const OK_REPLY_5: &[u8] = b"+OK\r\n";
-      unsafe {
-         out.set_len(old_len + count * 5);
-         let mut p = out.as_mut_ptr().add(old_len);
-         for _ in 0..count {
-            std::ptr::copy_nonoverlapping(OK_REPLY_5.as_ptr(), p, 5);
-            p = p.add(5);
-         }
-      }
-   }
    true
 }
 

@@ -41,10 +41,9 @@ impl CompactKey {
 
    #[inline(always)]
    fn read_heap_len(data: &[u8; INLINE_CAP]) -> usize {
-      unsafe {
-         let word = std::ptr::read_unaligned(data.as_ptr().add(8).cast::<u64>());
-         (word.to_le() & 0x00FF_FFFF_FFFF_FFFF) as usize
-      }
+      let mut bytes = [0u8; 8];
+      bytes[..7].copy_from_slice(&data[8..]);
+      u64::from_le_bytes(bytes) as usize
    }
 
    pub(crate) fn from_string(s: String) -> Self {
@@ -60,14 +59,17 @@ impl CompactKey {
       } else if Self::fits_full_width(&s) {
          Self::full_width(&s)
       } else {
-         let ptr = Box::into_raw(s.into_boxed_str());
-         let mut data = [0u8; INLINE_CAP];
-         unsafe {
-            std::ptr::write_unaligned(data.as_mut_ptr().cast::<usize>(), ptr as *const u8 as usize);
-         }
-         Self::store_heap_len(&mut data, unsafe { &*ptr }.len());
-         Self { data, tag: HEAP }
+         Self::from_heap(s.into_bytes().into_boxed_slice())
       }
+   }
+
+   fn from_heap(bytes: Box<[u8]>) -> Self {
+      let len = bytes.len();
+      let ptr = Box::into_raw(bytes) as *mut u8;
+      let mut data = [0u8; INLINE_CAP];
+      unsafe { data.as_mut_ptr().cast::<*mut u8>().write_unaligned(ptr) };
+      Self::store_heap_len(&mut data, len);
+      Self { data, tag: HEAP }
    }
 
    /// Full-width keys use their final byte when it is not a length or heap tag.
@@ -118,7 +120,7 @@ impl CompactKey {
       } else if Self::fits_full_width_bytes(key) {
          Self::full_width_bytes(key)
       } else {
-         Self::from_string(unsafe { String::from_utf8_unchecked(key.to_vec()) })
+         Self::from_heap(Box::from(key))
       }
    }
 
@@ -222,12 +224,12 @@ impl CompactKey {
 impl Drop for CompactKey {
    fn drop(&mut self) {
       if self.tag == HEAP {
-         let ptr_val = unsafe { std::ptr::read_unaligned(self.data.as_ptr().cast::<usize>()) };
+         let ptr_val = unsafe { std::ptr::read_unaligned(self.data.as_ptr().cast::<*mut u8>()) };
          let len_val = Self::read_heap_len(&self.data);
          unsafe {
-            drop(Box::from_raw(
-               std::ptr::slice_from_raw_parts_mut(ptr_val as *mut u8, len_val) as *mut str,
-            ));
+            drop(Box::from_raw(std::ptr::slice_from_raw_parts_mut(
+               ptr_val, len_val,
+            )));
          }
       }
    }

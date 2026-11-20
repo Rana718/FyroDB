@@ -86,13 +86,36 @@ impl Store {
    /// not writer exclusion.
    pub fn cluster_write_guard(&self) -> WriteFenceGuard<'_> {
       let fence = &self.cluster_write_fence;
-      fence.engaged.store(true, Ordering::SeqCst);
       let gate = fence.gate.lock();
+      fence.engaged.store(true, Ordering::SeqCst);
       for slot in fence.in_flight.iter() {
          while slot.load(Ordering::SeqCst) != 0 {
             std::hint::spin_loop();
          }
       }
       WriteFenceGuard { fence, _gate: gate }
+   }
+}
+
+#[cfg(test)]
+mod tests {
+   use super::*;
+
+   #[test]
+   fn overlapping_fence_requests_each_keep_the_fence_engaged() {
+      let store = Store::with_config_workers(1, 16, 2);
+      let start = std::sync::Barrier::new(2);
+      std::thread::scope(|scope| {
+         for _ in 0..2 {
+            scope.spawn(|| {
+               start.wait();
+               for _ in 0..500 {
+                  let _guard = store.cluster_write_guard();
+                  std::thread::yield_now();
+                  assert!(store.cluster_write_fence.engaged.load(Ordering::SeqCst));
+               }
+            });
+         }
+      });
    }
 }

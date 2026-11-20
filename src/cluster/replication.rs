@@ -3,7 +3,7 @@ use parking_lot::Mutex;
 use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MutationKind {
@@ -370,25 +370,12 @@ impl<T> Drop for SpinGuard<'_, T> {
 
 #[derive(Clone)]
 pub struct ReplicationCoordinator {
-   shards: Arc<SpinMutex<Vec<Arc<SpinMutex<MutationLog>>>>>,
-   offset_counter: Arc<AtomicU64>,
-   /// exactly the last handed-out offset; `next_offset()` derives from it
-   last_assigned: Arc<AtomicU64>,
-   journal: Arc<Mutex<Option<ReplicationJournal>>>,
-   total_len: Arc<AtomicUsize>,
-   total_bytes: Arc<AtomicUsize>,
-   appended: Arc<AtomicU64>,
-   capacity: usize,
+   state: Arc<Mutex<CoordinatorState>>,
 }
 
-const OFFSET_WINDOW: u64 = 256;
-
-thread_local! {
-    // Shard binding is per (thread, coordinator): a coordinator identity
-    // mismatch (tests re-create coordinators on one thread) re-binds.
-    static LOG_SHARD: std::cell::RefCell<Option<(usize, Arc<SpinMutex<MutationLog>>)>> =
-        const { std::cell::RefCell::new(None) };
-    static OFFSET_WINDOW_STATE: std::cell::Cell<(u64, u64)> = const { std::cell::Cell::new((0u64, 0u64)) };
+struct CoordinatorState {
+   log: MutationLog,
+   journal: Option<ReplicationJournal>,
 }
 
 struct ReplicationJournal {
@@ -424,235 +411,65 @@ fn write_journal_entry(journal: &mut ReplicationJournal, record: &MutationRecord
 impl ReplicationCoordinator {
    pub fn new(capacity: usize) -> Self {
       Self {
-         shards: Arc::new(SpinMutex::new(Vec::new())),
-         offset_counter: Arc::new(AtomicU64::new(1)),
-         last_assigned: Arc::new(AtomicU64::new(0)),
-         journal: Arc::new(Mutex::new(None)),
-         total_len: Arc::new(AtomicUsize::new(0)),
-         total_bytes: Arc::new(AtomicUsize::new(0)),
-         appended: Arc::new(AtomicU64::new(0)),
-         capacity: capacity.max(1),
+         state: Arc::new(Mutex::new(CoordinatorState {
+            log: MutationLog::new(capacity),
+            journal: None,
+         })),
       }
-   }
-
-   /// This thread's shard for *this* coordinator, registering it on first
-   /// use (cold).
-   #[allow(clippy::collapsible_if)]
-   fn shard(&self) -> Arc<SpinMutex<MutationLog>> {
-      let identity = self as *const Self as usize;
-      LOG_SHARD.with(|slot| {
-         if let Some((owner, shard)) = slot.borrow().as_ref()
-            && *owner == identity
-         {
-            return Arc::clone(shard);
-         }
-         let shard = Arc::new(SpinMutex::new(MutationLog::new(self.capacity)));
-         self.shards.lock().push(Arc::clone(&shard));
-         *slot.borrow_mut() = Some((identity, Arc::clone(&shard)));
-         shard
-      })
-   }
-
-   /// Windowed offset allocation to reduce atomic contention.
-   fn alloc_offset(&self) -> u64 {
-      OFFSET_WINDOW_STATE.with(|cell| {
-         let (next, end) = cell.get();
-         if next < end && self.offset_counter.load(Ordering::Acquire) == end {
-            cell.set((next + 1, end));
-            return next;
-         }
-         let base = self
-            .offset_counter
-            .fetch_add(OFFSET_WINDOW, Ordering::AcqRel);
-         cell.set((base + 1, base + OFFSET_WINDOW));
-         base
-      })
-   }
-
-   /// Sequential allocation for journal restore: dense offsets from the
-   /// coordinator's own counter, preserving the recorded mutation order.
-   fn alloc_offset_sequential(&self) -> u64 {
-      self.offset_counter.fetch_add(1, Ordering::AcqRel)
    }
 
    pub fn append(&self, mut record: MutationRecord) -> Result<u64, LogError> {
-      record.offset = self.alloc_offset();
-      self.last_assigned.store(record.offset, Ordering::Release);
-
-      if let Some(journal) = self.journal.lock().as_mut() {
+      let mut state = self.state.lock();
+      record.offset = state.log.next_offset();
+      if let Some(journal) = state.journal.as_mut() {
          write_journal_entry(journal, &record);
       }
-
-      let shard = self.shard();
-      let mut log = shard.lock();
-      log.bytes = log.bytes.saturating_add(record_memory_bytes(&record));
-      log.next_offset = record.offset.saturating_add(1);
-      log.records.push_back(Arc::new(record.clone()));
-      drop(log);
-      self.total_len.fetch_add(1, Ordering::Relaxed);
-      self
-         .total_bytes
-         .fetch_add(record_memory_bytes(&record), Ordering::Relaxed);
-      self.appended.fetch_add(1, Ordering::Relaxed);
-      self.trim_if_over_budget();
-      Ok(record.offset)
-   }
-
-   /// Evict oldest records across shards when over capacity or budget.
-   fn trim_if_over_budget(&self) {
-      let mut batch_count = 0;
-      while batch_count < 256 {
-         if self.total_len.load(Ordering::Relaxed) <= self.capacity
-            && self.total_bytes.load(Ordering::Relaxed) <= MAX_LOG_BYTES
-         {
-            return;
-         }
-         let oldest = {
-            let shards = self.shards.lock();
-            let mut oldest: Option<(Arc<SpinMutex<MutationLog>>, u64)> = None;
-            for shard in shards.iter() {
-               let log = shard.lock();
-               if let Some(front) = log.records.front() {
-                  let front = front.offset;
-                  if oldest.as_ref().is_none_or(|(_, off)| front < *off) {
-                     oldest = Some((Arc::clone(shard), front));
-                  }
-               }
-            }
-            oldest
-         };
-         let Some((shard, _)) = oldest else { return };
-         let mut log = shard.lock();
-         let mut pruned_records = 0usize;
-         let mut pruned_bytes = 0usize;
-         while pruned_records < 32 {
-            if self
-               .total_len
-               .load(Ordering::Relaxed)
-               .saturating_sub(pruned_records)
-               <= self.capacity
-               && self
-                  .total_bytes
-                  .load(Ordering::Relaxed)
-                  .saturating_sub(pruned_bytes)
-                  <= MAX_LOG_BYTES
-            {
-               break;
-            }
-            let Some(old) = log.records.pop_front() else {
-               break;
-            };
-            let bytes = record_memory_bytes(&old);
-            log.bytes = log.bytes.saturating_sub(bytes);
-            pruned_bytes += bytes;
-            pruned_records += 1;
-         }
-         drop(log);
-         if pruned_records > 0 {
-            self.total_len.fetch_sub(pruned_records, Ordering::Relaxed);
-            self.total_bytes.fetch_sub(pruned_bytes, Ordering::Relaxed);
-            batch_count += pruned_records;
-         } else {
-            break;
-         }
-      }
+      state.log.append(record)
    }
 
    pub fn replay_from(&self, offset: u64) -> Result<Vec<MutationRecord>, LogError> {
-      let shards = self.shards.lock();
-      let mut tails: Vec<Vec<Arc<MutationRecord>>> = Vec::with_capacity(shards.len());
-      let mut first_retained = self.offset_counter.load(Ordering::Relaxed);
-      for shard in shards.iter() {
-         let log = shard.lock();
-         if let Some(front) = log.records.front() {
-            first_retained = first_retained.min(front.offset);
+      let records: Vec<_> = {
+         let state = self.state.lock();
+         let first = state.log.first_offset();
+         if offset != 0 && offset < first {
+            return Err(LogError::OffsetGap);
          }
-         tails.push(
-            log.records
-               .iter()
-               .filter(|record| record.offset >= offset.max(1))
-               .cloned()
-               .collect(),
-         );
-      }
-      drop(shards);
-      if offset != 0 && offset < first_retained {
-         return Err(LogError::OffsetGap);
-      }
-      // k-way merge by offset: each shard's records are contiguous and
-      // strictly increasing within its offset windows
-      let mut heads: Vec<usize> = vec![0; tails.len()];
-      let mut out = Vec::new();
-      loop {
-         let mut best: Option<usize> = None;
-         for (i, tail) in tails.iter().enumerate() {
-            if heads[i] < tail.len()
-               && best.is_none_or(|b: usize| tail[heads[i]].offset < tail[heads[b]].offset)
-            {
-               best = Some(i);
-            }
-         }
-         let Some(i) = best else { break };
-         out.push(MutationRecord::clone(&tails[i][heads[i]]));
-         heads[i] += 1;
-      }
-      Ok(out)
+         let skip = usize::try_from(offset.saturating_sub(first)).unwrap_or(usize::MAX);
+         state.log.records.iter().skip(skip).cloned().collect()
+      };
+      Ok(records
+         .into_iter()
+         .map(|record| (*record).clone())
+         .collect())
    }
+
    pub fn record_at(&self, offset: u64) -> Result<Option<Arc<MutationRecord>>, LogError> {
-      let offset = offset.max(1);
-      {
-         let shards = self.shards.lock();
-         for shard in shards.iter() {
-            let log = shard.lock();
-            let Some(front) = log.records.front() else {
-               continue;
-            };
-            let first = front.offset;
-            if offset < first {
-               continue;
-            }
-            if offset < first + log.records.len() as u64 {
-               return Ok(log.records.get((offset - first) as usize).map(Arc::clone));
-            }
-         }
-      }
-      // A requested offset below the earliest retained record anywhere is
-      // a gap; at or above everything retained simply has no record.
-      let first_retained = self.first_retained_offset();
-      if offset != 0 && offset < first_retained {
+      let state = self.state.lock();
+      if offset != 0 && offset < state.log.first_offset() {
          return Err(LogError::OffsetGap);
       }
-      Ok(None)
+      state.log.record_at(offset)
    }
-   /// Returns the first retained offset, or the next offset when the log is empty.
    pub fn first_retained_offset(&self) -> u64 {
-      let shards = self.shards.lock();
-      let mut first: Option<u64> = None;
-      for shard in shards.iter() {
-         let log = shard.lock();
-         if let Some(front) = log.records.front() {
-            first = Some(first.map_or(front.offset, |f: u64| f.min(front.offset)));
-         }
-      }
-      first.unwrap_or_else(|| self.next_offset())
+      self.state.lock().log.first_offset()
    }
    pub fn next_offset(&self) -> u64 {
-      self.last_assigned.load(Ordering::Relaxed) + 1
+      self.state.lock().log.next_offset()
    }
    pub fn len(&self) -> usize {
-      self.total_len.load(Ordering::Relaxed)
+      self.state.lock().log.len()
    }
    pub fn is_empty(&self) -> bool {
-      self.len() == 0
+      self.state.lock().log.is_empty()
    }
    pub fn appended_count(&self) -> u64 {
-      self.appended.load(Ordering::Relaxed)
+      self.next_offset() - 1
    }
    pub fn retained_capacity(&self) -> usize {
-      self.capacity
+      self.state.lock().log.capacity
    }
    pub fn retained_bytes(&self) -> usize {
-      self.total_bytes.load(Ordering::Relaxed)
+      self.state.lock().log.bytes()
    }
    pub fn retained_byte_limit(&self) -> usize {
       MAX_LOG_BYTES
@@ -660,17 +477,22 @@ impl ReplicationCoordinator {
 
    pub fn flush_journal(&self) {
       use std::os::unix::io::AsRawFd;
-      if let Some(journal) = self.journal.lock().as_mut() {
+      if let Some(journal) = self.state.lock().journal.as_mut() {
          let _ = journal.file.flush();
          unsafe { libc::fsync(journal.file.as_raw_fd()) };
       }
    }
 
    pub fn identity(&self) -> Option<[u8; 16]> {
-      self.journal.lock().as_ref().map(|journal| journal.identity)
+      self
+         .state
+         .lock()
+         .journal
+         .as_ref()
+         .map(|journal| journal.identity)
    }
 
-   pub fn open_journal(&self, path: &str, identity: [u8; 16]) -> std::io::Result<()> {
+   pub fn open_journal(&self, path: &str, mut identity: [u8; 16]) -> std::io::Result<()> {
       const MAGIC: &[u8; 4] = b"FLRJ";
       let mut restored = Vec::new();
       if std::path::Path::new(path).exists() {
@@ -684,7 +506,7 @@ impl ReplicationCoordinator {
             ));
          }
          let existing: [u8; 16] = header[5..21].try_into().unwrap();
-         let existing_identity = if identity == [0; 16] {
+         identity = if identity == [0; 16] {
             existing
          } else if existing != identity {
             return Err(std::io::Error::new(
@@ -694,7 +516,6 @@ impl ReplicationCoordinator {
          } else {
             identity
          };
-         let _ = existing_identity;
          loop {
             let mut length = [0u8; 4];
             match file.read_exact(&mut length) {
@@ -719,26 +540,6 @@ impl ReplicationCoordinator {
             })?);
          }
       }
-      if !restored.is_empty() {
-         // Restore in original offset order to preserve mutation sequencing.
-         restored.sort_by_key(|record| record.offset);
-         let shard = self.shard();
-         for mut record in restored {
-            record.offset = self.alloc_offset_sequential();
-            self.last_assigned.store(record.offset, Ordering::Release);
-            let mut log = shard.lock();
-            log.bytes = log.bytes.saturating_add(record_memory_bytes(&record));
-            log.next_offset = record.offset.saturating_add(1);
-            log.records.push_back(Arc::new(record.clone()));
-            drop(log);
-            self.total_len.fetch_add(1, Ordering::Relaxed);
-            self
-               .total_bytes
-               .fetch_add(record_memory_bytes(&record), Ordering::Relaxed);
-            self.appended.fetch_add(1, Ordering::Relaxed);
-         }
-         self.trim_if_over_budget();
-      }
       let exists = std::path::Path::new(path).exists();
       let mut file = std::fs::OpenOptions::new()
          .create(true)
@@ -750,12 +551,27 @@ impl ReplicationCoordinator {
          file.write_all(&identity)?;
          file.flush()?;
       }
-      *self.journal.lock() = Some(ReplicationJournal { file, identity });
+      restored.sort_by_key(|record| record.offset);
+      let mut state = self.state.lock();
+      for mut record in restored {
+         record.offset = 0;
+         state
+            .log
+            .append(record)
+            .expect("restore assigns fresh offsets");
+      }
+      state.journal = Some(ReplicationJournal { file, identity });
       Ok(())
    }
 }
 
 impl MutationLog {
+   fn first_offset(&self) -> u64 {
+      self
+         .records
+         .front()
+         .map_or(self.next_offset, |record| record.offset)
+   }
    pub fn new(capacity: usize) -> Self {
       let capacity = capacity.max(1);
       Self {
@@ -830,8 +646,8 @@ impl MutationLog {
 fn record_memory_bytes(record: &MutationRecord) -> usize {
    record
       .key
-      .len()
-      .saturating_add(record.value.len())
+      .capacity()
+      .saturating_add(record.value.capacity())
       .saturating_add(std::mem::size_of::<MutationRecord>())
 }
 
@@ -970,6 +786,22 @@ fn take<'a>(input: &mut &'a [u8], size: usize) -> Result<&'a [u8], ReplicationCo
 #[cfg(test)]
 mod tests {
    use super::*;
+   #[test]
+   fn interleaved_writers_return_the_requested_offsets() {
+      let log = ReplicationCoordinator::new(10);
+      let append = |value| {
+         log.append(MutationRecord::replace(Slot(0), vec![1], vec![value], None))
+            .unwrap()
+      };
+      assert_eq!(append(1), 1);
+      std::thread::scope(|s| assert_eq!(s.spawn(|| append(2)).join().unwrap(), 2));
+      assert_eq!(append(3), 3);
+      for i in 1..=3 {
+         let record = log.record_at(i).unwrap().unwrap();
+         assert_eq!((record.offset, record.value[0]), (i, i as u8));
+      }
+   }
+
    #[test]
    fn mutation_round_trip_and_validation() {
       let record = MutationRecord {

@@ -184,6 +184,12 @@ def connection_burst(port, count):
 def main(binary):
     persisted = {f"bytes:{size}": pattern(b"\x00\xffABC\r\n", size)
                  for size in (5, 24, 256, 65536, 1048576)}
+    sets = {
+        "set": [b"a", b"b"],
+        "set:narrow": [b"-2147483648", b"0", b"2147483647"],
+        "set:wide": [b"0", b"9223372036854775807", b"-9223372036854775808"],
+        "set:mixed": [str(n).encode() for n in range(140)] + [b"01", b"-0"],
+    }
     with tempfile.TemporaryDirectory(prefix="fyrodb-integrity-") as work:
         snapshot = Path(work) / "integrity.rdb"
         with server(binary, snapshot) as port:
@@ -199,7 +205,8 @@ def main(binary):
                     assert c.call("SET", key, value) == "OK"
                 assert c.call("HSET", "hash", "field", b"\x00\xffvalue") == 1
                 assert c.call("RPUSH", "list", "first", "second") == 2
-                assert c.call("SADD", "set", "a", "b") == 2
+                for key, members in sets.items():
+                    assert c.call("SADD", key, *members, members[0]) == len(members), key
                 assert c.call("ZADD", "zset", "1.25", "member") == 1
                 assert c.call("SET", "ttl", "ok", "PX", 60000) == "OK"
                 assert c.call("SAVE") == "OK" and snapshot.stat().st_size > 0
@@ -208,7 +215,8 @@ def main(binary):
                 assert c.call("GET", key) == value, f"restart changed {key}"
             assert c.call("HGET", "hash", "field") == b"\x00\xffvalue"
             assert c.call("LRANGE", "list", 0, -1) == [b"first", b"second"]
-            assert sorted(c.call("SMEMBERS", "set")) == [b"a", b"b"]
+            for key, members in sets.items():
+                assert sorted(c.call("SMEMBERS", key)) == sorted(members), key
             assert c.call("ZSCORE", "zset", "member") == b"1.25"
             assert c.call("GET", "ttl") == b"ok" and 0 < c.call("PTTL", "ttl") <= 60000
         print("ok   binary values, collection types, and TTL survived restart", flush=True)

@@ -263,7 +263,6 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
    }
 
    pub fn compact_shard(&self, shard_idx: usize) {
-      let _write_epoch = self.write_epoch();
       let Some(shard) = self.shards.get(shard_idx) else {
          return;
       };
@@ -279,6 +278,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
          return;
       }
 
+      let _write_epoch = self.write_epoch();
       let _lock = shard.grow_lock.lock();
       shard.insert_gate.fetch_or(GROWING, Ordering::AcqRel);
       let mut spins: u32 = 0;
@@ -323,11 +323,18 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
 
    pub fn clear(&self) {
       let _write_epoch = self.write_epoch();
+      let mut retired = Vec::new();
+      let mut entries = 0usize;
       for shard in self.shards.iter() {
          let _lock = shard.grow_lock.lock();
          shard.insert_gate.fetch_or(GROWING, Ordering::AcqRel);
          while (shard.insert_gate.load(Ordering::Acquire) & !GROWING) != 0 {
             std::hint::spin_loop();
+         }
+         let occupied = shard.len.load(Ordering::Relaxed);
+         if occupied == 0 && shard.mask.load(Ordering::Relaxed) == shard.initial_capacity - 1 {
+            shard.insert_gate.fetch_and(!GROWING, Ordering::Release);
+            continue;
          }
          let new_table = alloc_table(SlotTable::<V>::new(shard.initial_capacity));
          let old_ptr = shard.table.swap(new_table, Ordering::AcqRel);
@@ -345,9 +352,16 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
          }
          shard.len.store(0, Ordering::Relaxed);
          if !old_ptr.is_null() {
-            unsafe { ebr::retire_raw(old_ptr.cast(), drop_raw_table_and_entries::<V>) };
+            retired.push(old_ptr);
+            entries = entries.saturating_add(occupied);
          }
          shard.insert_gate.fetch_and(!GROWING, Ordering::Release);
+      }
+      if !retired.is_empty() {
+         // Every replaced table and its entries stay alive until readers of the last table quiesce.
+         unsafe {
+            ebr::retire_with(move || reclaim_cleared(retired, entries));
+         }
       }
       for shard in self.shards.iter() {
          shard.live.store(0, Ordering::Release);

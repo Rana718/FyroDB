@@ -174,12 +174,8 @@ fn load_with_policy(store: &Store, path: &str, strict: bool) -> io::Result<usize
                   "set size too large",
                ));
             }
-            let mut s = foldhash::HashSet::<String>::with_capacity(n.min(1024));
-            for _ in 0..n {
-               s.insert(read_string_bounded(&mut r)?);
-            }
             StoreValue {
-               value: FyroDB::Set(Box::new(SetInner::from_strings(s))),
+               value: FyroDB::Set(Box::new(read_set_members(&mut r, n)?)),
                expires_ms: ttl_ms,
             }
          }
@@ -239,6 +235,32 @@ fn load_with_policy(store: &Store, path: &str, strict: bool) -> io::Result<usize
    Ok(count)
 }
 
+fn read_set_members(reader: &mut impl Read, count: usize) -> io::Result<SetInner> {
+   let mut numbers = Vec::new();
+   let mut members = (0..count).map(|_| read_string_bounded(reader));
+   let mut first_text = None;
+   for member in members.by_ref() {
+      let member = member?;
+      if let Some(n) = crate::storage::value::canonical_i64(&member) {
+         numbers.push(n);
+      } else {
+         first_text = Some(member);
+         break;
+      }
+   }
+   numbers.sort_unstable();
+   numbers.dedup();
+   if let Some(text) = first_text {
+      let mut set = SetInner::Integers(numbers);
+      set.insert(text);
+      for member in members {
+         set.insert(member?);
+      }
+      return Ok(set);
+   }
+   Ok(SetInner::Integers(numbers))
+}
+
 pub fn decode_single_value(bytes: &[u8]) -> io::Result<StoreValue> {
    let mut reader = std::io::Cursor::new(bytes);
    let expires_ms = read_u64(&mut reader)?;
@@ -266,11 +288,7 @@ pub fn decode_single_value(bytes: &[u8]) -> io::Result<StoreValue> {
       }
       TYPE_SET => {
          let count = read_count_bounded(&mut reader)? as usize;
-         let mut set = foldhash::HashSet::with_capacity(count.min(1024));
-         for _ in 0..count {
-            set.insert(read_string_bounded(&mut reader)?);
-         }
-         FyroDB::Set(Box::new(SetInner::from_strings(set)))
+         FyroDB::Set(Box::new(read_set_members(&mut reader, count)?))
       }
       TYPE_ZSET => {
          let count = read_count_bounded(&mut reader)? as usize;
@@ -298,4 +316,44 @@ pub fn decode_single_value(bytes: &[u8]) -> io::Result<StoreValue> {
       ));
    }
    Ok(StoreValue { value, expires_ms })
+}
+
+#[cfg(test)]
+mod tests {
+   use super::*;
+
+   #[test]
+   fn restore_set_members_from_arbitrary_order() {
+      for (members, integers) in [
+         (vec!["2", "-3", "2", "1"], true),
+         (
+            vec!["9223372036854775807", "0", "-9223372036854775808", "0"],
+            true,
+         ),
+         (vec!["2", "2", "-0", "02", "2", "-0", "0"], false),
+         (vec!["name", "2", "2", "-0"], false),
+         (vec![], true),
+      ] {
+         let mut frame = Vec::new();
+         write_u64(&mut frame, 6789).unwrap();
+         write_u8(&mut frame, TYPE_SET).unwrap();
+         write_u32(&mut frame, members.len() as u32).unwrap();
+         for member in &members {
+            write_bytes(&mut frame, member.as_bytes()).unwrap();
+         }
+         let value = decode_single_value(&frame).unwrap();
+         assert_eq!(value.expires_ms, 6789);
+         let set = value.value.as_set().unwrap();
+         assert_eq!(matches!(set, SetInner::Integers(_)), integers);
+         assert_eq!(
+            set.len(),
+            members
+               .iter()
+               .collect::<std::collections::BTreeSet<_>>()
+               .len()
+         );
+         assert!(members.iter().all(|member| set.contains(member)));
+         assert!(decode_single_value(&frame[..frame.len() - 1]).is_err());
+      }
+   }
 }

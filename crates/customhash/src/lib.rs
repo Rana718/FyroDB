@@ -956,9 +956,23 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
    #[inline(always)]
    pub fn insert_str_hashed(&self, key: &str, value: V, h: u64, idx: usize) -> bool {
       let pin = ebr::pin();
-      let _write_epoch = self.write_epoch();
-      let shard = unsafe { self.shards.get_unchecked(idx) };
-      match shard.insert_or_update_slot_fast(h, key, value, &pin) {
+      let epoch = self.write_epoch();
+      self.insert_str_hashed_pinned(key, value, h, idx, &epoch, &pin)
+   }
+
+   #[inline(always)]
+   pub fn insert_str_hashed_pinned(
+      &self,
+      key: &str,
+      value: V,
+      h: u64,
+      idx: usize,
+      epoch: &WriteEpochGuard<'_>,
+      pin: &Guard,
+   ) -> bool {
+      assert!(epoch.guards(&self.access));
+      let shard = &self.shards[idx];
+      match shard.insert_or_update_slot_fast(h, key, value, pin) {
          InsertFastResult::Inserted => {
             self.bump(idx, true);
             self.touched(key);
@@ -1892,6 +1906,60 @@ mod tests {
 
       map.clear();
       assert_eq!(map.len(), 0);
+   }
+
+   #[test]
+   fn empty_compaction_keeps_the_read_stamp_current() {
+      let map = CustomMap::<u64>::with_capacity(1, 32);
+      let stamp = map.read_stamp().unwrap();
+      map.compact_shard(0);
+      assert!(map.stamp_is_current(&stamp));
+   }
+
+   #[test]
+   fn clear_reuses_pristine_tables_but_discards_tombstones() {
+      let map = CustomMap::<u64>::with_capacity(2, 64);
+      let (hash, index) = map.locate_key("removed");
+      let untouched = index ^ 1;
+      let _pin = crate::pin();
+      let old = map.shard_fast[index].layout().0;
+      let empty = map.shard_fast[untouched].layout().0;
+      map.set_str_hinted("removed", Some(hash), 1);
+      assert!(map.remove_no_clone("removed"));
+      map.clear();
+      assert_ne!(map.shard_fast[index].layout().0, old);
+      assert_eq!(map.shard_fast[untouched].layout().0, empty);
+      map.set_str("new", 2);
+      assert_eq!(map.get("new"), Some(2));
+   }
+
+   #[test]
+   fn cleared_tables_release_every_value_after_the_last_reader_leaves() {
+      let _serial = crate::ebr::TEST_SERIALIZE
+         .lock()
+         .unwrap_or_else(|e| e.into_inner());
+      let map = CustomMap::with_capacity(8, 512);
+      let mut retired = Vec::new();
+      for n in 0..512 {
+         let value = Arc::new(n);
+         retired.push(Arc::downgrade(&value));
+         map.set_str(&n.to_string(), value);
+      }
+      let reader = map.get_ref("0").unwrap();
+      map.clear();
+      map.set_str("0", Arc::new(1024));
+      assert_eq!(**reader, 0);
+      assert!(retired.iter().all(|v| v.strong_count() == 1));
+      drop(reader);
+      for _ in 0..200 {
+         crate::force_collect_quiescent();
+         if retired.iter().all(|v| v.strong_count() == 0) {
+            break;
+         }
+         std::thread::sleep(std::time::Duration::from_millis(5));
+      }
+      assert!(retired.iter().all(|v| v.strong_count() == 0));
+      assert_eq!(*map.get("0").unwrap(), 1024);
    }
 
    #[test]

@@ -72,6 +72,7 @@ impl FrontendMessage {
 pub struct FrameReader<R> {
    inner: R,
    frame: Vec<u8>,
+   small_frames: u8,
 }
 
 impl<R: Read> FrameReader<R> {
@@ -79,6 +80,7 @@ impl<R: Read> FrameReader<R> {
       Self {
          inner,
          frame: Vec::with_capacity(8192),
+         small_frames: 0,
       }
    }
 
@@ -107,6 +109,23 @@ impl FrameReader<BufReader<TcpStream>> {
 }
 
 impl<R: Read> FrameReader<R> {
+   fn read_frame_body(&mut self, header: &[u8], total: usize) -> io::Result<()> {
+      self.frame.clear();
+      if self.frame.capacity() > 256 * 1024 && total <= 8192 {
+         self.small_frames += 1;
+         if self.small_frames == 64 {
+            self.frame = Vec::with_capacity(8192);
+            self.small_frames = 0;
+         }
+      } else {
+         self.small_frames = 0;
+      }
+      self.frame.reserve(total);
+      self.frame.extend_from_slice(header);
+      self.frame.resize(total, 0);
+      self.inner.read_exact(&mut self.frame[header.len()..])
+   }
+
    pub fn read_frontend(&mut self, initial: bool) -> io::Result<FrontendMessage> {
       if initial {
          self.read_initial()
@@ -125,13 +144,7 @@ impl<R: Read> FrameReader<R> {
          return Err(invalid("invalid message length"));
       }
       let total = 1 + len as usize;
-      self.frame.clear();
-      self.frame.reserve(total);
-      self.frame.extend_from_slice(&header);
-      let payload_len = len as usize - 4;
-      let cur = self.frame.len();
-      self.frame.resize(cur + payload_len, 0);
-      self.inner.read_exact(&mut self.frame[cur..])?;
+      self.read_frame_body(&header, total)?;
       Ok(tag)
    }
 
@@ -142,13 +155,7 @@ impl<R: Read> FrameReader<R> {
       if len < 8 || len as usize > MAX_STARTUP_LEN {
          return Err(invalid("invalid startup packet length"));
       }
-      self.frame.clear();
-      self.frame.reserve(len as usize);
-      self.frame.extend_from_slice(&header);
-      let payload_len = len as usize - 4;
-      let cur = self.frame.len();
-      self.frame.resize(cur + payload_len, 0);
-      self.inner.read_exact(&mut self.frame[cur..])?;
+      self.read_frame_body(&header, len as usize)?;
 
       let code = rd_i32_at(&self.frame, 4)?;
       match code {
@@ -206,13 +213,7 @@ impl<R: Read> FrameReader<R> {
          return Err(invalid("invalid message length"));
       }
       let total = 1 + len as usize;
-      self.frame.clear();
-      self.frame.reserve(total);
-      self.frame.extend_from_slice(&header);
-      let payload_len = len as usize - 4;
-      let cur = self.frame.len();
-      self.frame.resize(cur + payload_len, 0);
-      self.inner.read_exact(&mut self.frame[cur..])?;
+      self.read_frame_body(&header, total)?;
       let body = &self.frame[5..];
 
       match tag {
@@ -700,4 +701,36 @@ pub fn write_error_response<W: Write>(writer: &mut W, message: &str) -> io::Resu
 pub fn write_fatal_response<W: Write>(writer: &mut W, code: &str, message: &str) -> io::Result<()> {
    writer.write_all(&encode_error("FATAL", code, message))?;
    writer.flush()
+}
+
+#[cfg(test)]
+mod buffer_tests {
+   use super::*;
+
+   #[test]
+   fn small_traffic_releases_a_large_frame_after_a_grace_period() {
+      let mut wire = Vec::new();
+      for small_count in [63, 64] {
+         let payload = vec![42; 1024 * 1024];
+         wire.push(b'd');
+         wire.extend_from_slice(&((payload.len() + 4) as i32).to_be_bytes());
+         wire.extend_from_slice(&payload);
+         for _ in 0..small_count {
+            wire.extend_from_slice(b"S\0\0\0\x04");
+         }
+      }
+      let mut reader = FrameReader::new(&wire[..]);
+      for small_count in [63, 64] {
+         assert_eq!(reader.read_raw().unwrap(), b'd');
+         assert_eq!(reader.last_body().len(), 1024 * 1024);
+         for _ in 0..small_count {
+            assert_eq!(reader.read_raw().unwrap(), b'S');
+         }
+         if small_count == 63 {
+            assert!(reader.frame.capacity() >= 1024 * 1024);
+         } else {
+            assert_eq!(reader.frame.capacity(), 8192);
+         }
+      }
+   }
 }

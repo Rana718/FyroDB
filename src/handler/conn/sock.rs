@@ -154,7 +154,7 @@ impl<'a> Conn<'a> {
                      prefetched = self.parser.pos;
                      continue;
                   }
-                  if id == CmdId::JsonSet && dispatch_json_set_run(self, raw) {
+                  if id == CmdId::JsonSet && dispatch_json_set_run(self, raw, &pin) {
                      prefetched = self.parser.pos;
                      continue;
                   }

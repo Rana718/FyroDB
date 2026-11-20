@@ -1,8 +1,6 @@
 # Build stage
 FROM rust:1.99.1-alpine3.24 AS builder
 
-ENV RUSTFLAGS="-C link-self-contained=no"
-
 # Pull only the musl security rebuild from the tagged Alpine repository.
 RUN apk --no-cache upgrade \
     && echo '@muslfix https://dl-cdn.alpinelinux.org/alpine/v3.25/main' >> /etc/apk/repositories \
@@ -11,29 +9,32 @@ RUN apk --no-cache upgrade \
 
 WORKDIR /app
 
-ARG TARGETARCH
 ARG TARGET_CPU=x86-64-v3
 ARG FEATURES=""
+ENV CARGO_BUILD_RUSTFLAGS="-C link-self-contained=no" \
+    CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS="-C link-self-contained=no -C target-cpu=${TARGET_CPU}"
 
 COPY Cargo.toml Cargo.lock ./
-COPY crates ./crates
+COPY crates/customhash/Cargo.toml crates/customhash/
+COPY crates/fyro-vector/Cargo.toml crates/fyro-vector/
+COPY crates/rust-zmalloc/Cargo.toml crates/rust-zmalloc/
+COPY crates/fyro-dbcache/Cargo.toml crates/fyro-dbcache/
 COPY benches ./benches
-RUN mkdir src && echo "fn main() {}" > src/main.rs && touch src/lib.rs
-RUN if [ "$TARGETARCH" = "amd64" ] || [ -z "$TARGETARCH" -a "$(uname -m)" = "x86_64" ]; then \
-        export RUSTFLAGS="$RUSTFLAGS -C target-cpu=${TARGET_CPU}"; \
-    fi; \
-    cargo build --locked --release ${FEATURES:+--features $FEATURES}
-RUN rm -rf src
+
+# Cache registry dependencies separately from workspace source changes.
+RUN mkdir src && touch src/lib.rs src/main.rs \
+    && for crate in crates/*; do mkdir "$crate/src" && touch "$crate/src/lib.rs"; done \
+    && cargo build --locked --release --lib ${FEATURES:+--features "$FEATURES"} \
+    && cargo clean --release -p fyro_db -p customhash -p fyro-vector -p rust-zmalloc -p fyro-dbcache
+
+COPY crates ./crates
+RUN cargo build --locked --release --lib ${FEATURES:+--features "$FEATURES"} \
+    && cargo clean --release -p fyro_db
 
 COPY src ./src
-RUN touch src/main.rs src/lib.rs && \
-    if [ "$TARGETARCH" = "amd64" ] || [ -z "$TARGETARCH" -a "$(uname -m)" = "x86_64" ]; then \
-        export RUSTFLAGS="$RUSTFLAGS -C target-cpu=${TARGET_CPU}"; \
-    fi; \
-    cargo build --locked --release ${FEATURES:+--features $FEATURES}
+RUN cargo build --locked --release --bin fyro_db ${FEATURES:+--features "$FEATURES"}
 
-# Runtime stage
-FROM alpine:3.24
+FROM alpine:3.24 AS runtime-root
 
 RUN apk --no-cache upgrade \
     && echo '@muslfix https://dl-cdn.alpinelinux.org/alpine/v3.25/main' >> /etc/apk/repositories \
@@ -42,6 +43,9 @@ RUN apk --no-cache upgrade \
     && addgroup -S fyrodb && adduser -S fyrodb -G fyrodb \
     && mkdir -p /data && chown fyrodb:fyrodb /data
 
+# Ship the patched filesystem once, without superseded Alpine package layers.
+FROM scratch
+COPY --from=runtime-root / /
 WORKDIR /data
 
 COPY --from=builder /app/target/release/fyro_db /usr/local/bin/fyro_db
