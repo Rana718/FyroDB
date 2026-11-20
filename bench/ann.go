@@ -460,39 +460,55 @@ func verifyANNReady(conn *net.TCPConn, r *bufio.Reader, idx string, cfg annConfi
 
 // readValue decodes one RESP2 reply into string / int64 / []any / nil.
 func readValue(r *bufio.Reader) any {
-	line, err := r.ReadSlice('\n')
+	value, err := readRESPValue(r)
 	if err != nil {
 		panic(err)
 	}
-	body := strings.TrimRight(string(line[1:]), "\r\n")
+	return value
+}
+
+func readRESPValue(r *bufio.Reader) (any, error) {
+	line, err := r.ReadSlice('\n')
+	if err != nil {
+		return nil, err
+	}
+	if len(line) < 3 || line[len(line)-2] != '\r' {
+		return nil, fmt.Errorf("invalid RESP header")
+	}
+	body := string(line[1 : len(line)-2])
 	switch line[0] {
-	case '*':
-		n, _ := strconv.Atoi(body)
-		if n < 0 {
-			return nil
+	case '*', '$':
+		n, err := strconv.Atoi(body)
+		if err != nil || n < -1 {
+			return nil, fmt.Errorf("invalid RESP length %q", body)
 		}
-		out := make([]any, n)
-		for i := range out {
-			out[i] = readValue(r)
+		if n == -1 {
+			return nil, nil
 		}
-		return out
-	case '$':
-		n, _ := strconv.Atoi(body)
-		if n < 0 {
-			return nil
+		if line[0] == '*' {
+			out := make([]any, n)
+			for i := range out {
+				out[i], err = readRESPValue(r)
+				if err != nil {
+					return nil, err
+				}
+			}
+			return out, nil
 		}
 		b := make([]byte, n+2)
 		if _, err := io.ReadFull(r, b); err != nil {
-			panic(err)
+			return nil, err
 		}
-		return string(b[:n])
+		if b[n] != '\r' || b[n+1] != '\n' {
+			return nil, fmt.Errorf("invalid RESP bulk terminator")
+		}
+		return string(b[:n]), nil
 	case ':':
-		v, _ := strconv.ParseInt(body, 10, 64)
-		return v
+		return strconv.ParseInt(body, 10, 64)
 	case '-':
-		return fmt.Errorf("%s", body)
+		return fmt.Errorf("%s", body), nil
 	default:
-		return body
+		return body, nil
 	}
 }
 

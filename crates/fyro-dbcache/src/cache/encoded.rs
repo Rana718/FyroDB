@@ -5,7 +5,7 @@ use crate::row::{ColumnInfo, DbResultSet};
 // Wire-ready encoding of a cached result: RowDescription + DataRows + CommandComplete
 // stored contiguously in one allocation; split0 and split1 mark the boundaries.
 pub struct EncodedResult {
-   wire: Vec<u8>,
+   wire: Box<[u8]>,
    split0: u32,
    split1: u32,
    pub columns: Vec<ColumnInfo>,
@@ -16,17 +16,21 @@ pub struct EncodedResult {
 
 impl EncodedResult {
    pub fn from_result_set(result: &DbResultSet, ttl_ms: u64) -> Self {
-      let (row_description, data_rows, row_count) =
-         protocol::encode_result(&result.columns, &result.rows);
-      let cc = protocol::encode_command_complete(&format!("SELECT {row_count}"));
-      let split0 = row_description.len() as u32;
-      let split1 = split0 + data_rows.len() as u32;
-      let mut wire = Vec::with_capacity(split1 as usize + cc.len());
-      wire.extend_from_slice(&row_description);
-      wire.extend_from_slice(&data_rows);
-      wire.extend_from_slice(&cc);
+      let mut wire = if result.columns.is_empty() {
+         Vec::new()
+      } else {
+         protocol::encode_row_description(&result.columns)
+      };
+      let split0 = wire.len() as u32;
+      let row_count = result.rows.len() as u32;
+      wire.reserve(result.rows.len().saturating_mul(32));
+      for row in &result.rows {
+         protocol::append_data_row(&mut wire, &row.values);
+      }
+      let split1 = wire.len() as u32;
+      protocol::put_command_complete(&mut wire, &format!("SELECT {row_count}"));
       Self {
-         wire,
+         wire: wire.into_boxed_slice(),
          split0,
          split1,
          columns: result.columns.clone(),

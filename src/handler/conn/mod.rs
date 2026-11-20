@@ -120,6 +120,7 @@ pub struct Conn<'a> {
    /// Reusable scratch for element pops to build RESP replies outside entry lock.
    pub(crate) pop_scratch: String,
    pub(crate) prefetch: Option<Box<prefetch::PrefetchState>>,
+   local_primary: bool,
    topology_cache: Option<(
       u64,
       Arc<crate::cluster::Topology>,
@@ -158,6 +159,7 @@ impl<'a> Conn<'a> {
          park: None,
          pop_scratch: String::new(),
          prefetch: None,
+         local_primary: false,
          topology_cache: None,
       }
    }
@@ -167,15 +169,15 @@ impl<'a> Conn<'a> {
    #[inline]
    fn refresh_topology(&mut self) {
       let state = self.store.cluster_state_ref();
-      match self.topology_cache.as_ref().map(|(version, ..)| *version) {
-         Some(version) => {
-            if let Some(fresh) = state.topology_if_newer(version) {
-               self.topology_cache = Some(fresh);
-            }
-         }
-         None => {
-            self.topology_cache = state.topology_if_newer(0);
-         }
+      let cached = self
+         .topology_cache
+         .as_ref()
+         .map_or(0, |(version, ..)| *version);
+      if let Some(fresh) = state.topology_if_newer(cached) {
+         self.local_primary = fresh.1.nodes.iter().any(|node| {
+            node.id == self.store.cluster.local_id && node.role == crate::cluster::NodeRole::Primary
+         });
+         self.topology_cache = Some(fresh);
       }
    }
 

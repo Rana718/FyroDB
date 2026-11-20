@@ -462,6 +462,11 @@ func TestClusterKVRequestCounts(t *testing.T) {
 		cluster[i] = srvs[i].addr()
 	}
 	setVar(t, &addrs, cluster)
+	owners := make([]int, 16384)
+	for i := range owners {
+		owners[i] = i * nodes / len(owners)
+	}
+	setVar(t, &slotOwners, owners)
 	setVar(t, &CLIENTS, 6)
 	setVar(t, &OPS_CLIENT, 250)
 
@@ -561,6 +566,11 @@ func TestClusterMixRequestCounts(t *testing.T) {
 		cluster[i] = srvs[i].addr()
 	}
 	setVar(t, &addrs, cluster)
+	owners := make([]int, 16384)
+	for i := range owners {
+		owners[i] = i * nodes / len(owners)
+	}
+	setVar(t, &slotOwners, owners)
 	setVar(t, &CLIENTS, 6)
 	setVar(t, &MIX_OPS_CLIENT, 200)
 

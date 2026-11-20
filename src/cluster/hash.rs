@@ -78,7 +78,7 @@ fn crc16(bytes: &[u8]) -> u16 {
    crc
 }
 
-const CRC16_TABLES: [[u16; 256]; 8] = build_crc16_tables();
+static CRC16_TABLES: [[u16; 256]; 8] = build_crc16_tables();
 
 const fn build_crc16_tables() -> [[u16; 256]; 8] {
    let mut tables = [[0u16; 256]; 8];

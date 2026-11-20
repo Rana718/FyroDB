@@ -67,6 +67,10 @@ false→true issues the wake; the consumer's disarm-then-recheck closes the
 race with pushes that land while it is finishing. Full liveness requires
 the standard fairness assumption (noted in the file).
 
+### `slot_ranges.rs` — cluster slot reassignment
+
+The split model verifies that removing a slot preserves every other slot, leaves disjoint valid ranges, and uses safe endpoint arithmetic. The merge model verifies that joining adjacent ranges preserves their union. These properties cover the range arithmetic used by `remove_slot` and `compact_ranges`. Network handoff and publication are exercised separately by integration tests.
+
 ### `aof_sequence.rs` — per-record sequence allocation
 
 Two ordered atomic allocations below counter exhaustion issue distinct, increasing sequences. Mutation capture and filesystem durability are outside this model.

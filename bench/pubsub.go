@@ -15,7 +15,7 @@ import (
 const PUB_PIPE_SIZE = 200
 
 func runPubSub(addr string) {
-	channel := "bench:pubsub"
+	channel := string(sharedClusterKey("bench:pubsub"))
 
 	totalMsgs := int64(PUB_PUBLISHERS * PUB_MSGS_EACH)
 	totalExpected := int64(PUB_SUBSCRIBERS) * totalMsgs
@@ -54,7 +54,7 @@ func runPubSub(addr string) {
 		conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 
 		r := bufio.NewReaderSize(conn, 512)
-		consumeSubConfirm(r)
+		consumeSubConfirm(r, channel)
 		conn.SetReadDeadline(time.Time{})
 		if r.Buffered() > 0 {
 			tmp := make([]byte, r.Buffered())
@@ -187,23 +187,12 @@ func buildMessageFrame(channel, message string) []byte {
 	return b
 }
 
-func consumeSubConfirm(r *bufio.Reader) {
-	r.ReadSlice('\n')
-	r.ReadSlice('\n')
-	r.ReadSlice('\n')
-	line, _ := r.ReadSlice('\n')
-	chanLen := 0
-	for _, c := range line {
-		if c >= '0' && c <= '9' {
-			chanLen = chanLen*10 + int(c-'0')
-		} else if c == '$' {
-			continue
-		} else {
-			break
-		}
+func consumeSubConfirm(r *bufio.Reader, channel string) {
+	reply := readValue(r)
+	parts, ok := reply.([]any)
+	if !ok || len(parts) != 3 || parts[0] != "subscribe" || parts[1] != channel || parts[2] != int64(1) {
+		panic(fmt.Sprintf("unexpected SUBSCRIBE confirmation: %v", reply))
 	}
-	discardN(r, chanLen+2)
-	r.ReadSlice('\n')
 }
 
 func buildSubCmd(channel string) []byte {

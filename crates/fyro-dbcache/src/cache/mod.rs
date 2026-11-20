@@ -41,7 +41,6 @@ struct L1Entry {
    epoch: u64,
    fp: u64,
    entry: Arc<EncodedResult>,
-   result: Arc<crate::row::DbResultSet>,
 }
 
 struct L1Storage(std::cell::UnsafeCell<[Option<L1Entry>; 256]>);
@@ -355,7 +354,6 @@ impl DbCacheManager {
             manager_id: mgr_id,
             epoch,
             fp: fingerprint,
-            result: Arc::clone(&entry.result),
             entry: Arc::clone(&entry),
          });
       });
@@ -382,7 +380,7 @@ impl DbCacheManager {
             {
                let now = coarse_now_ms();
                if slot.entry.expires_at_ms == 0 || slot.entry.expires_at_ms >= now {
-                  return Some(Arc::clone(&slot.result));
+                  return Some(Arc::clone(&slot.entry.result));
                }
             }
             None

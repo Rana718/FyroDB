@@ -157,6 +157,15 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
       }
    }
 
+   #[inline]
+   pub fn try_read_view(&self) -> Option<ReadView<'_, V>> {
+      Some(ReadView {
+         map: self,
+         _epoch: self.try_read_epoch()?,
+         _pin: ebr::pin(),
+      })
+   }
+
    #[inline(always)]
    pub fn read_epoch_active(&self) -> bool {
       self.access.reading()

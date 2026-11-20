@@ -76,6 +76,19 @@ func main() {
 	cluster := flag.String("cluster", "", "comma-separated list of cluster master addrs")
 	pid := flag.Int("pid", 0, "server PID for resource monitoring (auto-detect if 0)")
 	dockerName := flag.String("docker", "", "docker container name/ID to monitor (auto-detect if empty)")
+	var clusterPIDs []int
+	flag.Func("cluster-pids", "comma-separated server PIDs in -cluster address order for local resource monitoring", func(raw string) error {
+		seen := make(map[int]bool)
+		for _, part := range strings.Split(raw, ",") {
+			pid, err := strconv.Atoi(strings.TrimSpace(part))
+			if err != nil || pid < 1 || seen[pid] {
+				return fmt.Errorf("invalid or duplicate server PID %q", part)
+			}
+			seen[pid] = true
+			clusterPIDs = append(clusterPIDs, pid)
+		}
+		return nil
+	})
 	noFlush := flag.Bool("f", false, "skip FLUSHALL between phases; keyspace accumulates so peak RSS measures true steady-state memory")
 	jsonOut := flag.String("json", "", "write all results (throughput, latency, memory) as JSON to this path")
 
@@ -146,16 +159,26 @@ func main() {
 	if len(addrs) == 1 {
 		fmt.Printf("connected to %s\n\n", addrs[0])
 	} else {
+		var err error
+		slotOwners, err = discoverSlotOwners(addrs)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "cluster discovery:", err)
+			os.Exit(1)
+		}
 		fmt.Printf("connected to Redis Cluster (%d masters): %s\n\n",
 			len(addrs), strings.Join(addrs, ", "))
 	}
 
 	serverPID := *pid
-	var clusterPIDs []int
 	var dockerContainers []string
 	useDocker := false
 
-	if len(addrs) > 1 {
+	if len(clusterPIDs) > 0 {
+		if len(addrs) < 2 || len(clusterPIDs) != len(addrs) || *pid != 0 || *dockerName != "" {
+			fmt.Fprintln(os.Stderr, "-cluster-pids requires one PID per cluster node and is exclusive with -pid and -docker")
+			os.Exit(1)
+		}
+	} else if len(addrs) > 1 {
 		// Cluster mode: prefer Docker containers, fall back to native PIDs.
 		if *dockerName != "" {
 			dockerContainers = []string{*dockerName}
@@ -230,7 +253,9 @@ func main() {
 
 	// Warmup: one small pipelined round-trip per connection so the first timed
 	// phase skips connection setup, page faults, and cold code paths.
-	warmup()
+	if *mode != "pgcache" {
+		warmup()
+	}
 
 	switch *mode {
 	case "key":

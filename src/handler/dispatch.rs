@@ -40,6 +40,20 @@ pub fn dispatch(conn: &mut Conn<'_>, parts: &[&str]) {
       return;
    }
 
+   if cmd_eq(cmd, b"ASKING") {
+      if parts.len() != 1 {
+         return resp::write_wrong_args(&mut conn.parser.wbuf, "asking");
+      }
+      if !conn.store.cluster.enabled {
+         return resp::write_err(
+            &mut conn.parser.wbuf,
+            "This instance has cluster support disabled",
+         );
+      }
+      conn.asking = true;
+      return resp::write_ok(&mut conn.parser.wbuf);
+   }
+
    match &conn.mode {
       ConnMode::Normal | ConnMode::Transaction(_) => {
          match cmd.first().map(|b| b.to_ascii_uppercase()) {
@@ -265,11 +279,6 @@ pub fn dispatch(conn: &mut Conn<'_>, parts: &[&str]) {
             handle_psubscribe(conn, parts);
          } else if cmd_eq(cmd, b"PUNSUBSCRIBE") {
             handle_punsubscribe(conn, parts);
-         } else if cmd_eq(cmd, b"ASKING") {
-            // ASKING before a redirected command is a no-op here; the routing
-            // layer enforces the migration fence.
-            conn.asking = true;
-            resp::write_simple(&mut conn.parser.wbuf, "OK");
          } else if cmd_eq(cmd, b"PING") {
             let out = &mut conn.parser.wbuf;
             let msg = parts.get(1).copied().unwrap_or("");

@@ -200,6 +200,22 @@ impl<'a> Conn<'a> {
                      }
                   }
                }
+               if self.store.cluster.enabled
+                  && self.authenticated
+                  && matches!(self.mode, ConnMode::Normal)
+                  && !is_null_store()
+               {
+                  if id == CmdId::Get && raw.len() == 2 {
+                     dispatch_cluster_strings::<false, STREAM_IO>(self, raw, &pin);
+                     prefetched = self.parser.pos;
+                     continue;
+                  }
+                  if id == CmdId::Set && raw.len() == 3 {
+                     dispatch_cluster_strings::<true, STREAM_IO>(self, raw, &pin);
+                     prefetched = self.parser.pos;
+                     continue;
+                  }
+               }
                dispatch_raw(self, raw);
             }
             ParseResult::Incomplete => break,

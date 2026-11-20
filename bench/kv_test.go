@@ -15,6 +15,7 @@ func TestHashTag(t *testing.T) {
 		{"plain", ""},
 		{"foo{bar}zap", "bar"},
 		{"foo{}bar", ""},
+		{"foo{}{later}", ""},
 		{"foo{bar", ""},
 	}
 	for _, tt := range tests {
@@ -32,9 +33,13 @@ func TestKeySlotUsesHashTag(t *testing.T) {
 }
 
 func TestClientKeyRoutesToClientNode(t *testing.T) {
-	oldAddrs := addrs
+	oldAddrs, oldOwners := addrs, slotOwners
 	addrs = []string{"node0", "node1", "node2", "node3", "node4", "node5"}
-	defer func() { addrs = oldAddrs }()
+	defer func() { addrs, slotOwners = oldAddrs, oldOwners }()
+	slotOwners = make([]int, 16384)
+	for i := range slotOwners {
+		slotOwners[i] = i % len(addrs)
+	}
 
 	var scratch [64]byte
 	for id := 0; id < len(addrs); id++ {
@@ -120,5 +125,19 @@ func BenchmarkSkipGetReplies(b *testing.B) {
 	r := bufio.NewReaderSize(src, 64<<10)
 	for b.Loop() {
 		skipGetReplies(r, 512)
+	}
+}
+
+func TestIndexSlotOwnersUsesAdvertisedRanges(t *testing.T) {
+	r := func(lo, hi int64, id string) any { return []any{lo, hi, []any{"localhost", int64(6379), id}} }
+	ids := map[string]int{"b": 0, "a": 1}
+	owners, err := indexSlotOwners([]any{r(0, 1000, "a"), r(1001, 16383, "b")}, ids)
+	if err != nil || owners[1000] != 1 || owners[1001] != 0 {
+		t.Fatal(err)
+	}
+	for _, bad := range [][]any{{r(0, 1000, "a"), r(1000, 16383, "b")}, {r(0, 1000, "a"), r(1002, 16383, "b")}, {r(0, 16383, "unknown")}, {r(0, 16383, "a")}} {
+		if _, err := indexSlotOwners(bad, ids); err == nil {
+			t.Fatal("accepted invalid slot ownership", bad)
+		}
 	}
 }

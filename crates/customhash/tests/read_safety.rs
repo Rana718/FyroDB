@@ -367,3 +367,20 @@ fn fused_insert_wraps_and_reuses_the_existing_key() {
    assert_eq!(map.get(&second), Some(2));
    assert_eq!(map.len(), 2);
 }
+
+#[test]
+fn optional_read_view_falls_back_during_writes_and_releases_its_pin() {
+   let map = CustomMap::with_capacity(1, 8);
+   map.set_str("key", 1);
+   let writer = map.write_epoch();
+   assert!(map.try_read_view().is_none());
+   drop(writer);
+
+   let view = map.try_read_view().unwrap();
+   assert_eq!(view.get("key"), Some(&1));
+   assert!(map.try_read_view().is_none());
+   drop(view);
+   assert!(!crossbeam_epoch::is_pinned());
+   map.set_str("key", 2);
+   assert_eq!(map.get("key"), Some(2));
+}

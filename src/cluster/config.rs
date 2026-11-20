@@ -14,7 +14,7 @@ pub struct ClusterConfig {
    pub max_inbound_peers: usize,
    pub auth_token: Option<String>,
    pub replication_log_capacity: usize,
-   /// Cached at startup — avoids a linear node scan on every write command.
+   /// Local replica role in the startup configuration.
    pub is_replica: bool,
    /// Path where cluster topology is auto-saved (nodes.conf style).
    pub nodes_config_file: String,

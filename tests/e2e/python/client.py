@@ -9,12 +9,19 @@ class Client:
         self.s = socket.create_connection(("127.0.0.1", PORT if port is None else port), timeout=timeout)
         self.f = self.s.makefile("rb")
 
-    def send(self, *args):
+    @staticmethod
+    def _frame(args):
         out = b"*%d\r\n" % len(args)
         for a in args:
             a = a if isinstance(a, bytes) else str(a).encode()
             out += b"$%d\r\n%s\r\n" % (len(a), a)
-        self.s.sendall(out)
+        return out
+
+    def send(self, *args):
+        self.s.sendall(self._frame(args))
+
+    def send_pipeline(self, commands):
+        self.s.sendall(b"".join(self._frame(args) for args in commands))
 
     def read(self):
         line = self.f.readline()
