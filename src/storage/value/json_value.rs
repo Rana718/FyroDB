@@ -82,8 +82,7 @@ impl JsonValue {
                let mut buf = [0u8; 20];
                out.push_str(crate::utils::int_format::write_i64_to(&mut buf, *n as i64));
             } else {
-               use std::fmt::Write;
-               let _ = write!(out, "{}", n);
+               out.push_str(ryu::Buffer::new().format(*n));
             }
          }
          Self::String(s) => write_json_string(out, s),
