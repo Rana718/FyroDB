@@ -2,10 +2,14 @@ name: CI
 
 on:
   push:
-    branches: [main, dev]
+    branches: [main]
   pull_request:
     branches: [main, dev]
     types: [opened, synchronize, reopened, labeled]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   changes:
@@ -24,7 +28,7 @@ jobs:
           fetch-depth: 0
 
       - id: diff
-        name: Detect Rust & Toolchain Changes
+        name: Detect Code & Infrastructure Changes
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -33,11 +37,12 @@ jobs:
           if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
             range="$BASE_SHA...$HEAD_SHA"
           fi
-          if [[ -z "$BASE_SHA" || -z "$HEAD_SHA" ]]; then
+          if [[ -z "$BASE_SHA" || -z "$HEAD_SHA" || "$BASE_SHA" == "0000000000000000000000000000000000000000" ]]; then
             echo 'rust=true' >> "$GITHUB_OUTPUT"
           elif git diff --quiet --no-renames "$range" -- \
             '*.rs' 'Cargo.toml' '*/Cargo.toml' 'Cargo.lock' '*/Cargo.lock' \
-            '.cargo/config' '.cargo/config.toml' 'rust-toolchain' 'rust-toolchain.toml' \
+            '.cargo/**' 'rust-toolchain*' 'Taskfile.yml' 'Dockerfile' 'docker-compose*' \
+            'proofs/**' 'bench/**' 'tests/**' 'scripts/**' '.github/workflows/ci.yml' \
             ':(exclude)docs/**'; then
             echo 'rust=false' >> "$GITHUB_OUTPUT"
           else
@@ -88,17 +93,24 @@ jobs:
               run_bench = label_is_bench
               run_verus = False
               run_lint = False
-          elif is_push or is_pr_open:
-              # Push to main or PR opened/reopened: run full CI suite if code changed or label present
+          elif is_push:
+              # Push directly to main (post-merge): run full verification suite
+              run_test = rust_changed or has_test_label
+              run_verus = rust_changed
+              run_lint = rust_changed
+              run_bench = rust_changed or has_bench_label
+              run_e2e = rust_changed or has_e2e_label
+          elif is_pr_open:
+              # PR created / reopened for the first time: run the complete CI suite once
               run_test = rust_changed or has_test_label
               run_verus = rust_changed
               run_lint = rust_changed
               run_bench = rust_changed or has_bench_label
               run_e2e = rust_changed or has_e2e_label
           elif is_pr_sync:
-              # 2nd+ push (synchronize): run testcases, verus, and lint on every push!
-              # E2E runs if e2e-testcase label is attached to the PR.
-              # Benchmark validation runs if benchmark-validation label is attached to the PR.
+              # Subsequent pushes to PR (synchronize / push 2nd time+):
+              # Only run testcases, verus proofs, and lint on every push!
+              # Heavy E2E and Benchmarks run ONLY when their labels are attached!
               run_test = rust_changed or has_test_label
               run_verus = rust_changed
               run_lint = rust_changed
