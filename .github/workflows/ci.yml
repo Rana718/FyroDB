@@ -2,22 +2,29 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   pull_request:
-    branches: [main]
+    branches: [main, dev]
+    types: [opened, synchronize, reopened, labeled]
 
 jobs:
   changes:
-    name: Detect Rust changes
+    name: Detect changes and CI routing
     runs-on: ubuntu-latest
     outputs:
       rust: ${{ steps.diff.outputs.rust }}
+      run_test: ${{ steps.evaluate.outputs.run_test }}
+      run_verus: ${{ steps.evaluate.outputs.run_verus }}
+      run_lint: ${{ steps.evaluate.outputs.run_lint }}
+      run_e2e: ${{ steps.evaluate.outputs.run_e2e }}
+      run_benchmark: ${{ steps.evaluate.outputs.run_benchmark }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
       - id: diff
+        name: Detect Rust & Toolchain Changes
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -26,7 +33,9 @@ jobs:
           if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
             range="$BASE_SHA...$HEAD_SHA"
           fi
-          if git diff --quiet --no-renames "$range" -- \
+          if [[ -z "$BASE_SHA" || -z "$HEAD_SHA" ]]; then
+            echo 'rust=true' >> "$GITHUB_OUTPUT"
+          elif git diff --quiet --no-renames "$range" -- \
             '*.rs' 'Cargo.toml' '*/Cargo.toml' 'Cargo.lock' '*/Cargo.lock' \
             '.cargo/config' '.cargo/config.toml' 'rust-toolchain' 'rust-toolchain.toml' \
             ':(exclude)docs/**'; then
@@ -35,9 +44,93 @@ jobs:
             echo 'rust=true' >> "$GITHUB_OUTPUT"
           fi
 
+      - id: evaluate
+        name: Evaluate CI Run Conditions
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_ACTION: ${{ github.event.action }}
+          LABEL_NAME: ${{ github.event.label.name }}
+          PR_LABELS_JSON: ${{ toJson(github.event.pull_request.labels) }}
+          RUST_CHANGED: ${{ steps.diff.outputs.rust }}
+        run: |
+          python3 - << 'EOF'
+          import os, json
+
+          event_name = os.environ.get("EVENT_NAME", "")
+          action = os.environ.get("EVENT_ACTION", "")
+          label_name = os.environ.get("LABEL_NAME", "")
+          rust_changed = os.environ.get("RUST_CHANGED", "false").lower() == "true"
+
+          labels_raw = os.environ.get("PR_LABELS_JSON", "[]")
+          try:
+              labels_list = json.loads(labels_raw) if labels_raw else []
+              labels = [l.get("name", "") for l in labels_list if isinstance(l, dict)]
+          except Exception:
+              labels = []
+
+          has_test_label = any(l in ["test-case", "testcase"] for l in labels)
+          has_e2e_label = any(l in ["e2e-testcase", "e2e"] for l in labels)
+          has_bench_label = any(l in ["benchmark-validation", "benchmark", "bench"] for l in labels)
+
+          is_push = (event_name == "push")
+          is_pr_open = (event_name == "pull_request" and action in ["opened", "reopened"])
+          is_pr_sync = (event_name == "pull_request" and action == "synchronize")
+          is_pr_labeled = (event_name == "pull_request" and action == "labeled")
+
+          label_is_test = label_name in ["test-case", "testcase"]
+          label_is_e2e = label_name in ["e2e-testcase", "e2e"]
+          label_is_bench = label_name in ["benchmark-validation", "benchmark", "bench"]
+
+          if is_pr_labeled:
+              # Label added event: only trigger the job matching the newly added label
+              run_test = label_is_test
+              run_e2e = label_is_e2e
+              run_bench = label_is_bench
+              run_verus = False
+              run_lint = False
+          elif is_push or is_pr_open:
+              # Push to main or PR opened/reopened: run full CI suite if code changed or label present
+              run_test = rust_changed or has_test_label
+              run_verus = rust_changed
+              run_lint = rust_changed
+              run_bench = rust_changed or has_bench_label
+              run_e2e = rust_changed or has_e2e_label
+          elif is_pr_sync:
+              # 2nd+ push (synchronize): run testcases, verus, and lint on every push!
+              # E2E runs if e2e-testcase label is attached to the PR.
+              # Benchmark validation runs if benchmark-validation label is attached to the PR.
+              run_test = rust_changed or has_test_label
+              run_verus = rust_changed
+              run_lint = rust_changed
+              run_bench = has_bench_label
+              run_e2e = has_e2e_label
+          else:
+              run_test = run_verus = run_lint = run_bench = run_e2e = False
+
+          print("=== CI Execution Routing Plan ===")
+          print(f"  Event: {event_name} (action: {action})")
+          print(f"  Rust Changed: {rust_changed}")
+          print(f"  Labels: {labels} (added label: {label_name})")
+          print(f"  -> test: {run_test}")
+          print(f"  -> verus: {run_verus}")
+          print(f"  -> lint: {run_lint}")
+          print(f"  -> e2e-integration: {run_e2e}")
+          print(f"  -> benchmark-validation: {run_bench}")
+          print("=================================")
+
+          output_file = os.environ.get("GITHUB_OUTPUT")
+          if output_file:
+              with open(output_file, "a") as f:
+                  f.write(f"run_test={str(run_test).lower()}\n")
+                  f.write(f"run_verus={str(run_verus).lower()}\n")
+                  f.write(f"run_lint={str(run_lint).lower()}\n")
+                  f.write(f"run_e2e={str(run_e2e).lower()}\n")
+                  f.write(f"run_benchmark={str(run_bench).lower()}\n")
+          EOF
+
   test:
     needs: changes
-    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.rust != 'false') }}
+    if: ${{ !cancelled() && needs.changes.outputs.run_test == 'true' }}
     name: Test
     runs-on: ubuntu-latest
     steps:
@@ -60,7 +153,7 @@ jobs:
 
   lint:
     needs: changes
-    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.rust != 'false') }}
+    if: ${{ !cancelled() && needs.changes.outputs.run_lint == 'true' }}
     name: Lint
     runs-on: ubuntu-latest
     steps:
@@ -74,7 +167,7 @@ jobs:
 
   verus:
     needs: changes
-    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.rust != 'false') }}
+    if: ${{ !cancelled() && needs.changes.outputs.run_verus == 'true' }}
     name: Verus
     runs-on: ubuntu-latest
     steps:
@@ -99,7 +192,7 @@ jobs:
 
   e2e-integration:
     needs: changes
-    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.rust != 'false') }}
+    if: ${{ !cancelled() && needs.changes.outputs.run_e2e == 'true' }}
     name: E2E Integration
     runs-on: ubuntu-latest
     steps:
@@ -117,7 +210,7 @@ jobs:
 
   benchmark-validation:
     needs: changes
-    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.rust != 'false') }}
+    if: ${{ !cancelled() && needs.changes.outputs.run_benchmark == 'true' }}
     name: Benchmark client validation
     runs-on: ubuntu-latest
     steps:

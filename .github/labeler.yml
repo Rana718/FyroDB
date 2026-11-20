@@ -1,0 +1,23 @@
+test-case:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'tests/**/*.rs'
+          - 'tests/*.rs'
+          - 'crates/**/tests/**'
+          - 'src/**'
+
+e2e-testcase:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'tests/e2e/**'
+          - 'scripts/e2e*'
+          - 'Dockerfile*'
+          - 'docker-compose*'
+
+benchmark-validation:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'bench/**'
+          - 'benches/**'
+          - 'scripts/bench*'
+          - 'scripts/test_bench*'
