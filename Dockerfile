@@ -24,15 +24,15 @@ COPY benches ./benches
 # Cache registry dependencies separately from workspace source changes.
 RUN mkdir src && touch src/lib.rs src/main.rs \
     && for crate in crates/*; do mkdir "$crate/src" && touch "$crate/src/lib.rs"; done \
-    && cargo build --locked --release --lib ${FEATURES:+--features "$FEATURES"} \
+    && cargo build --locked --release --lib --features "io-uring $FEATURES" \
     && cargo clean --release -p fyro_db -p customhash -p fyro-vector -p rust-zmalloc -p fyro-dbcache
 
 COPY crates ./crates
-RUN cargo build --locked --release --lib ${FEATURES:+--features "$FEATURES"} \
+RUN cargo build --locked --release --lib --features "io-uring $FEATURES" \
     && cargo clean --release -p fyro_db
 
 COPY src ./src
-RUN cargo build --locked --release --bin fyro_db ${FEATURES:+--features "$FEATURES"}
+RUN cargo build --locked --release --bin fyro_db --features "io-uring $FEATURES"
 
 FROM alpine:3.24 AS runtime-root
 
@@ -54,6 +54,7 @@ COPY --from=builder /app/target/release/fyro_db /usr/local/bin/fyro_db
 # `docker run -e NAME=value` or Compose environment settings.
 ENV FYRODB_PORT=8000
 ENV FYRODB_WORKERS=0
+ENV FYRODB_IO_URING=false
 ENV FYRODB_SHARDS=0
 ENV FYRODB_MAX_KEYS=0
 ENV FYRODB_MAX_CLIENTS=10000

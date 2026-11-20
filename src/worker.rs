@@ -38,6 +38,34 @@ pub fn run_worker(
    auth: Option<&str>,
    worker_index: usize,
 ) {
+   #[cfg(feature = "io-uring")]
+   if let Some(ring) = crate::handler::uring::SendRing::from_env() {
+      if worker_index == 0 {
+         eprintln!("fyrodb: io_uring sends enabled on worker 0");
+      }
+      return worker_loop::<true>(store, pubsub, port, bind, auth, worker_index, Some(ring));
+   }
+   worker_loop::<false>(
+      store,
+      pubsub,
+      port,
+      bind,
+      auth,
+      worker_index,
+      #[cfg(feature = "io-uring")]
+      None,
+   );
+}
+
+fn worker_loop<const BATCH_SEND: bool>(
+   store: &Arc<Store>,
+   pubsub: &PubSub,
+   port: u16,
+   bind: &str,
+   auth: Option<&str>,
+   worker_index: usize,
+   #[cfg(feature = "io-uring")] mut send_ring: Option<crate::handler::uring::SendRing>,
+) {
    let mut listener = make_listener(port, bind, worker_index);
 
    let mut poll = Poll::new().unwrap();
@@ -67,8 +95,6 @@ pub fn run_worker(
       .filter(|&us| us > 0)
       .map(std::time::Duration::from_micros);
    let mut last_active = std::time::Instant::now();
-   #[cfg(feature = "io-uring")]
-   let mut send_ring = crate::handler::uring::SendRing::from_env();
    #[cfg(feature = "io-uring")]
    let mut sent: Vec<(u64, i32)> = Vec::new();
 
@@ -234,7 +260,7 @@ pub fn run_worker(
             token => {
                let id = token.0;
                if let Some(conn) = conns.get_mut(id).and_then(|s| s.as_mut()) {
-                  let close = (event.is_readable() && !conn.do_read())
+                  let close = (event.is_readable() && !conn.do_read_with::<BATCH_SEND>())
                      || (event.is_writable() && !conn.do_write());
                   if !close {
                      let wants_writable = conn.has_pending_write();
@@ -279,7 +305,7 @@ pub fn run_worker(
          dirty.dedup();
       }
       #[cfg(feature = "io-uring")]
-      if let Some(ring) = send_ring.as_mut() {
+      if BATCH_SEND && let Some(ring) = send_ring.as_mut() {
          sent.clear();
          sub_dirty.sort_unstable();
          sub_dirty.dedup();

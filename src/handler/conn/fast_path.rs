@@ -223,7 +223,6 @@ fn dispatch_get_one(conn: &mut Conn<'_>, key_part: (*const u8, usize), pin: &cus
    let Some(value) = read.value.as_string() else {
       return crate::utils::resp::write_nil(&mut conn.parser.wbuf);
    };
-   #[cfg(not(feature = "io-uring"))]
    if value.len() >= super::bulk::DIRECT_SEND_MIN && conn.write_offset == conn.parser.wbuf.len() {
       send_large_value(conn, value.as_bytes());
       return;
@@ -243,7 +242,6 @@ fn dispatch_get_one(conn: &mut Conn<'_>, key_part: (*const u8, usize), pin: &cus
    }
 }
 
-#[cfg(not(feature = "io-uring"))]
 fn send_large_value(conn: &mut Conn<'_>, payload: &[u8]) {
    use std::io::IoSlice;
 
@@ -327,7 +325,6 @@ fn dispatch_repeated_get<const STREAM_IO: bool>(
       .filter(|v| !v.is_expired())
       .and_then(|v| v.value.as_string())
    {
-      #[cfg(not(feature = "io-uring"))]
       if STREAM_IO && value.len() >= super::bulk::MIN_STREAM_BYTES && store.worker_capacity() > 1 {
          super::bulk::send_repeated_value(
             &mut conn.stream,
@@ -418,9 +415,6 @@ fn dispatch_get_batch<const STREAM_IO: bool>(
    } else {
       None
    };
-   #[cfg(not(feature = "io-uring"))]
-   #[allow(unused_mut)] // STREAM_IO=false instantiations prune the mutable borrow
-   let mut read_epoch = read_epoch;
 
    conn
       .store
@@ -439,7 +433,6 @@ fn dispatch_get_batch<const STREAM_IO: bool>(
    } else {
       unsafe { store.string_payload_len_unguarded(hashes[0], entries[0]) }
    };
-   #[cfg(not(feature = "io-uring"))]
    let mut read_epoch = if read_epoch.is_none()
       && read_only
       && (count >= READ_EPOCH_MIN || first_payload_len >= super::bulk::MIN_STREAM_BYTES)
@@ -450,19 +443,16 @@ fn dispatch_get_batch<const STREAM_IO: bool>(
    };
    let prefetch_payloads = (24..=8192).contains(&first_payload_len)
       && (first_payload_len <= 1024 || store.worker_capacity() == 1);
-   #[cfg(not(feature = "io-uring"))]
    let stream_minimum = if store.worker_capacity() == 1 {
       4 * 1024
    } else {
       super::bulk::MIN_STREAM_BYTES
    };
-   #[cfg(not(feature = "io-uring"))]
    let stream_floor = if read_epoch.is_some() {
       stream_minimum
    } else {
       super::bulk::DIRECT_SEND_MIN
    };
-   #[cfg(not(feature = "io-uring"))]
    if STREAM_IO
       && first_payload_len >= stream_floor
       && unsafe {

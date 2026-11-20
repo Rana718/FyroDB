@@ -20,6 +20,10 @@ impl<'a> Conn<'a> {
    }
 
    pub fn do_read(&mut self) -> bool {
+      self.do_read_with::<false>()
+   }
+
+   pub(crate) fn do_read_with<const BATCH_SEND: bool>(&mut self) -> bool {
       #[cfg(feature = "bench-tools")]
       let raw_only = is_raw_arrival_only();
       #[cfg(not(feature = "bench-tools"))]
@@ -64,14 +68,7 @@ impl<'a> Conn<'a> {
       if !self.process_buffered_inner::<true>() {
          return false;
       }
-      #[cfg(not(feature = "io-uring"))]
-      {
-         self.do_write()
-      }
-      #[cfg(feature = "io-uring")]
-      {
-         true
-      }
+      BATCH_SEND || self.do_write()
    }
 
    /// Parse and execute commands in read buffer, pausing if parked and
