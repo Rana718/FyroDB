@@ -18,7 +18,7 @@ permissions:
 jobs:
   labeler:
     name: Auto Label PR
-    if: github.event_name == 'pull_request' && contains(fromJSON('["opened", "synchronize", "reopened"]'), github.event.action)
+    if: github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize' || github.event.action == 'reopened')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/labeler@v5
