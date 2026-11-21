@@ -1,16 +1,24 @@
 use io_uring::{IoUring, opcode, types};
-use std::os::fd::RawFd;
+use std::io;
+use std::os::fd::{AsRawFd, RawFd};
+use std::os::unix::net::UnixStream;
 
 pub struct SendRing {
    ring: IoUring,
    inflight: usize,
 }
 
+fn requested(setting: Option<&str>) -> bool {
+   setting.is_some_and(|s| {
+      ["true", "1", "yes", "on"]
+         .iter()
+         .any(|v| s.eq_ignore_ascii_case(v))
+   })
+}
+
 impl SendRing {
    pub fn from_env() -> Option<Self> {
-      let disabled = std::env::var("FYRODB_IO_URING")
-         .is_ok_and(|v| matches!(v.as_str(), "0" | "no" | "false" | "off"));
-      if disabled {
+      if !requested(std::env::var("FYRODB_IO_URING").ok().as_deref()) {
          return None;
       }
 
@@ -28,13 +36,38 @@ impl SendRing {
                .setup_cqsize(2048)
                .build(1024)
          })
-         .or_else(|_| IoUring::new(1024));
+         .or_else(|_| IoUring::new(1024))
+         .and_then(Self::check_send);
 
       match ring {
          Ok(ring) => Some(Self { ring, inflight: 0 }),
          Err(e) => {
             eprintln!("fyrodb: io_uring unavailable ({e}); using write(2)");
             None
+         }
+      }
+   }
+
+   fn check_send(mut ring: IoUring) -> io::Result<IoUring> {
+      let (sender, _receiver) = UnixStream::pair()?;
+      let probe = opcode::Send::new(types::Fd(sender.as_raw_fd()), b"x".as_ptr(), 1)
+         .flags(libc::MSG_DONTWAIT | libc::MSG_NOSIGNAL)
+         .build();
+      // The probe uses static storage and runs before any client buffer is submitted.
+      unsafe { ring.submission().push(&probe) }.expect("new submission queue is empty");
+      loop {
+         match ring.submit_and_wait(1) {
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            result => {
+               result?;
+            }
+         }
+         let result = ring.completion().next().map(|cqe| cqe.result());
+         match result {
+            Some(1) => return Ok(ring),
+            Some(n) if n < 0 => return Err(io::Error::from_raw_os_error(-n)),
+            Some(_) => return Err(io::Error::other("incomplete io_uring test send")),
+            None => continue,
          }
       }
    }
@@ -88,10 +121,27 @@ mod tests {
    use super::*;
 
    #[test]
+   fn ring_setup_requires_an_explicit_opt_in() {
+      for setting in [
+         None,
+         Some(""),
+         Some("false"),
+         Some("off"),
+         Some("0"),
+         Some("invalid"),
+      ] {
+         assert!(!requested(setting));
+      }
+      for setting in ["true", "TRUE", "1", "yes", "on"] {
+         assert!(requested(Some(setting)));
+      }
+   }
+
+   #[test]
    fn sends_complete_before_borrowed_buffers_are_reused() {
       use std::io::Read;
       use std::os::fd::AsRawFd;
-      let ring = match IoUring::new(8) {
+      let ring = match IoUring::new(8).and_then(SendRing::check_send) {
          Ok(ring) => ring,
          Err(error) if matches!(error.raw_os_error(), Some(libc::EPERM | libc::ENOSYS)) => {
             eprintln!("io_uring runtime test unavailable: {error}");

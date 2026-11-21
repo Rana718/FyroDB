@@ -300,31 +300,31 @@ impl ZSetData {
          self.chunks.push(c);
          return;
       };
-      let ci = if last.is_empty() || last.last().is_some_and(|e| before(e, score, member)) {
-         last.push(entry);
-         self.chunks.len() - 1
-      } else {
-         let (mut ci, mut ei) = self.bound(|e| before(e, score, member));
-         if ci == self.chunks.len() {
-            ci -= 1;
-            ei = self.chunks[ci].len();
-         }
-         self.chunks[ci].insert(ei, entry);
-         ci
-      };
-      if self.chunks[ci].len() > CHUNK_MAX {
-         if ci + 1 == self.chunks.len() {
-            let mut new_chunk = Vec::with_capacity(CHUNK_MAX);
-            new_chunk.push(self.chunks[ci].pop().unwrap());
-            self.chunks.push(new_chunk);
+      if last.is_empty() || last.last().is_some_and(|e| before(e, score, member)) {
+         if last.len() == CHUNK_MAX {
+            let mut next = Vec::with_capacity(CHUNK_MAX);
+            next.push(entry);
+            self.chunks.push(next);
          } else {
-            let tail = {
-               let c = &mut self.chunks[ci];
-               c.split_off(c.len() / 2)
-            };
-            self.chunks.insert(ci + 1, tail);
+            last.push(entry);
          }
+         return;
       }
+
+      let (ci, ei) = self.bound(|e| before(e, score, member));
+      let chunk = &mut self.chunks[ci];
+      if chunk.len() < CHUNK_MAX {
+         chunk.insert(ei, entry);
+         return;
+      }
+      let mid = CHUNK_MAX / 2;
+      let mut tail = chunk.split_off(mid);
+      if ei < mid {
+         chunk.insert(ei, entry);
+      } else {
+         tail.insert(ei - mid, entry);
+      }
+      self.chunks.insert(ci + 1, tail);
    }
 
    fn remove_at(&mut self, ci: usize, ei: usize) -> ZEntry {
@@ -346,14 +346,14 @@ impl ZSetData {
    }
 
    pub fn insert(&mut self, score: f64, member: &str) -> bool {
-      self.fingerprint |= member_bloom_bit(member.as_bytes());
       if let Some(ix) = self.index.as_deref_mut() {
          if let Some(&old) = ix.get(member) {
-            if (old - score).abs() > f64::EPSILON {
+            if old != score {
                self.relocate(member, score);
             }
             return false;
          }
+         self.fingerprint |= member_bloom_bit(member.as_bytes());
          let m = SmallStr::new(member);
          ix.insert(m.clone(), score);
          self.len += 1;
@@ -362,7 +362,7 @@ impl ZSetData {
       }
       match self.score_of(member) {
          Some(old) => {
-            if (old - score).abs() > f64::EPSILON {
+            if old != score {
                self.relocate(member, score);
             }
             false
@@ -758,6 +758,30 @@ mod tests {
          assert!(model.remove(e.member.as_str()).is_some());
       }
       assert!(model.is_empty());
+   }
+
+   #[test]
+   fn sorted_inserts_keep_finished_chunks_at_their_original_capacity() {
+      let mut z = ZSetData::new();
+      for i in 0..4 * CHUNK_MAX {
+         assert!(z.insert(i as f64, &i.to_string()));
+      }
+      for chunk in &z.chunks {
+         assert_eq!((chunk.len(), chunk.capacity()), (CHUNK_MAX, CHUNK_MAX));
+      }
+   }
+
+   #[test]
+   fn tiny_score_changes_survive_in_both_index_modes() {
+      for count in [0, 150] {
+         let mut z = ZSetData::new();
+         for i in 0..count {
+            z.insert(i as f64, &i.to_string());
+         }
+         assert!(z.insert(0.0, "member"));
+         assert!(!z.insert(f64::EPSILON / 2.0, "member"));
+         assert_eq!(z.get_score("member"), Some(f64::EPSILON / 2.0));
+      }
    }
 
    #[test]

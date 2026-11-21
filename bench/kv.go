@@ -68,25 +68,22 @@ func keySlot(key []byte) int {
 // hashTag returns the content between the first '{' and a following '}',
 // or nil if there is no valid tag (matching Redis behaviour).
 func hashTag(key []byte) []byte {
-	for i, b := range key {
-		if b == '{' {
-			for j := i + 1; j < len(key); j++ {
-				if key[j] == '}' && j > i+1 {
-					return key[i+1 : j]
-				}
-			}
+	start := bytes.IndexByte(key, '{')
+	if start >= 0 {
+		tail := key[start+1:]
+		if end := bytes.IndexByte(tail, '}'); end > 0 {
+			return tail[:end]
 		}
 	}
 	return nil
 }
 
-// nodeForKey maps a key to the owning index in addrs, assuming slots are
-// spread evenly across masters (the redis-cli --cluster create default).
+// nodeForKey uses the slot ownership discovered at the start of the run.
 func nodeForKey(key []byte) int {
 	if len(addrs) == 1 {
 		return 0
 	}
-	return keySlot(key) * len(addrs) / 16384
+	return slotOwners[keySlot(key)]
 }
 
 // clusterConns[clientID][nodeID] → *net.TCPConn

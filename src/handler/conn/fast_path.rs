@@ -179,7 +179,11 @@ thread_local! {
 }
 
 #[inline(always)]
-fn dispatch_get_one(conn: &mut Conn<'_>, key_part: (*const u8, usize), pin: &customhash::Guard) {
+fn dispatch_get_one<const STREAM_IO: bool>(
+   conn: &mut Conn<'_>,
+   key_part: (*const u8, usize),
+   pin: &customhash::Guard,
+) {
    let store = conn.store;
    let key = unsafe { part_bytes(key_part) };
    let mut learn = None;
@@ -223,8 +227,10 @@ fn dispatch_get_one(conn: &mut Conn<'_>, key_part: (*const u8, usize), pin: &cus
    let Some(value) = read.value.as_string() else {
       return crate::utils::resp::write_nil(&mut conn.parser.wbuf);
    };
-   #[cfg(not(feature = "io-uring"))]
-   if value.len() >= super::bulk::DIRECT_SEND_MIN && conn.write_offset == conn.parser.wbuf.len() {
+   if STREAM_IO
+      && value.len() >= super::bulk::DIRECT_SEND_MIN
+      && conn.write_offset == conn.parser.wbuf.len()
+   {
       send_large_value(conn, value.as_bytes());
       return;
    }
@@ -243,7 +249,6 @@ fn dispatch_get_one(conn: &mut Conn<'_>, key_part: (*const u8, usize), pin: &cus
    }
 }
 
-#[cfg(not(feature = "io-uring"))]
 fn send_large_value(conn: &mut Conn<'_>, payload: &[u8]) {
    use std::io::IoSlice;
 
@@ -305,7 +310,7 @@ pub(super) fn dispatch_get_run<const STREAM_IO: bool>(
    pin: &customhash::Guard,
 ) {
    if conn.parser.filled - conn.parser.pos < 20 && !is_null_store() {
-      dispatch_get_one(conn, first_key, pin);
+      dispatch_get_one::<true>(conn, first_key, pin);
       return;
    }
    dispatch_get_batch::<STREAM_IO>(conn, first_key, read_only, pin);
@@ -327,7 +332,6 @@ fn dispatch_repeated_get<const STREAM_IO: bool>(
       .filter(|v| !v.is_expired())
       .and_then(|v| v.value.as_string())
    {
-      #[cfg(not(feature = "io-uring"))]
       if STREAM_IO && value.len() >= super::bulk::MIN_STREAM_BYTES && store.worker_capacity() > 1 {
          super::bulk::send_repeated_value(
             &mut conn.stream,
@@ -404,7 +408,7 @@ fn dispatch_get_batch<const STREAM_IO: bool>(
    }
 
    if count == 1 {
-      dispatch_get_one(conn, first_key, pin);
+      dispatch_get_one::<true>(conn, first_key, pin);
       return;
    }
 
@@ -418,9 +422,6 @@ fn dispatch_get_batch<const STREAM_IO: bool>(
    } else {
       None
    };
-   #[cfg(not(feature = "io-uring"))]
-   #[allow(unused_mut)] // STREAM_IO=false instantiations prune the mutable borrow
-   let mut read_epoch = read_epoch;
 
    conn
       .store
@@ -439,7 +440,6 @@ fn dispatch_get_batch<const STREAM_IO: bool>(
    } else {
       unsafe { store.string_payload_len_unguarded(hashes[0], entries[0]) }
    };
-   #[cfg(not(feature = "io-uring"))]
    let mut read_epoch = if read_epoch.is_none()
       && read_only
       && (count >= READ_EPOCH_MIN || first_payload_len >= super::bulk::MIN_STREAM_BYTES)
@@ -450,19 +450,16 @@ fn dispatch_get_batch<const STREAM_IO: bool>(
    };
    let prefetch_payloads = (24..=8192).contains(&first_payload_len)
       && (first_payload_len <= 1024 || store.worker_capacity() == 1);
-   #[cfg(not(feature = "io-uring"))]
    let stream_minimum = if store.worker_capacity() == 1 {
       4 * 1024
    } else {
       super::bulk::MIN_STREAM_BYTES
    };
-   #[cfg(not(feature = "io-uring"))]
    let stream_floor = if read_epoch.is_some() {
       stream_minimum
    } else {
       super::bulk::DIRECT_SEND_MIN
    };
-   #[cfg(not(feature = "io-uring"))]
    if STREAM_IO
       && first_payload_len >= stream_floor
       && unsafe {
@@ -764,7 +761,11 @@ fn dispatch_set_batch<const BATCH: usize, const STREAMING: bool>(
    }
 }
 
-pub(super) fn dispatch_json_set_run(conn: &mut Conn<'_>, first_raw: &[(*const u8, usize)]) -> bool {
+pub(super) fn dispatch_json_set_run(
+   conn: &mut Conn<'_>,
+   first_raw: &[(*const u8, usize)],
+   pin: &customhash::Guard,
+) -> bool {
    if first_raw.len() != 4 {
       return false;
    }
@@ -777,7 +778,6 @@ pub(super) fn dispatch_json_set_run(conn: &mut Conn<'_>, first_raw: &[(*const u8
    let mut vals: [(*const u8, usize); BATCH] = [(std::ptr::null(), 0); BATCH];
    let mut hashes = [0u64; BATCH];
    let mut tables = [std::ptr::null(); BATCH];
-   let mut entries = [std::ptr::null(); BATCH];
 
    keys[0] = unsafe { part_bytes(first_raw[1]) };
    vals[0] = first_raw[3];
@@ -802,10 +802,10 @@ pub(super) fn dispatch_json_set_run(conn: &mut Conn<'_>, first_raw: &[(*const u8
       let (hint, entry) = conn.hint_for(first_raw[1]);
       let out = &mut conn.parser.wbuf;
       let Some(key) = part_str(out, first_raw[1]) else {
-         return false;
+         return true;
       };
       let Some(val) = part_str(out, first_raw[3]) else {
-         return false;
+         return true;
       };
       conn.store.set_json_auto(key, hint, entry, val);
       if conn.store.has_replication() {
@@ -818,50 +818,36 @@ pub(super) fn dispatch_json_set_run(conn: &mut Conn<'_>, first_raw: &[(*const u8
    conn
       .store
       .prefetch_slots_write(&keys[..count], &mut hashes[..count], &mut tables[..count]);
-   conn.store.probe_and_prefetch_entries_write(
-      &tables[..count],
-      &hashes[..count],
-      &mut entries[..count],
-   );
-
    let store = conn.store;
-   let _write_epoch = store.data.write_epoch();
+   let epoch = store.data.write_epoch();
    let out = &mut conn.parser.wbuf;
    out.reserve(count * 5);
-   let old_len = out.len();
-   let mut success = true;
 
    for i in 0..count {
       let Ok(key_str) = std::str::from_utf8(keys[i]) else {
          crate::utils::resp::write_err(out, "invalid UTF-8 in request");
-         success = false;
          continue;
       };
       let val_bytes = unsafe { std::slice::from_raw_parts(vals[i].0, vals[i].1) };
       let Ok(val_str) = std::str::from_utf8(val_bytes) else {
          crate::utils::resp::write_err(out, "invalid UTF-8 in request");
-         success = false;
          continue;
       };
-      conn
-         .store
-         .set_json_auto(key_str, Some(hashes[i]), entries[i], val_str);
+      let hash = hashes[i];
+      store.data.insert_str_hashed_pinned(
+         key_str,
+         crate::storage::value::StoreValue::json_str(val_str),
+         hash,
+         store.data.shard_of(hash),
+         &epoch,
+         pin,
+      );
+      crate::utils::resp::write_ok(out);
       if conn.store.has_replication() {
          conn.store.record_current_value(key_str);
       }
    }
 
-   if success {
-      const OK_REPLY_5: &[u8] = b"+OK\r\n";
-      unsafe {
-         out.set_len(old_len + count * 5);
-         let mut p = out.as_mut_ptr().add(old_len);
-         for _ in 0..count {
-            std::ptr::copy_nonoverlapping(OK_REPLY_5.as_ptr(), p, 5);
-            p = p.add(5);
-         }
-      }
-   }
    true
 }
 
@@ -1624,72 +1610,8 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
       None
    };
 
-   if conn.store.cluster.enabled {
-      if conn.store.replica_installing() {
-         conn
-            .parser
-            .wbuf
-            .extend_from_slice(b"-CLUSTERDOWN Replica snapshot is installing\r\n");
-         return;
-      }
-      if conn.store.cluster.is_replica && cluster_is_write {
-         conn
-            .parser
-            .wbuf
-            .extend_from_slice(b"-READONLY You can't write against a read only replica.\r\n");
-         return;
-      }
-
-      conn.refresh_topology();
-      let asking = std::mem::take(&mut conn.asking);
-
-      // The argument slice is materialized only for multi-key commands;
-      // keyless and single-key commands skip it.
-      let decision = match crate::cluster::routing_scope(cmd) {
-         crate::cluster::RoutingScope::Keyless => crate::cluster::RouteDecision::Local,
-         crate::cluster::RoutingScope::FirstKey => match raw.get(1) {
-            Some(&part) => {
-               let (topology, routing) = conn.cached_topology();
-               crate::cluster::route_single_key(
-                  &conn.store.cluster,
-                  conn.store.cluster_state_ref(),
-                  topology,
-                  routing,
-                  unsafe { part_bytes(part) },
-                  asking,
-               )
-            }
-            None => crate::cluster::RouteDecision::Local,
-         },
-         crate::cluster::RoutingScope::ManyKeys => {
-            const STACK_ARGS: usize = 32;
-            let mut stack_args = [&[][..]; STACK_ARGS];
-            if raw.len().saturating_sub(1) > STACK_ARGS {
-               let args: Vec<&[u8]> = raw[1..]
-                  .iter()
-                  .map(|&part| unsafe { part_bytes(part) })
-                  .collect();
-               route_cached(conn, cmd, &args, asking)
-            } else {
-               for (index, part) in raw[1..].iter().enumerate() {
-                  stack_args[index] = unsafe { part_bytes(*part) };
-               }
-               let args = &stack_args[..raw.len() - 1];
-               route_cached(conn, cmd, args, asking)
-            }
-         }
-      };
-      match decision {
-         crate::cluster::RouteDecision::Local => {}
-         other => {
-            let topology = conn
-               .topology_cache
-               .as_ref()
-               .map(|(_, topology, _)| topology.as_ref());
-            write_route_decision(&mut conn.parser.wbuf, other, topology);
-            return;
-         }
-      }
+   if conn.store.cluster.enabled && !cluster_admits(conn, id, cmd, raw, cluster_is_write) {
+      return;
    }
 
    if !conn.mode.executing_transaction() && park::is_blocking_cmd(cmd) {
@@ -1977,6 +1899,180 @@ fn dispatch_text(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
       }
       dispatch(conn, &parts);
    }
+}
+
+#[inline]
+fn cluster_admits(
+   conn: &mut Conn<'_>,
+   id: CmdId,
+   cmd: &[u8],
+   raw: &[(*const u8, usize)],
+   cluster_is_write: bool,
+) -> bool {
+   if conn.store.replica_installing() {
+      conn
+         .parser
+         .wbuf
+         .extend_from_slice(b"-CLUSTERDOWN Replica snapshot is installing\r\n");
+      return false;
+   }
+   conn.refresh_topology();
+   if cluster_is_write && !conn.local_primary {
+      conn
+         .parser
+         .wbuf
+         .extend_from_slice(b"-READONLY You can't write against a read only replica.\r\n");
+      return false;
+   }
+
+   let asking = std::mem::take(&mut conn.asking);
+
+   // The argument slice is materialized only for multi-key commands;
+   // keyless and single-key commands skip it.
+   let scope = match id {
+      CmdId::Get | CmdId::Set => crate::cluster::RoutingScope::FirstKey,
+      _ => crate::cluster::routing_scope(cmd),
+   };
+   let decision = match scope {
+      crate::cluster::RoutingScope::Keyless => crate::cluster::RouteDecision::Local,
+      crate::cluster::RoutingScope::FirstKey => match raw.get(1) {
+         Some(&part) => {
+            let (topology, routing) = conn.cached_topology();
+            crate::cluster::route_single_key(
+               &conn.store.cluster,
+               conn.store.cluster_state_ref(),
+               topology,
+               routing,
+               unsafe { part_bytes(part) },
+               asking,
+            )
+         }
+         None => crate::cluster::RouteDecision::Local,
+      },
+      crate::cluster::RoutingScope::ManyKeys => {
+         const STACK_ARGS: usize = 32;
+         let mut stack_args = [&[][..]; STACK_ARGS];
+         if raw.len().saturating_sub(1) > STACK_ARGS {
+            let args: Vec<&[u8]> = raw[1..]
+               .iter()
+               .map(|&part| unsafe { part_bytes(part) })
+               .collect();
+            route_cached(conn, cmd, &args, asking)
+         } else {
+            for (index, part) in raw[1..].iter().enumerate() {
+               stack_args[index] = unsafe { part_bytes(*part) };
+            }
+            let args = &stack_args[..raw.len() - 1];
+            route_cached(conn, cmd, args, asking)
+         }
+      }
+   };
+   match decision {
+      crate::cluster::RouteDecision::Local => {}
+      other => {
+         let topology = conn
+            .topology_cache
+            .as_ref()
+            .map(|(_, topology, _)| topology.as_ref());
+         write_route_decision(&mut conn.parser.wbuf, other, topology);
+         return false;
+      }
+   }
+   true
+}
+
+pub(super) fn dispatch_cluster_strings<const SET: bool, const STREAM_IO: bool>(
+   conn: &mut Conn<'_>,
+   first: &[(*const u8, usize)],
+   pin: &customhash::Guard,
+) {
+   let store = conn.store;
+   let _ticket = SET.then(|| store.begin_write(conn.worker));
+   let (id, cmd, header) = if SET {
+      (CmdId::Set, b"SET", b"*3\r\n")
+   } else {
+      (CmdId::Get, b"GET", b"*2\r\n")
+   };
+   let mut parts = [
+      first[0],
+      first[1],
+      first.get(2).copied().unwrap_or(first[1]),
+   ];
+   let mut writer = None;
+   let mut view = None;
+   let read_limit = conn
+      .parser
+      .wbuf
+      .len()
+      .saturating_add(super::bulk::DIRECT_SEND_MIN);
+   for index in 0..64 {
+      if index != 0 {
+         let pending = &conn.parser.rbuf[conn.parser.pos..conn.parser.filled];
+         if !pending.starts_with(header) {
+            break;
+         }
+         let (ptr, len) = (pending.as_ptr(), pending.len());
+         if SET {
+            let Some((key, value)) = conn.parser.try_fast_set_key_val_at(ptr, len) else {
+               break;
+            };
+            parts[1] = key;
+            parts[2] = value;
+         } else {
+            let Some(key) = conn.parser.try_fast_get_key_at(ptr, len) else {
+               break;
+            };
+            parts[1] = key;
+         }
+      }
+      if SET && store.at_key_capacity() {
+         conn
+            .parser
+            .wbuf
+            .extend_from_slice(crate::storage::capacity::OOM_REPLY);
+         continue;
+      }
+      if !cluster_admits(conn, id, cmd, &parts[..first.len()], SET) {
+         continue;
+      }
+      let Some(key) = part_str(&mut conn.parser.wbuf, parts[1]) else {
+         continue;
+      };
+      if SET {
+         if index == 1 && !store.has_replication() {
+            writer = Some(store.data.write_epoch());
+         }
+         dispatch_set_one(conn, parts[1], parts[2], pin);
+      } else {
+         if index == 1 && conn.parser.wbuf.len() < read_limit {
+            view = store.data.try_read_view();
+         }
+         if let Some(batch) = &view {
+            match batch.get(key) {
+               None => {
+                  crate::utils::resp::write_nil(&mut conn.parser.wbuf);
+                  continue;
+               }
+               Some(v) if !v.is_expired() => match v.value.as_string() {
+                  None => {
+                     crate::utils::resp::write_nil(&mut conn.parser.wbuf);
+                     continue;
+                  }
+                  Some(s) if s.len() < read_limit.saturating_sub(conn.parser.wbuf.len()) => {
+                     s.write_resp(&mut conn.parser.wbuf);
+                     continue;
+                  }
+                  _ => {}
+               },
+               _ => {}
+            }
+            // Release writer exclusion before expiry cleanup or copying a large reply.
+            drop(view.take());
+         }
+         dispatch_get_one::<STREAM_IO>(conn, parts[1], pin);
+      }
+   }
+   drop(writer);
 }
 
 /// Route one command against this connection's cached topology snapshot.

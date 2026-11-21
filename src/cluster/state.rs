@@ -1,16 +1,20 @@
 use arc_swap::ArcSwap;
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use super::{FailureReport, FailureTracker};
 
+struct PublishedTopology {
+   topology: Arc<super::Topology>,
+   routing: Arc<super::RoutingTable>,
+}
+
 #[derive(Clone)]
 pub struct ClusterState {
    failures: Arc<Mutex<FailureTracker>>,
-   topology: Arc<ArcSwap<super::Topology>>,
-   routing: Arc<ArcSwap<super::RoutingTable>>,
+   published: Arc<RwLock<PublishedTopology>>,
    version: Arc<AtomicU64>,
    migrations: Arc<ArcSwap<std::collections::HashMap<u16, String>>>,
    imports: Arc<ArcSwap<std::collections::HashMap<u16, String>>>,
@@ -31,8 +35,10 @@ impl ClusterState {
       let routing = super::RoutingTable::build(&topology);
       Self {
          failures: Arc::new(Mutex::new(FailureTracker::new(quorum, retention))),
-         topology: Arc::new(ArcSwap::from_pointee(topology)),
-         routing: Arc::new(ArcSwap::from_pointee(routing)),
+         published: Arc::new(RwLock::new(PublishedTopology {
+            topology: Arc::new(topology),
+            routing: Arc::new(routing),
+         })),
          version: Arc::new(AtomicU64::new(1)),
          migrations: Arc::new(ArcSwap::default()),
          imports: Arc::new(ArcSwap::default()),
@@ -42,18 +48,19 @@ impl ClusterState {
    }
 
    pub fn topology(&self) -> super::Topology {
-      self.topology.load_full().as_ref().clone()
+      self.topology_arc().as_ref().clone()
    }
 
    pub fn topology_arc(&self) -> Arc<super::Topology> {
-      self.topology.load_full()
+      Arc::clone(&self.published.read().topology)
    }
 
    pub fn topology_and_routing_arc(&self) -> (Arc<super::Topology>, Arc<super::RoutingTable>) {
-      // Independent atomic loads; each Arc is internally consistent.
-      let topology = self.topology.load_full();
-      let routing = self.routing.load_full();
-      (topology, routing)
+      let snapshot = self.published.read();
+      (
+         Arc::clone(&snapshot.topology),
+         Arc::clone(&snapshot.routing),
+      )
    }
 
    /// Version of the currently installed topology.
@@ -71,19 +78,17 @@ impl ClusterState {
       if self.version.load(Ordering::Acquire) == cached {
          return None;
       }
-      let topology = self.topology.load_full();
-      let routing = self.routing.load_full();
-      let version = self.version.load(Ordering::Acquire);
-      Some((version, topology, routing))
+      let snapshot = self.published.read();
+      Some((
+         self.topology_version(),
+         Arc::clone(&snapshot.topology),
+         Arc::clone(&snapshot.routing),
+      ))
    }
 
-   /// Publish a topology and advance the version so cached readers refresh.
-   fn install_topology(&self, topology: Arc<super::Topology>) {
-      let routing = super::RoutingTable::build(&topology);
-      // Publish routing first so a reader that observes the new topology
-      // version always finds the matching table on its load.
-      self.routing.store(Arc::new(routing));
-      self.topology.store(topology);
+   fn install_topology(&self, snapshot: &mut PublishedTopology, topology: Arc<super::Topology>) {
+      snapshot.routing = Arc::new(super::RoutingTable::build(&topology));
+      snapshot.topology = topology;
       self.version.fetch_add(1, Ordering::Release);
    }
 
@@ -91,7 +96,8 @@ impl ClusterState {
       if target.is_empty() || target.len() > 256 {
          return false;
       }
-      let topology = self.topology();
+      let snapshot = self.published.write();
+      let topology = &snapshot.topology;
       if topology.owner(slot).is_none() || !topology.nodes.iter().any(|node| node.id == target) {
          return false;
       }
@@ -103,6 +109,11 @@ impl ClusterState {
    }
 
    pub fn finish_slot_migration(&self, slot: super::Slot) {
+      let _update = self.published.write();
+      self.clear_migration(slot);
+   }
+
+   fn clear_migration(&self, slot: super::Slot) {
       let mut map = self.migrations.load_full();
       let map_mut = Arc::make_mut(&mut map);
       map_mut.remove(&slot.value());
@@ -114,18 +125,9 @@ impl ClusterState {
    }
 
    pub fn commit_slot_migration(&self, slot: super::Slot) -> Option<super::Topology> {
-      let target = {
-         let mut map = self.migrations.load_full();
-         let map_mut = Arc::make_mut(&mut map);
-         let t = map_mut.remove(&slot.value())?;
-         let empty = map_mut.is_empty();
-         self.migrations.store(map);
-         if empty {
-            self.has_migrations.store(false, Ordering::Release);
-         }
-         t
-      };
-      let mut topology = self.topology.load_full().as_ref().clone();
+      let mut snapshot = self.published.write();
+      let target = self.migrations.load().get(&slot.value()).cloned()?;
+      let mut topology = snapshot.topology.as_ref().clone();
       let source_index = topology.nodes.iter().position(|node| {
          node.role == super::NodeRole::Primary
             && node.slots.iter().any(|range| range.contains(slot))
@@ -140,7 +142,8 @@ impl ClusterState {
       topology.epoch = topology.epoch.saturating_add(1);
       topology.nodes[source_index].epoch = topology.epoch;
       topology.nodes[target_index].epoch = topology.epoch;
-      self.install_topology(Arc::new(topology.clone()));
+      self.install_topology(&mut snapshot, Arc::new(topology.clone()));
+      self.clear_migration(slot);
       Some(topology)
    }
 
@@ -155,6 +158,7 @@ impl ClusterState {
       if source.is_empty() || source.len() > 256 {
          return false;
       }
+      let _update = self.published.write();
       let mut map = self.imports.load_full();
       Arc::make_mut(&mut map).insert(slot.value(), source);
       self.imports.store(map);
@@ -163,6 +167,7 @@ impl ClusterState {
    }
 
    pub fn finish_slot_import(&self, slot: super::Slot) {
+      let _update = self.published.write();
       let mut map = self.imports.load_full();
       let map_mut = Arc::make_mut(&mut map);
       map_mut.remove(&slot.value());
@@ -188,14 +193,11 @@ impl ClusterState {
    }
 
    pub fn replace_topology(&self, topology: super::Topology) -> bool {
-      let current = self.topology.load_full();
-      if topology.epoch <= current.epoch || !topology.is_valid() {
+      let mut snapshot = self.published.write();
+      if topology.epoch <= snapshot.topology.epoch || !topology.is_valid() {
          return false;
       }
-      let routing = super::RoutingTable::build(&topology);
-      self.routing.store(Arc::new(routing));
-      self.topology.store(Arc::new(topology));
-      self.version.fetch_add(1, Ordering::Release);
+      self.install_topology(&mut snapshot, Arc::new(topology));
       true
    }
 
@@ -207,7 +209,8 @@ impl ClusterState {
          return None;
       }
       drop(failures);
-      let mut topology = self.topology.load_full().as_ref().clone();
+      let mut snapshot = self.published.write();
+      let mut topology = snapshot.topology.as_ref().clone();
       if topology.epoch != epoch {
          return None;
       }
@@ -236,7 +239,7 @@ impl ClusterState {
       topology.nodes[replica_index].slots = slots;
       topology.nodes[replica_index].epoch = next_epoch;
       topology.epoch = next_epoch;
-      self.install_topology(Arc::new(topology.clone()));
+      self.install_topology(&mut snapshot, Arc::new(topology.clone()));
       Some(topology)
    }
 
@@ -251,7 +254,8 @@ impl ClusterState {
    /// SETSLOT NODE must also land on non-source nodes; the old add_slots
    /// fallback caused MOVED loops. None if target unknown or already owner.
    pub fn assign_slot(&self, slot: super::Slot, target: &str) -> Option<super::Topology> {
-      let mut topology = self.topology.load_full().as_ref().clone();
+      let mut snapshot = self.published.write();
+      let mut topology = snapshot.topology.as_ref().clone();
       let target_index = topology.nodes.iter().position(|node| node.id == target)?;
       if topology.nodes[target_index]
          .slots
@@ -276,28 +280,30 @@ impl ClusterState {
       target_node.slots.sort_by_key(|range| range.start.value());
       compact_ranges(&mut target_node.slots);
       target_node.epoch = epoch;
-      self.install_topology(Arc::new(topology.clone()));
+      self.install_topology(&mut snapshot, Arc::new(topology.clone()));
       Some(topology)
    }
 
    /// Add a new node to the topology (CLUSTER MEET).
    /// Returns the updated topology on success, None if node already exists.
    pub fn meet_node(&self, node: super::NodeInfo) -> Option<super::Topology> {
-      let mut topology = self.topology.load_full().as_ref().clone();
+      let mut snapshot = self.published.write();
+      let mut topology = snapshot.topology.as_ref().clone();
       if topology.nodes.iter().any(|n| n.id == node.id) {
          return None;
       }
       topology.epoch = topology.epoch.saturating_add(1);
       topology.nodes.push(node);
       let new_topo = Arc::new(topology.clone());
-      self.install_topology(new_topo);
+      self.install_topology(&mut snapshot, new_topo);
       Some(topology)
    }
 
    /// Assign slots to a node (CLUSTER ADDSLOTS).
    /// Returns updated topology, or None if node not found or slots already owned.
    pub fn add_slots(&self, node_id: &str, slots: &[super::Slot]) -> Option<super::Topology> {
-      let mut topology = self.topology.load_full().as_ref().clone();
+      let mut snapshot = self.published.write();
+      let mut topology = snapshot.topology.as_ref().clone();
       let idx = topology.nodes.iter().position(|n| n.id == node_id)?;
       for &slot in slots {
          if topology
@@ -315,41 +321,44 @@ impl ClusterState {
       compact_ranges(&mut topology.nodes[idx].slots);
       topology.epoch = topology.epoch.saturating_add(1);
       topology.nodes[idx].epoch = topology.epoch;
-      self.install_topology(Arc::new(topology.clone()));
+      self.install_topology(&mut snapshot, Arc::new(topology.clone()));
       Some(topology)
    }
 
    /// Remove slots from a node (CLUSTER DELSLOTS).
    pub fn del_slots(&self, node_id: &str, slots: &[super::Slot]) -> Option<super::Topology> {
-      let mut topology = self.topology.load_full().as_ref().clone();
+      let mut snapshot = self.published.write();
+      let mut topology = snapshot.topology.as_ref().clone();
       let idx = topology.nodes.iter().position(|n| n.id == node_id)?;
       for &slot in slots {
          remove_slot(&mut topology.nodes[idx].slots, slot);
       }
       topology.epoch = topology.epoch.saturating_add(1);
       topology.nodes[idx].epoch = topology.epoch;
-      self.install_topology(Arc::new(topology.clone()));
+      self.install_topology(&mut snapshot, Arc::new(topology.clone()));
       Some(topology)
    }
 
    /// Remove a node from the topology (CLUSTER FORGET).
    pub fn forget_node(&self, node_id: &str) -> Option<super::Topology> {
-      let mut topology = self.topology.load_full().as_ref().clone();
+      let mut snapshot = self.published.write();
+      let mut topology = snapshot.topology.as_ref().clone();
       let idx = topology.nodes.iter().position(|n| n.id == node_id)?;
       topology.nodes.remove(idx);
       topology.epoch = topology.epoch.saturating_add(1);
-      self.install_topology(Arc::new(topology.clone()));
+      self.install_topology(&mut snapshot, Arc::new(topology.clone()));
       Some(topology)
    }
 
    /// Reset this node's slot assignments (CLUSTER RESET HARD/SOFT).
    pub fn reset_slots(&self, node_id: &str) -> super::Topology {
-      let mut topology = self.topology.load_full().as_ref().clone();
+      let mut snapshot = self.published.write();
+      let mut topology = snapshot.topology.as_ref().clone();
       if let Some(node) = topology.nodes.iter_mut().find(|n| n.id == node_id) {
          node.slots.clear();
       }
       topology.epoch = topology.epoch.saturating_add(1);
-      self.install_topology(Arc::new(topology.clone()));
+      self.install_topology(&mut snapshot, Arc::new(topology.clone()));
       topology
    }
 }
@@ -446,6 +455,49 @@ mod tests {
       assert_eq!(state.migrating_target(Slot(42)).as_deref(), Some("r"));
       state.finish_slot_migration(Slot(42));
       assert!(state.migrating_target(Slot(42)).is_none());
+   }
+
+   #[test]
+   fn concurrent_slot_assignments_publish_matching_owner_tables() {
+      let state = ClusterState::with_topology(2, Duration::from_secs(30), topology());
+      std::thread::scope(|scope| {
+         for start in [0, 32] {
+            let state = &state;
+            scope.spawn(move || {
+               for n in start..start + 32 {
+                  assert!(state.assign_slot(Slot(n), "r").is_some());
+                  let (_, topology, routing) = state.topology_if_newer(0).unwrap();
+                  for slot in [Slot(0), Slot(32), Slot(n)] {
+                     let owner = routing.owner_index(slot).unwrap();
+                     assert_eq!(topology.nodes[owner].id, topology.owner(slot).unwrap().id);
+                  }
+               }
+            });
+         }
+      });
+      let topology = state.topology();
+      assert!((0..64).all(|n| topology.owner(Slot(n)).unwrap().id == "r"));
+   }
+
+   #[test]
+   fn removing_and_restoring_slot_boundaries_preserves_the_live_route_table() {
+      for cut in [0, 1, 8192, 16382, 16383] {
+         let state = ClusterState::with_topology(2, Duration::from_secs(30), topology());
+         for target in ["r", "p"] {
+            state.assign_slot(Slot(cut), target).unwrap();
+            let (topology, routing) = state.topology_and_routing_arc();
+            for key_slot in 0..crate::cluster::HASH_SLOTS {
+               let slot = Slot(key_slot);
+               let id = if key_slot == cut { target } else { "p" };
+               assert_eq!(topology.owner(slot).unwrap().id, id);
+               assert_eq!(topology.nodes[routing.owner_index(slot).unwrap()].id, id);
+            }
+         }
+         assert_eq!(
+            state.topology().nodes[0].slots,
+            [SlotRange::new(Slot(0), Slot(16383)).unwrap()]
+         );
+      }
    }
 
    #[test]

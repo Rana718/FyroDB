@@ -128,18 +128,12 @@ impl Chunk {
       let r = f(as_str(&self.data[start..]));
       self.data.truncate(start);
       self.offs.pop();
-      if self.len() == 0 {
-         self.reset();
-      }
       r
    }
 
    fn pop_front_with<R>(&mut self, f: impl FnOnce(&str) -> R) -> R {
       let r = f(self.get(0));
       self.head += 1;
-      if self.len() == 0 {
-         self.reset();
-      }
       r
    }
 
@@ -271,6 +265,9 @@ impl QuickList {
    }
 
    pub fn pop_front_with<R>(&mut self, f: impl FnOnce(&str) -> R) -> Option<R> {
+      if self.is_empty() {
+         return None;
+      }
       let (r, empty) = {
          let c = self.chunks.front_mut()?;
          let r = c.pop_front_with(f);
@@ -288,6 +285,9 @@ impl QuickList {
    }
 
    pub fn pop_back_with<R>(&mut self, f: impl FnOnce(&str) -> R) -> Option<R> {
+      if self.is_empty() {
+         return None;
+      }
       let (r, empty) = {
          let c = self.chunks.back_mut()?;
          let r = c.pop_back_with(f);
@@ -539,6 +539,18 @@ mod tests {
          let r: Vec<&str> = q.range(s, n).collect();
          assert_eq!(r, want[s..s + n].to_vec());
       }
+   }
+
+   #[test]
+   fn retained_empty_chunk_can_be_popped_and_reused() {
+      let mut list = QuickList::new();
+      list.push_back("a");
+      assert_eq!(list.pop_front().as_deref(), Some("a"));
+      assert_eq!(list.pop_front(), None);
+      assert_eq!(list.pop_back(), None);
+      list.push_front("b");
+      assert_eq!(list.pop_back().as_deref(), Some("b"));
+      assert_eq!(list.pop_back(), None);
    }
 
    #[test]

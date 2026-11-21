@@ -24,8 +24,6 @@ const KIND_SET: u8 = 0;
 const KIND_DEL: u8 = 1;
 const KIND_FLUSH: u8 = 2;
 const FLUSH_BYTES: usize = 64 * 1024;
-/// Sequence numbers are allocated in per-writer windows.
-const SEQ_WINDOW: u64 = 64;
 /// Bit 31 of the record length marks CRC'd records; old (uncrc'd) files
 /// never set it, so both formats replay from the same directory.
 const LEN_CRC_FLAG: u32 = 0x8000_0000;
@@ -43,9 +41,6 @@ struct Writer {
    epoch: u64,
    file: Option<File>,
    buf: Vec<u8>,
-   /// Range of sequence numbers handed out by this writer.
-   seq_base: u64,
-   seq_next: u64,
 }
 
 pub struct Aof {
@@ -175,8 +170,18 @@ fn crc32_ieee(data: &[u8]) -> u32 {
 struct Record {
    seq: u64,
    kind: u8,
-   key: String,
-   value: Option<Vec<u8>>,
+   body: Vec<u8>,
+   key_end: usize,
+}
+
+impl Record {
+   fn key(&self) -> &str {
+      std::str::from_utf8(&self.body[13..self.key_end]).expect("validated AOF key")
+   }
+
+   fn value(&self) -> Option<&[u8]> {
+      (self.kind == KIND_SET).then(|| &self.body[self.key_end..])
+   }
 }
 
 fn read_record(r: &mut impl Read) -> io::Result<Option<Record>> {
@@ -194,8 +199,12 @@ fn read_record(r: &mut impl Read) -> io::Result<Option<Record>> {
       return Ok(None);
    }
    let mut body = vec![0u8; len];
-   if r.read_exact(&mut body).is_err() {
-      return Ok(None);
+   if let Err(error) = r.read_exact(&mut body) {
+      return if error.kind() == io::ErrorKind::UnexpectedEof {
+         Ok(None)
+      } else {
+         Err(error)
+      };
    }
    let payload_len = if has_crc { len - 4 } else { len };
    if has_crc {
@@ -210,26 +219,22 @@ fn read_record(r: &mut impl Read) -> io::Result<Option<Record>> {
          return Ok(None);
       }
    }
-   let body = &body[..payload_len];
+   body.truncate(payload_len);
    let seq = u64::from_le_bytes(body[0..8].try_into().unwrap());
    let kind = body[8];
    let klen = u32::from_le_bytes(body[9..13].try_into().unwrap()) as usize;
-   if 13 + klen > payload_len {
+   if klen > payload_len - 13 || !matches!(kind, KIND_SET | KIND_DEL | KIND_FLUSH) {
       return Ok(None);
    }
-   let Ok(key) = String::from_utf8(body[13..13 + klen].to_vec()) else {
+   let key_end = 13 + klen;
+   if std::str::from_utf8(&body[13..key_end]).is_err() {
       return Ok(None);
-   };
-   let value = match kind {
-      KIND_SET => Some(body[13 + klen..].to_vec()),
-      KIND_DEL | KIND_FLUSH => None,
-      _ => return Ok(None),
-   };
+   }
    Ok(Some(Record {
       seq,
       kind,
-      key,
-      value,
+      body,
+      key_end,
    }))
 }
 
@@ -310,14 +315,14 @@ pub fn replay(store: &Store, dir: &Path) -> io::Result<(u64, usize)> {
          applied += 1;
          return Ok(());
       }
-      match rec.value {
+      match rec.value() {
          Some(bytes) => {
-            if let Ok(v) = decode_single_value(&bytes) {
-               store.data.insert(rec.key, v);
+            if let Ok(v) = decode_single_value(bytes) {
+               store.data.insert_str(rec.key(), v);
             }
          }
          None => {
-            store.data.remove(&rec.key);
+            store.data.remove(rec.key());
          }
       }
       applied += 1;
@@ -370,27 +375,11 @@ impl Aof {
             epoch: 0,
             file: None,
             buf: Vec::with_capacity(FLUSH_BYTES),
-            seq_base: 0,
-            seq_next: 0,
          }));
          self.writers.lock().push(Arc::clone(&w));
          *l = Some(Arc::clone(&w));
          w
       })
-   }
-
-   /// Allocate the next sequence number, refilling this writer's window.
-   #[inline]
-   fn next_seq(w: &mut Writer, global: &AtomicU64) -> u64 {
-      if w.seq_next == w.seq_base {
-         let base = global.fetch_add(SEQ_WINDOW, Ordering::AcqRel);
-         w.seq_next = base;
-         w.seq_base = base + SEQ_WINDOW;
-         return base;
-      }
-      let seq = w.seq_next;
-      w.seq_next += 1;
-      seq
    }
 
    fn write_out(&self, w: &mut Writer) {
@@ -424,7 +413,15 @@ impl Aof {
       }
       w.buf.clear();
       if self.fsync == Fsync::Always {
-         let _ = f.sync_data();
+         self.sync_file(f);
+      }
+   }
+
+   fn sync_file(&self, file: &File) {
+      if let Err(error) = file.sync_data()
+         && !self.failed.swap(true, Ordering::Relaxed)
+      {
+         eprintln!("[aof] sync failed: {error}");
       }
    }
 
@@ -432,7 +429,7 @@ impl Aof {
       let encoded = read();
       let w = self.local();
       let mut w = w.lock();
-      let seq = Self::next_seq(&mut w, &self.seq);
+      let seq = self.seq.fetch_add(1, Ordering::AcqRel);
       encode(&mut w.buf, seq, key, encoded.as_deref());
       if w.buf.len() >= FLUSH_BYTES || self.fsync == Fsync::Always {
          self.write_out(&mut w);
@@ -449,7 +446,7 @@ impl Aof {
    pub fn record_encoded_bytes(&self, key: &[u8], encoded: Option<&[u8]>) {
       let w = self.local();
       let mut w = w.lock();
-      let seq = Self::next_seq(&mut w, &self.seq);
+      let seq = self.seq.fetch_add(1, Ordering::AcqRel);
       encode_bytes(&mut w.buf, seq, key, encoded);
       if w.buf.len() >= FLUSH_BYTES || self.fsync == Fsync::Always {
          self.write_out(&mut w);
@@ -459,7 +456,7 @@ impl Aof {
    pub fn record_flush(&self) {
       let w = self.local();
       let mut w = w.lock();
-      let seq = Self::next_seq(&mut w, &self.seq);
+      let seq = self.seq.fetch_add(1, Ordering::AcqRel);
       encode_kind(&mut w.buf, seq, KIND_FLUSH, b"", None);
       self.write_out(&mut w);
    }
@@ -490,7 +487,7 @@ impl Aof {
          let mut w = w.lock();
          self.write_out(&mut w);
          if let Some(f) = w.file.as_ref() {
-            let _ = f.sync_data();
+            self.sync_file(f);
          }
       }
    }
@@ -522,8 +519,8 @@ impl Aof {
                &mut carry,
                rec.seq,
                rec.kind,
-               rec.key.as_bytes(),
-               rec.value.as_deref(),
+               rec.key().as_bytes(),
+               rec.value(),
             );
          }
          Ok(())
@@ -555,6 +552,33 @@ mod tests {
    use super::*;
 
    #[test]
+   fn successive_writes_get_distinct_sequence_numbers() {
+      let aof = Aof {
+         dir: PathBuf::new(),
+         fsync: Fsync::No,
+         seq: AtomicU64::new(1),
+         epoch: AtomicU64::new(1),
+         next_id: AtomicUsize::new(0),
+         writers: Mutex::new(Vec::new()),
+         failed: AtomicBool::new(false),
+      };
+      std::thread::scope(|scope| {
+         scope
+            .spawn(|| {
+               aof.record_encoded("key", Some(b"a"));
+               aof.record_encoded("key", None);
+               let writer = aof.local();
+               let lock = writer.lock();
+               let mut input = &lock.buf[..];
+               assert_eq!(read_record(&mut input).unwrap().unwrap().seq, 1);
+               assert_eq!(read_record(&mut input).unwrap().unwrap().seq, 2);
+            })
+            .join()
+            .unwrap()
+      });
+   }
+
+   #[test]
    fn records_round_trip_and_torn_tail_is_ignored() {
       let mut buf = Vec::new();
       encode(&mut buf, 7, "k", Some(b"abc"));
@@ -563,12 +587,9 @@ mod tests {
       buf.truncate(buf.len() - 2);
       let mut r = io::Cursor::new(buf);
       let a = read_record(&mut r).unwrap().unwrap();
-      assert_eq!(
-         (a.seq, a.key.as_str(), a.value.as_deref()),
-         (7, "k", Some(&b"abc"[..]))
-      );
+      assert_eq!((a.seq, a.key(), a.value()), (7, "k", Some(&b"abc"[..])));
       let b = read_record(&mut r).unwrap().unwrap();
-      assert_eq!((b.seq, b.key.as_str(), b.value), (9, "gone", None));
+      assert_eq!((b.seq, b.key(), b.value()), (9, "gone", None));
       assert!(read_record(&mut r).unwrap().is_none());
    }
 

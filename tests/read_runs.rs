@@ -489,6 +489,22 @@ fn protected_get_batches_defer_expiry_cleanup_and_end_before_scripts() {
 }
 
 #[test]
+fn json_set_batch_emits_one_ordered_reply_per_command() {
+   let store = Arc::new(Store::with_config(2, usize::MAX));
+   let mut wire = command(&[b"JSON.SET", b"a", b".", b"1"]);
+   wire.extend(command(&[b"JSON.SET", b"b", b".", b"\xff"]));
+   wire.extend(command(&[b"JSON.SET", b"c", b".", b"2"]));
+   wire.extend(command(&[b"JSON.GET", b"a", b"."]));
+   wire.extend(command(&[b"JSON.GET", b"b", b"."]));
+   wire.extend(command(&[b"JSON.GET", b"c", b"."]));
+   check_pipeline(
+      store,
+      wire,
+      b"+OK\r\n-ERR invalid UTF-8 in request\r\n+OK\r\n$1\r\n1\r\n$-1\r\n$1\r\n2\r\n",
+   );
+}
+
+#[test]
 fn protected_json_batches_defer_expiry_cleanup_and_end_before_writes() {
    let store = Arc::new(Store::with_config(2, usize::MAX));
    store

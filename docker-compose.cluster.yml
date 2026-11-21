@@ -33,6 +33,7 @@ services:
       FYRODB_CLUSTER_CONFIG_FILE: "/config/fyrodb-nodes-1.conf"
       FYRODB_RDB_PATH: "/data/fyrodb.rdb"
       FYRODB_WORKERS: "4"
+      FYRODB_IO_URING: "${FYRODB_IO_URING:-false}"
     ports:
       - "8000:8000"
       - "18000:18000"
@@ -55,6 +56,7 @@ services:
       FYRODB_CLUSTER_CONFIG_FILE: "/config/fyrodb-nodes-2.conf"
       FYRODB_RDB_PATH: "/data/fyrodb.rdb"
       FYRODB_WORKERS: "4"
+      FYRODB_IO_URING: "${FYRODB_IO_URING:-false}"
     ports:
       - "8001:8000"
       - "18001:18000"
@@ -77,6 +79,7 @@ services:
       FYRODB_CLUSTER_CONFIG_FILE: "/config/fyrodb-nodes-3.conf"
       FYRODB_RDB_PATH: "/data/fyrodb.rdb"
       FYRODB_WORKERS: "4"
+      FYRODB_IO_URING: "${FYRODB_IO_URING:-false}"
     ports:
       - "8002:8000"
       - "18002:18000"

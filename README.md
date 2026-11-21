@@ -4,13 +4,16 @@ FyroDB is a high-performance database optimized for low latency and high concurr
 
 ## CI/CD Status
 
-PRs to `main` run the following required checks for changes to Rust code (including tests, benchmarks, and proofs), Cargo manifests and lockfiles, or workspace Cargo and toolchain configuration. Docs-only and Go-client-only PRs skip these jobs after a changed-file check. Mixed PRs with Rust changes run the full suite.
+PRs run intelligent CI/CD routing to ensure fast feedback and conserve runner resources:
 
-- **Test**: Workspace-wide integration and unit tests.
-- **Lint**: Clippy with strict warning enforcement.
-- **Verus**: Formal safety invariant verification.
-- **Benchmark client validation**: Verification of benchmark harness.
-- **E2E Integration**: Stress testing via Dockerized deployment.
+- **Initial PR Creation**: When a PR is opened, the entire test suite runs once (`Test`, `Lint`, `Verus`, `Benchmark client validation`, and `E2E Integration`).
+- **Subsequent Pushes**: When additional commits are pushed to an open PR, fast feedback checks run (`Test`, `Lint`, and `Verus`).
+- **Targeted Label Triggers**:
+  - `test-case`: Explicitly runs the workspace tests and protocol regressions.
+  - `e2e-testcase`: Explicitly runs the Docker E2E integration and stress test suite.
+  - `benchmark-validation`: Explicitly runs the Go benchmark client and matrix verification.
+  - PRs are automatically labeled by the PR Labeler based on modified files.
+- **Direct Pushes to Main/Dev**: Run the full validation suite.
 
 ## Benchmarks
 

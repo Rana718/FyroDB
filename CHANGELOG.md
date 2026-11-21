@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-21
+
+### Added
+- **Formal Slot Range Invariants**: SMT machine-checked proofs in Verus (`proofs/verus/slot_ranges.rs`) verifying boundaries and coverage across 16,384 cluster hash slots.
+- **Cluster E2E Integration Suite**: Comprehensive multi-node cluster failover test harness in Python (`cluster_e2e.py`) and cluster Go benchmarks (`bench/cluster.go`).
+- **Configurable `io_uring`**: Opt-in runtime `io_uring` batched socket sends via Docker Compose (`FYRODB_IO_URING=1`) with transparent fallback to `send(2)`.
+- **Intelligent CI/CD Routing & Labels**: Fast per-push checks (`test`, `lint`, `verus`), label-based targeted testing (`test-case`, `e2e-testcase`, `benchmark-validation`), and automated PR labeling.
+- **Automated Scoped Changeset Releases**: Tag release workflow reading version-scoped changelogs directly from `.changeset/<version>-changeset.md`.
+
+### Fixed
+- **Cluster Failover & Routing Stability**: Stabilized node state transitions, epoch increment coordination, and dynamic topology routing tables.
+- **AOF Sequence Refill Ordering**: Eliminated multi-writer sequence number assignment and refill races across concurrent worker threads.
+- **RDB Snapshot Corruption Defenses**: Hardened restore routines to validate RDB header magic, slot mappings, and CRC checksums before committing table state.
+- **CompactKey Binary Word Safety**: Hardened 64-bit unaligned word copies for arbitrary binary keys without allocations.
+
+### Optimized
+- **Quiescent Write Fence**: Enhanced write ticket barriers (`WriteFence`) to guarantee total keyspace quiescence during snapshot creation and slot migrations.
+- **QuickList Allocation Right-Sizing**: Tuned slotted chunk pre-allocation to eliminate heap allocations during queueing bursts.
+- **Sorted Set Vector Balancing**: Refined chunked vector balance in `ZSetData` and streamlined 64-bit member Bloom filter bit checking.
+
 ## [0.4.0] - 2026-11-19
 
 ### Fixed

@@ -72,7 +72,7 @@ func clientKey(prefix string, id int, scratch []byte) []byte {
 }
 
 func sharedClusterKey(name string) []byte {
-	if len(addrs) == 1 {
+	if len(addrs) < 2 {
 		return []byte(name)
 	}
 	key := append([]byte(nil), clusterHashTags()[0]...)
@@ -633,10 +633,10 @@ func runBenchQueue() {
 	recordResult("Producer/Consumer (50+50)", total, time.Since(start))
 }
 
-func buildJsonSetBatch(base, count int, out []byte) []byte {
+func buildJsonSetBatch(prefix []byte, base, count int, out []byte) []byte {
 	var kb [32]byte
 	for i := range count {
-		kn := appendLen(append(kb[:0], jsonKeyPfx...), base+i)
+		kn := appendLen(append(kb[:0], prefix...), base+i)
 		out = append(out, jsonSetCmdHdr...)
 		out = appendLen(out, len(kn))
 		out = append(out, crlfB...)
@@ -646,10 +646,10 @@ func buildJsonSetBatch(base, count int, out []byte) []byte {
 	return out
 }
 
-func buildJsonGetBatch(base, count int, out []byte) []byte {
+func buildJsonGetBatch(prefix []byte, base, count int, out []byte) []byte {
 	var kb [32]byte
 	for i := range count {
-		kn := appendLen(append(kb[:0], jsonKeyPfx...), base+i)
+		kn := appendLen(append(kb[:0], prefix...), base+i)
 		out = append(out, jsonGetCmdHdr...)
 		out = appendLen(out, len(kn))
 		out = append(out, crlfB...)
@@ -661,27 +661,14 @@ func buildJsonGetBatch(base, count int, out []byte) []byte {
 
 func runBenchJson() {
 	supported := false
-	for _, addr := range addrs {
-		conn, err := net.Dial("tcp", addr)
-		if err != nil {
-			continue
+	conn, err := net.Dial("tcp", addrs[nodeForKey([]byte("__probe"))])
+	if err == nil {
+		conn.SetDeadline(time.Now().Add(2 * time.Second))
+		if _, err := conn.Write([]byte("*4\r\n$8\r\nJSON.SET\r\n$7\r\n__probe\r\n$1\r\n.\r\n$4\r\nnull\r\n")); err == nil {
+			reply, err := bufio.NewReader(conn).ReadString('\n')
+			supported = err == nil && reply == "+OK\r\n"
 		}
-		conn.Write([]byte("*4\r\n$8\r\nJSON.SET\r\n$7\r\n__probe\r\n$1\r\n.\r\n$4\r\nnull\r\n"))
-		probe := make([]byte, 256)
-		conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-		n, _ := conn.Read(probe)
 		conn.Close()
-		if n > 0 && (probe[0] == '+' || probe[0] == ':') {
-			supported = true
-			break
-		}
-		if n > 0 && probe[0] == '-' {
-			reply := string(probe[:n])
-			if strings.Contains(reply, "MOVED") || strings.Contains(reply, "ASK") {
-				supported = true
-				break
-			}
-		}
 	}
 	if !supported {
 		fmt.Println("── JSON.SET/GET (documents)\n   (skipped — JSON module not loaded)")
@@ -692,6 +679,16 @@ func runBenchJson() {
 	defer closeAll(conns)
 	total := int64(CLIENTS * MIX_OPS_CLIENT)
 
+	prefixes := make([][]byte, len(addrs))
+	for i := range prefixes {
+		prefixes[i] = jsonKeyPfx
+	}
+	if len(addrs) > 1 {
+		for i, tag := range clusterHashTags() {
+			prefixes[i] = append(tag, jsonKeyPfx...)
+		}
+	}
+
 	var wg sync.WaitGroup
 
 	setStart := time.Now()
@@ -700,7 +697,7 @@ func runBenchJson() {
 			base := i * MIX_OPS_CLIENT
 			runAsyncPipeline(conns[i], MIX_OPS_CLIENT,
 				func(offset, count int, out []byte) []byte {
-					return buildJsonSetBatch(base+offset, count, out)
+					return buildJsonSetBatch(prefixes[i%len(addrs)], base+offset, count, out)
 				}, 5)
 		})
 	}
@@ -713,7 +710,7 @@ func runBenchJson() {
 			base := i * MIX_OPS_CLIENT
 			runAsyncPipeline(conns[i], MIX_OPS_CLIENT,
 				func(offset, count int, out []byte) []byte {
-					return buildJsonGetBatch(base+offset, count, out)
+					return buildJsonGetBatch(prefixes[i%len(addrs)], base+offset, count, out)
 				}, 34)
 		})
 	}

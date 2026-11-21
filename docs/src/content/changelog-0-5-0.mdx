@@ -1,0 +1,37 @@
+---
+title: Changelog v0.5.0
+description: Resilient cluster failover, multi-writer sequence persistence, opt-in io_uring, smart CI/CD routing, and automated release changesets.
+order: 89
+---
+
+# v0.5.0
+
+## Distributed Cluster & Replication
+
+- **Cluster Failover & Slot Migration**: Stabilized cluster failover state machine, epoch coordination, and dynamic topology routing tables.
+- **Formal Slot Invariants**: Proved slot range boundaries and coverage invariants in Verus (`proofs/verus/slot_ranges.rs`).
+- **Cluster E2E Suite**: Added automated multi-node cluster Python stress tests (`cluster_e2e.py`) and cluster Go benchmarks (`bench/cluster.go`).
+- **Replication Log Redesign**: Re-engineered mutation streaming log with 64-bit monotonic offsets, atomic snapshot handoffs, and lag tracking.
+
+## Persistence & Integrity
+
+- **AOF Sequence Refill Correctness**: Resolved multi-writer AOF window refill reordering, verified by `proofs/verus/aof_sequence.rs`.
+- **RDB Corruption Protection**: Hardened RDB load path to validate header magic, slot mappings, and CRC checksums before committing restore state.
+- **Write Fence Barrier**: Reinforced quiescent-state drain barriers during snapshot creation and slot migrations.
+
+## High-Performance I/O & Networking
+
+- **Opt-in `io_uring`**: Added runtime-configurable `io_uring` batched socket sending via Docker Compose (`FYRODB_IO_URING=1`) with zero-overhead fallback to `send(2)`.
+- **Fast-Path Ingress**: Streamlined edge-triggered connection socket reads and pre-allocated command buffers.
+
+## Data Structures & Memory
+
+- **QuickList Allocation Right-Sizing**: Optimized chunk pre-allocation to reduce heap allocations during heavy queueing bursts.
+- **ZSet Chunky Vector Refinement**: Balanced sorted set chunk vectors and upgraded 64-bit member Bloom filter checks.
+- **CompactKey Binary Safety**: Hardened unaligned 64-bit word reads for binary and inline keys.
+
+## CI/CD & Release Automation
+
+- **Intelligent CI Routing**: Configured PR events so full integration suites run on PR open, fast checks (`test`, `lint`, `verus`) run on every push, and heavy Docker E2E or benchmarks trigger via dedicated labels (`test-case`, `e2e-testcase`, `benchmark-validation`).
+- **Automated PR Labeler**: Integrated `actions/labeler@v5` to automatically label PRs based on modified files.
+- **Scoped Changeset Releases**: Integrated tag-based GitHub release automation reading versioned changelogs directly from `.changeset/<version>-changeset.md`.

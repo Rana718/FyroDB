@@ -1,0 +1,89 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+      - "*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  publish-release:
+    name: Publish Release Notes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Locate and Validate Changeset Notes
+        id: changeset
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          VERSION="${TAG#v}"
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+
+          echo "Resolving changeset for tag: $TAG (version: $VERSION)"
+
+          CANDIDATES=(
+            ".changeset/${VERSION}-changeset.md"
+            ".changeset/${VERSION}-charset.md"
+            ".changeset/${TAG}-changeset.md"
+            ".changeset/${TAG}-charset.md"
+            ".changeset/${VERSION}.md"
+            ".changeset/${TAG}.md"
+          )
+
+          MATCH=""
+          for candidate in "${CANDIDATES[@]}"; do
+            if [[ -f "$candidate" ]]; then
+              MATCH="$candidate"
+              break
+            fi
+          done
+
+          if [[ -n "$MATCH" ]]; then
+            echo "Found matching changeset file: $MATCH"
+            echo "CHANGESET_FILE=$MATCH" >> "$GITHUB_ENV"
+          else
+            echo "No matching file found in .changeset/, attempting extraction from CHANGELOG.md..."
+            if python3 -c "
+          import sys, re
+          version = sys.argv[1]
+          with open('CHANGELOG.md') as f:
+              content = f.read()
+          pattern = r'## \[' + re.escape(version) + r'\].*?(?=(## \[|\Z))'
+          match = re.search(pattern, content, re.DOTALL)
+          if match:
+              with open('.changeset_extracted.md', 'w') as out:
+                  out.write(match.group(0).strip() + '\n')
+              sys.exit(0)
+          sys.exit(1)
+          " "$VERSION"; then
+              echo "Extracted release notes from CHANGELOG.md"
+              echo "CHANGESET_FILE=.changeset_extracted.md" >> "$GITHUB_ENV"
+            else
+              echo "::error::No changeset file found in .changeset/ and no matching entry in CHANGELOG.md for version $VERSION."
+              echo "Please create .changeset/${VERSION}-changeset.md containing this version's changelog."
+              exit 1
+            fi
+          fi
+
+          if [[ "$TAG" =~ -(alpha|beta|rc|dev) ]]; then
+            echo "PRERELEASE=true" >> "$GITHUB_ENV"
+          else
+            echo "PRERELEASE=false" >> "$GITHUB_ENV"
+          fi
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "FyroDB ${{ env.TAG }}"
+          body_path: ${{ env.CHANGESET_FILE }}
+          draft: false
+          prerelease: ${{ env.PRERELEASE == 'true' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

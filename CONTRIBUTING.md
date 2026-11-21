@@ -225,6 +225,16 @@ Release profiles are configured with `lto = true`, `codegen-units = 1`, `panic =
 
 ---
 
+## Releases & Changesets
+
+FyroDB uses a scoped changeset system for automated GitHub Releases:
+
+1. **Write Changelog in `.changeset/`**: When preparing a release for version `X.Y.Z`, create a file named `.changeset/X.Y.Z-changeset.md` (e.g. `.changeset/0.4.0-changeset.md`).
+2. **Version-Scoped Notes Only**: Write only the notes and changes specific to that version in this file—do not include older release histories.
+3. **Automated Publishing**: When tag `vX.Y.Z` is pushed to GitHub, the Release workflow matches the tag against `.changeset/X.Y.Z-changeset.md` and automatically creates the GitHub Release with those exact notes.
+
+---
+
 ## Issue Reporting
 
 - **Bug Reports**: Please include minimum reproducible steps, Redis client used, OS, hardware, and expected vs actual behavior.

@@ -20,6 +20,10 @@ impl<'a> Conn<'a> {
    }
 
    pub fn do_read(&mut self) -> bool {
+      self.do_read_with::<false>()
+   }
+
+   pub(crate) fn do_read_with<const BATCH_SEND: bool>(&mut self) -> bool {
       #[cfg(feature = "bench-tools")]
       let raw_only = is_raw_arrival_only();
       #[cfg(not(feature = "bench-tools"))]
@@ -64,14 +68,7 @@ impl<'a> Conn<'a> {
       if !self.process_buffered_inner::<true>() {
          return false;
       }
-      #[cfg(not(feature = "io-uring"))]
-      {
-         self.do_write()
-      }
-      #[cfg(feature = "io-uring")]
-      {
-         true
-      }
+      BATCH_SEND || self.do_write()
    }
 
    /// Parse and execute commands in read buffer, pausing if parked and
@@ -154,7 +151,7 @@ impl<'a> Conn<'a> {
                      prefetched = self.parser.pos;
                      continue;
                   }
-                  if id == CmdId::JsonSet && dispatch_json_set_run(self, raw) {
+                  if id == CmdId::JsonSet && dispatch_json_set_run(self, raw, &pin) {
                      prefetched = self.parser.pos;
                      continue;
                   }
@@ -201,6 +198,22 @@ impl<'a> Conn<'a> {
                         QueueRunOutcome::Done => continue,
                         QueueRunOutcome::ConnError => return false,
                      }
+                  }
+               }
+               if self.store.cluster.enabled
+                  && self.authenticated
+                  && matches!(self.mode, ConnMode::Normal)
+                  && !is_null_store()
+               {
+                  if id == CmdId::Get && raw.len() == 2 {
+                     dispatch_cluster_strings::<false, STREAM_IO>(self, raw, &pin);
+                     prefetched = self.parser.pos;
+                     continue;
+                  }
+                  if id == CmdId::Set && raw.len() == 3 {
+                     dispatch_cluster_strings::<true, STREAM_IO>(self, raw, &pin);
+                     prefetched = self.parser.pos;
+                     continue;
                   }
                }
                dispatch_raw(self, raw);

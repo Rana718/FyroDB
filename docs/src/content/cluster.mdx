@@ -167,7 +167,7 @@ done
 | `FYRODB_ADVERTISE_ADDR`         | `FYRODB_BIND`        | Address used when there is no `nodes.conf`             |
 | `FYRODB_CLUSTER_CONFIG_FILE`    | `fyrodb-nodes.conf`  | Topology file, Redis `nodes.conf` format               |
 | `FYRODB_CLUSTER_HEARTBEAT_MS`   | `2000`               | Ping interval on the bus                               |
-| `FYRODB_CLUSTER_SUSPECT_MS`     | `6000`               | Silence before a peer is suspect; must exceed heartbeat |
+| `FYRODB_CLUSTER_SUSPECT_MS`     | `6000`               | Continuous peer outage before a failure vote, including at startup. Must exceed the heartbeat interval. |
 | `FYRODB_CLUSTER_FAILURE_QUORUM` | `2`                  | Reports needed to confirm a failure                    |
 | `FYRODB_CLUSTER_QUEUE_CAPACITY` | `1024`              | Bounded outbound frames per peer                       |
 | `FYRODB_CLUSTER_MAX_INBOUND`    | `1024`              | Max inbound bus connections                            |

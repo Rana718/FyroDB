@@ -207,7 +207,7 @@ impl FrameCodec {
 }
 
 /// Eight slicing-by-8 tables for IEEE 802.3 CRC32 calculation.
-const CRC32_TABLES: [[u32; 256]; 8] = build_crc32_tables();
+static CRC32_TABLES: [[u32; 256]; 8] = build_crc32_tables();
 
 const fn build_crc32_tables() -> [[u32; 256]; 8] {
    let mut tables = [[0u32; 256]; 8];

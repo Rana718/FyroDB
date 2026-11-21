@@ -72,15 +72,21 @@ func pgDrainReady(r *bufio.Reader) error {
 			return err
 		}
 		bodyLen := int(binary.BigEndian.Uint32(lenBuf[:])) - 4
-		body := make([]byte, bodyLen)
-		if _, err := io.ReadFull(r, body); err != nil {
+		if bodyLen < 0 {
+			return fmt.Errorf("invalid postgres frame length %d", bodyLen+4)
+		}
+		if tag == 'E' {
+			body := make([]byte, bodyLen)
+			if _, err := io.ReadFull(r, body); err != nil {
+				return err
+			}
+			return fmt.Errorf("postgres error: %s", body)
+		}
+		if _, err := r.Discard(bodyLen); err != nil {
 			return err
 		}
 		if tag == 'Z' {
 			return nil
-		}
-		if tag == 'E' {
-			return fmt.Errorf("postgres error: %s", body)
 		}
 	}
 }

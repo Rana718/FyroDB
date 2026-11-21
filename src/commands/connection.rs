@@ -248,7 +248,7 @@ pub fn cluster_cmd(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
    }
 
    if sub.eq_ignore_ascii_case("SLOTS") {
-      return write_cluster_slots(cluster, out);
+      return write_cluster_slots(&store.cluster_state_ref().topology_arc(), out);
    }
 
    if sub.eq_ignore_ascii_case("SHARDS") {
@@ -592,16 +592,14 @@ pub fn cluster_cmd(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
    )
 }
 
-fn write_cluster_slots(cluster: &crate::cluster::ClusterConfig, out: &mut Vec<u8>) {
-   let ranges: Vec<_> = cluster
-      .topology
+fn write_cluster_slots(topology: &crate::cluster::Topology, out: &mut Vec<u8>) {
+   let primaries = topology
       .nodes
       .iter()
-      .filter(|node| node.role == crate::cluster::NodeRole::Primary)
-      .flat_map(|node| node.slots.iter().map(move |range| (node, range)))
-      .collect();
-   resp::write_array_header(out, ranges.len());
-   for (node, range) in ranges {
+      .filter(|n| n.role == crate::cluster::NodeRole::Primary);
+   resp::write_array_header(out, primaries.clone().map(|n| n.slots.len()).sum());
+   for (node, range) in primaries.flat_map(|node| node.slots.iter().map(move |range| (node, range)))
+   {
       let (host, port) = split_advertised_address(&node.address);
       resp::write_array_header(out, 3);
       resp::write_integer(out, range.start.value() as i64);
@@ -614,35 +612,29 @@ fn write_cluster_slots(cluster: &crate::cluster::ClusterConfig, out: &mut Vec<u8
 }
 
 fn write_cluster_shards(store: &Store, out: &mut Vec<u8>) {
-   let topology = store.cluster_topology();
-   let primaries: Vec<_> = topology
+   let topology = store.cluster_state_ref().topology_arc();
+   let primaries = topology
       .nodes
       .iter()
-      .filter(|n| n.role == crate::cluster::NodeRole::Primary)
-      .collect();
-   resp::write_array_header(out, primaries.len());
+      .filter(|n| n.role == crate::cluster::NodeRole::Primary);
+   resp::write_array_header(out, primaries.clone().count());
    for node in primaries {
-      let replicas: Vec<_> = topology
+      let replicas = topology
          .nodes
          .iter()
-         .filter(|n| n.replica_of.as_deref() == Some(node.id.as_str()))
-         .collect();
-      let slots_flat: Vec<u16> = node
-         .slots
-         .iter()
-         .flat_map(|r| [r.start.value(), r.end.value()])
-         .collect();
-      resp::write_array_header(out, 2);
+         .filter(|n| n.replica_of.as_deref() == Some(node.id.as_str()));
+      resp::write_array_header(out, 4);
       resp::write_bulk(out, "slots");
-      resp::write_array_header(out, slots_flat.len());
-      for s in &slots_flat {
-         resp::write_integer(out, *s as i64);
+      resp::write_array_header(out, node.slots.len() * 2);
+      for r in &node.slots {
+         resp::write_integer(out, r.start.value() as i64);
+         resp::write_integer(out, r.end.value() as i64);
       }
       resp::write_bulk(out, "nodes");
-      resp::write_array_header(out, 1 + replicas.len());
+      resp::write_array_header(out, 1 + replicas.clone().count());
       for n in std::iter::once(node).chain(replicas) {
          let (host, port) = split_advertised_address(&n.address);
-         resp::write_array_header(out, 4);
+         resp::write_array_header(out, 8);
          resp::write_bulk(out, "id");
          resp::write_bulk(out, &n.id);
          resp::write_bulk(out, "endpoint");

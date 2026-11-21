@@ -487,17 +487,55 @@ pub(crate) unsafe fn drop_raw_table<V>(ptr: *mut u8) {
    }
 }
 
-pub(crate) unsafe fn drop_raw_table_and_entries<V>(ptr: *mut u8) {
-   let table = ptr.cast::<SlotTable<V>>();
-   for slot in unsafe { (*table).slots() } {
-      let p = slot.load(Ordering::Relaxed);
-      if !p.is_null() {
-         unsafe { drop_raw_entry::<V>(p.cast()) };
+struct ClearedTable<V>(SlotTable<V>);
+
+impl<V> Drop for ClearedTable<V> {
+   fn drop(&mut self) {
+      let slots = self.0.slots();
+      for (i, slot) in slots.iter().enumerate() {
+         if let Some(ahead) = slots.get(i + 16) {
+            let p = ahead.load(Ordering::Relaxed);
+            if !p.is_null() {
+               super::prefetch_line(p);
+            }
+         }
+         let p = slot.load(Ordering::Relaxed);
+         if !p.is_null() {
+            unsafe { drop_raw_entry::<V>(p.cast()) };
+         }
       }
    }
-   unsafe {
-      drop_raw_table::<V>(ptr);
+}
+
+pub(crate) unsafe fn reclaim_cleared<V: Send>(retired: Vec<*mut SlotTable<V>>, entries: usize) {
+   const ENTRIES_PER_WORKER: usize = 1 << 20;
+   let groups = (entries / ENTRIES_PER_WORKER)
+      .clamp(1, 4)
+      .min(retired.len());
+   let workers = if groups > 1 {
+      std::thread::available_parallelism().map_or(1, |n| n.get().min(groups))
+   } else {
+      1
+   };
+   let batch = retired.len().div_ceil(workers);
+   let mut tables = retired.into_iter().map(|ptr| {
+      // The epoch has elapsed. Move ownership out of the raw header before releasing it.
+      let table = unsafe { ptr.read() };
+      unsafe { rust_zmalloc::dealloc_raw(ptr.cast(), Layout::new::<SlotTable<V>>()) };
+      ClearedTable(table)
+   });
+   if workers == 1 {
+      tables.for_each(drop);
+      return;
    }
+   std::thread::scope(|scope| {
+      for _ in 1..workers {
+         let group: Vec<_> = tables.by_ref().take(batch).collect();
+         // Spawn failure drops the group's owned tables on this thread.
+         let _ = std::thread::Builder::new().spawn_scoped(scope, move || drop(group));
+      }
+      tables.for_each(drop);
+   });
 }
 
 pub(crate) fn alloc_table<V>(table: SlotTable<V>) -> *mut SlotTable<V> {
@@ -1902,6 +1940,24 @@ mod tests {
       }
    }
    use super::*;
+
+   #[test]
+   fn large_clear_reclaims_all_groups_including_an_uneven_tail() {
+      let value = std::sync::Arc::new(7);
+      let mut retired = Vec::new();
+      for n in 0..11 {
+         let table = SlotTable::new(8);
+         let entry = alloc_entry(
+            CompactKey::from_string(n.to_string()),
+            STATE_OCCUPIED,
+            value.clone(),
+         );
+         assert!(table.slots()[0].claim(entry, 0));
+         retired.push(alloc_table(table));
+      }
+      unsafe { reclaim_cleared(retired, 4 << 20) };
+      assert_eq!(std::sync::Arc::strong_count(&value), 1);
+   }
 
    /// Contended overwrites must not enter the insert gate: it is a shared
    /// cache line, and one hot key would serialize every writer on that shard.

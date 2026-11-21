@@ -632,10 +632,10 @@ pub fn start_health_monitor(
                .iter()
                .filter(|node| node.id != config.local_id)
             {
-               let is_suspect = manager
-                  .health(&node.id)
-                  .is_none_or(|health| health.state == super::health::PeerState::Disconnected);
-               if is_suspect {
+               let Some(health) = manager.health(&node.id) else {
+                  continue;
+               };
+               if health.unavailable_for(Instant::now(), config.suspect_timeout) {
                   suspect += 1;
                   let due = reported
                      .get(&node.id)
@@ -695,11 +695,10 @@ pub fn start_health_monitor(
                      }
                      reported.insert(node.id.clone(), Instant::now());
                   }
-               } else if manager
-                  .health(&node.id)
-                  .is_some_and(|health| health.state == super::health::PeerState::Healthy)
-               {
-                  healthy += 1;
+               } else {
+                  if health.state == super::health::PeerState::Healthy {
+                     healthy += 1;
+                  }
                   reported.remove(&node.id);
                }
             }

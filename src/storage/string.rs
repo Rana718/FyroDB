@@ -672,7 +672,18 @@ impl Store {
       entry_hint: *const (),
       out: &mut Vec<u8>,
    ) -> bool {
-      let _guard = customhash::pin();
+      self.get_to_buf_auto_pinned(key, hash_hint, entry_hint, out, &customhash::pin())
+   }
+
+   #[inline]
+   pub(crate) fn get_to_buf_auto_pinned(
+      &self,
+      key: &str,
+      hash_hint: Option<u64>,
+      entry_hint: *const (),
+      out: &mut Vec<u8>,
+      _pin: &customhash::Guard,
+   ) -> bool {
       if !entry_hint.is_null() {
          let hash = hash_hint.unwrap_or_else(|| self.data.locate_key(key).0);
          unsafe {
