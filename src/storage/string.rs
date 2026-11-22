@@ -271,15 +271,18 @@ impl Store {
             return None;
          }
       }
-      self.data.get_locked(key, |val| {
-         if val.is_expired() {
-            None
-         } else if let crate::storage::value::FyroDB::String(s) = &val.value {
-            Some(s.clone())
-         } else {
-            None
-         }
-      }).flatten()
+      self
+         .data
+         .get_locked(key, |val| {
+            if val.is_expired() {
+               None
+            } else if let crate::storage::value::FyroDB::String(s) = &val.value {
+               Some(s.clone())
+            } else {
+               None
+            }
+         })
+         .flatten()
    }
 
    /// Append one RESP GET reply per key, preserving key order and existing output.

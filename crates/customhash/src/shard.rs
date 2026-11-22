@@ -489,7 +489,8 @@ impl<V> TaggedSlot<V> {
             };
             let e = unsafe { &*p };
             let state = e.state.load(Ordering::Relaxed);
-            if (state & (0xFFFF_FFFF_0000_0000 | STATE_OCCUPIED)) == (expected_hash | STATE_OCCUPIED)
+            if (state & (0xFFFF_FFFF_0000_0000 | STATE_OCCUPIED))
+               == (expected_hash | STATE_OCCUPIED)
                && e.key.eq_str(key)
             {
                return p;
@@ -524,7 +525,8 @@ impl<V> TaggedSlot<V> {
             };
             let e = unsafe { &*p };
             let state = e.state.load(Ordering::Relaxed);
-            if (state & (0xFFFF_FFFF_0000_0000 | STATE_OCCUPIED)) == (expected_hash | STATE_OCCUPIED)
+            if (state & (0xFFFF_FFFF_0000_0000 | STATE_OCCUPIED))
+               == (expected_hash | STATE_OCCUPIED)
                && e.key.eq_bytes(key)
             {
                return p;

@@ -58,6 +58,7 @@ jobs:
         run: |
           "$HOME/tools/verus/z3" --version
           echo "VERUS_Z3_PATH=$HOME/tools/verus/z3" >> "$GITHUB_ENV"
+          rustup install 1.99.1-x86_64-unknown-linux-gnu
 
       - name: Run Verus Safety Invariants Test
         run: cargo test --test verus_safety_invariants -- --nocapture
