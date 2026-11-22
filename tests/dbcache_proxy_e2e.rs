@@ -30,7 +30,7 @@ struct Stats {
    context_probes: AtomicUsize,
    discards: AtomicUsize,
    password_ok: AtomicBool,
-   last_set: std::sync::Mutex<String>,
+   last_set: parking_lot::Mutex<String>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -164,7 +164,7 @@ fn serve_conn(stream: TcpStream, stats: Arc<Stats>, auth: Auth) -> io::Result<()
             let sql = cstring(&body);
             let lower = sql.trim_start().to_ascii_lowercase();
             if lower.starts_with("set application_name") {
-               *stats.last_set.lock().unwrap() = sql.clone();
+               *stats.last_set.lock() = sql.clone();
             }
             if lower.starts_with("select current_setting('search_path'") {
                stats.context_probes.fetch_add(1, Ordering::SeqCst);
@@ -1282,7 +1282,7 @@ fn proxy_terminates_scram_and_reuses_pooled_upstream() {
    // DISCARD ALL clears the startup setting, so the checkout re-applies the
    // new client's application_name on the reused session.
    assert_eq!(
-      stats.last_set.lock().unwrap().as_str(),
+      stats.last_set.lock().as_str(),
       "SET application_name = E'second\\'s app'"
    );
    // The reused session is back in its startup state, whose context the

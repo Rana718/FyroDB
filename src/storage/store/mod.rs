@@ -1,7 +1,7 @@
 use super::value::StoreValue;
+use arc_swap::ArcSwapOption;
 use crossbeam_utils::CachePadded;
 use customhash::CustomMap;
-use parking_lot::Mutex;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -44,9 +44,9 @@ pub struct Store {
    pub cluster: Box<crate::cluster::ClusterConfig>,
    pub(crate) cluster_state: crate::cluster::ClusterState,
    cluster_write_fence: WriteFence,
-   replica_meta_path: Mutex<Option<String>>,
-   replica_identity: Mutex<Option<[u8; 16]>>,
-   cluster_meta_path: Mutex<Option<String>>,
+   replica_meta_path: ArcSwapOption<String>,
+   replica_identity: ArcSwapOption<[u8; 16]>,
+   cluster_meta_path: ArcSwapOption<String>,
    metrics: Box<ClusterMetrics>,
    dbcache_manager: OnceLock<std::sync::Arc<fyro_dbcache::DbCacheManager>>,
    pub(crate) script_cache: parking_lot::RwLock<foldhash::HashMap<Arc<str>, Arc<str>>>,
@@ -110,9 +110,9 @@ impl Store {
          connected_clients: AtomicUsize::new(0),
          ttl: TtlCounters::new(),
          replica_applied_offset: AtomicU64::new(0),
-         replica_meta_path: Mutex::new(None),
-         replica_identity: Mutex::new(None),
-         cluster_meta_path: Mutex::new(None),
+         replica_meta_path: ArcSwapOption::const_empty(),
+         replica_identity: ArcSwapOption::const_empty(),
+         cluster_meta_path: ArcSwapOption::const_empty(),
          cluster_state: crate::cluster::ClusterState::with_topology(
             failure_quorum,
             std::time::Duration::from_secs(30),

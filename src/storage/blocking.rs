@@ -131,13 +131,13 @@ impl BlockRegistry {
 #[cfg(test)]
 mod tests {
    use super::*;
-   use std::sync::Mutex as StdMutex;
+   use parking_lot::Mutex;
 
    #[derive(Default)]
-   struct Rec(StdMutex<Vec<(usize, u64)>>);
+   struct Rec(Mutex<Vec<(usize, u64)>>);
    impl Wake for Rec {
       fn wake_retry(&self, token: usize, uid: u64) {
-         self.0.lock().unwrap().push((token, uid));
+         self.0.lock().push((token, uid));
       }
    }
 
@@ -156,10 +156,10 @@ mod tests {
       assert_eq!(reg.blocked_clients(), 1);
       reg.signal("b");
       reg.signal("zzz");
-      assert_eq!(*rec.0.lock().unwrap(), vec![(7, 42)]);
+      assert_eq!(*rec.0.lock(), vec![(7, 42)]);
       reg.unregister(&keys, 42);
       reg.signal("a");
-      assert_eq!(rec.0.lock().unwrap().len(), 1);
+      assert_eq!(rec.0.lock().len(), 1);
    }
 
    #[test]
@@ -182,7 +182,7 @@ mod tests {
       reg.unregister(&keys, 2);
       assert_eq!(reg.queued.load(Ordering::Relaxed), 0);
       reg.signal("a");
-      assert!(rec.0.lock().unwrap().is_empty());
+      assert!(rec.0.lock().is_empty());
    }
 
    /// A push that lands while a waiter registers is never lost: either the
@@ -209,7 +209,7 @@ mod tests {
             reg.register(&keys, &waiter);
             item.load(Ordering::Acquire)
          });
-         let woken = !rec.0.lock().unwrap().is_empty();
+         let woken = !rec.0.lock().is_empty();
          assert!(
             served || woken,
             "push between first attempt and registration was lost"

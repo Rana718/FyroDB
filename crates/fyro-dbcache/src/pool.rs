@@ -1,6 +1,8 @@
 use crate::query::compute_fingerprint;
 use crate::upstream::UpstreamConnection;
+use foldhash::fast::FixedState;
 use parking_lot::Mutex;
+use std::hash::BuildHasher;
 use std::time::{Duration, Instant};
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
@@ -74,17 +76,24 @@ struct IdleConnection {
    required_password: bool,
 }
 
+const IDLE_SHARDS: usize = 16;
+
+#[inline(always)]
+fn pool_key_shard(key: &PoolKey) -> usize {
+   FixedState::default().hash_one(key) as usize % IDLE_SHARDS
+}
+
 // Keeps authenticated upstream sessions alive across client connections.
 pub struct UpstreamPool {
    limits: PoolLimits,
-   idle: Mutex<Vec<IdleConnection>>,
+   idle: [Mutex<Vec<IdleConnection>>; IDLE_SHARDS],
 }
 
 impl UpstreamPool {
    pub fn new(limits: PoolLimits) -> Self {
       Self {
          limits,
-         idle: Mutex::new(Vec::new()),
+         idle: std::array::from_fn(|_| Mutex::new(Vec::new())),
       }
    }
 
@@ -96,17 +105,23 @@ impl UpstreamPool {
       require_passwordless: bool,
       application_name: Option<&str>,
    ) -> Option<UpstreamConnection> {
+      let preferred = pool_key_shard(key);
       loop {
          let now = Instant::now();
-         let candidate = {
-            let mut idle = self.idle.lock();
-            let index = idle.iter().rposition(|slot| {
+         let mut candidate = None;
+         for offset in 0..IDLE_SHARDS {
+            let shard_idx = (preferred + offset) % IDLE_SHARDS;
+            let mut idle = self.idle[shard_idx].lock();
+            if let Some(index) = idle.iter().rposition(|slot| {
                &slot.key == key
                   && now.duration_since(slot.idle_since) <= self.limits.idle_timeout
                   && (!require_passwordless || !slot.required_password)
-            })?;
-            idle.swap_remove(index)
-         };
+            }) {
+               candidate = Some(idle.swap_remove(index));
+               break;
+            }
+         }
+         let candidate = candidate?;
          let idle_since = candidate.idle_since;
          let mut connection = candidate.connection;
          if connection.finish_reset().is_err() {
@@ -132,9 +147,11 @@ impl UpstreamPool {
       if self.limits.max_idle == 0 {
          return;
       }
+      let shard_idx = pool_key_shard(&key);
       let required_password = connection.required_password();
-      let mut idle = self.idle.lock();
-      if idle.len() >= self.limits.max_idle {
+      let mut idle = self.idle[shard_idx].lock();
+      let max_per_shard = (self.limits.max_idle / IDLE_SHARDS).max(2);
+      if idle.len() >= max_per_shard {
          return;
       }
       idle.push(IdleConnection {
@@ -146,14 +163,15 @@ impl UpstreamPool {
    }
 
    pub fn prune(&self) {
-      self
-         .idle
-         .lock()
-         .retain(|slot| slot.idle_since.elapsed() <= self.limits.idle_timeout);
+      for shard in &self.idle {
+         shard
+            .lock()
+            .retain(|slot| slot.idle_since.elapsed() <= self.limits.idle_timeout);
+      }
    }
 
    pub fn idle_count(&self) -> usize {
-      self.idle.lock().len()
+      self.idle.iter().map(|shard| shard.lock().len()).sum()
    }
 }
 

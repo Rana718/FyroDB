@@ -1339,8 +1339,8 @@ fn make_one_row_result() -> DbResultSet {
 // invalidation exactly between the read and the in-memory promotion.
 struct RacingStorage {
    inner: MemoryStorage,
-   after_read: std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>,
-   on_del: std::sync::Mutex<Option<Box<dyn Fn() + Send>>>,
+   after_read: parking_lot::Mutex<Option<Box<dyn FnOnce() + Send>>>,
+   on_del: parking_lot::Mutex<Option<Box<dyn Fn() + Send>>>,
 }
 
 impl DbCacheStorage for RacingStorage {
@@ -1349,7 +1349,7 @@ impl DbCacheStorage for RacingStorage {
    }
    fn get_with_expiry(&self, key: &str) -> Option<(String, u64)> {
       let value = self.inner.get_with_expiry(key);
-      if let Some(hook) = self.after_read.lock().unwrap().take() {
+      if let Some(hook) = self.after_read.lock().take() {
          hook();
       }
       value
@@ -1358,7 +1358,7 @@ impl DbCacheStorage for RacingStorage {
       self.inner.set(key, value, ttl_ms)
    }
    fn del(&self, key: &str) -> bool {
-      if let Some(hook) = self.on_del.lock().unwrap().as_ref() {
+      if let Some(hook) = self.on_del.lock().as_ref() {
          hook();
       }
       self.inner.del(key)
@@ -1388,8 +1388,8 @@ fn one_row(text: &str) -> DbResultSet {
 fn test_stored_result_invalidated_mid_promotion_is_not_resurrected() {
    let storage = Arc::new(RacingStorage {
       inner: MemoryStorage::default(),
-      after_read: std::sync::Mutex::new(None),
-      on_del: std::sync::Mutex::new(None),
+      after_read: parking_lot::Mutex::new(None),
+      on_del: parking_lot::Mutex::new(None),
    });
    let parsed = parse_sql("SELECT name FROM users WHERE id = 1");
    let tables = vec!["users".to_string()];
@@ -1408,7 +1408,7 @@ fn test_stored_result_invalidated_mid_promotion_is_not_resurrected() {
 
    // A write to users is invalidated right after the stored row was read.
    let writer = Arc::clone(&manager);
-   *storage.after_read.lock().unwrap() = Some(Box::new(move || {
+   *storage.after_read.lock() = Some(Box::new(move || {
       writer.invalidate_tables(&["users".to_string()]);
    }));
    let served = manager.load_stored("db:", &parsed.tables, &tables, parsed.fingerprint);
@@ -1549,8 +1549,8 @@ fn test_a_stuck_bus_peer_cannot_stall_other_processes() {
 fn test_invalidation_retires_connection_copies_before_deleting() {
    let storage = Arc::new(RacingStorage {
       inner: MemoryStorage::default(),
-      after_read: std::sync::Mutex::new(None),
-      on_del: std::sync::Mutex::new(None),
+      after_read: parking_lot::Mutex::new(None),
+      on_del: parking_lot::Mutex::new(None),
    });
    let manager = Arc::new(DbCacheManager::new(storage.clone()));
    let tables = vec!["users".to_string()];
@@ -1563,7 +1563,7 @@ fn test_invalidation_retires_connection_copies_before_deleting() {
    let observer = Arc::clone(&manager);
    let stale_during_delete = Arc::new(std::sync::atomic::AtomicBool::new(false));
    let flag = Arc::clone(&stale_during_delete);
-   *storage.on_del.lock().unwrap() = Some(Box::new(move || {
+   *storage.on_del.lock() = Some(Box::new(move || {
       if observer.generation() == seen {
          flag.store(true, std::sync::atomic::Ordering::SeqCst);
       }

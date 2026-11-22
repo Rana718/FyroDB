@@ -15,8 +15,8 @@ use std::time::{Duration, Instant};
 static GLOBAL: Zmalloc = Zmalloc;
 
 #[cfg(feature = "profiling")]
-static PROFILER: std::sync::Mutex<Option<pprof::ProfilerGuard<'static>>> =
-   std::sync::Mutex::new(None);
+static PROFILER: parking_lot::Mutex<Option<pprof::ProfilerGuard<'static>>> =
+   parking_lot::Mutex::new(None);
 
 #[cfg(feature = "profiling")]
 fn start_profiler() {
@@ -25,14 +25,14 @@ fn start_profiler() {
          .frequency(997)
          .blocklist(&["libc", "libgcc", "pthread", "vdso"])
          .build();
-      *PROFILER.lock().unwrap() = guard.ok();
+      *PROFILER.lock() = guard.ok();
    }
 }
 
 #[cfg(feature = "profiling")]
 fn write_profile() {
    use std::io::Write;
-   let Some(guard) = PROFILER.lock().unwrap().take() else {
+   let Some(guard) = PROFILER.lock().take() else {
       return;
    };
    let Ok(path) = env::var("FYRODB_PPROF") else {

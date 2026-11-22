@@ -106,7 +106,7 @@ pub fn with_pin<R>(f: impl FnOnce(&()) -> R) -> R {
 }
 
 #[cfg(test)]
-pub(crate) static TEST_SERIALIZE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+pub(crate) static TEST_SERIALIZE: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 
 #[cfg(test)]
 mod tests {
@@ -145,7 +145,7 @@ mod tests {
 
    #[test]
    fn garbage_from_exited_threads_is_still_reclaimed() {
-      let _serial = TEST_SERIALIZE.lock().unwrap_or_else(|e| e.into_inner());
+      let _serial = TEST_SERIALIZE.lock();
       let before = DROPPED.load(Ordering::Acquire);
       for _ in 0..2 {
          retire_on_new_thread(16);
@@ -155,7 +155,7 @@ mod tests {
 
    #[test]
    fn deferred_values_are_reclaimed_across_thread_churn() {
-      let _serial = TEST_SERIALIZE.lock().unwrap_or_else(|e| e.into_inner());
+      let _serial = TEST_SERIALIZE.lock();
       let before = DROPPED.load(Ordering::Acquire);
       for _ in 0..64 {
          retire_on_new_thread(4);
@@ -175,7 +175,7 @@ mod tests {
 
    #[test]
    fn reclamation_callbacks_can_pin_and_retire_more_objects() {
-      let _serial = TEST_SERIALIZE.lock().unwrap_or_else(|e| e.into_inner());
+      let _serial = TEST_SERIALIZE.lock();
       let before = CHAIN_DROPPED.load(Ordering::Acquire);
       let ptr = Box::into_raw(Box::new(31u64)).cast();
       unsafe { super::retire_raw(ptr, reentrant_drop) };
@@ -193,9 +193,7 @@ mod panic_regression {
 
    #[test]
    fn a_panicking_callback_releases_its_pin_before_later_collection() {
-      let _serial = super::TEST_SERIALIZE
-         .lock()
-         .unwrap_or_else(|e| e.into_inner());
+      let _serial = super::TEST_SERIALIZE.lock();
       let before = DROPPED.load(Ordering::Acquire);
       std::thread::spawn(move || {
          let result = std::panic::catch_unwind(|| super::with_pin(|_| panic!("callback failed")));

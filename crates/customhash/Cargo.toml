@@ -8,6 +8,7 @@ name = "customhash"
 path = "src/lib.rs"
 
 [dependencies]
+arc-swap = "1.9"
 crossbeam-epoch = "0.9"
 crossbeam-utils = "0.8"
 foldhash = "0.2"

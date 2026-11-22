@@ -1768,7 +1768,7 @@ mod tests {
 
    #[test]
    fn snapshot_is_point_in_time_under_concurrent_writes() {
-      use std::sync::Mutex;
+      use parking_lot::Mutex;
       for round in 0..3 {
          let map = Arc::new(CustomMap::<i64>::with_capacity(16, 1 << 20));
          for i in 0..20_000i64 {
@@ -1777,7 +1777,7 @@ mod tests {
          let side: Arc<Mutex<Vec<(String, i64)>>> = Arc::new(Mutex::new(Vec::new()));
          let s2 = Arc::clone(&side);
          assert!(map.begin_snapshot(Arc::new(move |k: &str, v: &i64| {
-            s2.lock().unwrap().push((k.to_string(), *v));
+            s2.lock().push((k.to_string(), *v));
          })));
          assert!(!map.begin_snapshot(Arc::new(|_: &str, _: &i64| {})));
          let writer = {
@@ -1800,7 +1800,7 @@ mod tests {
          }
          writer.join().unwrap();
          map.end_snapshot();
-         saved.extend(side.lock().unwrap().drain(..));
+         saved.extend(side.lock().drain(..));
          saved.sort();
          let mut want: Vec<(String, i64)> = (0..20_000i64).map(|i| (format!("k{i}"), i)).collect();
          want.sort();
@@ -1909,9 +1909,7 @@ mod tests {
 
    #[test]
    fn concurrent_clear_read_write_is_safe() {
-      let _serialize = crate::ebr::TEST_SERIALIZE
-         .lock()
-         .unwrap_or_else(|e| e.into_inner());
+      let _serialize = crate::ebr::TEST_SERIALIZE.lock();
       let map = Arc::new(CustomMap::with_capacity(8, 100_000));
       std::thread::scope(|scope| {
          for worker in 0..4 {
@@ -1965,9 +1963,7 @@ mod tests {
 
    #[test]
    fn cleared_tables_release_every_value_after_the_last_reader_leaves() {
-      let _serial = crate::ebr::TEST_SERIALIZE
-         .lock()
-         .unwrap_or_else(|e| e.into_inner());
+      let _serial = crate::ebr::TEST_SERIALIZE.lock();
       let map = CustomMap::with_capacity(8, 512);
       let mut retired = Vec::new();
       for n in 0..512 {
