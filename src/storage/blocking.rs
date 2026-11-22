@@ -95,10 +95,10 @@ impl BlockRegistry {
    /// takes the shard lock (which orders it after the waiter's insert), or the
    /// waiter's re-attempt after `register` sees the pushed data.
    pub(super) fn signal_many(&self, key: &str, count: usize) {
-      fence(Ordering::SeqCst);
       if self.queued.load(Ordering::Relaxed) == 0 {
          return;
       }
+      fence(Ordering::SeqCst);
       let waiters: smallvec::SmallVec<[Waiter; 1]> = {
          let mut shard = self.keys[key_shard(key)].lock();
          let Some(queue) = shard.get_mut(key) else {

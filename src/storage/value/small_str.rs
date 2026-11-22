@@ -555,10 +555,40 @@ impl SmallStr {
             self.len = Tag::inline(min_len);
             return;
          }
-         let mut owned = Vec::with_capacity(min_len);
+         if self.len == Tag::Heap {
+            let cap = self.heap_capacity();
+            if min_len <= cap {
+               let current = self.len();
+               let ptr = unsafe { std::ptr::read_unaligned(self.data.as_ptr().cast::<*mut u8>()) };
+               unsafe {
+                  std::ptr::write_bytes(ptr.add(current), 0, min_len - current);
+               }
+               Self::store_heap_len(&mut self.data, min_len);
+               self.data[16] = (cap - min_len) as u8;
+               return;
+            }
+         }
+         let reserve_extra = 255.min(min_len);
+         let alloc_cap = min_len + reserve_extra;
+         let mut owned = Vec::with_capacity(alloc_cap);
          owned.extend_from_slice(self.as_bytes());
-         owned.resize(min_len, 0);
-         *self = Self::from_bytes(owned);
+         owned.resize(alloc_cap, 0);
+         let ptr = Box::into_raw(owned.into_boxed_slice()) as *mut u8;
+         let mut data = [0u8; SMALL_STR_CAP];
+         data[..8].copy_from_slice(&(ptr as usize).to_ne_bytes());
+         Self::store_heap_len(&mut data, min_len);
+         data[16] = reserve_extra as u8;
+         if self.len == Tag::Heap {
+            let old_ptr = unsafe { std::ptr::read_unaligned(self.data.as_ptr().cast::<*mut u8>()) };
+            let old_cap = self.heap_capacity();
+            unsafe {
+               drop(Box::from_raw(std::ptr::slice_from_raw_parts_mut(
+                  old_ptr, old_cap,
+               )));
+            }
+         }
+         self.data = data;
+         self.len = Tag::Heap;
       }
    }
 }

@@ -182,12 +182,12 @@ impl Store {
    pub fn get(&self, key: &str) -> Option<String> {
       let (h, idx) = self.data.locate_key(key);
       let _guard = customhash::pin();
-      let p = self.data.probe_entry_matching_str(h, idx, key);
+      let p = self.data.probe_slot_entry(h, idx);
       if !p.is_null() {
          let e = unsafe { &*p };
          let expected = ((h as u32 as u64) << 32) | customhash::STATE_OCCUPIED;
          let state1 = e.state.load(std::sync::atomic::Ordering::Acquire);
-         if (state1 & customhash::STATE_MATCH_MASK) == expected {
+         if (state1 & customhash::STATE_MATCH_MASK) == expected && e.key.eq_str(key) {
             let val = unsafe { (*e.value.get()).assume_init_ref() };
             if (val.expires_ms == 0 || !val.is_expired())
                && let crate::storage::value::FyroDB::String(s) = &val.value
@@ -202,6 +202,7 @@ impl Store {
             }
          }
          if state1 & (0xFFFF_FFFF_0000_0000 | customhash::STATE_OCCUPIED) == expected
+            && e.key.eq_str(key)
             && let Some(read) = e.read()
          {
             if read.is_expired() {
@@ -236,12 +237,12 @@ impl Store {
    pub fn get_small_str(&self, key: &str) -> Option<SmallStr> {
       let (h, idx) = self.data.locate_key(key);
       let _guard = customhash::pin();
-      let p = self.data.probe_entry_matching_str(h, idx, key);
+      let p = self.data.probe_slot_entry(h, idx);
       if !p.is_null() {
          let e = unsafe { &*p };
          let expected = ((h as u32 as u64) << 32) | customhash::STATE_OCCUPIED;
          let state1 = e.state.load(std::sync::atomic::Ordering::Acquire);
-         if (state1 & customhash::STATE_MATCH_MASK) == expected {
+         if (state1 & customhash::STATE_MATCH_MASK) == expected && e.key.eq_str(key) {
             let val = unsafe { (*e.value.get()).assume_init_ref() };
             if (val.expires_ms == 0 || !val.is_expired())
                && let crate::storage::value::FyroDB::String(s) = &val.value
@@ -256,6 +257,7 @@ impl Store {
             }
          }
          if state1 & (0xFFFF_FFFF_0000_0000 | customhash::STATE_OCCUPIED) == expected
+            && e.key.eq_str(key)
             && let Some(read) = e.read()
          {
             if read.is_expired() {
@@ -350,7 +352,7 @@ impl Store {
          Some(h) => (h, self.data.shard_of(h)),
          None => self.data.locate_key(key),
       };
-      let p = self.data.probe_entry_matching_str(h, idx, key);
+      let p = self.data.probe_slot_entry(h, idx);
       unsafe { self.get_to_buf_fast_entry_bytes(key.as_bytes(), h, p, out) }
    }
 
@@ -361,7 +363,7 @@ impl Store {
          Some(h) => (h, self.data.shard_of(h)),
          None => self.data.locate_bytes(key),
       };
-      let p = self.data.probe_entry_matching_bytes(h, idx, key);
+      let p = self.data.probe_slot_entry(h, idx);
       unsafe { self.get_to_buf_fast_entry_bytes(key, h, p, out) }
    }
 
