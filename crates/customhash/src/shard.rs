@@ -463,6 +463,76 @@ impl<V> TaggedSlot<V> {
       }
       ptr::null_mut()
    }
+
+   #[inline(always)]
+   pub(crate) unsafe fn probe_entry_matching_str(
+      slots: *const TaggedSlot<V>,
+      mask: usize,
+      hash: u64,
+      key: &str,
+   ) -> *mut Entry<V> {
+      let expected_hi = (hash_tag(hash) | (1 << TAG_BITS)) as u16;
+      let expected_hash = (hash as u32 as u64) << STATE_HASH_SHIFT;
+      let base_idx = (hash as usize) & mask;
+      for offset in 0..16 {
+         let slot = unsafe { &*slots.add((base_idx + offset) & mask) };
+         let word = slot.0.load(Ordering::Relaxed) as usize;
+         if word == 0 {
+            return ptr::null_mut();
+         }
+         if (word >> TAG_SHIFT) as u16 == expected_hi || (word & TAG_FLAG) == 0 {
+            std::sync::atomic::fence(Ordering::Acquire);
+            let p = if (word & TAG_FLAG) != 0 {
+               (word & PTR_MASK) as *mut Entry<V>
+            } else {
+               word as *mut Entry<V>
+            };
+            let e = unsafe { &*p };
+            let state = e.state.load(Ordering::Relaxed);
+            if (state & (0xFFFF_FFFF_0000_0000 | STATE_OCCUPIED)) == (expected_hash | STATE_OCCUPIED)
+               && e.key.eq_str(key)
+            {
+               return p;
+            }
+         }
+      }
+      ptr::null_mut()
+   }
+
+   #[inline(always)]
+   pub(crate) unsafe fn probe_entry_matching_bytes(
+      slots: *const TaggedSlot<V>,
+      mask: usize,
+      hash: u64,
+      key: &[u8],
+   ) -> *mut Entry<V> {
+      let expected_hi = (hash_tag(hash) | (1 << TAG_BITS)) as u16;
+      let expected_hash = (hash as u32 as u64) << STATE_HASH_SHIFT;
+      let base_idx = (hash as usize) & mask;
+      for offset in 0..16 {
+         let slot = unsafe { &*slots.add((base_idx + offset) & mask) };
+         let word = slot.0.load(Ordering::Relaxed) as usize;
+         if word == 0 {
+            return ptr::null_mut();
+         }
+         if (word >> TAG_SHIFT) as u16 == expected_hi || (word & TAG_FLAG) == 0 {
+            std::sync::atomic::fence(Ordering::Acquire);
+            let p = if (word & TAG_FLAG) != 0 {
+               (word & PTR_MASK) as *mut Entry<V>
+            } else {
+               word as *mut Entry<V>
+            };
+            let e = unsafe { &*p };
+            let state = e.state.load(Ordering::Relaxed);
+            if (state & (0xFFFF_FFFF_0000_0000 | STATE_OCCUPIED)) == (expected_hash | STATE_OCCUPIED)
+               && e.key.eq_bytes(key)
+            {
+               return p;
+            }
+         }
+      }
+      ptr::null_mut()
+   }
 }
 
 unsafe impl<V: Send> Send for SlotTable<V> {}
@@ -1068,7 +1138,7 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
       let expected_hi = (hash_tag(hash) | (1 << TAG_BITS)) as u16;
       for offset in 0..16 {
          let slot = unsafe { table.slot((base + offset) & table.mask) };
-         let word = slot.0.load(Ordering::Acquire) as usize;
+         let word = slot.0.load(Ordering::Relaxed) as usize;
          if word == 0 {
             let insert_guard = self.enter_insert();
             if self.table.load(Ordering::Acquire) != table_ptr
@@ -1096,59 +1166,60 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
             }
             return InsertFastResult::Fallback(value);
          }
-         let p = if (word >> TAG_SHIFT) as u16 == expected_hi {
-            (word & PTR_MASK) as *mut Entry<V>
-         } else if word & TAG_FLAG == 0 {
-            word as *mut Entry<V>
-         } else {
-            continue;
-         };
-         let entry = unsafe { &*p };
-         let state = entry.state.load(Ordering::Relaxed);
-         if stored_hash(state) != hash as u32 as u64 || !entry.key.eq_str(key) {
-            continue;
-         }
-         let mut current_state = state;
-         let mut backoff = 1u32;
-         for _ in 0..256 {
-            while current_state & STATE_LOCK != 0 {
-               for _ in 0..backoff {
-                  std::hint::spin_loop();
-               }
-               if backoff < 64 {
-                  backoff <<= 1;
-               }
-               current_state = entry.state.load(Ordering::Relaxed);
+         if (word >> TAG_SHIFT) as u16 == expected_hi || (word & TAG_FLAG) == 0 {
+            std::sync::atomic::fence(Ordering::Acquire);
+            let p = if (word & TAG_FLAG) != 0 {
+               (word & PTR_MASK) as *mut Entry<V>
+            } else {
+               word as *mut Entry<V>
+            };
+            let entry = unsafe { &*p };
+            let state = entry.state.load(Ordering::Relaxed);
+            if stored_hash(state) != hash as u32 as u64 || !entry.key.eq_str(key) {
+               continue;
             }
-            if current_state & STATE_OCCUPIED == 0 {
-               break;
-            }
-            let locked = bump_seq(current_state) | STATE_LOCK;
-            match entry.state.compare_exchange_weak(
-               current_state,
-               locked,
-               Ordering::Acquire,
-               Ordering::Relaxed,
-            ) {
-               Ok(_) => {
-                  self.snap.before_write(entry);
-                  unsafe { (*entry.value.get()).assume_init_drop() };
-                  unsafe { (*entry.value.get()).write(value) };
-                  unlock_write(&entry.state, locked, true);
-                  return InsertFastResult::Updated;
-               }
-               Err(observed) => {
-                  current_state = observed;
+            let mut current_state = state;
+            let mut backoff = 1u32;
+            for _ in 0..256 {
+               while current_state & STATE_LOCK != 0 {
                   for _ in 0..backoff {
                      std::hint::spin_loop();
                   }
                   if backoff < 64 {
                      backoff <<= 1;
                   }
+                  current_state = entry.state.load(Ordering::Relaxed);
+               }
+               if current_state & STATE_OCCUPIED == 0 {
+                  break;
+               }
+               let locked = bump_seq(current_state) | STATE_LOCK;
+               match entry.state.compare_exchange_weak(
+                  current_state,
+                  locked,
+                  Ordering::Acquire,
+                  Ordering::Relaxed,
+               ) {
+                  Ok(_) => {
+                     self.snap.before_write(entry);
+                     unsafe { (*entry.value.get()).assume_init_drop() };
+                     unsafe { (*entry.value.get()).write(value) };
+                     unlock_write(&entry.state, locked, true);
+                     return InsertFastResult::Updated;
+                  }
+                  Err(observed) => {
+                     current_state = observed;
+                     for _ in 0..backoff {
+                        std::hint::spin_loop();
+                     }
+                     if backoff < 64 {
+                        backoff <<= 1;
+                     }
+                  }
                }
             }
+            return InsertFastResult::Fallback(value);
          }
-         return InsertFastResult::Fallback(value);
       }
       InsertFastResult::Fallback(value)
    }
@@ -1171,7 +1242,7 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
       let expected_hi = (hash_tag(hash) | (1 << TAG_BITS)) as u16;
       for offset in 0..16 {
          let slot = unsafe { table.slot((base + offset) & table.mask) };
-         let word = slot.0.load(Ordering::Acquire) as usize;
+         let word = slot.0.load(Ordering::Relaxed) as usize;
          if word == 0 {
             let insert_guard = self.enter_insert();
             if self.table.load(Ordering::Acquire) != table_ptr
@@ -1199,59 +1270,60 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
             }
             return InsertFastResult::Fallback(value);
          }
-         let p = if (word >> TAG_SHIFT) as u16 == expected_hi {
-            (word & PTR_MASK) as *mut Entry<V>
-         } else if word & TAG_FLAG == 0 {
-            word as *mut Entry<V>
-         } else {
-            continue;
-         };
-         let entry = unsafe { &*p };
-         let state = entry.state.load(Ordering::Relaxed);
-         if stored_hash(state) != hash as u32 as u64 || !entry.key.eq_bytes(key) {
-            continue;
-         }
-         let mut current_state = state;
-         let mut backoff = 1u32;
-         for _ in 0..256 {
-            while current_state & STATE_LOCK != 0 {
-               for _ in 0..backoff {
-                  std::hint::spin_loop();
-               }
-               if backoff < 64 {
-                  backoff <<= 1;
-               }
-               current_state = entry.state.load(Ordering::Relaxed);
+         if (word >> TAG_SHIFT) as u16 == expected_hi || (word & TAG_FLAG) == 0 {
+            std::sync::atomic::fence(Ordering::Acquire);
+            let p = if (word & TAG_FLAG) != 0 {
+               (word & PTR_MASK) as *mut Entry<V>
+            } else {
+               word as *mut Entry<V>
+            };
+            let entry = unsafe { &*p };
+            let state = entry.state.load(Ordering::Relaxed);
+            if stored_hash(state) != hash as u32 as u64 || !entry.key.eq_bytes(key) {
+               continue;
             }
-            if current_state & STATE_OCCUPIED == 0 {
-               break;
-            }
-            let locked = bump_seq(current_state) | STATE_LOCK;
-            match entry.state.compare_exchange_weak(
-               current_state,
-               locked,
-               Ordering::Acquire,
-               Ordering::Relaxed,
-            ) {
-               Ok(_) => {
-                  self.snap.before_write(entry);
-                  unsafe { (*entry.value.get()).assume_init_drop() };
-                  unsafe { (*entry.value.get()).write(value) };
-                  unlock_write(&entry.state, locked, true);
-                  return InsertFastResult::Updated;
-               }
-               Err(observed) => {
-                  current_state = observed;
+            let mut current_state = state;
+            let mut backoff = 1u32;
+            for _ in 0..256 {
+               while current_state & STATE_LOCK != 0 {
                   for _ in 0..backoff {
                      std::hint::spin_loop();
                   }
                   if backoff < 64 {
                      backoff <<= 1;
                   }
+                  current_state = entry.state.load(Ordering::Relaxed);
+               }
+               if current_state & STATE_OCCUPIED == 0 {
+                  break;
+               }
+               let locked = bump_seq(current_state) | STATE_LOCK;
+               match entry.state.compare_exchange_weak(
+                  current_state,
+                  locked,
+                  Ordering::Acquire,
+                  Ordering::Relaxed,
+               ) {
+                  Ok(_) => {
+                     self.snap.before_write(entry);
+                     unsafe { (*entry.value.get()).assume_init_drop() };
+                     unsafe { (*entry.value.get()).write(value) };
+                     unlock_write(&entry.state, locked, true);
+                     return InsertFastResult::Updated;
+                  }
+                  Err(observed) => {
+                     current_state = observed;
+                     for _ in 0..backoff {
+                        std::hint::spin_loop();
+                     }
+                     if backoff < 64 {
+                        backoff <<= 1;
+                     }
+                  }
                }
             }
+            return InsertFastResult::Fallback(value);
          }
-         return InsertFastResult::Fallback(value);
       }
       InsertFastResult::Fallback(value)
    }

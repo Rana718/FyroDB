@@ -17,7 +17,7 @@ export default function HomePage() {
          <div className="landing-mast">
             <section className="landing-hero landing-wrap">
                <div className="landing-lead">
-                  <Link className="landing-version" href="/docs/changelog-0-5-0"><i aria-hidden="true" />FyroDB v0.5.0 <FiArrowUpRight /></Link>
+                  <Link className="landing-version" href="/docs/changelog-0-6-0"><i aria-hidden="true" />FyroDB v0.6.0 <FiArrowUpRight /></Link>
                   <h1>In-memory database<br /><span>built in Rust.</span></h1>
                   <p>Use your Redis client to store key-value data, run transactions, and search vectors with FyroDB.</p>
                   <div className="landing-actions">

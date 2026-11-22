@@ -180,6 +180,43 @@ impl Store {
    }
 
    pub fn get(&self, key: &str) -> Option<String> {
+      let (h, idx) = self.data.locate_key(key);
+      let _guard = customhash::pin();
+      let p = self.data.probe_entry_matching_str(h, idx, key);
+      if !p.is_null() {
+         let e = unsafe { &*p };
+         let expected = ((h as u32 as u64) << 32) | customhash::STATE_OCCUPIED;
+         let state1 = e.state.load(std::sync::atomic::Ordering::Acquire);
+         if (state1 & customhash::STATE_MATCH_MASK) == expected {
+            let val = unsafe { (*e.value.get()).assume_init_ref() };
+            if (val.expires_ms == 0 || !val.is_expired())
+               && let crate::storage::value::FyroDB::String(s) = &val.value
+               && s.is_inline()
+            {
+               let s_copy = s.clone();
+               std::sync::atomic::fence(std::sync::atomic::Ordering::Acquire);
+               let state2 = e.state.load(std::sync::atomic::Ordering::Acquire);
+               if state1 == state2 {
+                  return Some(s_copy.as_str().to_string());
+               }
+            }
+         }
+         if state1 & (0xFFFF_FFFF_0000_0000 | customhash::STATE_OCCUPIED) == expected
+            && let Some(read) = e.read()
+         {
+            if read.is_expired() {
+               drop(read);
+               if !self.data.read_epoch_active() {
+                  self.data.remove_if(key, |value| value.is_expired());
+               }
+               return None;
+            }
+            if let crate::storage::value::FyroDB::String(s) = &read.value {
+               return Some(s.as_str().to_string());
+            }
+            return None;
+         }
+      }
       let result = self.data.get_locked(key, |val| {
          if val.is_expired() {
             return Err(());
@@ -193,6 +230,56 @@ impl Store {
          }
          Ok(v) => v,
       }
+   }
+
+   #[inline]
+   pub fn get_small_str(&self, key: &str) -> Option<SmallStr> {
+      let (h, idx) = self.data.locate_key(key);
+      let _guard = customhash::pin();
+      let p = self.data.probe_entry_matching_str(h, idx, key);
+      if !p.is_null() {
+         let e = unsafe { &*p };
+         let expected = ((h as u32 as u64) << 32) | customhash::STATE_OCCUPIED;
+         let state1 = e.state.load(std::sync::atomic::Ordering::Acquire);
+         if (state1 & customhash::STATE_MATCH_MASK) == expected {
+            let val = unsafe { (*e.value.get()).assume_init_ref() };
+            if (val.expires_ms == 0 || !val.is_expired())
+               && let crate::storage::value::FyroDB::String(s) = &val.value
+               && s.is_inline()
+            {
+               let s_copy = s.clone();
+               std::sync::atomic::fence(std::sync::atomic::Ordering::Acquire);
+               let state2 = e.state.load(std::sync::atomic::Ordering::Acquire);
+               if state1 == state2 {
+                  return Some(s_copy);
+               }
+            }
+         }
+         if state1 & (0xFFFF_FFFF_0000_0000 | customhash::STATE_OCCUPIED) == expected
+            && let Some(read) = e.read()
+         {
+            if read.is_expired() {
+               drop(read);
+               if !self.data.read_epoch_active() {
+                  self.data.remove_if(key, |value| value.is_expired());
+               }
+               return None;
+            }
+            if let crate::storage::value::FyroDB::String(s) = &read.value {
+               return Some(s.clone());
+            }
+            return None;
+         }
+      }
+      self.data.get_locked(key, |val| {
+         if val.is_expired() {
+            None
+         } else if let crate::storage::value::FyroDB::String(s) = &val.value {
+            Some(s.clone())
+         } else {
+            None
+         }
+      }).flatten()
    }
 
    /// Append one RESP GET reply per key, preserving key order and existing output.
@@ -255,7 +342,13 @@ impl Store {
 
    #[inline(always)]
    pub fn get_to_buf_hinted(&self, key: &str, hash: Option<u64>, out: &mut Vec<u8>) -> bool {
-      self.get_to_buf_hinted_bytes(key.as_bytes(), hash, out)
+      let _guard = customhash::pin();
+      let (h, idx) = match hash {
+         Some(h) => (h, self.data.shard_of(h)),
+         None => self.data.locate_key(key),
+      };
+      let p = self.data.probe_entry_matching_str(h, idx, key);
+      unsafe { self.get_to_buf_fast_entry_bytes(key.as_bytes(), h, p, out) }
    }
 
    #[inline(always)]
@@ -265,7 +358,7 @@ impl Store {
          Some(h) => (h, self.data.shard_of(h)),
          None => self.data.locate_bytes(key),
       };
-      let p = self.data.probe_slot_entry(h, idx);
+      let p = self.data.probe_entry_matching_bytes(h, idx, key);
       unsafe { self.get_to_buf_fast_entry_bytes(key, h, p, out) }
    }
 
@@ -305,9 +398,23 @@ impl Store {
       if !p.is_null() {
          let e = unsafe { &*p };
          let expected = ((hash as u32 as u64) << 32) | customhash::STATE_OCCUPIED;
-         if e.state.load(std::sync::atomic::Ordering::Acquire)
-            & (0xFFFF_FFFF_0000_0000 | customhash::STATE_OCCUPIED)
-            == expected
+         let state1 = e.state.load(std::sync::atomic::Ordering::Acquire);
+         if (state1 & customhash::STATE_MATCH_MASK) == expected && e.key.eq_bytes(key) {
+            let val = unsafe { (*e.value.get()).assume_init_ref() };
+            if (val.expires_ms == 0 || !val.is_expired())
+               && let crate::storage::value::FyroDB::String(s) = &val.value
+               && s.is_inline()
+            {
+               let s_copy = s.clone();
+               std::sync::atomic::fence(std::sync::atomic::Ordering::Acquire);
+               let state2 = e.state.load(std::sync::atomic::Ordering::Acquire);
+               if state1 == state2 {
+                  s_copy.write_resp(out);
+                  return true;
+               }
+            }
+         }
+         if state1 & (0xFFFF_FFFF_0000_0000 | customhash::STATE_OCCUPIED) == expected
             && e.key.eq_bytes(key)
             && let Some(read) = e.read()
          {

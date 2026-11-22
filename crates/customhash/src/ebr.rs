@@ -16,7 +16,10 @@ impl Drop for Guard {
    fn drop(&mut self) {
       // Release this guard exactly once before testing whether its thread quiesced.
       unsafe { ManuallyDrop::drop(&mut self.inner) };
-      if DIRTY.try_with(Cell::get).unwrap_or(false) && !crossbeam_epoch::is_pinned() {
+      if PENDING.load(Ordering::Relaxed) != 0
+         && DIRTY.try_with(Cell::get).unwrap_or(false)
+         && !crossbeam_epoch::is_pinned()
+      {
          force_collect();
       }
    }

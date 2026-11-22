@@ -321,6 +321,20 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
    }
 
    #[inline(always)]
+   pub fn probe_entry_matching_str(&self, hash: u64, idx: usize, key: &str) -> *mut Entry<V> {
+      let sf = unsafe { &*self.shard_fast.as_ptr().add(idx) };
+      let (slots, mask) = sf.layout();
+      unsafe { TaggedSlot::probe_entry_matching_str(slots, mask, hash, key) }
+   }
+
+   #[inline(always)]
+   pub fn probe_entry_matching_bytes(&self, hash: u64, idx: usize, key: &[u8]) -> *mut Entry<V> {
+      let sf = unsafe { &*self.shard_fast.as_ptr().add(idx) };
+      let (slots, mask) = sf.layout();
+      unsafe { TaggedSlot::probe_entry_matching_bytes(slots, mask, hash, key) }
+   }
+
+   #[inline(always)]
    pub fn prefetch_slots<K: AsRef<[u8]>>(
       &self,
       keys: &[K],
@@ -671,19 +685,12 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
 
    #[inline(always)]
    pub fn probe_entry_fast(&self, key: &str, hash: u64, idx: usize) -> Option<*const Entry<V>> {
-      let sf = unsafe { &*self.shard_fast.as_ptr().add(idx) };
-      let (slots, mask) = sf.layout();
-      let base = unsafe { slots.add((hash as usize) & mask) };
-      let p = unsafe { TaggedSlot::probe_from_base(base, hash, 16) };
+      let p = self.probe_entry_matching_str(hash, idx, key);
       if !p.is_null() {
-         let e = unsafe { &*p };
-         let state = e.state.load(Ordering::Relaxed);
-         let expected = ((hash as u32 as u64) << 32) | STATE_OCCUPIED;
-         if (state & (0xFFFF_FFFF_0000_0000 | STATE_OCCUPIED)) == expected && e.key.eq_str(key) {
-            return Some(p as *const Entry<V>);
-         }
+         Some(p as *const Entry<V>)
+      } else {
+         None
       }
-      None
    }
 
    /// Bytes-key twin of the probe chain (audit S-2): probes by tag and
@@ -695,19 +702,12 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
       hash: u64,
       idx: usize,
    ) -> Option<*const Entry<V>> {
-      let sf = unsafe { &*self.shard_fast.as_ptr().add(idx) };
-      let (slots, mask) = sf.layout();
-      let base = unsafe { slots.add((hash as usize) & mask) };
-      let p = unsafe { TaggedSlot::probe_from_base(base, hash, 16) };
+      let p = self.probe_entry_matching_bytes(hash, idx, key);
       if !p.is_null() {
-         let e = unsafe { &*p };
-         let state = e.state.load(Ordering::Relaxed);
-         let expected = ((hash as u32 as u64) << 32) | STATE_OCCUPIED;
-         if (state & (0xFFFF_FFFF_0000_0000 | STATE_OCCUPIED)) == expected && e.key.eq_bytes(key) {
-            return Some(p as *const Entry<V>);
-         }
+         Some(p as *const Entry<V>)
+      } else {
+         None
       }
-      None
    }
 
    /// Bytes-key pinned read: find by full byte comparison under an EBR pin.

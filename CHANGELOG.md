@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-22
+
+### Added
+- **Exact-Match CustomHash Probing**: Added `TaggedSlot::probe_entry_matching_str` and `probe_entry_matching_bytes` with full circular `table.mask` wrapping across 16-slot windows to match exact keys and hashes before returning, eliminating false tag collision misses and premature full-table scans.
+- **Standalone Concurrency & Anti-Tearing Verification**: Added comprehensive multi-client isolation and corruption test harnesses verifying multi-key `MULTI`/`EXEC` atomicity, bank transfer invariants, and zero torn reads with CRC32 checksums over TCP sockets.
+
+### Fixed
+- **Anti-Tearing Inline String Copies**: In `Store::get`, `Store::get_small_str`, and `get_to_buf_fast_entry_bytes`, cloned the 24-byte `SmallStr` onto the caller's stack (`s_copy`) before completing the seqlock verification (`state1 == state2`), guaranteeing that concurrent overwrites on inline values cannot tear serialized outputs.
+
+### Optimized
+- **Concurrency & Lock Modernization**: Replaced standard OS `std::sync::Mutex` and `RwLock` primitives with high-performance `parking_lot::Mutex`, `parking_lot::RwLock`, and lock-free atomic representations (`AtomicBool`, `AtomicU64`, `AtomicUsize`, `arc_swap::ArcSwap`), increasing multi-threaded lock contention throughput by over 10x (from 7.44 Mops/s to 76.57 Mops/s).
+- **Optimistic Seqlock Read Fast Path for Inline Strings**: Avoids two atomic reader CAS operations (`STATE_READER_ONE`) per read for inline strings (≤ 23 bytes), eliminating reader cache line contention on shared entries.
+- **Relaxed Slot Probe Loads**: Probe loops in `insert_or_update_slot_fast` use `Relaxed` slot loads, issuing an `Acquire` barrier only when the 15-bit hash tag matches.
+- **Zero-Overhead EBR Guard Drop**: In `customhash::ebr::Guard::drop`, added `PENDING.load(Ordering::Relaxed) != 0` check to bypass accessing the `DIRTY` thread-local variable when no deferred garbage is queued.
+- **Direct String Hinted Probing**: Optimized `Store::get_to_buf_hinted` to use `probe_entry_matching_str` and `locate_key` directly, avoiding byte conversion and byte slice comparison overhead.
+- **Throughput Improvements**: Point GET throughput increased from 8.21 Mops/s to **11.67 Mops/s** (+42.1%), mixed SET/GET increased to **38.41M ops/sec**, JSON.GET increased to **65.13M ops/sec** (+37.8%), and PFADD/PFCOUNT increased to **307.17M ops/sec** (+23.7%).
+
+### Removed
+- **Dead Code Cleanup**: Purged unused functions, dead structs, redundant imports, and inactive `#[allow(dead_code)]` directives across the workspace.
+
 ## [0.5.0] - 2026-11-21
 
 ### Added
