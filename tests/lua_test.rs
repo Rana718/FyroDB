@@ -79,6 +79,40 @@ fn test_lua_redis_call_set_get_incr() {
 }
 
 #[test]
+fn test_lua_float_arguments_use_ryu_formatting_in_both_paths() {
+   let store = Arc::new(Store::new());
+   let script = r#"
+      local values = {1.25, 42.0, 1e100, -0.0, math.huge, 0/0}
+      local fallback = {}
+      local keys = {}
+      for i, value in ipairs(values) do
+         local stack_key = 'stack:' .. i
+         local fallback_key = 'fallback:' .. i
+         redis.call('SET', stack_key, value)
+         keys[#keys + 1] = stack_key
+         keys[#keys + 1] = fallback_key
+         fallback[#fallback + 1] = fallback_key
+         fallback[#fallback + 1] = value
+      end
+      redis.call('MSET', table.unpack(fallback))
+      return redis.call('MGET', table.unpack(keys))
+   "#;
+
+   assert_eq!(
+      run_cmd(&store, &["EVAL", script, "0"]),
+      concat!(
+         "*12\r\n",
+         "$4\r\n1.25\r\n$4\r\n1.25\r\n",
+         "$4\r\n42.0\r\n$4\r\n42.0\r\n",
+         "$5\r\n1e100\r\n$5\r\n1e100\r\n",
+         "$4\r\n-0.0\r\n$4\r\n-0.0\r\n",
+         "$3\r\ninf\r\n$3\r\ninf\r\n",
+         "$3\r\nNaN\r\n$3\r\nNaN\r\n"
+      )
+   );
+}
+
+#[test]
 fn test_lua_redis_call_error_propagation() {
    let store = Arc::new(Store::new());
 
