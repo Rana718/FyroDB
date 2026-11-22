@@ -32,7 +32,10 @@ enum Held<'a> {
    Nested,
    Shared(&'a RawRwLock),
    AtomicShared(&'a Isolation),
-   Exclusive(&'a Isolation, #[allow(dead_code)] MutexGuard<'a, ()>),
+   Exclusive {
+      isolation: &'a Isolation,
+      _guard: MutexGuard<'a, ()>,
+   },
 }
 
 pub struct CommandGuard<'a> {
@@ -74,7 +77,10 @@ impl Isolation {
                   slot.lock_exclusive();
                }
                CURRENT.set((self, true));
-               Held::Exclusive(self, writer)
+               Held::Exclusive {
+                  isolation: self,
+                  _guard: writer,
+               }
             }
             IsolationMode::AtomicShared => {
                for slot in &self.slots {
@@ -124,7 +130,7 @@ impl Drop for CommandGuard<'_> {
                unsafe { slot.unlock_shared() };
             }
          }
-         Held::Exclusive(isolation, _) => {
+         Held::Exclusive { isolation, .. } => {
             for slot in isolation.slots.iter().rev() {
                unsafe { slot.unlock_exclusive() };
             }

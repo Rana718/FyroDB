@@ -213,8 +213,10 @@ pub fn zrangebyscore(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
    if !parse_rangebyscore_options(rest, &mut withscores, &mut offset, &mut count, out) {
       return;
    }
-   let items = wt!(out, store.zrangebyscore(key, mn, mx, offset, count));
-   write_zset_result(out, &items, withscores);
+   wt!(
+      out,
+      store.zrangebyscore_to_buf(key, mn, mx, offset, count, withscores, out)
+   );
 }
 
 pub fn zrevrangebyscore(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
@@ -229,32 +231,34 @@ pub fn zrevrangebyscore(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
    if !parse_rangebyscore_options(rest, &mut withscores, &mut offset, &mut count, out) {
       return;
    }
-   let items = wt!(out, store.zrevrangebyscore(key, mx, mn, offset, count));
-   write_zset_result(out, &items, withscores);
+   wt!(
+      out,
+      store.zrevrangebyscore_to_buf(key, mx, mn, offset, count, withscores, out)
+   );
 }
 
-fn zpop_impl<F>(parts: &[&str], store: &Store, out: &mut Vec<u8>, cmd: &'static str, f: F)
-where
-   F: FnOnce(&Store, &str, usize) -> Result<Vec<(String, f64)>, &'static str>,
-{
+pub fn zpopmin(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
    let (key, count) = match parts {
       [_, key] => (*key, 1usize),
       [_, key, cnt] => {
          let c = parse_int!(out, cnt, usize);
          (*key, c)
       }
-      _ => return resp::write_wrong_args(out, cmd),
+      _ => return resp::write_wrong_args(out, "zpopmin"),
    };
-   let items = wt!(out, f(store, key, count));
-   write_zset_result(out, &items, true);
-}
-
-pub fn zpopmin(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
-   zpop_impl(parts, store, out, "zpopmin", Store::zpopmin);
+   wt!(out, store.zpopmin_to_buf(key, count, out));
 }
 
 pub fn zpopmax(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
-   zpop_impl(parts, store, out, "zpopmax", Store::zpopmax);
+   let (key, count) = match parts {
+      [_, key] => (*key, 1usize),
+      [_, key, cnt] => {
+         let c = parse_int!(out, cnt, usize);
+         (*key, c)
+      }
+      _ => return resp::write_wrong_args(out, "zpopmax"),
+   };
+   wt!(out, store.zpopmax_to_buf(key, count, out));
 }
 
 pub fn zunionstore(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
@@ -288,28 +292,22 @@ pub fn zinterstore(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
 }
 
 pub fn zrandmember(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
-   let (key, count, withscores) = match parts {
-      [_, key] => (*key, 1i64, false),
+   let (key, count, withscores, single) = match parts {
+      [_, key] => (*key, 1i64, false, true),
       [_, key, cnt] => {
          let c = parse_int!(out, cnt);
-         (*key, c, false)
+         (*key, c, false, false)
       }
       [_, key, cnt, ws] if ws.eq_ignore_ascii_case("WITHSCORES") => {
          let c = parse_int!(out, cnt);
-         (*key, c, true)
+         (*key, c, true, false)
       }
       _ => return resp::write_wrong_args(out, "zrandmember"),
    };
-   let items = wt!(out, store.zrandmember(key, count));
-   if parts.len() == 2 {
-      if items.is_empty() {
-         resp::write_nil(out);
-      } else {
-         resp::write_bulk(out, &items[0].0);
-      }
-   } else {
-      write_zset_result(out, &items, withscores);
-   }
+   wt!(
+      out,
+      store.zrandmember_to_buf(key, count, withscores, single, out)
+   );
 }
 
 fn write_zset_result(out: &mut Vec<u8>, items: &[(String, f64)], withscores: bool) {
@@ -418,8 +416,10 @@ pub fn zrangebylex(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
       }
       i += 1;
    }
-   let items = wt!(out, store.zrangebylex(key, min, max, offset, count));
-   resp::write_array(out, &items);
+   wt!(
+      out,
+      store.zrangebylex_to_buf(key, min, max, offset, count, out)
+   );
 }
 
 pub fn zdiff(parts: &[&str], store: &Store, out: &mut Vec<u8>) {

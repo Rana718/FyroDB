@@ -92,33 +92,6 @@ impl ReadBuf {
       Some(frame)
    }
 
-   #[allow(dead_code)]
-   fn take_regular_frame(&mut self) -> Option<(u8, Vec<u8>)> {
-      let avail = self.available();
-      if avail.len() < 5 {
-         return None;
-      }
-      let msg_type = avail[0];
-      let len = i32::from_be_bytes([avail[1], avail[2], avail[3], avail[4]]);
-      if len < 4 || len as usize > (64 << 20) {
-         return None;
-      }
-      let body_len = len as usize - 4;
-      let total = 5 + body_len;
-      if avail.len() < total {
-         return None;
-      }
-      let body = avail[5..total].to_vec();
-      self.consumed += total;
-      self.compact();
-      Some((msg_type, body))
-   }
-
-   #[allow(dead_code)]
-   fn has_more(&self) -> bool {
-      self.buf.len() > self.consumed
-   }
-
    fn compact(&mut self) {
       if self.consumed > 4096 && self.consumed >= self.buf.len() / 2 {
          self.buf.drain(..self.consumed);
@@ -175,8 +148,6 @@ struct StmtEntry {
    sql: String,
    param_oids: Vec<u32>,
    parsed: Arc<ParsedQuery>,
-   #[allow(dead_code)] // retained for upstream relay path
-   parse_frame: Vec<u8>,
    row_description: Option<Vec<u8>>,
 }
 
@@ -185,8 +156,6 @@ struct PortalEntry {
    parsed: Arc<ParsedQuery>,
    fingerprint: u64,
    text_results: bool,
-   #[allow(dead_code)] // retained for upstream relay path
-   bind_frame: Vec<u8>,
    cursor: usize,
    finished: bool,
    cached_encoded: Option<Arc<EncodedResult>>,
@@ -471,7 +440,6 @@ impl ActiveState {
          sql: sql.to_string(),
          param_oids,
          parsed,
-         parse_frame: Vec::new(),
          row_description: None,
       };
 
@@ -641,7 +609,6 @@ impl ActiveState {
                parsed,
                fingerprint: base_fp,
                text_results,
-               bind_frame: Vec::new(),
                cursor: 0,
                finished: false,
                cached_encoded,
@@ -666,7 +633,6 @@ impl ActiveState {
                parsed,
                fingerprint: base_fp,
                text_results,
-               bind_frame: Vec::new(),
                cursor: 0,
                finished: false,
                cached_encoded,

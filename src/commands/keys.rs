@@ -165,8 +165,7 @@ pub fn keys(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
    let [_, pattern] = parts else {
       return resp::write_wrong_args(out, "keys");
    };
-   let all = store.keys_matching(pattern);
-   resp::write_array(out, &all);
+   store.keys_matching_to_buf(pattern, out);
 }
 
 #[inline]

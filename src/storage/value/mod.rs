@@ -344,6 +344,14 @@ impl StoreValue {
    }
 
    #[inline]
+   pub fn set_inner(s: SetInner) -> Self {
+      Self {
+         value: FyroDB::Set(Box::new(s)),
+         expires_ms: 0,
+      }
+   }
+
+   #[inline]
    pub fn zset(z: ZSetData) -> Self {
       Self {
          value: FyroDB::ZSet(Box::new(z)),

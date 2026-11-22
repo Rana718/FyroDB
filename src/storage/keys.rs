@@ -210,4 +210,17 @@ impl Store {
       });
       keys
    }
+
+   pub fn keys_matching_to_buf(&self, pattern: &str, out: &mut Vec<u8>) {
+      let mut keys = Vec::new();
+      self.data.for_each(|key, val| {
+         if !val.is_expired() && glob_match(pattern, key) {
+            keys.push(crate::storage::value::SmallStr::new(key));
+         }
+      });
+      crate::utils::resp::write_array_header(out, keys.len());
+      for k in &keys {
+         k.write_resp(out);
+      }
+   }
 }

@@ -112,11 +112,13 @@ pub fn time(_parts: &[&str], out: &mut Vec<u8>) {
    let now = SystemTime::now()
       .duration_since(UNIX_EPOCH)
       .unwrap_or_default();
-   let secs = now.as_secs().to_string();
-   let micros = (now.subsec_micros()).to_string();
+   let mut buf1 = [0u8; 20];
+   let mut buf2 = [0u8; 20];
+   let secs = crate::utils::int_format::write_u64_to(&mut buf1, now.as_secs());
+   let micros = crate::utils::int_format::write_u64_to(&mut buf2, now.subsec_micros() as u64);
    resp::write_array_header(out, 2);
-   resp::write_bulk(out, &secs);
-   resp::write_bulk(out, &micros);
+   resp::write_bulk(out, secs);
+   resp::write_bulk(out, micros);
 }
 
 pub fn flushall(store: &Store, out: &mut Vec<u8>) {
@@ -843,13 +845,15 @@ pub fn sort_cmd(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
       i += 1;
    }
 
-   let mut items: Vec<String> = match store.data.get_ref(key) {
+   let mut items: Vec<crate::storage::value::SmallStr> = match store.data.get_ref(key) {
       None => vec![],
       Some(e) if e.is_expired() => vec![],
       Some(e) => match &e.value {
-         crate::storage::value::FyroDB::List(l) => l.iter().map(|v| v.to_string()).collect(),
-         crate::storage::value::FyroDB::Set(s) => s.iter().map(|m| m.to_string()).collect(),
-         crate::storage::value::FyroDB::ZSet(z) => z.members().map(|m| m.to_string()).collect(),
+         crate::storage::value::FyroDB::List(l) => {
+            l.iter().map(crate::storage::value::SmallStr::new).collect()
+         }
+         crate::storage::value::FyroDB::Set(s) => s.iter().map(|m| m.to_small_str()).collect(),
+         crate::storage::value::FyroDB::ZSet(z) => z.members().cloned().collect(),
          _ => {
             return resp::write_err(out, "WRONGTYPE");
          }
@@ -860,8 +864,8 @@ pub fn sort_cmd(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
       items.sort();
    } else {
       items.sort_by(|a, b| {
-         let fa = a.parse::<f64>().unwrap_or(0.0);
-         let fb = b.parse::<f64>().unwrap_or(0.0);
+         let fa = a.as_str().parse::<f64>().unwrap_or(0.0);
+         let fb = b.as_str().parse::<f64>().unwrap_or(0.0);
          fa.partial_cmp(&fb).unwrap_or(std::cmp::Ordering::Equal)
       });
    }
@@ -870,22 +874,31 @@ pub fn sort_cmd(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
       items.reverse();
    }
 
-   if limit_count > 0 {
-      items = items
-         .into_iter()
-         .skip(limit_offset)
-         .take(limit_count)
-         .collect();
+   if limit_offset > 0 || limit_count > 0 {
+      if limit_offset >= items.len() {
+         items.clear();
+      } else {
+         if limit_offset > 0 {
+            items.drain(..limit_offset);
+         }
+         if limit_count > 0 && items.len() > limit_count {
+            items.truncate(limit_count);
+         }
+      }
    }
 
    if let Some(dst) = store_dst {
       let len = items.len();
-      let l: std::collections::VecDeque<String> = items.into_iter().collect();
+      let l: std::collections::VecDeque<String> =
+         items.into_iter().map(|s| s.into_string()).collect();
       store
          .data
          .insert_str(dst, crate::storage::value::StoreValue::list(l));
       resp::write_integer(out, len as i64);
    } else {
-      resp::write_array(out, &items);
+      resp::write_array_header(out, items.len());
+      for item in &items {
+         item.write_resp(out);
+      }
    }
 }

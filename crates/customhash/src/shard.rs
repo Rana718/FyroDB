@@ -179,8 +179,8 @@ impl<V> Entry<V> {
       }
    }
 
+   #[cfg(test)]
    #[inline(always)]
-   #[allow(dead_code)]
    pub(crate) fn new(key: CompactKey, state: u64, value: V) -> Self {
       Self {
          key,
@@ -391,7 +391,7 @@ impl<V> TaggedSlot<V> {
       Ok(word as *mut Entry<V>)
    }
 
-   #[allow(dead_code)]
+   #[cfg(test)]
    #[inline(always)]
    pub(crate) fn store(&self, entry: *mut Entry<V>, hash: u64, order: Ordering) {
       self.0.store(Self::encode(entry, hash), order);
@@ -696,14 +696,6 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
       unsafe { &*self.table.load(Ordering::Acquire) }
    }
 
-   /// Like `table()` but Relaxed — safe only when the caller holds an EBR
-   /// Guard whose Acquire fence already synchronized the table pointer.
-   #[allow(dead_code)]
-   #[inline(always)]
-   pub(crate) fn table_relaxed(&self) -> &SlotTable<V> {
-      unsafe { &*self.table.load(Ordering::Relaxed) }
-   }
-
    #[inline(always)]
    fn enter_insert(&self) -> InsertGuard<'_> {
       let mut spins: u32 = 0;
@@ -893,22 +885,6 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
          probes += 1;
       }
       None
-   }
-
-   #[allow(dead_code)]
-   #[inline(always)]
-   pub(crate) fn get(&self, key: &str, hash: u64) -> Option<V> {
-      self.get_pinned(key, hash)
-   }
-
-   /// Like `get` with relaxed table load when caller holds an EBR Guard.
-   #[allow(dead_code)]
-   #[inline(always)]
-   pub(crate) fn get_pinned(&self, key: &str, hash: u64) -> Option<V> {
-      let table = self.table();
-      let slots = table.slots;
-      let mask = table.mask;
-      Self::get_pinned_fast(slots, mask, key, hash)
    }
 
    #[inline(always)]
@@ -1764,23 +1740,6 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
    pub(crate) fn insert_hashed_key(&self, key: CompactKey, value: V, hash: u64) -> bool {
       let _guard = ebr::pin();
       self.set_compact_key(key, hash, value, true)
-   }
-
-   #[allow(dead_code)]
-   pub(crate) fn insert_new(&self, key: String, value: V, hash: u64, overwrite: bool) -> bool {
-      self.insert_new_key(CompactKey::from_string(key), value, hash, overwrite)
-   }
-
-   #[allow(dead_code)]
-   pub(crate) fn insert_new_key(
-      &self,
-      key: CompactKey,
-      value: V,
-      hash: u64,
-      overwrite: bool,
-   ) -> bool {
-      let _guard = ebr::pin();
-      self.set_compact_key(key, hash, value, overwrite)
    }
 
    fn grow(&self) {

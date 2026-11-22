@@ -139,14 +139,6 @@ impl Store {
       self.set_string_hinted_pinned(key, Some(hash), value, expires_ms);
    }
 
-   #[cold]
-   #[inline(never)]
-   /// `set_string_fallback_bytes` with a pre-validated `&str` value.
-   #[allow(dead_code)]
-   fn set_string_fallback(&self, key: &str, hash: u64, value: &str, expires_ms: u64) {
-      self.set_string_fallback_bytes(key.as_bytes(), hash, value.as_bytes(), expires_ms)
-   }
-
    fn set_string_fallback_bytes(&self, key: &[u8], hash: u64, value: &[u8], expires_ms: u64) {
       let store_val = StoreValue {
          value: crate::storage::value::FyroDB::String(SmallStr::from_slice(value)),

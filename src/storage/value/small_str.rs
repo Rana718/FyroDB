@@ -663,6 +663,20 @@ impl PartialEq for SmallStr {
 
 impl Eq for SmallStr {}
 
+impl PartialOrd for SmallStr {
+   #[inline(always)]
+   fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+      Some(self.cmp(other))
+   }
+}
+
+impl Ord for SmallStr {
+   #[inline(always)]
+   fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+      self.as_bytes().cmp(other.as_bytes())
+   }
+}
+
 impl std::hash::Hash for SmallStr {
    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
       match self.try_as_str() {

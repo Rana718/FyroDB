@@ -1,5 +1,5 @@
 use crate::storage::store::Store;
-use crate::storage::value::{FyroDB, SetInner, StoreValue};
+use crate::storage::value::{FyroDB, SetInner, SmallStr, StoreValue};
 use foldhash::{HashSet, HashSetExt};
 
 impl Store {
@@ -270,10 +270,8 @@ impl Store {
                let n = count.min(s.len());
                let mut out = Vec::with_capacity(n);
                for _ in 0..n {
-                  let member = s.iter().next().map(|m| m.to_string());
-                  if let Some(m) = member {
-                     s.remove(&m);
-                     out.push(m);
+                  if let Some(m) = s.pop_small() {
+                     out.push(m.into_string());
                   }
                }
                Ok(out)
@@ -283,6 +281,26 @@ impl Store {
       });
 
       result.unwrap_or_else(|| Ok(vec![]))
+   }
+
+   pub fn spop_one_to_buf(&self, key: &str, out: &mut Vec<u8>) -> Result<bool, &'static str> {
+      let result = self.data.update_with(key, |val| {
+         if val.is_expired() {
+            return Ok(false);
+         }
+         match val.value.as_set_mut() {
+            Some(s) => match s.pop_small() {
+               Some(m) => {
+                  m.write_resp(out);
+                  Ok(true)
+               }
+               None => Ok(false),
+            },
+            None => Err("WRONGTYPE"),
+         }
+      });
+
+      result.unwrap_or(Ok(false))
    }
 
    pub fn srandmember(&self, key: &str, count: i64) -> Result<Vec<String>, &'static str> {
@@ -438,7 +456,7 @@ impl Store {
       }
    }
 
-   pub fn sunion(&self, keys: &[&str]) -> Result<Vec<String>, &'static str> {
+   pub fn sunion_inner(&self, keys: &[&str]) -> Result<HashSet<SmallStr>, &'static str> {
       let mut result = HashSet::new();
       for &k in keys {
          match self.data.get_ref(k) {
@@ -447,37 +465,55 @@ impl Store {
             Some(e) => match e.value.as_set() {
                Some(s) => {
                   for m in s.iter() {
-                     result.insert(m.to_string());
+                     result.insert(m.to_small_str());
                   }
                }
                None => return Err("WRONGTYPE"),
             },
          }
       }
-      Ok(result.into_iter().map(|m| m.to_string()).collect())
+      Ok(result)
    }
 
-   pub fn sinter(&self, keys: &[&str]) -> Result<Vec<String>, &'static str> {
-      if keys.is_empty() {
-         return Ok(vec![]);
+   pub fn sunion(&self, keys: &[&str]) -> Result<Vec<String>, &'static str> {
+      let set = self.sunion_inner(keys)?;
+      Ok(set.into_iter().map(|m| m.into_string()).collect())
+   }
+
+   pub fn sunion_to_buf(&self, keys: &[&str], out: &mut Vec<u8>) -> Result<(), &'static str> {
+      if keys.len() == 1 {
+         self.smembers_to_buf(keys[0], out)?;
+         return Ok(());
       }
-      let first: HashSet<String> = match self.data.get_ref(keys[0]) {
-         None => return Ok(vec![]),
-         Some(e) if e.is_expired() => return Ok(vec![]),
+      let set = self.sunion_inner(keys)?;
+      crate::utils::resp::write_array_header(out, set.len());
+      for m in &set {
+         m.write_resp(out);
+      }
+      Ok(())
+   }
+
+   pub fn sinter_inner(&self, keys: &[&str]) -> Result<HashSet<SmallStr>, &'static str> {
+      if keys.is_empty() {
+         return Ok(HashSet::new());
+      }
+      let first: HashSet<SmallStr> = match self.data.get_ref(keys[0]) {
+         None => return Ok(HashSet::new()),
+         Some(e) if e.is_expired() => return Ok(HashSet::new()),
          Some(e) => match e.value.as_set() {
-            Some(s) => s.iter().map(|m| m.to_string()).collect(),
+            Some(s) => s.iter().map(|m| m.to_small_str()).collect(),
             None => return Err("WRONGTYPE"),
          },
       };
 
-      let mut result: HashSet<String> = first;
+      let mut result = first;
       for &k in &keys[1..] {
          match self.data.get_ref(k) {
-            None => return Ok(vec![]),
-            Some(e) if e.is_expired() => return Ok(vec![]),
+            None => return Ok(HashSet::new()),
+            Some(e) if e.is_expired() => return Ok(HashSet::new()),
             Some(e) => match e.value.as_set() {
                Some(s) => {
-                  result.retain(|m| s.contains(m));
+                  result.retain(|m| s.contains(m.as_str()));
                }
                None => return Err("WRONGTYPE"),
             },
@@ -486,68 +522,116 @@ impl Store {
             break;
          }
       }
-      Ok(result.into_iter().map(|m| m.to_string()).collect())
+      Ok(result)
    }
 
-   pub fn sdiff(&self, keys: &[&str]) -> Result<Vec<String>, &'static str> {
-      if keys.is_empty() {
-         return Ok(vec![]);
+   pub fn sinter(&self, keys: &[&str]) -> Result<Vec<String>, &'static str> {
+      let set = self.sinter_inner(keys)?;
+      Ok(set.into_iter().map(|m| m.into_string()).collect())
+   }
+
+   pub fn sinter_to_buf(&self, keys: &[&str], out: &mut Vec<u8>) -> Result<(), &'static str> {
+      if keys.len() == 1 {
+         self.smembers_to_buf(keys[0], out)?;
+         return Ok(());
       }
-      let first: HashSet<String> = match self.data.get_ref(keys[0]) {
-         None => return Ok(vec![]),
-         Some(e) if e.is_expired() => return Ok(vec![]),
+      let set = self.sinter_inner(keys)?;
+      crate::utils::resp::write_array_header(out, set.len());
+      for m in &set {
+         m.write_resp(out);
+      }
+      Ok(())
+   }
+
+   pub fn sdiff_inner(&self, keys: &[&str]) -> Result<HashSet<SmallStr>, &'static str> {
+      if keys.is_empty() {
+         return Ok(HashSet::new());
+      }
+      let first: HashSet<SmallStr> = match self.data.get_ref(keys[0]) {
+         None => return Ok(HashSet::new()),
+         Some(e) if e.is_expired() => return Ok(HashSet::new()),
          Some(e) => match e.value.as_set() {
-            Some(s) => s.iter().map(|m| m.to_string()).collect(),
+            Some(s) => s.iter().map(|m| m.to_small_str()).collect(),
             None => return Err("WRONGTYPE"),
          },
       };
 
-      let mut result: HashSet<String> = first;
+      let mut result = first;
       for &k in &keys[1..] {
          match self.data.get_ref(k) {
             None => {}
             Some(e) if e.is_expired() => {}
             Some(e) => match e.value.as_set() {
                Some(s) => {
-                  result.retain(|m| !s.contains(m));
+                  result.retain(|m| !s.contains(m.as_str()));
                }
                None => return Err("WRONGTYPE"),
             },
          }
+         if result.is_empty() {
+            break;
+         }
       }
-      Ok(result.into_iter().map(|m| m.to_string()).collect())
+      Ok(result)
+   }
+
+   pub fn sdiff(&self, keys: &[&str]) -> Result<Vec<String>, &'static str> {
+      let set = self.sdiff_inner(keys)?;
+      Ok(set.into_iter().map(|m| m.into_string()).collect())
+   }
+
+   pub fn sdiff_to_buf(&self, keys: &[&str], out: &mut Vec<u8>) -> Result<(), &'static str> {
+      if keys.len() == 1 {
+         self.smembers_to_buf(keys[0], out)?;
+         return Ok(());
+      }
+      let set = self.sdiff_inner(keys)?;
+      crate::utils::resp::write_array_header(out, set.len());
+      for m in &set {
+         m.write_resp(out);
+      }
+      Ok(())
    }
 
    pub fn sunionstore(&self, dst: &str, keys: &[&str]) -> Result<usize, &'static str> {
-      let members = self.sunion(keys)?;
-      let count = members.len();
-      let s: HashSet<String> = members.into_iter().collect();
-      self.data.insert_str(dst, StoreValue::set(s));
+      let set = self.sunion_inner(keys)?;
+      let count = set.len();
+      let mut inner = SetInner::with_capacity(count);
+      for m in set {
+         inner.insert_small(m);
+      }
+      self.data.insert_str(dst, StoreValue::set_inner(inner));
       Ok(count)
    }
 
    pub fn sinterstore(&self, dst: &str, keys: &[&str]) -> Result<usize, &'static str> {
-      let members = self.sinter(keys)?;
-      let count = members.len();
-      let s: HashSet<String> = members.into_iter().collect();
-      self.data.insert_str(dst, StoreValue::set(s));
+      let set = self.sinter_inner(keys)?;
+      let count = set.len();
+      let mut inner = SetInner::with_capacity(count);
+      for m in set {
+         inner.insert_small(m);
+      }
+      self.data.insert_str(dst, StoreValue::set_inner(inner));
       Ok(count)
    }
 
    pub fn sdiffstore(&self, dst: &str, keys: &[&str]) -> Result<usize, &'static str> {
-      let members = self.sdiff(keys)?;
-      let count = members.len();
-      let s: HashSet<String> = members.into_iter().collect();
-      self.data.insert_str(dst, StoreValue::set(s));
+      let set = self.sdiff_inner(keys)?;
+      let count = set.len();
+      let mut inner = SetInner::with_capacity(count);
+      for m in set {
+         inner.insert_small(m);
+      }
+      self.data.insert_str(dst, StoreValue::set_inner(inner));
       Ok(count)
    }
 
    pub fn sintercard(&self, keys: &[&str], limit: usize) -> Result<usize, &'static str> {
-      let members = self.sinter(keys)?;
+      let set = self.sinter_inner(keys)?;
       if limit > 0 {
-         Ok(members.len().min(limit))
+         Ok(set.len().min(limit))
       } else {
-         Ok(members.len())
+         Ok(set.len())
       }
    }
 }

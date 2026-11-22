@@ -489,6 +489,22 @@ impl SetInner {
    }
 
    #[inline]
+   pub fn pop_small(&mut self) -> Option<SmallStr> {
+      match self {
+         Self::Integers(v) => v.pop().map(SmallStr::from_int),
+         Self::Compact(v) => v.pop(),
+         Self::Full(s) => {
+            let item = s.iter().next().cloned()?;
+            s.remove(&item);
+            if s.len() <= COMPACT_THRESHOLD / 2 {
+               self.demote_set();
+            }
+            Some(item)
+         }
+      }
+   }
+
+   #[inline]
    pub fn contains(&self, member: &str) -> bool {
       match self {
          Self::Integers(v) => canonical_i64(member).is_some_and(|n| {
@@ -595,6 +611,14 @@ impl SetMemberRef<'_> {
       match self {
          Self::Integer(n) => canonical_i64(value) == Some(n),
          Self::String(s) => s.as_bytes() == value.as_bytes(),
+      }
+   }
+
+   #[inline]
+   pub fn to_small_str(self) -> SmallStr {
+      match self {
+         Self::Integer(n) => SmallStr::from_int(n),
+         Self::String(s) => (*s).clone(),
       }
    }
 
