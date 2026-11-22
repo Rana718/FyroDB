@@ -1,0 +1,48 @@
+name: E2E Container Integration
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main, dev]
+    types: [labeled]
+  workflow_dispatch:
+
+concurrency:
+  group: e2e-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e-docker:
+    name: Docker Container & E2E Stress Test
+    if: >
+      github.event_name == 'push' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+       contains(fromJSON('["e2e", "e2e-testcase", "e2e-integration"]'), github.event.label.name))
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker Image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: fyrodb-test:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Run Containerized FyroDB
+        run: docker run -d -p 8000:8000 --name fyrodb-container fyrodb-test:latest
+
+      - name: Run E2E Stress Test
+        run: python3 scripts/e2e_stress_test.py
+
+      - name: Stop Container
+        if: always()
+        run: docker stop fyrodb-container || true
