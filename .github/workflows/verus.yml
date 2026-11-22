@@ -2,7 +2,7 @@ name: Verus Formal Verification
 
 on:
   push:
-    branches: [main, dev]
+    branches: [main]
     paths:
       - 'proofs/**'
       - 'src/**'
