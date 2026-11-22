@@ -27,6 +27,8 @@ struct Stats {
    describes: AtomicUsize,
    sasl_rounds: AtomicUsize,
    connections: AtomicUsize,
+   context_probes: AtomicUsize,
+   discards: AtomicUsize,
    password_ok: AtomicBool,
    last_set: std::sync::Mutex<String>,
 }
@@ -163,6 +165,12 @@ fn serve_conn(stream: TcpStream, stats: Arc<Stats>, auth: Auth) -> io::Result<()
             let lower = sql.trim_start().to_ascii_lowercase();
             if lower.starts_with("set application_name") {
                *stats.last_set.lock().unwrap() = sql.clone();
+            }
+            if lower.starts_with("select current_setting('search_path'") {
+               stats.context_probes.fetch_add(1, Ordering::SeqCst);
+            }
+            if lower.starts_with("discard all") {
+               stats.discards.fetch_add(1, Ordering::SeqCst);
             }
             if is_internal_query(&lower) {
                respond_internal(&mut out, &lower)?;
@@ -720,8 +728,71 @@ fn start_configured(
       pool_max_idle,
       ..DbCacheConfig::default()
    };
-   start_proxy_listener(config, Arc::clone(&manager)).expect("start proxy");
+   launch(config, &manager);
    (port, manager, store)
+}
+
+// DBCACHE_E2E_LISTENER=mio runs the whole suite against the mio listener,
+// which is exported but not what the server starts.
+fn launch(mut config: DbCacheConfig, manager: &Arc<DbCacheManager>) {
+   if std::env::var("DBCACHE_E2E_LISTENER").is_ok_and(|v| v == "mio") {
+      config.proxy_workers = 2;
+      fyro_dbcache::start_proxy_listener_mio(config, Arc::clone(manager)).expect("start mio proxy");
+   } else {
+      start_proxy_listener(config, Arc::clone(manager)).expect("start proxy");
+   }
+}
+
+fn raw_startup(port: u16) -> TcpStream {
+   let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect proxy");
+   stream
+      .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+      .unwrap();
+   let mut payload = Vec::new();
+   payload.extend_from_slice(&PROTOCOL_VERSION_3.to_be_bytes());
+   payload.extend_from_slice(b"user\0postgres\0database\0test\0\0");
+   let mut packet = ((payload.len() + 4) as i32).to_be_bytes().to_vec();
+   packet.extend_from_slice(&payload);
+   stream.write_all(&packet).unwrap();
+   stream
+}
+
+#[test]
+fn connections_over_the_limit_get_too_many_clients() {
+   let store = Arc::new(Store::new());
+   let manager = Arc::new(DbCacheManager::new(store.clone()));
+   let port = free_port();
+   launch(
+      DbCacheConfig {
+         enabled: true,
+         mode: DbProxyMode::CacheOnly,
+         listen_addr: format!("127.0.0.1:{port}"),
+         max_connections: 2,
+         ..DbCacheConfig::default()
+      },
+      &manager,
+   );
+   let first = Client::connect(port);
+   let second = Client::connect(port);
+
+   let mut third = BufReader::new(raw_startup(port));
+   let (tag, body) = read_tagged(&mut third).expect("an error, not a silent close");
+   assert_eq!(tag, b'E');
+   assert!(String::from_utf8_lossy(&body).contains("53300"), "{body:?}");
+
+   // A slot frees up once a client leaves.
+   drop(first);
+   let mut admitted = false;
+   for _ in 0..50 {
+      let mut next = BufReader::new(raw_startup(port));
+      if read_tagged(&mut next).is_some_and(|(tag, _)| tag == b'R') {
+         admitted = true;
+         break;
+      }
+      std::thread::sleep(std::time::Duration::from_millis(20));
+   }
+   assert!(admitted, "a freed slot was never reused");
+   drop(second);
 }
 
 // Cache keys now mix the session-context hash, so tests locate entries by
@@ -1214,6 +1285,55 @@ fn proxy_terminates_scram_and_reuses_pooled_upstream() {
       stats.last_set.lock().unwrap().as_str(),
       "SET application_name = E'second\\'s app'"
    );
+   // The reused session is back in its startup state, whose context the
+   // first login already probed: no second probe round trip.
+   assert_eq!(stats.context_probes.load(Ordering::SeqCst), 1);
+   assert_eq!(
+      stats.discards.load(Ordering::SeqCst),
+      1,
+      "check-in resets the session"
+   );
+}
+
+// A reused session is reset with DISCARD ALL, so a SET made by one client
+// never leaks into the next client's cache key or answers, even though the
+// remembered startup context replaces the probe.
+#[test]
+fn pooled_reuse_after_a_session_change_starts_clean() {
+   let (upstream, stats) = FakePg::start_with_auth(Auth::Cleartext);
+   let users = AuthUsers::from_pairs([("alice", "secret")]);
+   let (port, manager, store) = start_configured(DbProxyMode::Dual, Some(&upstream), users, 4);
+   let wait_idle = |count: u64| {
+      let deadline = Instant::now() + Duration::from_secs(5);
+      while Instant::now() < deadline && manager.metrics().pool_idle.load(Ordering::Relaxed) < count
+      {
+         thread::sleep(Duration::from_millis(10));
+      }
+   };
+
+   let mut first = connect_scram(port, "alice", "secret").expect("first login");
+   assert!(first.simple("SET search_path = other").error.is_none());
+   assert_eq!(
+      first
+         .simple("select id, username from users where id = 9")
+         .rows,
+      expected_rows()
+   );
+   first.send(b'X', &[]);
+   drop(first);
+   wait_idle(1);
+
+   let mut second = connect_scram(port, "alice", "secret").expect("pooled login");
+   assert_eq!(
+      second
+         .simple("select id, username from users where id = 9")
+         .rows,
+      expected_rows()
+   );
+   assert_eq!(stats.connections.load(Ordering::SeqCst), 1, "reused");
+   // Different contexts, so the second client could not hit the first one's
+   // entry: two upstream executions and two separate cache entries.
+   assert_eq!(cached_keys(&store, "users").len(), 2);
 }
 
 // ── Pipelining and concurrency deep tests ────────────────────────────────────
@@ -1675,7 +1795,7 @@ fn cache_only_large_extended_protocol_pipeline() {
       .unwrap()
       .parse()
       .unwrap();
-   let _handle = fyro_dbcache::start_proxy_listener(config, manager).expect("start proxy");
+   launch(config, &manager);
    std::thread::sleep(Duration::from_millis(30));
 
    let mut client = Client::connect(port);
@@ -1868,4 +1988,78 @@ fn make_one_row_result_local() -> fyro_dbcache::DbResultSet {
       }],
       rows_affected: 1,
    }
+}
+
+// Connection-local shortcuts (the mio listener's hot slots and portal copies)
+// used to check only the TTL, so they kept answering after a write
+// invalidated the table. Runs against both listeners.
+#[test]
+fn invalidated_results_are_not_served_from_connection_shortcuts() {
+   let store = Arc::new(Store::new());
+   let manager = Arc::new(DbCacheManager::new(store));
+   let simple_sql = "select id, username from users where id = 42";
+   let simple = fyro_dbcache::query::parse_sql(simple_sql);
+   let prepared_sql = "select id, username from users where id = 7";
+   let prepared = fyro_dbcache::query::parse_sql(prepared_sql);
+   let fill = |manager: &DbCacheManager| {
+      for parsed in [&simple, &prepared] {
+         manager.store_cached_query(
+            "db:",
+            &parsed.tables,
+            parsed.fingerprint,
+            &make_one_row_result_local(),
+            60_000,
+         );
+      }
+   };
+   fill(&manager);
+   let port = free_port();
+   launch(
+      DbCacheConfig {
+         enabled: true,
+         mode: DbProxyMode::CacheOnly,
+         listen_addr: format!("127.0.0.1:{port}"),
+         flush_on_start: false,
+         ..DbCacheConfig::default()
+      },
+      &manager,
+   );
+   let mut client = Client::connect(port);
+
+   // Warm every shortcut: repeated simple queries and a re-bound portal.
+   for _ in 0..3 {
+      assert_eq!(client.simple(simple_sql).rows.len(), 1);
+   }
+   client.parse("s1", prepared_sql);
+   for _ in 0..3 {
+      client.bind("p1", "s1", &[]);
+      client.describe_portal("p1");
+      client.execute("p1", 0);
+      client.sync();
+      let reply = client.read_until_ready();
+      assert!(reply.error.is_none(), "{:?}", reply.error);
+      assert_eq!(reply.rows.len(), 1);
+      assert!(
+         reply.row_tags.contains(&b'T'),
+         "Describe must return the cached columns"
+      );
+   }
+
+   manager.invalidate_tables(&["users".to_string()]);
+   let reply = client.simple(simple_sql);
+   assert!(
+      reply.rows.is_empty(),
+      "simple query served an invalidated result"
+   );
+   assert!(reply.error.is_some());
+   client.bind("p1", "s1", &[]);
+   client.execute("p1", 0);
+   client.sync();
+   let reply = client.read_until_ready();
+   assert!(reply.rows.is_empty(), "portal served an invalidated result");
+   assert!(reply.error.is_some());
+
+   // Refilled entries are served again.
+   fill(&manager);
+   assert_eq!(client.simple(simple_sql).rows.len(), 1);
 }

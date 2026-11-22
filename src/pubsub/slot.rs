@@ -1,5 +1,5 @@
 use crossbeam_queue::SegQueue;
-use foldhash::fast::FixedState;
+use foldhash::fast::RandomState;
 use mio::Waker;
 use parking_lot::Mutex;
 use smallvec::SmallVec;
@@ -66,7 +66,11 @@ pub(crate) struct Subscriber {
 }
 
 type Members = SmallVec<[Subscriber; 1]>;
-type Subscriptions = HashMap<Arc<str>, Members, FixedState>;
+/// Channel names are client-chosen. A hasher seeded with a constant from the
+/// source lets anyone compute colliding names offline and degrade lookups to
+/// linear probing (hash flooding); `RandomState` seeds from the process's
+/// random seed instead.
+type Subscriptions = HashMap<Arc<str>, Members, RandomState>;
 pub(crate) struct LocalSubscriptions {
    pub channels: Subscriptions,
    pub patterns: Subscriptions,
@@ -74,8 +78,8 @@ pub(crate) struct LocalSubscriptions {
 impl LocalSubscriptions {
    fn new() -> Self {
       Self {
-         channels: HashMap::with_hasher(FixedState::with_seed(0)),
-         patterns: HashMap::with_hasher(FixedState::with_seed(0)),
+         channels: HashMap::with_hasher(RandomState::default()),
+         patterns: HashMap::with_hasher(RandomState::default()),
       }
    }
 }

@@ -1,5 +1,5 @@
 mod access;
-pub use access::{ReadEpochGuard, ReadStamp, WriteEpochGuard};
+pub use access::{ReadEpochGuard, ReadStamp, WriteEpochGuard, bind_thread_stripe};
 mod ebr;
 mod key;
 mod ops;
@@ -1635,11 +1635,26 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
    #[inline(always)]
    fn bump(&self, idx: usize, up: bool) {
       let live = &unsafe { self.shards.get_unchecked(idx) }.live;
+      // `approx` is read only when a key limit is configured. Without one,
+      // skipping it avoids a process-wide contended line on every insert.
+      let limited = self.max_keys != usize::MAX;
       if up {
          live.fetch_add(1, Ordering::Relaxed);
-         self.approx.fetch_add(1, Ordering::Relaxed);
+         if limited {
+            self.approx.fetch_add(1, Ordering::Relaxed);
+         }
       } else {
          live.fetch_sub(1, Ordering::Relaxed);
+         if limited {
+            self.approx.fetch_sub(1, Ordering::Relaxed);
+         }
+      }
+   }
+
+   /// A scan removed one entry without going through `bump`.
+   #[inline(always)]
+   pub(crate) fn removed_one(&self) {
+      if self.max_keys != usize::MAX {
          self.approx.fetch_sub(1, Ordering::Relaxed);
       }
    }
@@ -1673,10 +1688,16 @@ impl<V: Clone + Send + Sync + 'static> Default for CustomMap<V> {
 
 pub const PREFETCH_BATCH: usize = 32;
 
+/// An `Entry` can span two cache lines unless it is line-aligned and at most
+/// one line long; only then is a second prefetch useful.
+const fn entry_spans_lines<V>() -> bool {
+   !(std::mem::align_of::<Entry<V>>() >= 64 && std::mem::size_of::<Entry<V>>() <= 64)
+}
+
 #[inline(always)]
 fn prefetch_entry<V>(p: *const Entry<V>) {
    prefetch_line(p);
-   if std::mem::size_of::<Entry<V>>() > 32 {
+   if entry_spans_lines::<V>() {
       prefetch_line(
          p.cast::<u8>()
             .wrapping_add(std::mem::size_of::<Entry<V>>() - 1),
@@ -1687,7 +1708,7 @@ fn prefetch_entry<V>(p: *const Entry<V>) {
 #[inline(always)]
 fn prefetch_entry_write<V>(p: *const Entry<V>) {
    prefetch_line_write(p);
-   if std::mem::size_of::<Entry<V>>() > 32 {
+   if entry_spans_lines::<V>() {
       prefetch_line_write(
          p.cast::<u8>()
             .wrapping_add(std::mem::size_of::<Entry<V>>() - 1),

@@ -16,6 +16,16 @@ pub struct EncodedResult {
 
 impl EncodedResult {
    pub fn from_result_set(result: &DbResultSet, ttl_ms: u64) -> Self {
+      Self::encode(std::sync::Arc::new(result.clone()), expiry_ms(ttl_ms))
+   }
+
+   /// Encodes a result that is already shared, expiring at an absolute
+   /// deadline (Unix ms, 0 = never) rather than after a fresh TTL.
+   pub fn from_shared(result: std::sync::Arc<DbResultSet>, expires_at_ms: u64) -> Self {
+      Self::encode(result, expires_at_ms)
+   }
+
+   fn encode(result: std::sync::Arc<DbResultSet>, expires_at_ms: u64) -> Self {
       let mut wire = if result.columns.is_empty() {
          Vec::new()
       } else {
@@ -35,8 +45,8 @@ impl EncodedResult {
          split1,
          columns: result.columns.clone(),
          row_count,
-         expires_at_ms: expiry_ms(ttl_ms),
-         result: std::sync::Arc::new(result.clone()),
+         expires_at_ms,
+         result,
       }
    }
 

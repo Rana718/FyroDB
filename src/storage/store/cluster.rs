@@ -41,120 +41,95 @@ impl Store {
       self.replication.is_some() || crate::storage::persistence::aof::enabled()
    }
 
-   #[inline]
-   pub(crate) fn aof_capture(&self, key: &str) {
-      if let Some(aof) = crate::storage::persistence::aof::get() {
-         aof.record(key, || {
-            self
-               .data
-               .get_ref(key)
-               .and_then(|v| crate::storage::persistence::aof::encode_live(&v))
-         });
-      }
-   }
-
-   /// Records live string write for replication and AOF without secondary table lookup.
-   pub fn record_live_string(&self, key: &[u8], bytes: &[u8], expires_ms: u64) {
-      let mut encoded: Option<Vec<u8>> = None;
-      if crate::storage::persistence::aof::enabled() || self.replication.is_some() {
-         encoded = Some(crate::storage::rdb::encode_string_value(bytes, expires_ms));
-      }
-      if let Some(aof) = crate::storage::persistence::aof::get() {
-         aof.record_encoded_bytes(key, encoded.as_deref());
-      }
-      let Some(log) = &self.replication else { return };
-      let slot = crate::cluster::hash_slot(key);
-      let Some(enc) = encoded else { return };
-      let expire_at_ms = (expires_ms != 0).then_some(expires_ms);
-      let _ = log.append(crate::cluster::MutationRecord::replace(
-         slot,
-         key.to_vec(),
-         enc,
-         expire_at_ms,
-      ));
-   }
-
+   /// Log `key`'s current state to the AOF and the replication log.
+   ///
+   /// Writers call this after releasing the entry lock, so two writers of one
+   /// key can reach it in either order. Each call therefore logs the state it
+   /// observes, and takes its AOF sequence number and replication offset at a
+   /// point where that state cannot change:
+   /// - a present key: while holding the entry read guard, which excludes
+   ///   writers until both numbers are assigned;
+   /// - an absent key: after taking both numbers, it re-checks that the key is
+   ///   still absent. An insert after the re-check is logged by its own writer
+   ///   with later numbers; an insert before it fails the re-check and the
+   ///   call starts over.
+   ///
+   /// Per key, log order therefore matches apply order and the last record is
+   /// the key's latest state, so replay and replicas converge on the live value.
    pub fn record_current_value_bytes(&self, key: &[u8]) {
-      let mut encoded: Option<Vec<u8>> = None;
-      let mut expire_at_ms: Option<u64> = None;
-      let mut live = false;
-      {
-         let value = self.data.get_ref_bytes(key);
-         if let Some(value) = value.as_ref().filter(|value| !value.is_expired()) {
-            live = true;
-            if crate::storage::persistence::aof::enabled() {
-               encoded = crate::storage::persistence::aof::encode_live(value);
+      let aof = crate::storage::persistence::aof::get();
+      let log = self.replication.as_ref();
+      if aof.is_none() && log.is_none() {
+         return;
+      }
+      loop {
+         if let Some(value) = self.data.get_ref_bytes(key) {
+            let mut encoded: Option<Vec<u8>> = None;
+            let mut expire_at_ms: Option<u64> = None;
+            let live = !value.is_expired();
+            if live {
+               if aof.is_some() {
+                  encoded = crate::storage::persistence::aof::encode_live(&value);
+               }
+               expire_at_ms = Some(value.expires_ms).filter(|expiry| *expiry != 0);
+               if log.is_some() && encoded.is_none() {
+                  encoded = crate::storage::rdb::encode_single_value(&value).ok();
+               }
             }
-            expire_at_ms = Some(value.expires_ms).filter(|expiry| *expiry != 0);
-            if self.replication.is_some() && encoded.is_none() {
-               encoded = crate::storage::rdb::encode_single_value(value).ok();
+            if let Some(aof) = aof {
+               aof.record_encoded_bytes(key, encoded.as_deref());
             }
+            if let Some(log) = log {
+               let _ = log.append(Self::mutation_record(
+                  key,
+                  if live { encoded } else { None },
+                  expire_at_ms,
+               ));
+            }
+            // The read guard is released only after both numbers are assigned.
+            drop(value);
+            return;
          }
+         let seq = aof.map(|aof| aof.reserve_seq());
+         let mut appender = log.map(|log| log.lock_append());
+         if self.data.get_ref_bytes(key).is_some() {
+            // Inserted meanwhile. The reserved AOF number becomes a gap.
+            continue;
+         }
+         if let (Some(aof), Some(seq)) = (aof, seq) {
+            aof.record_reserved_bytes(seq, key, None);
+         }
+         if let Some(appender) = appender.as_mut() {
+            let _ = appender.append(Self::mutation_record(key, None, None));
+         }
+         return;
       }
-      if let Some(aof) = crate::storage::persistence::aof::get() {
-         aof.record_encoded_bytes(key, encoded.as_deref());
-      }
-      let Some(log) = &self.replication else { return };
+   }
+
+   #[inline]
+   pub fn record_current_value(&self, key: &str) {
+      self.record_current_value_bytes(key.as_bytes());
+   }
+
+   fn mutation_record(
+      key: &[u8],
+      encoded: Option<Vec<u8>>,
+      expire_at_ms: Option<u64>,
+   ) -> crate::cluster::MutationRecord {
       let slot = crate::cluster::hash_slot(key);
-      let Some(encoded) = (live.then_some(encoded)).flatten() else {
-         let _ = log.append(crate::cluster::MutationRecord {
+      match encoded {
+         Some(encoded) => {
+            crate::cluster::MutationRecord::replace(slot, key.to_vec(), encoded, expire_at_ms)
+         }
+         None => crate::cluster::MutationRecord {
             offset: 0,
             slot,
             kind: crate::cluster::MutationKind::Delete,
             key: key.to_vec(),
             value: Vec::new(),
             expire_at_ms: None,
-         });
-         return;
-      };
-      let _ = log.append(crate::cluster::MutationRecord::replace(
-         slot,
-         key.to_vec(),
-         encoded,
-         expire_at_ms,
-      ));
-   }
-
-   pub fn record_current_value(&self, key: &str) {
-      // One lookup and encoding shared by AOF and replication.
-      let mut encoded: Option<Vec<u8>> = None;
-      let mut expire_at_ms: Option<u64> = None;
-      let mut live = false;
-      {
-         let value = self.data.get_ref(key);
-         if let Some(value) = value.as_ref().filter(|value| !value.is_expired()) {
-            live = true;
-            if crate::storage::persistence::aof::enabled() {
-               encoded = crate::storage::persistence::aof::encode_live(value);
-            }
-            expire_at_ms = Some(value.expires_ms).filter(|expiry| *expiry != 0);
-            if self.replication.is_some() && encoded.is_none() {
-               encoded = crate::storage::rdb::encode_single_value(value).ok();
-            }
-         }
+         },
       }
-      if let Some(aof) = crate::storage::persistence::aof::get() {
-         aof.record_encoded(key, encoded.as_deref());
-      }
-      let Some(log) = &self.replication else { return };
-      let slot = crate::cluster::hash_slot(key.as_bytes());
-      let Some(encoded) = (live.then_some(encoded)).flatten() else {
-         let _ = log.append(crate::cluster::MutationRecord {
-            offset: 0,
-            slot,
-            kind: crate::cluster::MutationKind::Delete,
-            key: key.as_bytes().to_vec(),
-            value: Vec::new(),
-            expire_at_ms: None,
-         });
-         return;
-      };
-      let _ = log.append(crate::cluster::MutationRecord::replace(
-         slot,
-         key.as_bytes().to_vec(),
-         encoded,
-         expire_at_ms,
-      ));
    }
 
    pub fn cluster_topology(&self) -> crate::cluster::Topology {
@@ -196,17 +171,37 @@ impl Store {
       }
    }
 
+   /// Writes the replication journal's buffered entries; called by workers
+   /// once per event-loop pass, just before the AOF flush.
+   #[inline]
+   pub fn write_replication_journal(&self) {
+      if let Some(log) = &self.replication {
+         log.write_journal_buffer();
+      }
+   }
+
+   /// Installs a topology learned from a peer (newer, or merged with a
+   /// concurrent change) and persists whatever ended up installed.
    pub fn install_cluster_topology(&self, topology: crate::cluster::Topology) -> bool {
-      if !self.cluster_state.replace_topology(topology.clone()) {
+      if !self.cluster_state.replace_topology(topology) {
          return false;
       }
+      self.persist_cluster_topology();
+      true
+   }
+
+   /// Persists the installed topology. Local changes (failover, SETSLOT,
+   /// migration commit) are applied to the cluster state in place, so
+   /// `install_cluster_topology` would reject them as "not newer" and they
+   /// were never written to nodes.conf or the epoch metadata.
+   pub fn persist_cluster_topology(&self) {
+      let topology = self.cluster_state.topology_arc();
       let _ = self.persist_cluster_metadata();
       let _ = crate::cluster::save_nodes_conf(
          &self.cluster.nodes_config_file,
          &topology,
          &self.cluster.local_id,
       );
-      true
    }
 
    fn persist_cluster_metadata(&self) -> std::io::Result<()> {

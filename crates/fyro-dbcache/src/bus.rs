@@ -18,6 +18,15 @@ use std::path::PathBuf;
 use std::thread;
 
 const RETRY: Duration = Duration::from_millis(250);
+/// Bus writes used to block forever, so one paused or wedged process filled
+/// its socket buffer, stalled the broker's relay, and then every process's
+/// writers stalled on `publish`. The broker now gives each peer this long to
+/// take a message and disconnects it otherwise; the peer flushes its own
+/// cache on reconnect and tells the others to flush, so nothing is lost.
+const PEER_WRITE_TIMEOUT: Duration = Duration::from_millis(500);
+/// Publishers wait longer than the relay, so a stuck peer is dropped by the
+/// broker before healthy publishers give up on their own connection.
+const PUBLISH_TIMEOUT: Duration = Duration::from_secs(2);
 const LOCK_STALE: Duration = Duration::from_secs(5);
 const MAX_LINE: usize = 1 << 20;
 const FLUSH_LINE: &str = "{\"flush\":true}\n";
@@ -33,6 +42,10 @@ pub struct InvalidationBus {
    path: PathBuf,
    #[cfg(unix)]
    writer: Mutex<Option<UnixStream>>,
+   /// Set while this process hosts the broker. Its publish path is a
+   /// connection to its own listener, which nothing else would reopen.
+   #[cfg(unix)]
+   broker: AtomicBool,
 }
 
 impl InvalidationBus {
@@ -51,6 +64,9 @@ impl InvalidationBus {
    #[cfg(unix)]
    fn publish(&self, line: &str) {
       let mut guard = self.writer.lock();
+      if guard.is_none() && !self.reopen_local(&mut guard) {
+         return;
+      }
       let Some(stream) = guard.as_mut() else {
          return;
       };
@@ -61,6 +77,9 @@ impl InvalidationBus {
       {
          let _ = stream.shutdown(std::net::Shutdown::Both);
          *guard = None;
+         // A client process reconnects from `run` and flushes everyone then.
+         // The broker reconnects here; the flush it sends covers this line.
+         self.reopen_local(&mut guard);
          return;
       }
       self
@@ -68,6 +87,27 @@ impl InvalidationBus {
          .metrics()
          .bus_messages_sent
          .fetch_add(1, Ordering::Relaxed);
+   }
+
+   /// Broker only: reopens the connection to our own listener after a failed
+   /// write, then tells every peer to flush because a message may be lost.
+   #[cfg(unix)]
+   fn reopen_local(&self, guard: &mut Option<UnixStream>) -> bool {
+      if !self.broker.load(Ordering::Acquire) {
+         return false;
+      }
+      let Some(mut stream) = connect_local(&self.path) else {
+         return false;
+      };
+      if stream
+         .write_all(FLUSH_LINE.as_bytes())
+         .and_then(|_| stream.flush())
+         .is_err()
+      {
+         return false;
+      }
+      *guard = Some(stream);
+      true
    }
 
    #[cfg(not(unix))]
@@ -94,6 +134,7 @@ pub fn start(
       prefix,
       path: PathBuf::from(path),
       writer: Mutex::new(None),
+      broker: AtomicBool::new(false),
    });
    let worker = Arc::clone(&bus);
    thread::Builder::new()
@@ -137,6 +178,7 @@ impl InvalidationBus {
             }
             ever_connected = true;
             self.serve_broker(listener);
+            self.broker.store(false, Ordering::Release);
          }
          self.set_connected(false);
          if let Some(stream) = self.writer.lock().take() {
@@ -155,6 +197,9 @@ impl InvalidationBus {
       let Ok(write_half) = stream.try_clone() else {
          return;
       };
+      if write_half.set_write_timeout(Some(PUBLISH_TIMEOUT)).is_err() {
+         return;
+      }
       *self.writer.lock() = Some(write_half);
       self.set_connected(true);
       // Flush peers to reconcile invalidations missed while disconnected.
@@ -217,18 +262,19 @@ impl InvalidationBus {
 
       // The broker also needs a publisher path; connect to itself so its own
       // invalidations travel through the same relay as everyone else's.
-      if let Ok(mut stream) = UnixStream::connect(&self.path)
-         && stream.write_all(LOCAL_HELLO.as_bytes()).is_ok()
-         && stream.flush().is_ok()
-      {
+      if let Some(stream) = connect_local(&self.path) {
          *self.writer.lock() = Some(stream);
          self.set_connected(true);
       }
+      self.broker.store(true, Ordering::Release);
 
       for incoming in listener.incoming() {
          let Ok(stream) = incoming else {
             break;
          };
+         if stream.set_write_timeout(Some(PEER_WRITE_TIMEOUT)).is_err() {
+            continue;
+         }
          let peer = Arc::new(Peer {
             stream: Mutex::new(stream),
             local: AtomicBool::new(false),
@@ -295,6 +341,17 @@ impl InvalidationBus {
             .ok();
       }
    }
+}
+
+/// The broker's own publish connection: marked local so the relay does not
+/// re-apply its messages here.
+#[cfg(unix)]
+fn connect_local(path: &std::path::Path) -> Option<UnixStream> {
+   let mut stream = UnixStream::connect(path).ok()?;
+   stream.set_write_timeout(Some(PUBLISH_TIMEOUT)).ok()?;
+   stream.write_all(LOCAL_HELLO.as_bytes()).ok()?;
+   stream.flush().ok()?;
+   Some(stream)
 }
 
 #[cfg(unix)]

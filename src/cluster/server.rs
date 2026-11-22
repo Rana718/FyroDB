@@ -42,7 +42,6 @@ pub fn start_listener(
    let listener = TcpListener::bind(address)?;
    listener.set_nonblocking(false)?;
    let local_id = config.local_id.clone();
-   let epoch = config.topology.epoch;
    let codec = FrameCodec::default();
    let active_peers = Arc::new(AtomicUsize::new(0));
    let max_inbound_peers = config.max_inbound_peers;
@@ -74,7 +73,6 @@ pub fn start_listener(
                         let _permit = permit;
                         let ctx = PeerContext {
                            local_id: &peer_id,
-                           epoch,
                            auth_token: peer_auth.as_deref(),
                            peer_timeout,
                         };
@@ -98,7 +96,6 @@ pub fn start_listener(
 /// Identity + auth + timeouts a peer handshake needs.
 struct PeerContext<'a> {
    local_id: &'a str,
-   epoch: u64,
    auth_token: Option<&'a str>,
    peer_timeout: std::time::Duration,
 }
@@ -151,7 +148,7 @@ fn handle_peer(
       request_id: hello.request_id,
       source_id: stable_id(ctx.local_id),
       target_id: hello.source_id,
-      epoch: ctx.epoch,
+      epoch: state.epoch(),
       payload: ctx.local_id.as_bytes().to_vec(),
    };
    if peer.send(&response).is_err() {
@@ -167,7 +164,7 @@ fn handle_peer(
          request_id: hello.request_id,
          source_id: stable_id(ctx.local_id),
          target_id: hello.source_id,
-         epoch: ctx.epoch,
+         epoch: state.epoch(),
          payload,
       })
       .is_err()
@@ -178,6 +175,7 @@ fn handle_peer(
    let snapshot_path =
       std::env::temp_dir().join(format!("fyrodb-replica-{}-{remote_id}.rdb", ctx.local_id));
    let mut snapshot_file: Option<std::fs::File> = None;
+   let mut snapshot_header: Option<(u64, u64)> = None;
    // One Arc + version per connection; a topology clone only happens when the
    // generation actually changes, not on every inbound frame.
    let Some((mut topology_version, mut current_topology, _)) = state.topology_if_newer(0) else {
@@ -193,13 +191,13 @@ fn handle_peer(
          current_topology = topology;
       }
       let topology = current_topology.as_ref();
-      let current_epoch = topology.epoch.max(ctx.epoch);
-      if frame.epoch < current_epoch {
-         continue;
-      }
-      if frame.epoch > current_epoch && frame.message_type != MessageType::Topology {
-         break;
-      }
+      // No blanket epoch filter: peers stamp frames with their live epoch,
+      // which legitimately runs ahead of or behind ours while a topology
+      // change propagates. Dropping those frames silently stopped
+      // replication, heartbeats and failover after the first change. Each
+      // message is checked against the live topology below instead
+      // (replication source, import source, failure quorum epoch).
+      let current_epoch = state.epoch();
       match frame.message_type {
          MessageType::Ping => {
             let _ = peer.send(&Frame {
@@ -208,7 +206,7 @@ fn handle_peer(
                request_id: frame.request_id,
                source_id: stable_id(ctx.local_id),
                target_id: frame.source_id,
-               epoch: ctx.epoch,
+               epoch: state.epoch(),
                payload: Vec::new(),
             });
          }
@@ -229,9 +227,11 @@ fn handle_peer(
                if known_reporter && known_target && report.target_id != ctx.local_id {
                   let confirmed = state.record_failure(report.clone());
                   if confirmed
-                     && let Some(topology) = state.promote_replica(&report.target_id, report.epoch)
+                     && state
+                        .promote_replica(&report.target_id, report.epoch)
+                        .is_some()
                   {
-                     let _ = store.install_cluster_topology(topology);
+                     store.persist_cluster_topology();
                   }
                }
             }
@@ -242,13 +242,36 @@ fn handle_peer(
             }
          }
          MessageType::ReplicationEntry => {
-            if let Ok(super::ReplicationMessage::Entry(record)) =
-               decode_replication_message(&frame.payload)
-               && source_allowed
-               && replica_applier
-                  .try_apply(&record, |record| store.apply_replica_mutation(record))
-                  .is_ok()
-            {
+            if !source_allowed {
+               continue;
+            }
+            let before = replica_applier.applied_offset();
+            // A single entry (older primaries) or a batch: applied in order,
+            // stopping at the first failure, then acknowledged once.
+            match decode_replication_message(&frame.payload) {
+               Ok(super::ReplicationMessage::Entry(record)) => {
+                  if replica_applier
+                     .try_apply(&record, |record| store.apply_replica_mutation(record))
+                     .is_err()
+                  {
+                     // Unchanged reply for single entries: no ack, the
+                     // primary retries after its timeout.
+                     continue;
+                  }
+               }
+               Ok(super::ReplicationMessage::Entries(records)) => {
+                  for record in &records {
+                     if replica_applier
+                        .try_apply(record, |record| store.apply_replica_mutation(record))
+                        .is_err()
+                     {
+                        break;
+                     }
+                  }
+               }
+               _ => continue,
+            }
+            if replica_applier.applied_offset() != before {
                store.set_replica_applied_offset(replica_applier.applied_offset());
                offset_dirty = true;
                if last_offset_checkpoint.elapsed() >= REPLICA_OFFSET_CHECKPOINT {
@@ -256,19 +279,22 @@ fn handle_peer(
                   offset_dirty = false;
                   last_offset_checkpoint = Instant::now();
                }
-               if let Ok(payload) = encode_replication_message(&super::ReplicationMessage::Ack {
-                  applied_offset: replica_applier.applied_offset(),
-               }) {
-                  let _ = peer.send(&Frame {
-                     message_type: MessageType::ReplicationAck,
-                     flags: 0,
-                     request_id: frame.request_id,
-                     source_id: stable_id(ctx.local_id),
-                     target_id: frame.source_id,
-                     epoch: ctx.epoch,
-                     payload,
-                  });
-               }
+            }
+            // A batch is always acknowledged, even when it stopped at a gap,
+            // so the primary rewinds to our offset at once instead of waiting
+            // for a timeout.
+            if let Ok(payload) = encode_replication_message(&super::ReplicationMessage::Ack {
+               applied_offset: replica_applier.applied_offset(),
+            }) {
+               let _ = peer.send(&Frame {
+                  message_type: MessageType::ReplicationAck,
+                  flags: 0,
+                  request_id: frame.request_id,
+                  source_id: stable_id(ctx.local_id),
+                  target_id: frame.source_id,
+                  epoch: state.epoch(),
+                  payload,
+               });
             }
          }
          MessageType::MigrateBegin => {
@@ -350,7 +376,11 @@ fn handle_peer(
             else {
                continue;
             };
-            if snapshot_epoch != ctx.epoch {
+            // Chunks must all belong to the transfer the start chunk opened;
+            // the sender's epoch is no longer compared with our startup one.
+            if frame.flags & 1 != 0 {
+               snapshot_header = Some((snapshot_epoch, offset));
+            } else if snapshot_header != Some((snapshot_epoch, offset)) {
                continue;
             }
             if frame.flags & 1 != 0 {
@@ -375,6 +405,7 @@ fn handle_peer(
                let _ = file.flush();
                let _ = file.sync_all();
                snapshot_file = None;
+               snapshot_header = None;
                store.flush();
                let result =
                   crate::storage::rdb::load_strict(store, snapshot_path.to_str().unwrap_or(""));
@@ -400,7 +431,7 @@ fn handle_peer(
                   request_id: frame.request_id,
                   source_id: stable_id(ctx.local_id),
                   target_id: frame.source_id,
-                  epoch: ctx.epoch,
+                  epoch: state.epoch(),
                   payload,
                });
             }
@@ -425,11 +456,11 @@ fn handle_peer(
                );
                let _ = peer.send(&Frame {
                   message_type: MessageType::ReplicationAck,
-                  flags: 0,
+                  flags: super::FLAG_REPLICATION_BATCHES,
                   request_id: frame.request_id,
                   source_id: stable_id(ctx.local_id),
                   target_id: frame.source_id,
-                  epoch: ctx.epoch,
+                  epoch: state.epoch(),
                   payload,
                });
             }
@@ -509,16 +540,16 @@ mod tests {
          let (stream, _) = listener.accept().unwrap();
          let ctx = PeerContext {
             local_id: "node-a",
-            epoch: 7,
             auth_token: None,
             peer_timeout: std::time::Duration::from_secs(6),
          };
+         let live = super::super::Topology::new(7, Vec::new());
          handle_peer(
             stream,
             FrameCodec::default(),
             &ctx,
-            &super::super::Topology::default(),
-            &ClusterState::new(2, std::time::Duration::from_secs(30)),
+            &live,
+            &ClusterState::with_topology(2, std::time::Duration::from_secs(30), live.clone()),
             &Store::with_config(1, 16),
          );
       });
@@ -544,32 +575,55 @@ mod tests {
       let topology = peer.receive().unwrap();
       assert_eq!(topology.message_type, MessageType::Topology);
 
-      peer
-         .send(&Frame {
-            message_type: MessageType::Ping,
-            flags: 0,
-            request_id: 12,
-            source_id: stable_id("node-b"),
-            target_id: stable_id("node-a"),
-            epoch: 1,
-            payload: Vec::new(),
+      // A peer behind us (epoch 1) or ahead of us (epoch 9) while a topology
+      // change propagates is still answered; only the live topology decides
+      // what a frame may do, so heartbeats never stall on an epoch mismatch.
+      for (request_id, epoch) in [(12, 1), (13, 9)] {
+         peer
+            .send(&Frame {
+               message_type: MessageType::Ping,
+               flags: 0,
+               request_id,
+               source_id: stable_id("node-b"),
+               target_id: stable_id("node-a"),
+               epoch,
+               payload: Vec::new(),
+            })
+            .unwrap();
+         let pong = peer.receive().unwrap();
+         assert_eq!(pong.message_type, MessageType::Pong);
+         assert_eq!(pong.request_id, request_id);
+         assert_eq!(pong.epoch, 7, "replies carry the live epoch");
+      }
+      // A replica advertises batched entries on its ReplicationBegin reply;
+      // primaries that see no flag (older replicas) send single entries.
+      let begin =
+         crate::cluster::encode_replication_message(&crate::cluster::ReplicationMessage::Begin {
+            epoch: 7,
+            from_offset: 0,
+            identity: [5; 16],
          })
          .unwrap();
       peer
          .send(&Frame {
-            message_type: MessageType::Ping,
+            message_type: MessageType::ReplicationBegin,
             flags: 0,
-            request_id: 13,
+            request_id: 14,
             source_id: stable_id("node-b"),
             target_id: stable_id("node-a"),
-            epoch: hello.epoch,
-            payload: Vec::new(),
+            epoch: 7,
+            payload: begin,
          })
          .unwrap();
-      let pong = peer.receive().unwrap();
-      assert_eq!(pong.message_type, MessageType::Pong);
-      assert_eq!(pong.request_id, 13);
-      assert_eq!(pong.epoch, hello.epoch);
+      let reply = peer.receive().unwrap();
+      assert_eq!(reply.message_type, MessageType::ReplicationAck);
+      assert_eq!(reply.request_id, 14);
+      assert_ne!(reply.flags & crate::cluster::FLAG_REPLICATION_BATCHES, 0);
+      assert_eq!(
+         reply.payload.len(),
+         24,
+         "payload layout unchanged for older primaries"
+      );
       drop(peer);
       server.join().unwrap();
    }

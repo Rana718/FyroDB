@@ -247,11 +247,22 @@ $ redis-cli -p 8000 mget a b
 (error) CROSSSLOT Keys in request don't hash to the same slot
 ```
 
+## Upgrading a Cluster
+
+Primaries ship replication entries in batches (one frame and one
+acknowledgement per batch instead of per write) to replicas that advertise
+support for them, and single entries to older replicas. Nodes can therefore be
+upgraded in any order.
+
 ## Slot Migration
 
-Migration follows Redis's handshake. `SETSLOT <slot> NODE <target>` has to be
-sent to **every** master — only the source has a pending migration record, and a
-node that never hears about the new owner will keep redirecting to the old one.
+Migration follows Redis's handshake. Send `SETSLOT <slot> NODE <target>` to the
+source and the target, as in Redis; sending it to every master is still safe.
+Every node pushes its topology over the cluster bus when it changes and whenever
+a peer connects, so the other nodes (and a node that was down at the time, such
+as a primary returning after a failover) learn the new owner within a heartbeat.
+If two nodes change the topology concurrently, their versions are merged: each
+slot goes to the claimant with the higher config epoch.
 
 ```bash
 SLOT=$(redis-cli -p 8000 cluster keyslot user:1 | tr -dc 0-9)

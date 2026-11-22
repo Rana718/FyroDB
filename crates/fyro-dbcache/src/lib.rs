@@ -2,6 +2,7 @@ pub mod auth;
 pub mod bus;
 pub mod cache;
 pub mod config;
+mod keyed;
 pub mod pool;
 pub mod protocol;
 pub mod proxy;

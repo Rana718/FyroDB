@@ -137,6 +137,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
                   unsafe { (*entry.value.get()).assume_init_drop() };
                   write_end(&entry.state, false);
                   shard.live.fetch_sub(1, Ordering::Relaxed);
+                  self.removed_one();
                   removed = true;
                   if self.observing.load(Ordering::Relaxed) {
                      self.notify(entry.key.as_str());
@@ -194,6 +195,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
             unsafe { (*entry.value.get()).assume_init_drop() };
             write_end(&entry.state, false);
             shard.live.fetch_sub(1, Ordering::Relaxed);
+            self.removed_one();
             if self.observing.load(Ordering::Relaxed) {
                self.notify(entry.key.as_str());
             }
@@ -250,6 +252,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
             unsafe { (*entry.value.get()).assume_init_drop() };
             write_end(&entry.state, false);
             shard.live.fetch_sub(1, Ordering::Relaxed);
+            self.removed_one();
             removed += 1;
             if self.observing.load(Ordering::Relaxed) {
                self.notify(entry.key.as_str());

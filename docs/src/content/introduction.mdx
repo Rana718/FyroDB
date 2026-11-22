@@ -35,7 +35,7 @@ Both engines run in one process with separate event loops while sharing CPU, mem
 - **PostgreSQL query cache** — proxy mode sits between your app and Postgres, caches SELECT results, serves hits at 5M+ ops/sec without touching the database
 - **Table-aware invalidation** — cached results are invalidated automatically when the underlying tables change; INSERT/UPDATE/DELETE/DDL on `users` immediately drops all cached results that touched `users`
 - **Extended protocol support** — prepared statements and parameterized queries are fully cached; parameters become part of the cache key fingerprint
-- **mio event loop per proxy thread** — thousands of connections multiplexed on a fixed number of threads, no thread-per-connection overhead
+- **Isolated proxy threads** — each client connection has its own thread, separate from the KV engine's event loops, with a configurable connection cap
 - **Per-session context fingerprinting** — `search_path`, timezone, and other session settings are mixed into cache keys, preventing cross-session cache confusion
 - **SCRAM auth + connection pool** — authenticates against upstream PostgreSQL and reuses connections across clients
 

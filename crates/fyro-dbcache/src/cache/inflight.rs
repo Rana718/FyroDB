@@ -43,7 +43,7 @@ impl Drop for FillGuard {
 
 pub(super) fn inflight_shard_idx(key: &str) -> usize {
    use std::hash::{BuildHasher, Hasher};
-   let mut hasher = FixedState::with_seed(0).build_hasher();
+   let mut hasher = FixedState::with_seed(crate::keyed::table_seed()).build_hasher();
    hasher.write(key.as_bytes());
    (hasher.finish() as usize) & (INFLIGHT_SHARDS - 1)
 }

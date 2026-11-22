@@ -8,7 +8,7 @@ order: 6
 
 FyroDB includes a built-in PostgreSQL query caching proxy. Your application connects to FyroDB's proxy port instead of directly to PostgreSQL — using identical PostgreSQL wire protocol, so no driver, ORM, or code changes are needed. When a SELECT query arrives, FyroDB checks its in-memory cache. A cache hit returns in microseconds with no database involvement. A miss forwards to the real PostgreSQL upstream, caches the result, and returns normally.
 
-Both the KV engine and the proxy run in the same process with independent mio event loops — neither can block the other.
+Both the KV engine and the proxy run in the same process on separate threads — neither can block the other.
 
 ## How It Works
 
@@ -103,7 +103,7 @@ EXECUTE get_user(43);   -- cached under fingerprint for param=43
 EXECUTE get_user(42);   -- cache hit — no DB call
 ```
 
-Batch pipelines (sending many `Parse → Bind → Execute → Sync` cycles in one TCP write) are coalesced by the proxy's mio event loop — pipeline throughput is fully preserved.
+Batch pipelines (sending many `Parse → Bind → Execute → Sync` cycles in one TCP write) are coalesced by the proxy: cache-hit replies for a pipelined batch leave in one write, so pipeline throughput is preserved.
 
 ## Dual Mode vs Cache-Only
 
@@ -136,7 +136,6 @@ docker run -d \
   -e FYRODB_PROXY_PORT=5432 \
   -e FYRODB_PROXY_UPSTREAM_URL=postgres://user:pass@db:5432/mydb \
   -e FYRODB_PROXY_TRUST_AUTH=true \
-  -e FYRODB_PROXY_WORKERS=4 \
   -e FYRODB_PROXY_CACHE_TTL_MS=60000 \
   -e FYRODB_PROXY_CACHE_MAX_KEYS=500000 \
   rana718/fyrodb:latest
@@ -161,10 +160,8 @@ services:
       FYRODB_PROXY_PORT: "5432"
       FYRODB_PROXY_UPSTREAM_URL: postgres://appuser:secret@postgres:5432/mydb
       FYRODB_PROXY_TRUST_AUTH: "true"
-      FYRODB_PROXY_WORKERS: "4"
       FYRODB_PROXY_CACHE_TTL_MS: "60000"
       FYRODB_PROXY_CACHE_MAX_KEYS: "500000"
-      FYRODB_PROXY_BLOCKING_POOL: "16"
     restart: unless-stopped
 
   postgres:
@@ -190,7 +187,6 @@ services:
       FYRODB_PROXY_PORT: "5432"
       FYRODB_PROXY_MODE: "cache-only"
       FYRODB_PROXY_TRUST_AUTH: "true"
-      FYRODB_PROXY_WORKERS: "4"
       FYRODB_PROXY_CACHE_MAX_KEYS: "1000000"
       FYRODB_PROXY_CACHE_TTL_MS: "0"        # 0 = never expire, app controls TTL
       FYRODB_PROXY_FLUSH_ON_START: "false"  # keep cache across restarts
@@ -212,15 +208,16 @@ The minimal set of variables for a production proxy-only deployment:
 | `FYRODB_PROXY_PORT` | `5432` | standard Postgres port |
 | `FYRODB_PROXY_UPSTREAM_URL` | your DB URL | omit for cache-only mode |
 | `FYRODB_PROXY_TRUST_AUTH` | `true` | skip SCRAM on internal networks |
-| `FYRODB_PROXY_WORKERS` | `num_cpus / 2` | mio event loop threads |
 | `FYRODB_PROXY_CACHE_TTL_MS` | `30000`–`60000` | result freshness window |
 | `FYRODB_PROXY_CACHE_MAX_KEYS` | `100000`–`1000000` | tune to your query surface |
-| `FYRODB_PROXY_BLOCKING_POOL` | `16` | upstream / miss thread pool |
+| `FYRODB_PROXY_MAX_CONNECTIONS` | `4096` | concurrent clients; extra clients get `53300 too many clients` |
 | `FYRODB_PROXY_MODE` | `dual` or `cache-only` | fallback behaviour on miss |
 
 ## Per-Session Context Fingerprinting
 
 Session-level settings — `search_path`, `timezone`, `datestyle`, `client_encoding`, and others — are probed on connection and mixed into every cache key for that session. A query under `search_path = myschema` and the same query under `search_path = public` produce different fingerprints and are cached separately. Changing `SET search_path` mid-session is handled correctly — the fingerprint updates and the next query is treated as a miss against the new context.
+
+Fingerprints are keyed: they are computed with SipHash under a 128-bit key drawn from the operating system when the process starts. A client cannot compute or predict a fingerprint, so it cannot craft a query, parameter or `SET` statement that lands on another query's or another session's cache entry. Because the key is new for each process, cache entries left by an earlier process are never hit and expire on their TTL. The parse cache serves a stored parse only for exactly the same SQL text.
 
 ## Cache Purge
 
@@ -351,7 +348,6 @@ services:
       FYRODB_PROXY_UPSTREAM_URL: postgres://appuser:secret@postgres:5432/mydb
       FYRODB_PROXY_CACHE_TTL_MS: "30000"
       FYRODB_PROXY_TRUST_AUTH: "true"
-      FYRODB_PROXY_WORKERS: "2"
     volumes:
       - fyrodb-data:/data
     restart: unless-stopped
@@ -396,13 +392,13 @@ All numbers on a 6-core Intel i5-11400H (12 hardware threads), no upstream datab
 | Simple query TCP (cache hit)      | ~7.6M ops/sec     |
 | Extended protocol TCP (cache hit) | ~5M ops/sec       |
 
-The mio event loop multiplexes thousands of connections on a fixed thread count (`FYRODB_PROXY_WORKERS`). Adding more concurrent clients does not add threads.
+Each client connection is served by its own thread (512 KiB stack, mostly untouched), so concurrency is capped by `FYRODB_PROXY_MAX_CONNECTIONS` (default `4096`, `0` = unlimited). Clients over the cap receive PostgreSQL's standard `53300 sorry, too many clients already` error.
 
 ## Architecture
 
-The proxy runs as a set of independent mio worker threads, each owning a private epoll instance. The KV engine's worker threads have their own epoll instances. The two never share an event loop — a slow upstream connection in the proxy cannot delay a KV GET, and a large KV scan cannot delay proxy latency.
+The proxy runs one thread per client connection, separate from the KV engine's worker threads and their epoll instances. A slow upstream connection in the proxy cannot delay a KV GET, and a large KV scan cannot delay proxy latency.
 
-For upstream operations (initial authentication, cache misses) the proxy uses a bounded blocking thread pool separate from the event loop threads. Cache-hit traffic — the dominant steady-state workload — is handled entirely within the mio threads with no blocking and no thread handoff.
+Cache hits are answered on the client's thread straight from the in-memory encoded cache, without touching the upstream. Misses, authentication relay and writes go to the upstream over a pooled connection (`FYRODB_PROXY_UPSTREAM_POOL`).
 
 ## Configuration Reference
 

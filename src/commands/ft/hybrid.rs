@@ -300,7 +300,7 @@ fn vector(
                })
             })
          };
-         graph.rerank_by(cands, window, &fetch)
+         graph.rerank_bounded(qv, cands, window, &fetch)
       } else {
          cands.into_iter().take(window).collect()
       }

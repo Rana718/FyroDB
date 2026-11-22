@@ -281,12 +281,8 @@ pub fn cluster_cmd(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
          epoch: 1,
          slots: Vec::new(),
       };
-      if let Some(topology) = store.cluster_state_ref().meet_node(new_node) {
-         let _ = crate::cluster::save_nodes_conf(
-            &cluster.nodes_config_file,
-            &topology,
-            &cluster.local_id,
-         );
+      if store.cluster_state_ref().meet_node(new_node).is_some() {
+         store.persist_cluster_topology();
       }
       return resp::write_ok(out);
    }
@@ -309,12 +305,8 @@ pub fn cluster_cmd(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
          .cluster_state_ref()
          .add_slots(&cluster.local_id, &slots)
       {
-         Some(topology) => {
-            let _ = crate::cluster::save_nodes_conf(
-               &cluster.nodes_config_file,
-               &topology,
-               &cluster.local_id,
-            );
+         Some(_) => {
+            store.persist_cluster_topology();
             return resp::write_ok(out);
          }
          None => return resp::write_err(out, "Slot already assigned or node not found"),
@@ -348,12 +340,8 @@ pub fn cluster_cmd(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
          .cluster_state_ref()
          .add_slots(&cluster.local_id, &slots)
       {
-         Some(topology) => {
-            let _ = crate::cluster::save_nodes_conf(
-               &cluster.nodes_config_file,
-               &topology,
-               &cluster.local_id,
-            );
+         Some(_) => {
+            store.persist_cluster_topology();
             return resp::write_ok(out);
          }
          None => return resp::write_err(out, "Slot already assigned or node not found"),
@@ -374,15 +362,12 @@ pub fn cluster_cmd(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
             Err(_) => return resp::write_err(out, "Invalid slot number"),
          }
       }
-      if let Some(topology) = store
+      if store
          .cluster_state_ref()
          .del_slots(&cluster.local_id, &slots)
+         .is_some()
       {
-         let _ = crate::cluster::save_nodes_conf(
-            &cluster.nodes_config_file,
-            &topology,
-            &cluster.local_id,
-         );
+         store.persist_cluster_topology();
       }
       return resp::write_ok(out);
    }
@@ -409,15 +394,12 @@ pub fn cluster_cmd(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
          }
          i += 2;
       }
-      if let Some(topology) = store
+      if store
          .cluster_state_ref()
          .del_slots(&cluster.local_id, &slots)
+         .is_some()
       {
-         let _ = crate::cluster::save_nodes_conf(
-            &cluster.nodes_config_file,
-            &topology,
-            &cluster.local_id,
-         );
+         store.persist_cluster_topology();
       }
       return resp::write_ok(out);
    }
@@ -430,12 +412,8 @@ pub fn cluster_cmd(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
       if node_id == cluster.local_id {
          return resp::write_err(out, "Can't forget myself");
       }
-      if let Some(topology) = store.cluster_state_ref().forget_node(node_id) {
-         let _ = crate::cluster::save_nodes_conf(
-            &cluster.nodes_config_file,
-            &topology,
-            &cluster.local_id,
-         );
+      if store.cluster_state_ref().forget_node(node_id).is_some() {
+         store.persist_cluster_topology();
       }
       return resp::write_ok(out);
    }
@@ -445,9 +423,8 @@ pub fn cluster_cmd(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
       if hard {
          store.flush();
       }
-      let topology = store.cluster_state_ref().reset_slots(&cluster.local_id);
-      let _ =
-         crate::cluster::save_nodes_conf(&cluster.nodes_config_file, &topology, &cluster.local_id);
+      store.cluster_state_ref().reset_slots(&cluster.local_id);
+      store.persist_cluster_topology();
       return resp::write_ok(out);
    }
 
@@ -542,22 +519,19 @@ pub fn cluster_cmd(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
             Some(id) => *id,
             None => return resp::write_wrong_args(out, "cluster setslot"),
          };
-         if let Some(topology) = store.cluster_state_ref().commit_slot_migration(slot) {
-            let _ = crate::cluster::save_nodes_conf(
-               &cluster.nodes_config_file,
-               &topology,
-               &cluster.local_id,
-            );
-            let _ = store.install_cluster_topology(topology);
-         } else if let Some(topology) = store.cluster_state_ref().assign_slot(slot, target) {
-            // Non-source nodes still need to record the new owner,
-            // otherwise they keep redirecting the slot to the old one.
-            let _ = crate::cluster::save_nodes_conf(
-               &cluster.nodes_config_file,
-               &topology,
-               &cluster.local_id,
-            );
-            let _ = store.install_cluster_topology(topology);
+         // Non-source nodes still need to record the new owner, otherwise
+         // they keep redirecting the slot to the old one. Peers learn the
+         // change from the bus, which pushes every new topology.
+         if store
+            .cluster_state_ref()
+            .commit_slot_migration(slot)
+            .is_some()
+            || store
+               .cluster_state_ref()
+               .assign_slot(slot, target)
+               .is_some()
+         {
+            store.persist_cluster_topology();
          }
       }
       return resp::write_ok(out);
@@ -580,9 +554,8 @@ pub fn cluster_cmd(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
    }
 
    if sub.eq_ignore_ascii_case("FLUSHSLOTS") {
-      let topology = store.cluster_state_ref().reset_slots(&cluster.local_id);
-      let _ =
-         crate::cluster::save_nodes_conf(&cluster.nodes_config_file, &topology, &cluster.local_id);
+      store.cluster_state_ref().reset_slots(&cluster.local_id);
+      store.persist_cluster_topology();
       return resp::write_ok(out);
    }
 

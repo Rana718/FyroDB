@@ -99,7 +99,7 @@ def ping(port):
 
 def environment():
     env = {k: v for k, v in os.environ.items() if not k.startswith("FYRODB_")}
-    env.update(MIMALLOC_ALLOW_THP="0", MIMALLOC_PURGE_DELAY="0", MIMALLOC_PURGE_DECOMMITS="1", MIMALLOC_ARENA_RESERVE="0", MIMALLOC_ABANDONED_PAGE_PURGE="1", MIMALLOC_ARENA_EAGER_COMMIT="0")
+    env.update(MIMALLOC_ALLOW_THP="0", MIMALLOC_PURGE_DECOMMITS="1", MIMALLOC_ARENA_RESERVE="0", MIMALLOC_ABANDONED_PAGE_PURGE="1", MIMALLOC_ARENA_EAGER_COMMIT="0")
     return env
 
 

@@ -66,6 +66,8 @@ fn worker_loop<const BATCH_SEND: bool>(
    worker_index: usize,
    #[cfg(feature = "io-uring")] mut send_ring: Option<crate::handler::uring::SendRing>,
 ) {
+   // One map-admission writer stripe per worker; see customhash::access.
+   customhash::bind_thread_stripe(worker_index);
    let mut listener = make_listener(port, bind, worker_index);
 
    let mut poll = Poll::new().unwrap();
@@ -95,6 +97,14 @@ fn worker_loop<const BATCH_SEND: bool>(
       .filter(|&us| us > 0)
       .map(std::time::Duration::from_micros);
    let mut last_active = std::time::Instant::now();
+   // Memory a worker frees stays in its allocator heap until the worker
+   // allocates again, and an idle worker sleeps in epoll indefinitely. After
+   // IDLE_COLLECT with no events, collect the heap once so freed buffers
+   // (closed connections, drained pipelines) return to the OS. Busy workers
+   // never pay for it.
+   const IDLE_COLLECT_MS: u64 = 1_000;
+   // Millisecond deadline (process clock), pushed back on every busy pass.
+   let mut collect_due_ms: Option<u64> = None;
    #[cfg(feature = "io-uring")]
    let mut sent: Vec<(u64, i32)> = Vec::new();
 
@@ -130,6 +140,12 @@ fn worker_loop<const BATCH_SEND: bool>(
       if !notifier.fanout.is_empty() || !notifier.pending.is_empty() {
          timeout = Some(std::time::Duration::ZERO);
       }
+      if let Some(due) = collect_due_ms {
+         let until = std::time::Duration::from_millis(
+            due.saturating_sub(crate::storage::value::approx_now_ms()),
+         );
+         timeout = Some(timeout.map_or(until, |t| t.min(until)));
+      }
       let poll_res = poll.poll(&mut events, timeout);
 
       match poll_res {
@@ -139,6 +155,13 @@ fn worker_loop<const BATCH_SEND: bool>(
       }
 
       tick_clock();
+      let now_ms = crate::storage::value::approx_now_ms();
+      if !events.is_empty() {
+         collect_due_ms = Some(now_ms + IDLE_COLLECT_MS);
+      } else if collect_due_ms.is_some_and(|due| now_ms >= due) {
+         collect_due_ms = None;
+         rust_zmalloc::purge();
+      }
       if busy_window.is_some() && !events.is_empty() {
          last_active = std::time::Instant::now();
       }
@@ -164,12 +187,10 @@ fn worker_loop<const BATCH_SEND: bool>(
                         Stream::Tcp(ref tcp) => {
                            let sock_ref = socket2::SockRef::from(tcp);
                            let _ = sock_ref.set_tcp_nodelay(true);
-                           #[cfg(target_os = "linux")]
-                           {
-                              let _ = sock_ref.set_tcp_quickack(true);
-                              // 8MB socket buffers allow large pipelined batches to stream zero-copy.
-                              let _ = sock_ref.set_send_buffer_size(8 * 1024 * 1024);
-                              let _ = sock_ref.set_recv_buffer_size(8 * 1024 * 1024);
+                           // See `socket_buffer_bytes` for the default and override.
+                           if let Some(bytes) = socket_buffer_bytes() {
+                              let _ = sock_ref.set_send_buffer_size(bytes);
+                              let _ = sock_ref.set_recv_buffer_size(bytes);
                            }
                         }
                         #[cfg(feature = "unix-sockets")]
@@ -293,6 +314,7 @@ fn worker_loop<const BATCH_SEND: bool>(
          }
       }
 
+      store.write_replication_journal();
       crate::storage::persistence::aof::flush_local();
       if dirty.len() == 2 {
          if dirty[0] == dirty[1] {
@@ -673,16 +695,37 @@ fn make_tcp_listener(addr: SocketAddr, _worker_index: usize) -> TcpListener {
             std::mem::size_of::<libc::c_int>() as libc::socklen_t,
          );
       }
-      #[cfg(target_os = "linux")]
-      {
-         // Set socket buffer sizes before listen() for SYN/ACK window scaling.
-         let _ = socket.set_send_buffer_size(8 * 1024 * 1024);
-         let _ = socket.set_recv_buffer_size(8 * 1024 * 1024);
+      // Accepted sockets inherit these (and the autotuning lock), so the
+      // listener follows the same setting. Set before listen() for window scaling.
+      if let Some(bytes) = socket_buffer_bytes() {
+         let _ = socket.set_send_buffer_size(bytes);
+         let _ = socket.set_recv_buffer_size(bytes);
       }
    }
    socket.bind(&addr.into()).unwrap();
    socket.listen(8192).unwrap();
    TcpListener::from_std(std::net::TcpListener::from(socket))
+}
+
+/// Default SO_SNDBUF/SO_RCVBUF for client sockets. Measured on deep
+/// pipelines (2026-11-21): leaving sizing to kernel autotuning cost ~3-6% on
+/// pipelined GET/SET and raised peak RSS by ~22 MiB, because unsent work
+/// backed up into user-space buffers instead.
+const DEFAULT_SOCKET_BUFFER_BYTES: usize = 8 * 1024 * 1024;
+
+/// `FYRODB_SOCKET_BUFFER_BYTES` overrides the default; `0` leaves sizing to
+/// the kernel's autotuning, which bounds kernel memory per socket and suits
+/// many mostly-idle connections. A fixed size turns autotuning off, and the
+/// kernel doubles the value.
+fn socket_buffer_bytes() -> Option<usize> {
+   static BYTES: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+   let bytes = *BYTES.get_or_init(|| {
+      std::env::var("FYRODB_SOCKET_BUFFER_BYTES")
+         .ok()
+         .and_then(|v| v.parse().ok())
+         .unwrap_or(DEFAULT_SOCKET_BUFFER_BYTES)
+   });
+   (bytes != 0).then_some(bytes)
 }
 
 fn alloc_slot(
@@ -696,13 +739,10 @@ fn alloc_slot(
    let id = *next_token;
    *next_token += 1;
    if id >= conns.len() {
-      let previous = conns.capacity();
+      // No allocator purge here: `mi_collect(true)` walks this worker's heap
+      // and stalls every connection on it; mimalloc's purge delay returns
+      // the retired array's pages on its own.
       conns.resize_with(id + 1, || None);
-      if conns.capacity() != previous && previous * size_of::<Option<Conn>>() >= 32 * 1024 {
-         // Reclaim large retired slot arrays during connection bursts;
-         // ordinary request processing never pays for this collection.
-         rust_zmalloc::purge();
-      }
    }
    id
 }

@@ -378,6 +378,7 @@ dependencies = [
  "base64",
  "foldhash",
  "getrandom 0.4.3",
+ "libc",
  "md-5",
  "mio",
  "native-tls",

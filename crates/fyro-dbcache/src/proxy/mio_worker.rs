@@ -2,10 +2,11 @@
 // Multiplexes connections with inline cache hits and a blocking sub-pool.
 
 use mio::net::{TcpListener, TcpStream};
-use mio::{Events, Interest, Poll, Token, Waker};
+use mio::{Events, Interest, Poll, Token};
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
-use std::sync::{Arc, mpsc};
+use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
 
 use foldhash::fast::FixedState;
 
@@ -16,9 +17,10 @@ use crate::pool::UpstreamPool;
 use crate::protocol;
 use crate::query::{ParsedQuery, QueryKind, compute_fingerprint};
 
+use super::{ConnectionPermit, reject_too_many, try_admit};
+
 const LISTENER_TK: Token = Token(0);
-const WAKER_TK: Token = Token(1);
-const CONN_BASE: usize = 2;
+const CONN_BASE: usize = 1;
 
 const READ_CAP: usize = 32 * 1024;
 const FLUSH_THRESH: usize = 32 * 1024;
@@ -170,7 +172,6 @@ impl WriteBuf {
 // ────────────────────────────────────── session state (post-auth)
 
 struct StmtEntry {
-   #[allow(dead_code)]
    sql: String,
    param_oids: Vec<u32>,
    parsed: Arc<ParsedQuery>,
@@ -189,14 +190,22 @@ struct PortalEntry {
    cursor: usize,
    finished: bool,
    cached_encoded: Option<Arc<EncodedResult>>,
+   /// `DbCacheManager::generation` read before `cached_encoded` was looked up.
+   cached_generation: u64,
 }
 
+/// Connection-local shortcut to a cached result. Only valid while the
+/// manager's generation still equals `generation`: before, these copies only
+/// checked the TTL, so they kept serving a result after a write invalidated it.
 #[derive(Clone)]
 struct HotQuerySlot {
    fp: u64,
    parsed: Arc<ParsedQuery>,
    encoded: Option<Arc<EncodedResult>>,
+   generation: u64,
 }
+
+const HOT_SLOTS_CAP: usize = 64;
 
 struct ActiveState {
    mgr: Arc<DbCacheManager>,
@@ -209,7 +218,7 @@ struct ActiveState {
    statements: HashMap<String, StmtEntry, FixedState>,
    portals: HashMap<String, PortalEntry, FixedState>,
    cycle_error: bool,
-   hot_slots: [Option<HotQuerySlot>; 8],
+   hot_slots: [Option<HotQuerySlot>; HOT_SLOTS_CAP],
 }
 
 impl ActiveState {
@@ -226,7 +235,7 @@ impl ActiveState {
          statements: HashMap::with_hasher(FixedState::with_seed(0)),
          portals: HashMap::with_hasher(FixedState::with_seed(0)),
          cycle_error: false,
-         hot_slots: [NONE_SLOT; 8],
+         hot_slots: [NONE_SLOT; HOT_SLOTS_CAP],
       }
    }
 
@@ -275,22 +284,12 @@ impl ActiveState {
       parsed: &ParsedQuery,
       fp: u64,
    ) -> Option<Arc<crate::row::DbResultSet>> {
-      for table in &parsed.tables {
-         if let Some(r) = self
-            .mgr
-            .get_cached_query(&self.config.key_prefix, table, fp)
-         {
-            self.mgr.remember_encoded(
-               &self.config.key_prefix,
-               table,
-               fp,
-               &r,
-               self.config.default_ttl_ms,
-            );
-            return Some(r);
-         }
-      }
-      None
+      self.mgr.load_stored(
+         &self.config.key_prefix,
+         &parsed.tables,
+         &self.mgr.expanded_tables(parsed),
+         fp,
+      )
    }
 
    #[inline]
@@ -324,11 +323,13 @@ impl ActiveState {
       }
 
       let sql_fp = compute_fingerprint(sql);
-      let slot_idx = (sql_fp as usize) & 7;
+      let slot_idx = (sql_fp as usize) & (HOT_SLOTS_CAP - 1);
 
+      let generation = self.mgr.generation();
       if !self.in_transaction
          && let Some(slot) = &self.hot_slots[slot_idx]
          && slot.fp == sql_fp
+         && slot.generation == generation
          && let Some(entry) = &slot.encoded
       {
          let now = coarse_now_ms();
@@ -375,16 +376,19 @@ impl ActiveState {
                fp: sql_fp,
                parsed: Arc::clone(&parsed),
                encoded: Some(Arc::clone(&entry)),
+               generation,
             });
             entry.write_simple_response(out);
             return true;
          }
          if let Some(result) = self.lookup_json_and_promote(&parsed, fp) {
+            let generation = self.mgr.generation();
             if let Some(entry) = self.lookup_encoded(&parsed, fp) {
                self.hot_slots[slot_idx] = Some(HotQuerySlot {
                   fp: sql_fp,
                   parsed: Arc::clone(&parsed),
                   encoded: Some(Arc::clone(&entry)),
+                  generation,
                });
                entry.write_simple_response(out);
                return true;
@@ -415,6 +419,7 @@ impl ActiveState {
                fp: sql_fp,
                parsed: Arc::clone(&parsed),
                encoded: None,
+               generation,
             });
          }
          _ => {
@@ -497,9 +502,11 @@ impl ActiveState {
       }
 
       // Fast path: repeated bind on the same portal with valid cached entry
+      let generation = self.mgr.generation();
       if !self.in_transaction
          && let Some(entry) = self.get_portal_mut(portal)
          && entry.statement == statement
+         && entry.cached_generation == generation
          && let Some(ref cached) = entry.cached_encoded
       {
          let now = coarse_now_ms();
@@ -627,6 +634,7 @@ impl ActiveState {
             entry.cursor = 0;
             entry.finished = false;
             entry.cached_encoded = cached_encoded;
+            entry.cached_generation = generation;
          } else {
             self.unnamed_portal = Some(PortalEntry {
                statement: statement.to_string(),
@@ -637,6 +645,7 @@ impl ActiveState {
                cursor: 0,
                finished: false,
                cached_encoded,
+               cached_generation: generation,
             });
          }
       } else if let Some(entry) = self.portals.get_mut(portal) {
@@ -648,6 +657,7 @@ impl ActiveState {
          entry.cursor = 0;
          entry.finished = false;
          entry.cached_encoded = cached_encoded;
+         entry.cached_generation = generation;
       } else {
          self.portals.insert(
             portal.to_string(),
@@ -660,6 +670,7 @@ impl ActiveState {
                cursor: 0,
                finished: false,
                cached_encoded,
+               cached_generation: generation,
             },
          );
       }
@@ -681,13 +692,16 @@ impl ActiveState {
          0
       };
 
+      let generation = self.mgr.generation();
       let Some(portal) = self.get_portal_mut(portal_name) else {
          self.queue_error(out, "34000", "portal does not exist");
          self.cycle_error = true;
          return true;
       };
 
-      if let Some(entry) = &portal.cached_encoded {
+      if portal.cached_generation == generation
+         && let Some(entry) = &portal.cached_encoded
+      {
          let now = coarse_now_ms();
          if !entry.is_expired(now) {
             if max_rows <= 0 && portal.cursor == 0 {
@@ -716,12 +730,17 @@ impl ActiveState {
       if cacheable {
          if let Some(entry) = self.lookup_encoded(&parsed, fp) {
             let portal_mut = self.get_portal_mut(portal_name).unwrap();
+            portal_mut.cached_encoded = Some(Arc::clone(&entry));
+            portal_mut.cached_generation = generation;
             serve_encoded_from_portal(out, portal_mut, &entry, max_rows);
             return true;
          }
          if let Some(result) = self.lookup_json_and_promote(&parsed, fp) {
+            let generation = self.mgr.generation();
             if let Some(entry) = self.lookup_encoded(&parsed, fp) {
                let portal_mut = self.get_portal_mut(portal_name).unwrap();
+               portal_mut.cached_encoded = Some(Arc::clone(&entry));
+               portal_mut.cached_generation = generation;
                serve_encoded_from_portal(out, portal_mut, &entry, max_rows);
                return true;
             }
@@ -792,6 +811,11 @@ impl ActiveState {
       let mut pos = 1usize;
       let name = take_cstr(body, &mut pos).unwrap_or("");
 
+      // Describe used to answer NoData for every SELECT and then send rows on
+      // Execute, which clients reject as a protocol violation. Columns come
+      // from the cached result now; with no cached copy there is nothing
+      // truthful to say without an upstream, so it is an error, as in the
+      // blocking session.
       match kind {
          b'S' => {
             let Some(stmt) = self.get_statement(name) else {
@@ -799,18 +823,67 @@ impl ActiveState {
                self.cycle_error = true;
                return;
             };
-            let oids = &stmt.param_oids;
-            protocol::put_parameter_description(out, oids);
-            if let Some(row_desc) = &stmt.row_description {
-               out.extend_from_slice(row_desc);
+            let row_description = if stmt.parsed.kind != QueryKind::Select {
+               Some(None)
+            } else if let Some(known) = &stmt.row_description {
+               Some(Some(known.clone()))
+            } else if stmt.param_oids.is_empty() && !stmt.sql.contains('$') {
+               let parsed = Arc::clone(&stmt.parsed);
+               self
+                  .lookup_encoded(&parsed, self.effective_fp(parsed.fingerprint))
+                  .map(|entry| Some(entry.row_description().to_vec()))
             } else {
-               protocol::put_no_data(out);
+               None
+            };
+            let Some(row_description) = row_description else {
+               self.queue_error(out, "08006", "no upstream database configured");
+               self.cycle_error = true;
+               return;
+            };
+            let oids = self
+               .get_statement(name)
+               .map(|stmt| stmt.param_oids.clone())
+               .unwrap_or_default();
+            protocol::put_parameter_description(out, &oids);
+            match row_description {
+               Some(row_description) => out.extend_from_slice(&row_description),
+               None => protocol::put_no_data(out),
             }
          }
          b'P' => {
-            // For cache-only portals we don't have upstream row description;
-            // send NoData which is safe for the client to handle.
-            protocol::put_no_data(out);
+            let generation = self.mgr.generation();
+            let Some(portal) = self.get_portal_mut(name) else {
+               self.queue_error(out, "34000", "portal does not exist");
+               self.cycle_error = true;
+               return;
+            };
+            if portal.parsed.kind != QueryKind::Select {
+               protocol::put_no_data(out);
+               return;
+            }
+            let now = coarse_now_ms();
+            let cached = portal
+               .cached_encoded
+               .as_ref()
+               .filter(|entry| portal.cached_generation == generation && !entry.is_expired(now))
+               .cloned();
+            let (parsed, fingerprint, text_results) = (
+               Arc::clone(&portal.parsed),
+               portal.fingerprint,
+               portal.text_results,
+            );
+            let entry = cached.or_else(|| {
+               (text_results && self.mgr.is_cacheable(&parsed))
+                  .then(|| self.lookup_encoded(&parsed, self.effective_fp(fingerprint)))
+                  .flatten()
+            });
+            match entry {
+               Some(entry) => out.extend_from_slice(entry.row_description()),
+               None => {
+                  self.queue_error(out, "08006", "no upstream database configured");
+                  self.cycle_error = true;
+               }
+            }
          }
          _ => {
             self.queue_error(out, "08P01", "invalid describe type");
@@ -948,10 +1021,7 @@ fn rd_i16(buf: &[u8], pos: usize) -> i16 {
 
 enum ConnState {
    Startup,
-   Offloaded,
    Active(Box<ActiveState>),
-   #[allow(dead_code)]
-   Dead,
 }
 
 struct ProxyConn {
@@ -960,113 +1030,45 @@ struct ProxyConn {
    rbuf: ReadBuf,
    wbuf: WriteBuf,
    wants_write: bool,
+   permit: ConnectionPermit,
 }
 
 impl ProxyConn {
-   fn new(stream: TcpStream) -> Self {
+   fn new(stream: TcpStream, permit: ConnectionPermit) -> Self {
       Self {
          stream,
          state: ConnState::Startup,
          rbuf: ReadBuf::new(),
          wbuf: WriteBuf::new(),
          wants_write: false,
+         permit,
       }
    }
 }
 
-// ────────────────────────────────────── blocking sub-pool
-
-pub(super) struct BlockingPool {
-   tx: mpsc::SyncSender<PoolJob>,
+/// What the event loop does with a connection after handling an event.
+enum Next {
+   Keep,
+   Close,
+   /// Hand the connection to a blocking upstream session; carries the
+   /// startup message already read off the socket.
+   Offload(Vec<u8>),
 }
 
-struct PoolJob {
-   conn_id: usize,
-   stream: std::net::TcpStream,
-   config: Arc<DbCacheConfig>,
-   mgr: Arc<DbCacheManager>,
-   pool: Arc<UpstreamPool>,
-   bus: Option<Arc<InvalidationBus>>,
-   done_tx: mpsc::SyncSender<usize>,
-   waker: Arc<Waker>,
-}
-
-impl BlockingPool {
-   pub(super) fn start(thread_count: usize) -> Arc<Self> {
-      let (job_tx, job_rx) = mpsc::sync_channel::<PoolJob>(thread_count * 8);
-      let job_rx = Arc::new(std::sync::Mutex::new(job_rx));
-      for i in 0..thread_count {
-         let rx = Arc::clone(&job_rx);
-         std::thread::Builder::new()
-            .name(format!("fyrodb-dbblocking-{i}"))
-            .stack_size(super::session::CLIENT_STACK)
-            .spawn(move || {
-               loop {
-                  let job = match rx.lock().unwrap().recv() {
-                     Ok(j) => j,
-                     Err(_) => return,
-                  };
-                  let _ = super::session::handle_client(
-                     job.stream,
-                     (*job.config).clone(),
-                     job.mgr,
-                     job.pool,
-                     job.bus,
-                  );
-                  let _ = job.done_tx.try_send(job.conn_id);
-                  let _ = job.waker.wake();
-               }
-            })
-            .unwrap();
-      }
-      Arc::new(BlockingPool { tx: job_tx })
-   }
-
-   #[allow(clippy::too_many_arguments)]
-   pub(super) fn submit(
-      &self,
-      conn_id: usize,
-      stream: std::net::TcpStream,
-      config: Arc<DbCacheConfig>,
-      mgr: Arc<DbCacheManager>,
-      pool: Arc<UpstreamPool>,
-      bus: Option<Arc<InvalidationBus>>,
-      done_tx: mpsc::SyncSender<usize>,
-      waker: Arc<Waker>,
-   ) -> bool {
-      self
-         .tx
-         .try_send(PoolJob {
-            conn_id,
-            stream,
-            config,
-            mgr,
-            pool,
-            bus,
-            done_tx,
-            waker,
-         })
-         .is_ok()
-   }
+/// Shared by every worker of one listener: the proxy-wide connection count.
+pub(super) struct WorkerShared {
+   pub(super) mgr: Arc<DbCacheManager>,
+   pub(super) config: Arc<DbCacheConfig>,
+   pub(super) pool: Arc<UpstreamPool>,
+   pub(super) bus: Option<Arc<InvalidationBus>>,
+   pub(super) active: Arc<AtomicUsize>,
 }
 
 // ────────────────────────────────────── worker entry point
 
-#[allow(clippy::too_many_arguments)]
-pub(super) fn run_proxy_worker(
-   mut listener: TcpListener,
-   mgr: Arc<DbCacheManager>,
-   config: Arc<DbCacheConfig>,
-   pool: Arc<UpstreamPool>,
-   bus: Option<Arc<InvalidationBus>>,
-   blocking_pool: Arc<BlockingPool>,
-   done_rx: mpsc::Receiver<usize>,
-   done_tx: mpsc::SyncSender<usize>,
-) {
+pub(super) fn run_proxy_worker(mut listener: TcpListener, shared: WorkerShared) {
    let mut poll = Poll::new().unwrap();
    let mut events = Events::with_capacity(512);
-
-   let waker = Arc::new(Waker::new(poll.registry(), WAKER_TK).unwrap());
 
    poll
       .registry()
@@ -1086,38 +1088,25 @@ pub(super) fn run_proxy_worker(
       }
 
       for event in events.iter() {
-         match event.token() {
-            LISTENER_TK => {
-               do_accept(
-                  &mut listener,
-                  poll.registry(),
-                  &mut conns,
-                  &mut free,
-                  &mut next_id,
-               );
+         if event.token() == LISTENER_TK {
+            do_accept(
+               &mut listener,
+               poll.registry(),
+               &mut conns,
+               &mut free,
+               &mut next_id,
+               &shared,
+            );
+            continue;
+         }
+         let id = event.token().0.wrapping_sub(CONN_BASE);
+         match dispatch_event(&mut conns, id, event, &shared) {
+            Next::Close => free_slot(&mut conns, poll.registry(), &mut free, id),
+            Next::Offload(startup) => {
+               offload_conn(&mut conns, poll.registry(), &mut free, id, startup, &shared)
             }
-            WAKER_TK => {
-               while let Ok(id) = done_rx.try_recv() {
-                  free_slot(&mut conns, poll.registry(), &mut free, id);
-               }
-            }
-            token => {
-               let id = token.0.wrapping_sub(CONN_BASE);
-               let close = dispatch_event(
-                  &mut conns,
-                  id,
-                  event,
-                  &mgr,
-                  &config,
-                  &pool,
-                  &bus,
-                  &blocking_pool,
-                  &done_tx,
-                  &waker,
-               );
-               if close {
-                  free_slot(&mut conns, poll.registry(), &mut free, id);
-               } else if let Some(Some(conn)) = conns.get(id)
+            Next::Keep => {
+               if let Some(Some(conn)) = conns.get(id)
                   && !conn.wbuf.is_empty()
                {
                   write_pending.push(id);
@@ -1132,81 +1121,50 @@ pub(super) fn run_proxy_worker(
    }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn dispatch_event(
    conns: &mut [Option<ProxyConn>],
    id: usize,
    event: &mio::event::Event,
-   mgr: &Arc<DbCacheManager>,
-   config: &Arc<DbCacheConfig>,
-   pool: &Arc<UpstreamPool>,
-   bus: &Option<Arc<InvalidationBus>>,
-   blocking_pool: &Arc<BlockingPool>,
-   done_tx: &mpsc::SyncSender<usize>,
-   waker: &Arc<Waker>,
-) -> bool {
+   shared: &WorkerShared,
+) -> Next {
    let Some(Some(conn)) = conns.get_mut(id) else {
-      return false;
+      return Next::Keep;
    };
 
    if event.is_readable() {
-      // Fill read buffer
       if let Err(e) = conn.rbuf.fill(&mut conn.stream)
          && e.kind() != io::ErrorKind::WouldBlock
       {
-         return true;
+         return Next::Close;
       }
-
-      let keep = match conn.state {
-         ConnState::Startup => handle_startup_event(
-            conn,
-            id,
-            mgr,
-            config,
-            pool,
-            bus,
-            blocking_pool,
-            done_tx,
-            waker,
-         ),
-         ConnState::Active(_) => handle_active_event(conn),
-         ConnState::Offloaded | ConnState::Dead => false,
+      let next = match conn.state {
+         ConnState::Startup => handle_startup_event(conn, shared),
+         ConnState::Active(_) => {
+            if handle_active_event(conn) {
+               Next::Keep
+            } else {
+               Next::Close
+            }
+         }
       };
-      if !keep {
-         return true;
+      if !matches!(next, Next::Keep) {
+         return next;
       }
    }
 
-   if event.is_writable()
-      && let Some(Some(conn)) = conns.get_mut(id)
-   {
-      match conn.wbuf.flush_to(&mut conn.stream) {
-         Ok(_) => {}
-         Err(_) => return true,
-      }
+   if event.is_writable() && conn.wbuf.flush_to(&mut conn.stream).is_err() {
+      return Next::Close;
    }
-
-   false
+   Next::Keep
 }
 
-#[allow(clippy::too_many_arguments)]
-fn handle_startup_event(
-   conn: &mut ProxyConn,
-   id: usize,
-   mgr: &Arc<DbCacheManager>,
-   config: &Arc<DbCacheConfig>,
-   pool: &Arc<UpstreamPool>,
-   bus: &Option<Arc<InvalidationBus>>,
-   blocking_pool: &Arc<BlockingPool>,
-   done_tx: &mpsc::SyncSender<usize>,
-   waker: &Arc<Waker>,
-) -> bool {
+fn handle_startup_event(conn: &mut ProxyConn, shared: &WorkerShared) -> Next {
    loop {
       let Some(frame) = conn.rbuf.take_startup_frame() else {
-         return true; // need more data
+         return Next::Keep; // need more data
       };
       if frame.len() < 8 {
-         return false;
+         return Next::Close;
       }
       let code = i32::from_be_bytes([frame[4], frame[5], frame[6], frame[7]]);
 
@@ -1216,106 +1174,95 @@ fn handle_startup_event(
          continue;
       }
       if code == protocol::CANCEL_REQUEST_CODE {
-         return false;
+         return Next::Close;
       }
       if (code >> 16) != 3 {
-         return false;
+         return Next::Close;
       }
 
-      // Real Startup message.
-      if config.upstream_addr.is_some() {
-         return offload_conn(
-            conn,
-            id,
-            frame,
-            config,
-            mgr,
-            pool,
-            bus,
-            blocking_pool,
-            done_tx,
-            waker,
-         );
+      // Real Startup message. Upstream sessions (auth relay, misses) are
+      // blocking, so they move to their own thread.
+      if shared.config.upstream_addr.is_some()
+         && shared.config.mode == crate::config::DbProxyMode::Dual
+      {
+         return Next::Offload(frame);
       }
 
       // No upstream: send AuthOk + params + ReadyForQuery inline.
       if protocol::write_startup_ok(&mut conn.wbuf.buf).is_err() {
-         return false;
+         return Next::Close;
       }
       conn.state = ConnState::Active(Box::new(ActiveState::new(
-         Arc::clone(mgr),
-         Arc::clone(config),
+         Arc::clone(&shared.mgr),
+         Arc::clone(&shared.config),
       )));
       let _ = conn.wbuf.flush_to(&mut conn.stream);
-      return true;
+      return Next::Keep;
    }
 }
 
+/// Moves a connection out of the event loop into a blocking session thread.
+///
+/// The previous version `dup`ed the fd and left the original registered:
+/// O_NONBLOCK is shared by both descriptors, so switching the copy to
+/// blocking also made the event loop's reads block, and both sides then
+/// raced for the client's bytes. It also dropped the startup message it had
+/// already consumed, and gave up silently when its fixed pool was full. Now
+/// the socket is deregistered and owned by the session alone, and every byte
+/// already read is replayed into it.
 #[cfg(unix)]
-#[allow(clippy::too_many_arguments)]
 fn offload_conn(
-   conn: &mut ProxyConn,
+   conns: &mut [Option<ProxyConn>],
+   registry: &mio::Registry,
+   free: &mut Vec<usize>,
    id: usize,
-   _startup_frame: Vec<u8>,
-   config: &Arc<DbCacheConfig>,
-   mgr: &Arc<DbCacheManager>,
-   pool: &Arc<UpstreamPool>,
-   bus: &Option<Arc<InvalidationBus>>,
-   blocking_pool: &Arc<BlockingPool>,
-   done_tx: &mpsc::SyncSender<usize>,
-   waker: &Arc<Waker>,
-) -> bool {
-   use std::os::unix::io::FromRawFd;
-
-   // Duplicate fd to offload stream to blocking sub-pool.
-   let raw_fd = {
-      let fd = std::os::unix::io::AsRawFd::as_raw_fd(&conn.stream);
-      libc_dup(fd)
+   startup: Vec<u8>,
+   shared: &WorkerShared,
+) {
+   let Some(mut conn) = conns.get_mut(id).and_then(Option::take) else {
+      return;
    };
-   if raw_fd < 0 {
-      return false;
+   let _ = registry.deregister(&mut conn.stream);
+   free.push(id);
+
+   let mut prefix = startup;
+   prefix.extend_from_slice(conn.rbuf.available());
+   let unsent = conn.wbuf.buf[conn.wbuf.pos.min(conn.wbuf.buf.len())..].to_vec();
+   let permit = conn.permit;
+   let mut stream = into_std(conn.stream);
+   if stream.set_nonblocking(false).is_err() || stream.write_all(&unsent).is_err() {
+      return;
    }
-   let std_stream = unsafe { std::net::TcpStream::from_raw_fd(raw_fd) };
-   if std_stream.set_nonblocking(false).is_err() {
-      return false;
+
+   let config = (*shared.config).clone();
+   let mgr = Arc::clone(&shared.mgr);
+   let pool = Arc::clone(&shared.pool);
+   let bus = shared.bus.clone();
+   let spawned =
+      super::threads::spawn_session("fyrodb-dbconn", super::session::CLIENT_STACK, move || {
+         let _permit = permit;
+         if let Err(e) =
+            super::session::handle_client_with_prefix(stream, prefix, config, mgr, pool, bus)
+            && e.kind() != io::ErrorKind::UnexpectedEof
+         {
+            eprintln!("fyrodb-dbproxy client error: {e}");
+         }
+      });
+   if let Err(e) = spawned {
+      eprintln!("fyrodb-dbproxy: spawn failed: {e}");
    }
-   conn.state = ConnState::Offloaded;
-   blocking_pool.submit(
-      id,
-      std_stream,
-      Arc::clone(config),
-      Arc::clone(mgr),
-      Arc::clone(pool),
-      bus.clone(),
-      done_tx.clone(),
-      Arc::clone(waker),
-   );
-   true
 }
 
 #[cfg(not(unix))]
 fn offload_conn(
-   conn: &mut ProxyConn,
-   _id: usize,
-   _startup_frame: Vec<u8>,
-   _config: &Arc<DbCacheConfig>,
-   _mgr: &Arc<DbCacheManager>,
-   _pool: &Arc<UpstreamPool>,
-   _bus: &Option<Arc<InvalidationBus>>,
-   _blocking_pool: &Arc<BlockingPool>,
-   _done_tx: &mpsc::SyncSender<usize>,
-   _waker: &Arc<Waker>,
-) -> bool {
-   conn.state = ConnState::Dead;
-   false
-}
-
-#[cfg(unix)]
-fn libc_dup(fd: std::os::unix::io::RawFd) -> std::os::unix::io::RawFd {
-   unsafe extern "C" {
-      fn dup(fd: i32) -> i32;
-   }
-   unsafe { dup(fd) }
+   conns: &mut [Option<ProxyConn>],
+   registry: &mio::Registry,
+   free: &mut Vec<usize>,
+   id: usize,
+   _startup: Vec<u8>,
+   _shared: &WorkerShared,
+) {
+   free_slot(conns, registry, free, id);
 }
 
 fn handle_active_event(conn: &mut ProxyConn) -> bool {
@@ -1410,10 +1357,15 @@ fn do_accept(
    conns: &mut Vec<Option<ProxyConn>>,
    free: &mut Vec<usize>,
    next_id: &mut usize,
+   shared: &WorkerShared,
 ) {
    loop {
       match listener.accept() {
          Ok((mut stream, _)) => {
+            let Some(permit) = try_admit(&shared.active, shared.config.max_connections) else {
+               reject_too_many(into_std(stream));
+               continue;
+            };
             let _ = socket2::SockRef::from(&stream).set_tcp_nodelay(true);
             let _ = socket2::SockRef::from(&stream).set_send_buffer_size(512 * 1024);
             let _ = socket2::SockRef::from(&stream).set_recv_buffer_size(512 * 1024);
@@ -1424,13 +1376,30 @@ fn do_accept(
                .register(&mut stream, Token(id + CONN_BASE), Interest::READABLE)
                .is_ok()
             {
-               conns[id] = Some(ProxyConn::new(stream));
+               conns[id] = Some(ProxyConn::new(stream, permit));
+            } else {
+               free.push(id);
             }
          }
          Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => break,
          Err(_) => break,
       }
    }
+}
+
+/// Takes a socket out of mio's ownership (it must not be registered).
+#[cfg(unix)]
+fn into_std(stream: TcpStream) -> std::net::TcpStream {
+   use std::os::unix::io::{FromRawFd, IntoRawFd};
+   // SAFETY: `into_raw_fd` released mio's ownership; this is the only owner.
+   unsafe { std::net::TcpStream::from_raw_fd(stream.into_raw_fd()) }
+}
+
+#[cfg(windows)]
+fn into_std(stream: TcpStream) -> std::net::TcpStream {
+   use std::os::windows::io::{FromRawSocket, IntoRawSocket};
+   // SAFETY: `into_raw_socket` released mio's ownership; this is the only owner.
+   unsafe { std::net::TcpStream::from_raw_socket(stream.into_raw_socket()) }
 }
 
 fn sync_write_interest(registry: &mio::Registry, conns: &mut [Option<ProxyConn>], id: usize) {

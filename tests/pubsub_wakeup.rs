@@ -71,6 +71,8 @@ fn completion_queued_before_poll_still_wakes_the_worker() {
    let notifier = WorkerNotifier::new(waker, 0);
    notifier.complete(Completion::Retry { uid: 9, token: 3 });
    let mut events = Events::with_capacity(4);
-   poll.poll(&mut events, Some(Duration::from_secs(1))).unwrap();
+   poll
+      .poll(&mut events, Some(Duration::from_secs(1)))
+      .unwrap();
    assert!(events.iter().any(|e| e.token() == Token(7)));
 }

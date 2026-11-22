@@ -29,6 +29,54 @@ impl Quant {
 }
 
 /// Rotation / code width for RaBitQ: dims padded to a power of two ≥ 64.
+/// Int8 payload words before the codes: scale, quantized norm ‖x̂‖, residual
+/// norm ‖x − x̂‖ and exact norm ‖x‖.
+const INT8_HEADER: usize = 4;
+
+/// Lower bound on the exact distance (as `crate::distance::distance` reports
+/// it) between the query and an Int8 payload's original vector, or `None`
+/// when there is none (other encodings, non-finite values). The int8 estimate
+/// is off by at most ‖q‖‖x − x̂‖ + ‖q − q̂‖‖x̂‖ (Cauchy–Schwarz); the slack
+/// covers f32 rounding in the exact kernels.
+#[inline]
+pub(crate) fn int8_lower_bound<K: Kernel>(
+   k: K,
+   metric: DistanceMetric,
+   q: &QEnc,
+   payload: &[u32],
+   dims: usize,
+) -> Option<f32> {
+   const SLACK: f32 = 1e-4;
+   let QEnc::Int8 {
+      codes,
+      scale,
+      exact_norm,
+      resid,
+      ..
+   } = q
+   else {
+      return None;
+   };
+   let x_scale = f32::from_bits(payload[0]);
+   let x_code_norm = f32::from_bits(payload[1]);
+   let x_resid = f32::from_bits(payload[2]);
+   let x_norm = f32::from_bits(payload[3]);
+   let x_codes = &bytemuck::cast_slice::<u32, i8>(&payload[INT8_HEADER..])[..dims];
+   let est = k.dot_i8(codes, x_codes) as f32 * scale * x_scale;
+   let err = exact_norm * x_resid + resid * x_code_norm;
+   let high = est + err;
+   let lower = match metric {
+      DistanceMetric::Cosine => 1.0 - high / (exact_norm * x_norm) - SLACK,
+      DistanceMetric::Ip => -high - SLACK * exact_norm * x_norm,
+      DistanceMetric::L2 => {
+         let sq = exact_norm * exact_norm + x_norm * x_norm;
+         (sq - 2.0 * high - SLACK * sq).max(0.0).sqrt()
+      }
+   };
+   // NaN (non-finite inputs or a zero norm) fails this test.
+   (lower > f32::NEG_INFINITY).then_some(lower)
+}
+
 pub(crate) fn rq_dim(dims: usize) -> usize {
    dims.next_power_of_two().max(64)
 }
@@ -39,7 +87,7 @@ pub(crate) fn payload_words(q: Quant, dims: usize) -> usize {
       // vector, norm
       Quant::None => dims + 1,
       // scale, norm, codes
-      Quant::Int8 => 2 + dims.div_ceil(4),
+      Quant::Int8 => INT8_HEADER + dims.div_ceil(4),
       // ‖r‖, factor, popcount, centroid, ‖x‖, pad, sign bits (u64-aligned
       // at +24 bytes)
       Quant::RaBitQ => 6 + 2 * (rq_dim(dims) / 64),
@@ -221,15 +269,22 @@ pub(crate) fn encode(
       Quant::Int8 => {
          let maxabs = v.iter().fold(0f32, |m, x| m.max(x.abs()));
          let scale = if maxabs > 0.0 { maxabs / 127.0 } else { 1.0 };
-         let codes: &mut [i8] = &mut bytemuck::cast_slice_mut::<u32, i8>(&mut out[2..])[..v.len()];
+         let codes: &mut [i8] =
+            &mut bytemuck::cast_slice_mut::<u32, i8>(&mut out[INT8_HEADER..])[..v.len()];
          let mut sq = 0i64;
+         let mut resid = 0f64;
          for (c, &x) in codes.iter_mut().zip(v) {
             let q = (x / scale).round().clamp(-127.0, 127.0) as i8;
             *c = q;
             sq += q as i64 * q as i64;
+            resid += (x as f64 - q as f64 * scale as f64).powi(2);
          }
          out[0] = scale.to_bits();
          out[1] = (scale * (sq as f32).sqrt()).max(1e-10).to_bits();
+         // Rounded up so the bound stays a bound after narrowing to f32;
+         // non-finite input leaves it non-finite, which disables the bound.
+         out[2] = ((resid.sqrt() * (1.0 + 1e-6)) as f32).to_bits();
+         out[3] = crate::kernels::norm_sq_f32(v).sqrt().to_bits();
       }
       Quant::RaBitQ => {
          let rot = rot.expect("RaBitQ graph has a rotation");
@@ -320,6 +375,9 @@ pub(crate) enum QEnc {
       codes: Vec<i8>,
       scale: f32,
       norm: f32,
+      /// ‖q‖ and ‖q − q̂‖, for `int8_lower_bound`.
+      exact_norm: f32,
+      resid: f32,
    },
    /// One encoding of the residual `q − c` per centroid (every metric is
    /// scored through the centered residuals).
@@ -382,10 +440,17 @@ pub(crate) fn encode_query(
                .map(|&x| (x / scale).round().clamp(-127.0, 127.0) as i8),
          );
          let sq: i64 = codes.iter().map(|&c| c as i64 * c as i64).sum();
+         let resid: f64 = v
+            .iter()
+            .zip(codes.iter())
+            .map(|(&x, &c)| (x as f64 - c as f64 * scale as f64).powi(2))
+            .sum();
          QEnc::Int8 {
             codes,
             scale,
             norm: (scale * (sq as f32).sqrt()).max(1e-10),
+            exact_norm: crate::kernels::norm_sq_f32(v).sqrt(),
+            resid: (resid.sqrt() * (1.0 + 1e-6)) as f32,
          }
       }
       Quant::RaBitQ => {
@@ -451,10 +516,12 @@ pub(crate) fn distance<K: Kernel>(
 ) -> f32 {
    match q {
       QEnc::None => unreachable!("f32 payloads are scored by the f32 path"),
-      QEnc::Int8 { codes, scale, norm } => {
+      QEnc::Int8 {
+         codes, scale, norm, ..
+      } => {
          let x_scale = f32::from_bits(payload[0]);
          let x_norm = f32::from_bits(payload[1]);
-         let x_codes = &bytemuck::cast_slice::<u32, i8>(&payload[2..])[..dims];
+         let x_codes = &bytemuck::cast_slice::<u32, i8>(&payload[INT8_HEADER..])[..dims];
          let dot = k.dot_i8(codes, x_codes) as f32 * scale * x_scale;
          match metric {
             DistanceMetric::L2 => norm * norm + x_norm * x_norm - 2.0 * dot,
@@ -510,8 +577,8 @@ pub(crate) fn distance_codes<K: Kernel>(
       Quant::Int8 => {
          let (sa, na) = (f32::from_bits(a[0]), f32::from_bits(a[1]));
          let (sb, nb) = (f32::from_bits(b[0]), f32::from_bits(b[1]));
-         let ca = &bytemuck::cast_slice::<u32, i8>(&a[2..])[..dims];
-         let cb = &bytemuck::cast_slice::<u32, i8>(&b[2..])[..dims];
+         let ca = &bytemuck::cast_slice::<u32, i8>(&a[INT8_HEADER..])[..dims];
+         let cb = &bytemuck::cast_slice::<u32, i8>(&b[INT8_HEADER..])[..dims];
          let dot = k.dot_i8(ca, cb) as f32 * sa * sb;
          match metric {
             DistanceMetric::L2 => na * na + nb * nb - 2.0 * dot,

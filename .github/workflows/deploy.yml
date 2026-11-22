@@ -2,7 +2,7 @@ name: Deploy
 
 on:
   push:
-    tags: ["v*.*.*", "v*"]
+    tags: ["v*.*.*"]
 
 jobs:
   docker:
@@ -37,9 +37,11 @@ jobs:
           images: |
             ${{ secrets.DOCKER_USERNAME }}/fyrodb
             ghcr.io/${{ github.repository }}
+          # `latest` only for stable releases (vX.Y.Z); a pre-release such
+          # as v1.2.0-rc.1 gets its version tag but never moves `latest`.
           tags: |
             type=semver,pattern={{version}}
-            type=raw,value=latest
+            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
           labels: |
             org.opencontainers.image.title=FyroDB
             org.opencontainers.image.description=Blazing fast Redis-compatible in-memory KV store and DB cache proxy

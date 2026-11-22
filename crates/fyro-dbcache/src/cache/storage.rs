@@ -15,6 +15,13 @@ pub trait DbCacheStorage: Send + Sync {
       self.get(key).is_some()
    }
 
+   /// The value plus its absolute expiry in Unix milliseconds (0 = none), so
+   /// an in-memory copy can expire with the stored entry instead of getting
+   /// a fresh full TTL. The default reports no expiry.
+   fn get_with_expiry(&self, key: &str) -> Option<(String, u64)> {
+      self.get(key).map(|value| (value, 0))
+   }
+
    fn scan_prefix(&self, prefix: &str) -> Vec<(String, Option<String>)> {
       let _ = prefix;
       Vec::new()
@@ -35,7 +42,9 @@ impl Default for MemoryStorage {
    fn default() -> Self {
       let mut shards = Vec::with_capacity(64);
       for _ in 0..64 {
-         shards.push(RwLock::new(HashMap::with_hasher(FixedState::with_seed(0))));
+         shards.push(RwLock::new(HashMap::with_hasher(FixedState::with_seed(
+            crate::keyed::table_seed(),
+         ))));
       }
       Self {
          shards: shards.into_boxed_slice(),
@@ -45,7 +54,7 @@ impl Default for MemoryStorage {
 
 impl MemoryStorage {
    fn shard(&self, key: &str) -> &MemoryShard {
-      let mut h = FixedState::with_seed(0).build_hasher();
+      let mut h = FixedState::with_seed(crate::keyed::table_seed()).build_hasher();
       h.write(key.as_bytes());
       &self.shards[(h.finish() as usize) & 63]
    }
@@ -60,6 +69,17 @@ impl DbCacheStorage for MemoryStorage {
          None
       } else {
          Some(val.clone())
+      }
+   }
+
+   fn get_with_expiry(&self, key: &str) -> Option<(String, u64)> {
+      let now = now_ms();
+      let guard = self.shard(key).read();
+      let (val, exp) = guard.get(key)?;
+      if *exp != 0 && *exp < now {
+         None
+      } else {
+         Some((val.clone(), *exp))
       }
    }
 

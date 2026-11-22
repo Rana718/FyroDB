@@ -9,7 +9,7 @@ use crate::row::DbValue;
 use crate::upstream::{HandshakeError, RelayOutcome, ReplyStop, UpstreamConnection};
 use foldhash::fast::FixedState;
 use std::collections::HashMap;
-use std::io::{self, BufReader, Write};
+use std::io::{self, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::sync::Arc;
 
@@ -49,6 +49,32 @@ impl Write for ClientSink<'_> {
    }
 }
 
+/// The client socket, preceded by any bytes an event loop already read from
+/// it before handing the connection to a blocking session (the mio worker
+/// reads the startup message itself, then offloads upstream sessions).
+pub(super) struct ClientStream {
+   prefix: Vec<u8>,
+   consumed: usize,
+   inner: TcpStream,
+}
+
+impl Read for ClientStream {
+   fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+      if self.consumed < self.prefix.len() {
+         let pending = &self.prefix[self.consumed..];
+         let n = pending.len().min(buf.len());
+         buf[..n].copy_from_slice(&pending[..n]);
+         self.consumed += n;
+         if self.consumed == self.prefix.len() {
+            self.prefix = Vec::new();
+            self.consumed = 0;
+         }
+         return Ok(n);
+      }
+      self.inner.read(buf)
+   }
+}
+
 pub(super) fn handle_client(
    client: TcpStream,
    config: DbCacheConfig,
@@ -56,8 +82,25 @@ pub(super) fn handle_client(
    pool: Arc<UpstreamPool>,
    bus: Option<Arc<InvalidationBus>>,
 ) -> io::Result<()> {
+   handle_client_with_prefix(client, Vec::new(), config, cache_mgr, pool, bus)
+}
+
+/// Like `handle_client`, for a connection whose first `prefix` bytes were
+/// already read off the socket; they are replayed before the socket.
+pub(super) fn handle_client_with_prefix(
+   client: TcpStream,
+   prefix: Vec<u8>,
+   config: DbCacheConfig,
+   cache_mgr: Arc<DbCacheManager>,
+   pool: Arc<UpstreamPool>,
+   bus: Option<Arc<InvalidationBus>>,
+) -> io::Result<()> {
    client.set_nodelay(true)?;
-   let read_stream = client.try_clone()?;
+   let read_stream = ClientStream {
+      prefix,
+      consumed: 0,
+      inner: client.try_clone()?,
+   };
    let mut session = Session {
       client,
       reader: FrameReader::new(BufReader::with_capacity(CLIENT_READ_BUF, read_stream)),
@@ -74,8 +117,8 @@ pub(super) fn handle_client(
       transaction_writes: Vec::new(),
       cycle_forwarded: false,
       cycle_error: false,
-      statements: HashMap::with_hasher(FixedState::with_seed(0)),
-      portals: HashMap::with_hasher(FixedState::with_seed(0)),
+      statements: HashMap::with_hasher(FixedState::with_seed(crate::keyed::table_seed())),
+      portals: HashMap::with_hasher(FixedState::with_seed(crate::keyed::table_seed())),
       out: Vec::with_capacity(RELAY_FLUSH_BYTES + 512),
       context_hash: 0,
       context_state: ContextState::Untrusted,
@@ -88,6 +131,9 @@ pub(super) fn handle_client(
 
 struct StatementState {
    sql: String,
+   /// Analysis of `sql`, kept from Parse: a pure function of the text, so a
+   /// Bind no longer re-hashes the SQL and looks it up again.
+   parsed: Arc<ParsedQuery>,
    param_oids: Vec<u32>,
    parse_frame: Vec<u8>,
    row_description: Option<Vec<u8>>,
@@ -108,7 +154,7 @@ struct PortalState {
 
 struct Session {
    client: TcpStream,
-   reader: FrameReader<BufReader<TcpStream>>,
+   reader: FrameReader<BufReader<ClientStream>>,
    config: DbCacheConfig,
    mgr: Arc<DbCacheManager>,
    pool: Arc<UpstreamPool>,
@@ -365,7 +411,7 @@ impl Session {
                         self.upstream_poolable = false;
                      }
                      self.context_state = ContextState::NeedsProbe;
-                     let _ = self.probe_context();
+                     let _ = self.probe_startup_context();
                      let _ = self.refresh_catalog();
                   }
                   None => {
@@ -589,6 +635,7 @@ impl Session {
          name.clone(),
          StatementState {
             sql,
+            parsed: Arc::clone(&parsed),
             param_oids,
             parse_frame,
             row_description: None,
@@ -682,8 +729,16 @@ impl Session {
          self.cycle_error = true;
          return Ok(());
       };
-      let sql = stmt.sql.clone();
-      let (parsed, base_fingerprint) = self.mgr.analyze_bound(&sql, &params, &param_formats);
+      let parsed = Arc::clone(&stmt.parsed);
+      let base_fingerprint = if params.is_empty() {
+         parsed.fingerprint
+      } else {
+         crate::query::compute_fingerprint_with_params_base(
+            parsed.fingerprint,
+            &params,
+            &param_formats,
+         )
+      };
       let text_results =
          result_formats.is_empty() || result_formats.iter().all(|format| *format == 0);
       let effective = self.effective_fingerprint(base_fingerprint);
@@ -699,24 +754,51 @@ impl Session {
             .lookup_encoded(&parsed, effective.unwrap_or(base_fingerprint))
             .is_some();
 
-      let bind_frame = self.reader.last_frame().to_vec();
+      if hit || self.upstream.is_none() {
+         protocol::put_bind_complete(&mut self.out);
+         // Re-binding a portal (the common prepared-statement loop) updates
+         // it in place, reusing its buffers instead of allocating a new state.
+         let frame = self.reader.last_frame();
+         if let Some(existing) = self.portals.get_mut(&portal) {
+            existing.statement.clear();
+            existing.statement.push_str(&statement);
+            existing.parsed = parsed;
+            existing.fingerprint = base_fingerprint;
+            existing.text_results = text_results;
+            existing.bind_frame.clear();
+            existing.bind_frame.extend_from_slice(frame);
+            existing.bind_forwarded = false;
+            existing.cursor = 0;
+            existing.finished = false;
+            existing.row_description = None;
+         } else {
+            let state = PortalState {
+               statement,
+               parsed,
+               fingerprint: base_fingerprint,
+               text_results,
+               bind_frame: frame.to_vec(),
+               bind_forwarded: false,
+               cursor: 0,
+               finished: false,
+               row_description: None,
+            };
+            self.portals.insert(portal, state);
+         }
+         return Ok(());
+      }
+
       let mut state = PortalState {
          statement: statement.clone(),
          parsed,
          fingerprint: base_fingerprint,
          text_results,
-         bind_frame,
+         bind_frame: self.reader.last_frame().to_vec(),
          bind_forwarded: false,
          cursor: 0,
          finished: false,
          row_description: None,
       };
-
-      if hit || self.upstream.is_none() {
-         protocol::put_bind_complete(&mut self.out);
-         self.portals.insert(portal, state);
-         return Ok(());
-      }
 
       if !self.statements.get(&statement).is_some_and(|s| s.forwarded)
          && !self.send_parse(&statement, false)?
@@ -1337,7 +1419,7 @@ impl Session {
          return;
       }
       let mut upstream = upstream;
-      if upstream.reset_session().is_err() {
+      if upstream.begin_reset().is_err() {
          return;
       }
       self.pool.checkin(key, upstream);
@@ -1381,24 +1463,13 @@ impl Session {
       &self,
       parsed: &ParsedQuery,
       fingerprint: u64,
-   ) -> Option<crate::row::DbResultSet> {
-      for table in &parsed.tables {
-         if let Some(result) =
-            self
-               .mgr
-               .get_cached_query(&self.config.key_prefix, table, fingerprint)
-         {
-            self.mgr.remember_encoded(
-               &self.config.key_prefix,
-               table,
-               fingerprint,
-               &result,
-               self.config.default_ttl_ms,
-            );
-            return Some((*result).clone());
-         }
-      }
-      None
+   ) -> Option<Arc<crate::row::DbResultSet>> {
+      self.mgr.load_stored(
+         &self.config.key_prefix,
+         &parsed.tables,
+         &self.mgr.expanded_tables(parsed),
+         fingerprint,
+      )
    }
 
    fn fill_cache(
@@ -1509,6 +1580,23 @@ impl Session {
             .mgr
             .cache_key(&self.config.key_prefix, table, fingerprint),
       )
+   }
+
+   /// Context of a session in its startup state: a pooled connection
+   /// remembers it (DISCARD ALL restores that state exactly), saving the probe
+   /// round trip on every reuse; a new connection probes and remembers.
+   fn probe_startup_context(&mut self) -> bool {
+      if let Some(hash) = self.upstream.as_ref().and_then(|u| u.baseline_context()) {
+         self.context_hash = hash;
+         self.context_state = ContextState::Trusted;
+         self.context_sets = 0;
+         return true;
+      }
+      let probed = self.probe_context();
+      if probed && let Some(upstream) = self.upstream.as_mut() {
+         upstream.set_baseline_context(Some(self.context_hash));
+      }
+      probed
    }
 
    fn probe_context(&mut self) -> bool {

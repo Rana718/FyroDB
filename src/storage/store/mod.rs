@@ -638,6 +638,46 @@ mod tests {
       assert!(!store.has_ttl_keys());
    }
 
+   /// Writers log after releasing the entry lock, so two writers of one key
+   /// can reach the log in either order. The log must still end on each key's
+   /// live state, or a replica (and AOF replay) diverges.
+   #[test]
+   fn concurrent_same_key_writes_replicate_to_the_live_value() {
+      use std::sync::Arc;
+      const KEYS: usize = 32;
+      let mut base = Store::with_config(2, usize::MAX);
+      base.replication = Some(crate::cluster::ReplicationCoordinator::new(1 << 20));
+      let store = Arc::new(base);
+      std::thread::scope(|scope| {
+         for thread in 0..4 {
+            let store = &store;
+            scope.spawn(move || {
+               for i in 0..400 {
+                  let key = format!("k{}", i % KEYS);
+                  if (i + thread) % 9 == 0 {
+                     store.del(&key);
+                  } else {
+                     store.set_string(&key, &format!("{thread}-{i}"), 0);
+                     store.record_current_value(&key);
+                  }
+               }
+            });
+         }
+      });
+      let replica = Store::with_config(2, usize::MAX);
+      for record in store.replication.as_ref().unwrap().replay_from(0).unwrap() {
+         replica.apply_replica_mutation(&record).unwrap();
+      }
+      for i in 0..KEYS {
+         let key = format!("k{i}");
+         assert_eq!(
+            replica.get(&key),
+            store.get(&key),
+            "replica diverged on {key}"
+         );
+      }
+   }
+
    /// Replaced a process-wide mutex while keeping what migration and
    /// bootstrap need: no write sections while the guard is held.
    #[test]

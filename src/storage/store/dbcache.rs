@@ -7,6 +7,20 @@ impl DbCacheStorage for Store {
       self.get(key)
    }
 
+   fn get_with_expiry(&self, key: &str) -> Option<(String, u64)> {
+      let _guard = self.command_guard(usize::MAX);
+      self
+         .data
+         .get_locked(key, |val| {
+            if val.is_expired() {
+               return None;
+            }
+            let value = val.value.as_string()?.to_string();
+            Some((value, val.expires_ms))
+         })
+         .flatten()
+   }
+
    fn set(&self, key: &str, value: &str, ttl_ms: u64) {
       let _guard = self.command_guard(usize::MAX);
       let expires_ms = if ttl_ms > 0 {

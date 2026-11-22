@@ -481,7 +481,7 @@ fn knn_search(
       };
       let finish = |r: Vec<(f32, usize)>| -> Vec<(f32, usize)> {
          if graph.is_quantized() {
-            graph.rerank_by(r, knn.k, &fetch)
+            graph.rerank_bounded(qv, r, knn.k, &fetch)
          } else {
             r
          }

@@ -20,9 +20,9 @@ pub(super) struct TableTracker {
 impl Default for TableTracker {
    fn default() -> Self {
       Self {
-         tables: HashMap::with_hasher(FixedState::with_seed(0)),
-         markers: HashMap::with_hasher(FixedState::with_seed(0)),
-         epochs: HashMap::with_hasher(FixedState::with_seed(0)),
+         tables: HashMap::with_hasher(FixedState::with_seed(crate::keyed::table_seed())),
+         markers: HashMap::with_hasher(FixedState::with_seed(crate::keyed::table_seed())),
+         epochs: HashMap::with_hasher(FixedState::with_seed(crate::keyed::table_seed())),
          insert_order: VecDeque::new(),
       }
    }
@@ -34,7 +34,7 @@ impl TableTracker {
       self
          .tables
          .entry(table.to_string())
-         .or_insert_with(|| HashSet::with_hasher(FixedState::with_seed(0)))
+         .or_insert_with(|| HashSet::with_hasher(FixedState::with_seed(crate::keyed::table_seed())))
          .insert(key.clone());
       let markers = self.markers.entry(key.clone()).or_default();
       if !markers.contains(&marker) {
@@ -108,7 +108,8 @@ impl TableTracker {
    }
 
    pub(super) fn tracked_table_names(&self) -> Vec<String> {
-      let mut set: HashSet<String, FixedState> = HashSet::with_hasher(FixedState::with_seed(0));
+      let mut set: HashSet<String, FixedState> =
+         HashSet::with_hasher(FixedState::with_seed(crate::keyed::table_seed()));
       for table in self.tables.keys() {
          let norm = normalize_table_name(table);
          if !norm.is_empty() {
@@ -158,7 +159,9 @@ impl Default for ExternalSync {
          last_poll_ms: AtomicU64::new(0),
          poll_started_ms: AtomicU64::new(0),
          in_progress: AtomicBool::new(false),
-         snapshot: Mutex::new(HashMap::with_hasher(FixedState::with_seed(0))),
+         snapshot: Mutex::new(HashMap::with_hasher(FixedState::with_seed(
+            crate::keyed::table_seed(),
+         ))),
       }
    }
 }

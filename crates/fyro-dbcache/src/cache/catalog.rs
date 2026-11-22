@@ -15,9 +15,9 @@ pub struct CatalogSnapshot {
 impl Default for CatalogSnapshot {
    fn default() -> Self {
       Self {
-         volatile: HashSet::with_hasher(FixedState::with_seed(0)),
-         view_tables: HashMap::with_hasher(FixedState::with_seed(0)),
-         volatile_views: HashSet::with_hasher(FixedState::with_seed(0)),
+         volatile: HashSet::with_hasher(FixedState::with_seed(crate::keyed::table_seed())),
+         view_tables: HashMap::with_hasher(FixedState::with_seed(crate::keyed::table_seed())),
+         volatile_views: HashSet::with_hasher(FixedState::with_seed(crate::keyed::table_seed())),
       }
    }
 }
@@ -36,7 +36,7 @@ impl CatalogSnapshot {
       }
 
       let mut definitions: HashMap<String, String, FixedState> =
-         HashMap::with_hasher(FixedState::with_seed(0));
+         HashMap::with_hasher(FixedState::with_seed(crate::keyed::table_seed()));
       for row in view_rows {
          let Some(view) = row_text(row, 0) else {
             continue;
@@ -116,8 +116,10 @@ impl CatalogSnapshot {
    // nesting depth. Used for invalidation registration only, never for keys.
    pub fn expand(&self, tables: &[String]) -> Vec<String> {
       let mut out: Vec<String> = Vec::with_capacity(tables.len());
-      let mut seen: HashSet<String, FixedState> =
-         HashSet::with_capacity_and_hasher(tables.len() * 4, FixedState::with_seed(0));
+      let mut seen: HashSet<String, FixedState> = HashSet::with_capacity_and_hasher(
+         tables.len() * 4,
+         FixedState::with_seed(crate::keyed::table_seed()),
+      );
       let mut queue: VecDeque<(String, usize)> = tables.iter().map(|t| (t.clone(), 0)).collect();
       while let Some((table, depth)) = queue.pop_front() {
          if !seen.insert(table.clone()) {

@@ -137,7 +137,6 @@ services:
       FYRODB_PROXY_UPSTREAM_URL: postgres://appuser:secret@postgres:5432/mydb
       FYRODB_PROXY_CACHE_TTL_MS: "30000"
       FYRODB_PROXY_TRUST_AUTH: "true"
-      FYRODB_PROXY_WORKERS: "2"
     volumes:
       - fyrodb-data:/data
     restart: unless-stopped

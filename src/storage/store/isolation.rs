@@ -5,16 +5,24 @@ use std::cell::Cell;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
+/// Slots reserved for threads that are not workers (expiry, persistence,
+/// search jobs, dbcache proxy sessions). Striped so that hundreds of proxy
+/// session threads do not all bounce one lock's cache line, while still
+/// never sharing a line with a worker.
+const AUX_SLOTS: usize = 4;
+
 thread_local! {
    pub(crate) static CURRENT: Cell<(*const Isolation, bool)> = const { Cell::new((std::ptr::null(), false)) };
-   static AUTO_SLOT: usize = {
+   static AUX_STRIPE: usize = {
       static NEXT: AtomicUsize = AtomicUsize::new(0);
-      NEXT.fetch_add(1, Ordering::Relaxed)
+      NEXT.fetch_add(1, Ordering::Relaxed) % AUX_SLOTS
    };
 }
 
 pub struct Isolation {
+   /// One slot per worker, then `AUX_SLOTS` for every other thread.
    slots: Box<[CachePadded<RawRwLock>]>,
+   workers: usize,
    writer: Mutex<()>,
    /// Total exclusive-admission acquisitions (EVAL / EXEC / WATCH).
    exclusive_total: AtomicU64,
@@ -35,11 +43,13 @@ pub struct CommandGuard<'a> {
 
 impl Isolation {
    pub(super) fn new(workers: usize) -> Self {
+      let workers = workers.max(1);
       Self {
-         slots: (0..workers.max(1) + 1)
+         slots: (0..workers + AUX_SLOTS)
             .map(|_| CachePadded::new(RawRwLock::INIT))
             .collect::<Vec<_>>()
             .into_boxed_slice(),
+         workers,
          writer: Mutex::new(()),
          exclusive_total: AtomicU64::new(0),
       }
@@ -74,10 +84,12 @@ impl Isolation {
                Held::AtomicShared(self)
             }
             IsolationMode::Shared => {
-               let index = if worker == usize::MAX {
-                  AUTO_SLOT.with(|index| index % self.slots.len())
+               // Auxiliary threads (and out-of-range indexes) use the reserved
+               // stripes after the worker slots, never a worker's line.
+               let index = if worker < self.workers {
+                  worker
                } else {
-                  worker.min(self.slots.len() - 1)
+                  self.workers + AUX_STRIPE.with(|stripe| *stripe)
                };
                let slot = &*self.slots[index];
                slot.lock_shared();
@@ -122,10 +134,10 @@ impl Drop for CommandGuard<'_> {
 }
 
 impl super::Store {
-   /// Configured worker slots, excluding the auxiliary caller slot.
+   /// Configured worker slots, excluding the auxiliary slots.
    #[inline(always)]
    pub(crate) fn worker_capacity(&self) -> usize {
-      self.isolation.slots.len() - 1
+      self.isolation.workers
    }
 
    /// Total exclusive-admission acquisitions (EVAL / EXEC / WATCH).
@@ -146,6 +158,61 @@ impl super::Store {
    }
 
    pub fn atomic_shared_command_guard(&self) -> CommandGuard<'_> {
-      self.isolation.enter(usize::MAX, IsolationMode::AtomicShared)
+      self
+         .isolation
+         .enter(usize::MAX, IsolationMode::AtomicShared)
+   }
+}
+
+#[cfg(test)]
+mod aux_slot_tests {
+   use super::*;
+
+   #[test]
+   fn auxiliary_threads_spread_over_reserved_slots_and_exclusive_still_waits() {
+      let isolation = std::sync::Arc::new(Isolation::new(2));
+      // Which slot each of several auxiliary threads takes.
+      let used: std::collections::HashSet<usize> = (0..16)
+         .map(|_| {
+            let isolation = std::sync::Arc::clone(&isolation);
+            std::thread::spawn(move || {
+               let guard = isolation.enter(usize::MAX, IsolationMode::Shared);
+               let Held::Shared(slot) = &guard.held else {
+                  panic!("shared")
+               };
+               let index = isolation
+                  .slots
+                  .iter()
+                  .position(|s| std::ptr::eq(&**s, *slot))
+                  .unwrap();
+               drop(guard);
+               index
+            })
+            .join()
+            .unwrap()
+         })
+         .collect();
+      assert!(
+         used.iter().all(|&i| i >= 2),
+         "auxiliary threads never use a worker slot"
+      );
+      assert!(
+         used.len() > 1,
+         "auxiliary threads are striped, not all on one line"
+      );
+
+      // An exclusive holder still excludes every auxiliary stripe.
+      let exclusive = isolation.enter(0, IsolationMode::Exclusive);
+      let blocked = {
+         let isolation = std::sync::Arc::clone(&isolation);
+         std::thread::spawn(move || {
+            let started = std::time::Instant::now();
+            let _guard = isolation.enter(usize::MAX, IsolationMode::Shared);
+            started.elapsed()
+         })
+      };
+      std::thread::sleep(std::time::Duration::from_millis(50));
+      drop(exclusive);
+      assert!(blocked.join().unwrap() >= std::time::Duration::from_millis(40));
    }
 }

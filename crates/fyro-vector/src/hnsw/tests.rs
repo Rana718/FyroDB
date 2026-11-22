@@ -34,7 +34,10 @@ fn flat_arena_omits_edges_and_preserves_vectors_through_dump_and_reorder() {
    let regular = HnswGraph::new(DistanceMetric::L2, 128, 16, 200);
    flat.prepare_batch(&items);
    regular.prepare_batch(&items);
-   assert!(flat.memory_bytes() < regular.memory_bytes());
+   // The vector arena (the sketch is counted separately) carries no edges.
+   let sketch_bytes: usize = flat.inner.read().sketch.iter().map(|c| c.len() * 4).sum();
+   assert!(sketch_bytes > 0);
+   assert!(flat.memory_bytes() - sketch_bytes < regular.memory_bytes());
    assert_eq!(flat.linked_len(), data.len());
    assert_eq!(flat.dump().nodes.len(), data.len());
    for q in &data[..8] {
@@ -793,4 +796,205 @@ fn full_width_search_includes_disconnected_live_nodes() {
    assert_eq!(hits.len(), 599);
    assert_eq!(hits[0].1, 511);
    assert!(hits.iter().all(|hit| hit.1 != 31));
+}
+
+/// Reference graph without a sketch: same payloads and the same exact
+/// distance code, so its scan is what the pruned FLAT scan must reproduce.
+fn sketch_pair(metric: DistanceMetric, data: &[Vec<f32>]) -> (HnswGraph, HnswGraph) {
+   let dims = data[0].len();
+   let flat = HnswGraph::new_flat(metric, dims);
+   let plain = HnswGraph::new(metric, dims, 16, 100);
+   assert!(
+      flat.inner.read().sketch_words != 0,
+      "FLAT graph keeps a sketch"
+   );
+   assert_eq!(plain.inner.read().sketch_words, 0);
+   let items: Vec<_> = data
+      .iter()
+      .enumerate()
+      .map(|(i, v)| (i, v.as_slice()))
+      .collect();
+   flat.prepare_batch(&items[..items.len() / 2]);
+   plain.prepare_batch(&items[..items.len() / 2]);
+   for &(i, v) in &items[items.len() / 2..] {
+      flat.prepare(i, v);
+      plain.prepare(i, v);
+   }
+   (flat, plain)
+}
+
+/// Results as comparable keys: distances by bit pattern (NaN included) and
+/// equal distances ordered by id, since neither scan orders ties.
+fn keyed(r: Vec<(f32, usize)>) -> Vec<(u32, usize)> {
+   let mut r = r;
+   r.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+   r.into_iter().map(|(d, id)| (d.to_bits(), id)).collect()
+}
+
+fn uniform(n: usize, dims: usize, seed: u64) -> Vec<Vec<f32>> {
+   let mut rng = Lcg(seed);
+   (0..n)
+      .map(|_| (0..dims).map(|_| rng.next() * 2.0 - 1.0).collect())
+      .collect()
+}
+
+#[test]
+fn pruned_flat_scan_returns_exactly_the_plain_scan_results() {
+   for metric in [
+      DistanceMetric::Cosine,
+      DistanceMetric::L2,
+      DistanceMetric::Ip,
+   ] {
+      for (label, data) in [
+         ("uniform", uniform(6_000, 96, 7)),
+         ("clustered", clustered(6_000, 96, 24, 11)),
+      ] {
+         let (flat, plain) = sketch_pair(metric, &data);
+         for i in (0..data.len()).step_by(11) {
+            flat.mark_deleted(i);
+            plain.mark_deleted(i);
+         }
+         let subset: Vec<usize> = (0..data.len()).filter(|i| i % 3 != 1).collect();
+         for (j, k) in [1usize, 10, 64, 700].into_iter().enumerate() {
+            for t in 0..6 {
+               let q = &data[(t * 977 + j * 13) % data.len()];
+               let q: Vec<f32> = q.iter().map(|x| x * 0.9 + 0.01).collect();
+               assert_eq!(
+                  keyed(flat.brute_search(&q, k)),
+                  keyed(plain.brute_search(&q, k)),
+                  "{metric:?} {label} k={k}: unfiltered"
+               );
+               assert_eq!(
+                  keyed(flat.brute_search_ids(&q, k, &subset)),
+                  keyed(plain.brute_search_ids(&q, k, &subset)),
+                  "{metric:?} {label} k={k}: subset"
+               );
+            }
+         }
+      }
+   }
+}
+
+#[test]
+fn pruned_flat_scan_stays_exact_for_concurrent_batches() {
+   use std::sync::Arc;
+   let data = Arc::new(uniform(12_000, 128, 3));
+   let (flat, plain) = sketch_pair(DistanceMetric::Cosine, &data);
+   let (flat, plain) = (Arc::new(flat), Arc::new(plain));
+   let handles: Vec<_> = (0..12)
+      .map(|t| {
+         let (flat, plain, data) = (Arc::clone(&flat), Arc::clone(&plain), Arc::clone(&data));
+         std::thread::spawn(move || {
+            for i in 0..15 {
+               let q = &data[(t * 389 + i * 71) % data.len()];
+               assert_eq!(
+                  keyed(flat.brute_search(q, 10)),
+                  keyed(plain.brute_search(q, 10))
+               );
+            }
+         })
+      })
+      .collect();
+   for h in handles {
+      h.join().unwrap();
+   }
+}
+
+/// Rows without a finite bound (non-finite components) are always re-scored,
+/// so they rank exactly where the plain scan puts them; updates rewrite the
+/// sketch row along with the vector.
+#[test]
+fn pruned_flat_scan_handles_unbounded_rows_and_updates() {
+   for metric in [
+      DistanceMetric::Cosine,
+      DistanceMetric::L2,
+      DistanceMetric::Ip,
+   ] {
+      let mut data = uniform(5_000, 64, 19);
+      data[17][3] = f32::INFINITY;
+      data[42] = vec![0.0; 64];
+      let (flat, plain) = sketch_pair(metric, &data);
+      let q = data[100].clone();
+      assert_eq!(
+         keyed(flat.brute_search(&q, 10)),
+         keyed(plain.brute_search(&q, 10)),
+         "{metric:?}"
+      );
+      // Move a far vector onto the query: it must become the nearest.
+      let moved: Vec<f32> = q.iter().map(|x| x * 1.0001).collect();
+      flat.prepare(4_000, &moved);
+      plain.prepare(4_000, &moved);
+      let got = flat.brute_search(&q, 10);
+      assert_eq!(
+         keyed(got.clone()),
+         keyed(plain.brute_search(&q, 10)),
+         "{metric:?} after update"
+      );
+      assert!(
+         got.iter().any(|r| r.1 == 4_000),
+         "{metric:?}: updated row found"
+      );
+   }
+}
+
+#[test]
+fn reordered_flat_graph_keeps_its_sketch() {
+   let data = uniform(5_000, 64, 23);
+   let (flat, plain) = sketch_pair(DistanceMetric::Cosine, &data);
+   let (reordered, map) = flat.reordered();
+   let q = &data[7];
+   let want: Vec<(f32, usize)> = plain
+      .brute_search(q, 10)
+      .into_iter()
+      .map(|(d, id)| (d, map[id] as usize))
+      .collect();
+   assert_eq!(keyed(reordered.brute_search(q, 10)), keyed(want));
+}
+
+/// Bounded reranking of an Int8 graph returns what scoring every candidate
+/// returns, while scoring fewer of them; missing documents are skipped as
+/// `rerank_by` skips them.
+#[test]
+fn bounded_rerank_equals_full_rerank_with_fewer_scores() {
+   use std::cell::Cell;
+   for metric in [
+      DistanceMetric::Cosine,
+      DistanceMetric::L2,
+      DistanceMetric::Ip,
+   ] {
+      for (label, data) in [
+         ("uniform", uniform(3_000, 128, 31)),
+         ("clustered", clustered(3_000, 128, 16, 37)),
+      ] {
+         let g = HnswGraph::with_quant(metric, 128, 16, 100, Quant::Int8);
+         let items: Vec<_> = data
+            .iter()
+            .enumerate()
+            .map(|(i, v)| (i, v.as_slice()))
+            .collect();
+         g.prepare_batch(&items);
+         for t in 0..8 {
+            let q: Vec<f32> = data[t * 173].iter().map(|x| x * 0.8 - 0.05).collect();
+            // Candidates in estimated order, as a search would return them.
+            let cands: Vec<(f32, usize)> =
+               (0..400).map(|i| (0.0, (i * 7 + t) % data.len())).collect();
+            let missing = |id: usize| id % 13 == 5;
+            let scored = Cell::new(0usize);
+            let score = |id: usize| {
+               scored.set(scored.get() + 1);
+               (!missing(id)).then(|| distance(metric, &q, &data[id]))
+            };
+            let full = g.rerank_by(cands.clone(), 10, &|id| {
+               (!missing(id)).then(|| distance(metric, &q, &data[id]))
+            });
+            let bounded = g.rerank_bounded(&q, cands, 10, &score);
+            assert_eq!(keyed(bounded), keyed(full), "{metric:?} {label} query {t}");
+            assert!(
+               scored.get() < 400,
+               "{metric:?} {label}: scored all {} candidates",
+               scored.get()
+            );
+         }
+      }
+   }
 }

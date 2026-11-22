@@ -47,6 +47,9 @@ struct PeerHandle {
 
 const SNAPSHOT_WINDOW: usize = 8;
 const REPLICATION_WINDOW: usize = 64;
+/// Upper bounds for one replication frame (records, key + value bytes).
+const REPLICATION_BATCH_RECORDS: usize = 512;
+const REPLICATION_BATCH_BYTES: usize = 256 * 1024;
 const MIGRATE_BATCH_RECORDS: usize = 128;
 const MIGRATE_BATCH_BYTES: usize = 1024 * 1024;
 
@@ -280,7 +283,7 @@ impl PeerManager {
       // authoritative and retryable.
       store.remove_slot_values(slot);
       if let Some(topology) = state.commit_slot_migration(slot) {
-         let _ = store.install_cluster_topology(topology.clone());
+         store.persist_cluster_topology();
          if let Ok(payload) = super::encode_topology(&topology) {
             for peer_id in self.peer_ids() {
                let _ = self.try_send(
@@ -327,7 +330,7 @@ pub fn start_peer_manager(config: &ClusterConfig, state: ClusterState) -> PeerMa
          },
       );
       let local_id = config.local_id.clone();
-      let local_epoch = config.topology.epoch;
+      let worker_state = state.clone();
       let heartbeat_interval = config.heartbeat_interval;
       let auth_token = config.auth_token.clone();
       let worker_reconnect_count = Arc::clone(&reconnect_count);
@@ -338,7 +341,7 @@ pub fn start_peer_manager(config: &ClusterConfig, state: ClusterState) -> PeerMa
          .spawn(move || {
             let ctx = PeerWorkerContext {
                local_id: &local_id,
-               epoch: local_epoch,
+               state: worker_state,
                heartbeat_interval,
                auth_token: auth_token.as_deref(),
             };
@@ -374,7 +377,6 @@ pub fn start_replication_streams(
    log: ReplicationCoordinator,
 ) {
    let local_id = config.local_id.clone();
-   let epoch = config.topology.epoch;
    let timeout = config.suspect_timeout;
    for replica in config.topology.nodes.iter().filter(|node| {
       node.role == crate::cluster::NodeRole::Replica
@@ -395,7 +397,13 @@ pub fn start_replication_streams(
                 let mut next_to_send = 0u64;
                 let mut next_to_ack = 0u64;
                 let mut pending: VecDeque<(u64, u64)> = VecDeque::new();
+                // Whether this replica accepts batched entries; learned from
+                // its reply to every ReplicationBegin.
+                let mut replica_batches = false;
                 loop {
+                    // Frames carry the live epoch; a startup epoch made peers
+                    // drop every frame after the first topology change.
+                    let epoch = store.cluster_state_ref().epoch();
                     if next_to_send == 0 {
                         pending.clear();
                         let mut begin = Vec::with_capacity(33);
@@ -406,6 +414,7 @@ pub fn start_replication_streams(
                         let resumed = manager.request(&replica_id, Frame { message_type: MessageType::ReplicationBegin, flags: 0, request_id: 0, source_id: stable_id(&local_id), target_id: stable_id(&replica_id), epoch, payload: begin }, timeout)
                             .ok()
                             .and_then(|frame| {
+                                replica_batches = frame.flags & crate::cluster::FLAG_REPLICATION_BATCHES != 0;
                                 if frame.payload.len() != 24 || frame.payload[..16] != identity { return None; }
                                 Some(u64::from_be_bytes(frame.payload[16..24].try_into().unwrap()))
                             })
@@ -425,18 +434,25 @@ pub fn start_replication_streams(
 
                     let mut fell_behind = false;
                     while pending.len() < REPLICATION_WINDOW {
-                        let record = match log.record_at(next_to_send) {
-                            Ok(Some(record)) => record,
-                            Ok(None) => break,
-                            Err(_) => {
-                                fell_behind = true;
-                                break;
-                            }
+                        // Ship whatever the log already holds, up to a batch
+                        // bound: a lone write still leaves at once, a burst
+                        // leaves as one frame with one ack.
+                        let max_records = if replica_batches { REPLICATION_BATCH_RECORDS } else { 1 };
+                        let (mut batch, behind) =
+                            take_replication_batch(&log, next_to_send, max_records, REPLICATION_BATCH_BYTES);
+                        fell_behind = behind;
+                        let Some(last) = batch.last().map(|record| record.offset) else {
+                            break;
                         };
-                        let offset = record.offset;
-                        let Ok(payload) =
-                            encode_replication_message(&ReplicationMessage::Entry(record))
-                        else {
+                        // A single record (an older replica, or one too large to
+                        // share a frame) uses the single-entry frame every
+                        // replica understands.
+                        let message = if batch.len() == 1 {
+                            ReplicationMessage::Entry(batch.pop().expect("one record"))
+                        } else {
+                            ReplicationMessage::Entries(batch)
+                        };
+                        let Ok(payload) = encode_replication_message(&message) else {
                             break;
                         };
                         match manager.send_request(
@@ -452,8 +468,8 @@ pub fn start_replication_streams(
                             },
                         ) {
                             Ok(request_id) => {
-                                pending.push_back((request_id, offset));
-                                next_to_send = offset.saturating_add(1);
+                                pending.push_back((request_id, last));
+                                next_to_send = last.saturating_add(1);
                             }
                             Err(PeerRequestError::QueueFull) => break,
                             Err(_) => break,
@@ -504,6 +520,24 @@ pub fn start_replication_streams(
                                     );
                                 }
                                 next_to_ack = applied_offset.saturating_add(1);
+                            } else {
+                                // The replica stopped short (a gap or a failed
+                                // apply) and acked where it is: resend from
+                                // there. If it made no progress since its last
+                                // ack, the record keeps failing to apply, so back
+                                // off instead of resending in a tight loop.
+                                for (request_id, _) in pending.drain(..) {
+                                    manager.cancel_request(&replica_id, request_id);
+                                }
+                                if let Ok(ReplicationMessage::Ack { applied_offset }) =
+                                    decode_replication_message(&response.payload)
+                                {
+                                    if let Some(pause) = short_ack_backoff(next_to_ack, applied_offset) {
+                                        thread::sleep(pause);
+                                    }
+                                    next_to_ack = applied_offset.saturating_add(1);
+                                }
+                                next_to_send = next_to_ack.max(1);
                             }
                         }
                         Err(_) => {
@@ -519,6 +553,51 @@ pub fn start_replication_streams(
                 }
             });
    }
+}
+
+/// Consecutive log records starting at `from`, for one replication frame:
+/// at most `max_records`, and a multi-record frame never grows past
+/// `max_bytes` of encoded payload. The size check runs before a record is
+/// added, so one large record after many small ones starts the next frame
+/// instead of pushing this one past the transport's payload limit (which
+/// stalled the replica for good). A record too large for any batch is
+/// returned alone. The flag is set when `from` itself has left the log.
+pub(crate) fn take_replication_batch(
+   log: &ReplicationCoordinator,
+   from: u64,
+   max_records: usize,
+   max_bytes: usize,
+) -> (Vec<Arc<crate::cluster::MutationRecord>>, bool) {
+   // Entries payload: tag (1) + count (4), then a length prefix per record.
+   let mut payload = 5usize;
+   let mut batch = Vec::new();
+   while batch.len() < max_records {
+      match log.record_at(from.saturating_add(batch.len() as u64)) {
+         Ok(Some(record)) => {
+            let size = 4 + crate::cluster::mutation_wire_len(&record);
+            if !batch.is_empty() && payload + size > max_bytes {
+               break;
+            }
+            payload += size;
+            batch.push(record);
+         }
+         Ok(None) => break,
+         // Evicted from the log: only a snapshot can bridge the gap, once
+         // whatever was gathered is out.
+         Err(_) => {
+            let behind = batch.is_empty();
+            return (batch, behind);
+         }
+      }
+   }
+   (batch, false)
+}
+
+/// After a short ack: `None` to resend at once (the replica advanced, so a
+/// frame was lost or a batch stopped at a gap), or a pause when it is stuck
+/// on the same offset (a record that fails to apply every time).
+pub(crate) fn short_ack_backoff(next_to_ack: u64, applied_offset: u64) -> Option<Duration> {
+   (applied_offset.saturating_add(1) <= next_to_ack).then_some(Duration::from_millis(100))
 }
 
 fn send_snapshot(
@@ -626,8 +705,12 @@ pub fn start_health_monitor(
             let total = manager.peer_count();
             let mut healthy = 0usize;
             let mut suspect = 0usize;
-            for node in config
-               .topology
+            // The live topology, not the startup config: the epoch must match
+            // what promote_replica checks, or failover never fires after the
+            // first topology change.
+            let topology = state.topology_arc();
+            let epoch = topology.epoch;
+            for node in topology
                .nodes
                .iter()
                .filter(|node| node.id != config.local_id)
@@ -644,7 +727,7 @@ pub fn start_health_monitor(
                      let report = crate::cluster::FailureReport {
                         target_id: node.id.clone(),
                         reporter_id: config.local_id.clone(),
-                        epoch: config.topology.epoch,
+                        epoch,
                      };
                      // Count own observation first, or quorum can never be reached.
                      let confirmed = state.record_failure(report.clone());
@@ -669,7 +752,7 @@ pub fn start_health_monitor(
                               request_id: 0,
                               source_id: stable_id(&config.local_id),
                               target_id: stable_id(&voter_id),
-                              epoch: config.topology.epoch,
+                              epoch,
                               payload: payload.clone(),
                            },
                         );
@@ -677,7 +760,7 @@ pub fn start_health_monitor(
                      if let Some(topology) = promoted
                         && let Ok(topology_payload) = super::encode_topology(&topology)
                      {
-                        let _ = store.install_cluster_topology(topology.clone());
+                        store.persist_cluster_topology();
                         for peer_id in manager.peer_ids() {
                            let _ = manager.try_send(
                               &peer_id,
@@ -712,11 +795,12 @@ pub fn start_health_monitor(
       });
 }
 
-/// Local-node identity the outbound worker needs: who we are, the topology
-/// epoch we speak, how often to heartbeat, and how to authenticate.
+/// Local-node identity the outbound worker needs: who we are, the live
+/// cluster state (its epoch stamps every frame and its topology is pushed to
+/// the peer), how often to heartbeat, and how to authenticate.
 struct PeerWorkerContext<'a> {
    local_id: &'a str,
-   epoch: u64,
+   state: ClusterState,
    heartbeat_interval: Duration,
    auth_token: Option<&'a str>,
 }
@@ -735,6 +819,7 @@ fn run_peer_worker(
    let mut connected_once = false;
    let mut batch: Vec<Frame> = Vec::with_capacity(64);
    let mut scratch: Vec<[u8; 48]> = Vec::new();
+   let mut pushed_version = 0u64;
    loop {
       batch.clear();
       let first = match receiver.recv_timeout(ctx.heartbeat_interval) {
@@ -746,7 +831,7 @@ fn run_peer_worker(
                request_id,
                source_id: stable_id(ctx.local_id),
                target_id: stable_id(&node.id),
-               epoch: ctx.epoch,
+               epoch: ctx.state.epoch(),
                payload: Vec::new(),
             };
             request_id = request_id.wrapping_add(1).max(1);
@@ -776,7 +861,14 @@ fn run_peer_worker(
             }
             // Try every candidate: dual-stack names often yield IPv6 first.
             let attempt = candidates.iter().find_map(|&address| {
-               connect_and_handshake(address, ctx.local_id, node, ctx.epoch, ctx.auth_token).ok()
+               connect_and_handshake(
+                  address,
+                  ctx.local_id,
+                  node,
+                  ctx.state.epoch(),
+                  ctx.auth_token,
+               )
+               .ok()
             });
             match attempt {
                Some(connection) => {
@@ -795,6 +887,8 @@ fn run_peer_worker(
                         .ok();
                   }
                   peer = Some(connection);
+                  // A fresh connection has seen none of our topology yet.
+                  pushed_version = 0;
                   backoff = MIN_BACKOFF;
                }
                None => {
@@ -805,10 +899,10 @@ fn run_peer_worker(
                }
             }
          }
-         if peer
-            .as_mut()
-            .is_some_and(|connection| connection.send_batch(&batch, &mut scratch).is_ok())
-         {
+         if peer.as_mut().is_some_and(|connection| {
+            push_topology(connection, ctx, &node.id, &mut pushed_version).is_ok()
+               && connection.send_batch(&batch, &mut scratch).is_ok()
+         }) {
             break;
          }
          peer = None;
@@ -819,6 +913,35 @@ fn run_peer_worker(
          }
       }
    }
+}
+
+/// Sends our topology to the peer when it has not seen the current version
+/// on this connection. Every new connection and every change is pushed, so
+/// a node that was down (or partitioned) while the topology changed learns
+/// the new one as soon as it is reachable, instead of keeping a stale view
+/// such as still believing it is the primary of slots it lost in a failover.
+fn push_topology(
+   connection: &mut PeerConnection,
+   ctx: &PeerWorkerContext<'_>,
+   peer_id: &str,
+   pushed_version: &mut u64,
+) -> Result<(), super::ProtocolError> {
+   let Some((version, topology, _)) = ctx.state.topology_if_newer(*pushed_version) else {
+      return Ok(());
+   };
+   if let Ok(payload) = super::encode_topology(&topology) {
+      connection.send(&Frame {
+         message_type: MessageType::Topology,
+         flags: 0,
+         request_id: 0,
+         source_id: stable_id(ctx.local_id),
+         target_id: stable_id(peer_id),
+         epoch: topology.epoch,
+         payload,
+      })?;
+   }
+   *pushed_version = version;
+   Ok(())
 }
 
 fn read_replies(
@@ -887,8 +1010,11 @@ fn connect_and_handshake(
    if response.message_type != MessageType::Hello || response.payload != node.id.as_bytes() {
       return Err(super::ProtocolError::InvalidHandshake);
    }
+   // A peer whose topology is older than ours is still a valid peer: it is
+   // behind on a change, and the push that follows the handshake updates it.
+   // Rejecting it here kept the two nodes disconnected for good.
    let topology = peer.receive()?;
-   if topology.message_type != MessageType::Topology || topology.epoch < epoch {
+   if topology.message_type != MessageType::Topology {
       return Err(super::ProtocolError::InvalidHandshake);
    }
    decode_topology(&topology.payload).map_err(|_| super::ProtocolError::InvalidHandshake)?;
@@ -899,6 +1025,76 @@ fn connect_and_handshake(
 #[cfg(test)]
 mod tests {
    use super::*;
+
+   #[test]
+   fn a_large_record_after_small_ones_starts_its_own_frame() {
+      use crate::cluster::{MutationRecord, ReplicationCoordinator, Slot};
+      let log = ReplicationCoordinator::new(1_000);
+      for i in 0..300u32 {
+         log.append(MutationRecord::replace(
+            Slot(1),
+            i.to_be_bytes().to_vec(),
+            vec![7; 800],
+            None,
+         ))
+         .unwrap();
+      }
+      let big = 16 * 1024 * 1024 - 100 * 1024;
+      log.append(MutationRecord::replace(
+         Slot(1),
+         b"big".to_vec(),
+         vec![1; big],
+         None,
+      ))
+      .unwrap();
+
+      // The small records fill a frame up to the budget, never the large one.
+      let mut from = 1;
+      let mut frames = Vec::new();
+      loop {
+         let (batch, behind) = take_replication_batch(
+            &log,
+            from,
+            REPLICATION_BATCH_RECORDS,
+            REPLICATION_BATCH_BYTES,
+         );
+         assert!(!behind);
+         let Some(last) = batch.last().map(|r| r.offset) else {
+            break;
+         };
+         let payload = encode_replication_message(&if batch.len() == 1 {
+            ReplicationMessage::Entry(Arc::clone(&batch[0]))
+         } else {
+            ReplicationMessage::Entries(batch.clone())
+         })
+         .unwrap();
+         assert!(
+            payload.len() <= super::super::codec::DEFAULT_MAX_PAYLOAD,
+            "frame of {} bytes exceeds the transport limit",
+            payload.len()
+         );
+         if batch.len() > 1 {
+            assert!(payload.len() <= REPLICATION_BATCH_BYTES);
+         }
+         frames.push(batch.len());
+         from = last + 1;
+      }
+      assert_eq!(
+         frames.iter().sum::<usize>(),
+         301,
+         "every record is shipped once"
+      );
+      assert_eq!(*frames.last().unwrap(), 1, "the large record travels alone");
+   }
+
+   #[test]
+   fn a_replica_stuck_on_one_offset_is_retried_with_a_pause() {
+      // Advanced since the last ack (lost frame / gap): resend at once.
+      assert_eq!(short_ack_backoff(10, 14), None);
+      // Same offset again (the next record keeps failing): back off.
+      assert!(short_ack_backoff(15, 14).is_some());
+      assert!(short_ack_backoff(15, 3).is_some());
+   }
    use crate::cluster::{NodeRole, Slot, SlotRange, Topology};
 
    fn config() -> ClusterConfig {

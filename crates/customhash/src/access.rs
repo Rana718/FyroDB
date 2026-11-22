@@ -4,9 +4,13 @@ use std::marker::PhantomData;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 type LocalWrite = (u64, usize);
-const WRITE_STRIPES: usize = 8;
-static NEXT_STRIPE: AtomicUsize = AtomicUsize::new(0);
+/// One stripe per worker (bound with `bind_thread_stripe`) plus room for
+/// auxiliary threads, which take stripes from the top so they do not share a
+/// line with low-numbered workers.
+const WRITE_STRIPES: usize = 16;
+static NEXT_AUX_STRIPE: AtomicUsize = AtomicUsize::new(0);
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+const UNBOUND: usize = usize::MAX;
 
 struct ReadState {
    count: AtomicUsize,
@@ -14,10 +18,36 @@ struct ReadState {
 }
 
 thread_local! {
-   static STRIPE: usize = NEXT_STRIPE.fetch_add(1, Ordering::Relaxed) % WRITE_STRIPES;
+   static STRIPE: Cell<usize> = const { Cell::new(UNBOUND) };
    static READING: Cell<u64> = const { Cell::new(0) };
    static WRITING: Cell<LocalWrite> = const { Cell::new((0, 0)) };
    static OTHER_WRITES: RefCell<Vec<LocalWrite>> = const { RefCell::new(Vec::new()) };
+}
+
+/// This thread's writer stripe, assigned on first use if not bound.
+#[inline(always)]
+fn stripe() -> usize {
+   STRIPE.with(|cell| {
+      let index = cell.get();
+      if index != UNBOUND {
+         return index;
+      }
+      let index =
+         WRITE_STRIPES - 1 - NEXT_AUX_STRIPE.fetch_add(1, Ordering::Relaxed) % WRITE_STRIPES;
+      cell.set(index);
+      index
+   })
+}
+
+/// Bind the calling thread to a writer stripe (a worker passes its index).
+/// A thread that already wrote keeps its stripe: changing it while a write
+/// epoch is open would unbalance the stripe's started/finished counters.
+pub fn bind_thread_stripe(index: usize) {
+   STRIPE.with(|cell| {
+      if cell.get() == UNBOUND {
+         cell.set(index % WRITE_STRIPES);
+      }
+   });
 }
 
 #[derive(Default)]
@@ -156,7 +186,7 @@ impl Access {
             false
          })
       {
-         let stripe = &self.writers[STRIPE.with(|i| *i)];
+         let stripe = &self.writers[stripe()];
          loop {
             if stripe.started.fetch_add(1, Ordering::SeqCst) >= u64::MAX / 2 {
                self.stamps_disabled.store(true, Ordering::SeqCst);
@@ -215,7 +245,7 @@ impl Drop for WriteEpochGuard<'_> {
          })
       };
       if last {
-         self.access.writers[STRIPE.with(|i| *i)]
+         self.access.writers[stripe()]
             .finished
             .fetch_add(1, Ordering::SeqCst);
       }

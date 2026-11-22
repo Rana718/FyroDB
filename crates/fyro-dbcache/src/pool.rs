@@ -109,8 +109,16 @@ impl UpstreamPool {
          };
          let idle_since = candidate.idle_since;
          let mut connection = candidate.connection;
-         if idle_since.elapsed() > Duration::from_secs(10) && connection.ping().is_err() {
+         if connection.finish_reset().is_err() {
             continue;
+         }
+         if idle_since.elapsed() > Duration::from_secs(10) {
+            // Long-idle sessions may have missed a configuration reload, so
+            // their remembered context is not trusted; probe again.
+            connection.set_baseline_context(None);
+            if connection.ping().is_err() {
+               continue;
+            }
          }
          if connection.apply_session_params(application_name).is_err() {
             continue;

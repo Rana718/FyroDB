@@ -170,11 +170,35 @@ struct PointCache {
    reply: [u8; 32],
    reply_len: usize,
    stamp: Option<customhash::ReadStamp>,
+   /// Consecutive stamp checks that failed because some writer ran.
+   failures: u32,
+   /// Repeated-key GETs left to serve without checking or learning a stamp.
+   backoff: u32,
 }
+
+impl PointCache {
+   /// Starts tracking a new key (at most 32 bytes). Backoff and failure counts
+   /// belong to the previous key: carried over, a key that was contended
+   /// would leave the next hot key uncached for up to `POINT_CACHE_BACKOFF`
+   /// GETs.
+   fn switch_to(&mut self, key: &[u8]) {
+      self.key[..key.len()].copy_from_slice(key);
+      self.key_len = key.len();
+      self.stamp = None;
+      self.failures = 0;
+      self.backoff = 0;
+   }
+}
+
+/// After this many consecutive invalidated stamps the cache stops checking:
+/// under concurrent writes each check reads every writer stripe's line from
+/// another core and still misses.
+const POINT_CACHE_MAX_FAILURES: u32 = 4;
+const POINT_CACHE_BACKOFF: u32 = 1 << 16;
 
 thread_local! {
    static POINT_CACHE: std::cell::RefCell<PointCache> = const { std::cell::RefCell::new(PointCache {
-      key: [0; 32], key_len: 0, reply: [0; 32], reply_len: 0, stamp: None,
+      key: [0; 32], key_len: 0, reply: [0; 32], reply_len: 0, stamp: None, failures: 0, backoff: 0,
    }) };
 }
 
@@ -190,23 +214,31 @@ fn dispatch_get_one<const STREAM_IO: bool>(
    if key.len() <= 32 {
       let hit = POINT_CACHE.with_borrow_mut(|cache| {
          if cache.key_len == key.len() && &cache.key[..key.len()] == key {
-            if cache
-               .stamp
-               .as_ref()
-               .is_some_and(|stamp| store.data.stamp_is_current(stamp))
-            {
-               conn
-                  .parser
-                  .wbuf
-                  .extend_from_slice(&cache.reply[..cache.reply_len]);
-               return true;
+            if cache.backoff != 0 {
+               cache.backoff -= 1;
+               return false;
+            }
+            if let Some(stamp) = cache.stamp.as_ref() {
+               if store.data.stamp_is_current(stamp) {
+                  cache.failures = 0;
+                  conn
+                     .parser
+                     .wbuf
+                     .extend_from_slice(&cache.reply[..cache.reply_len]);
+                  return true;
+               }
+               cache.failures += 1;
+               if cache.failures >= POINT_CACHE_MAX_FAILURES {
+                  cache.failures = 0;
+                  cache.stamp = None;
+                  cache.backoff = POINT_CACHE_BACKOFF;
+                  return false;
+               }
             }
             cache.stamp = None;
             learn = store.data.read_stamp();
          } else {
-            cache.key[..key.len()].copy_from_slice(key);
-            cache.key_len = key.len();
-            cache.stamp = None;
+            cache.switch_to(key);
          }
          false
       });
@@ -521,7 +553,9 @@ fn dispatch_get_batch<const STREAM_IO: bool>(
    }
 }
 
-const GET_BATCH_FLUSH_BYTES: usize = 8 * 1024 * 1024;
+/// Flush a GET batch's replies once this much is buffered, which bounds
+/// per-connection output memory (8 MiB per connection before).
+const GET_BATCH_FLUSH_BYTES: usize = 1024 * 1024;
 
 #[inline(always)]
 fn dispatch_set_one(
@@ -538,7 +572,7 @@ fn dispatch_set_one(
       .store
       .set_string_auto_bytes_pinned(key, hint, entry, bytes, 0, pin);
    if conn.store.has_replication() {
-      conn.store.record_live_string(key, bytes, 0);
+      conn.store.record_current_value_bytes(key);
    }
    out.extend_from_slice(b"+OK\r\n");
 }
@@ -1636,7 +1670,7 @@ pub(super) fn dispatch_raw(conn: &mut Conn<'_>, raw: &[(*const u8, usize)]) {
                .store
                .set_string_auto_bytes(key.as_bytes(), hint, entry, bytes, 0);
             if conn.store.has_replication() {
-               conn.store.record_live_string(key.as_bytes(), bytes, 0);
+               conn.store.record_current_value_bytes(key.as_bytes());
             }
             conn.parser.wbuf.extend_from_slice(b"+OK\r\n");
             return;
@@ -2242,14 +2276,17 @@ pub(super) fn handle_unauth(conn: &mut Conn<'_>, raw: &[(*const u8, usize)], cmd
 
 #[inline(never)]
 pub(crate) fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-   let max_len = a.len().max(b.len());
-   let mut diff = (a.len() ^ b.len()) as u8;
-   for i in 0..max_len {
-      let byte_a = if i < a.len() { a[i] } else { 0 };
-      let byte_b = if i < b.len() { b[i] } else { 0 };
-      diff |= byte_a ^ byte_b;
+   // The length difference is folded in at full width. It used to be cast
+   // to u8, so inputs whose lengths differed by a multiple of 256 passed the
+   // length check and compared equal when the longer one ended in zero bytes.
+   let mut diff = a.len() ^ b.len();
+   for i in 0..a.len().max(b.len()) {
+      let x = a.get(i).copied().unwrap_or(0);
+      let y = b.get(i).copied().unwrap_or(0);
+      diff |= usize::from(x ^ y);
    }
-   diff == 0
+   // Keeps the optimizer from turning the loop into an early exit.
+   std::hint::black_box(diff) == 0
 }
 
 /// Offloads search commands to the vector pool to avoid stalling workers;
@@ -2387,5 +2424,47 @@ mod cmd_id_tests {
       assert_eq!(cmd_id(b"JSON\x0eGET"), CmdId::Other);
       assert_eq!(cmd_id(b"JSON\x0eSET"), CmdId::Other);
       assert_eq!(cmd_id(b"FT.SEARCH"), CmdId::Other);
+   }
+}
+
+#[cfg(test)]
+mod point_cache_tests {
+   use super::*;
+
+   #[test]
+   fn a_new_hot_key_does_not_inherit_the_previous_keys_backoff() {
+      let mut cache = PointCache {
+         key: [0; 32],
+         key_len: 0,
+         reply: [0; 32],
+         reply_len: 0,
+         stamp: None,
+         failures: POINT_CACHE_MAX_FAILURES - 1,
+         backoff: POINT_CACHE_BACKOFF,
+      };
+      cache.switch_to(b"key:b");
+      assert_eq!(&cache.key[..cache.key_len], b"key:b");
+      assert_eq!(cache.backoff, 0);
+      assert_eq!(cache.failures, 0);
+      assert!(cache.stamp.is_none());
+   }
+}
+
+#[cfg(test)]
+mod constant_time_eq_tests {
+   use super::constant_time_eq;
+
+   #[test]
+   fn equal_only_for_identical_bytes_whatever_the_length_difference() {
+      assert!(constant_time_eq(b"secret", b"secret"));
+      assert!(constant_time_eq(b"", b""));
+      assert!(!constant_time_eq(b"secret", b"secreT"));
+      assert!(!constant_time_eq(b"secret", b"secre"));
+      // A length difference of 256 with zero padding used to compare equal.
+      let mut padded = b"secret".to_vec();
+      padded.extend(std::iter::repeat_n(0u8, 256));
+      assert!(!constant_time_eq(b"secret", &padded));
+      assert!(!constant_time_eq(&padded, b"secret"));
+      assert!(!constant_time_eq(b"", &[0u8; 512]));
    }
 }

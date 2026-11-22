@@ -30,11 +30,10 @@ impl TtlCounters {
       STRIPE_IDX.with(|cell| {
          let mut idx = cell.get();
          if idx == usize::MAX {
-            #[cfg(target_os = "linux")]
-            let cpu = unsafe { libc::sched_getcpu() };
-            #[cfg(not(target_os = "linux"))]
-            let cpu = 0;
-            idx = if cpu < 0 { 0 } else { cpu as usize };
+            // A unique index per thread. The CPU number sampled once at
+            // thread start let unpinned workers share a stripe permanently.
+            static NEXT: AtomicUsize = AtomicUsize::new(0);
+            idx = NEXT.fetch_add(1, Ordering::Relaxed);
             cell.set(idx);
          }
          idx & (self.adds.len() - 1)
