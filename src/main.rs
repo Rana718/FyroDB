@@ -15,8 +15,8 @@ use std::time::{Duration, Instant};
 static GLOBAL: Zmalloc = Zmalloc;
 
 #[cfg(feature = "profiling")]
-static PROFILER: std::sync::Mutex<Option<pprof::ProfilerGuard<'static>>> =
-   std::sync::Mutex::new(None);
+static PROFILER: parking_lot::Mutex<Option<pprof::ProfilerGuard<'static>>> =
+   parking_lot::Mutex::new(None);
 
 #[cfg(feature = "profiling")]
 fn start_profiler() {
@@ -25,14 +25,14 @@ fn start_profiler() {
          .frequency(997)
          .blocklist(&["libc", "libgcc", "pthread", "vdso"])
          .build();
-      *PROFILER.lock().unwrap() = guard.ok();
+      *PROFILER.lock() = guard.ok();
    }
 }
 
 #[cfg(feature = "profiling")]
 fn write_profile() {
    use std::io::Write;
-   let Some(guard) = PROFILER.lock().unwrap().take() else {
+   let Some(guard) = PROFILER.lock().take() else {
       return;
    };
    let Ok(path) = env::var("FYRODB_PPROF") else {
@@ -456,7 +456,11 @@ fn open_aof(store: &Store, rdb_path: &str) {
 fn expiry_loop(store: &Arc<Store>) {
    const TICK: Duration = Duration::from_millis(100);
    const TICK_BUDGET: Duration = Duration::from_millis(25);
-   const CHUNK_SLOTS: usize = 32_768;
+   // Slots per call. Each call holds the map write epoch (which blocks MGET's
+   // read epoch) only for its own chunk, so chunks stay small; a tick still
+   // covers TICK_SLOTS when nothing is expiring.
+   const CHUNK_SLOTS: usize = 1_024;
+   const TICK_SLOTS: usize = 32_768;
    const DEFRAG_BUDGET: usize = 512;
 
    let shards = store.map_shard_count();
@@ -487,6 +491,7 @@ fn expiry_loop(store: &Arc<Store>) {
    loop {
       std::thread::sleep(TICK);
       tick += 1;
+      rust_zmalloc::maybe_reserve_arenas();
       if tick.is_multiple_of(10) {
          customhash::force_collect();
          rust_zmalloc::purge();
@@ -527,7 +532,13 @@ fn expiry_loop(store: &Arc<Store>) {
          continue;
       }
       let started = Instant::now();
+      let mut tick_slots = 0usize;
+      // At most one full pass per tick: on a small map 32 K slots cover the
+      // keyspace more than once, and continuing past the end repeated the
+      // end-of-cycle work and ignored the rest period it had just set.
+      let mut wrapped = false;
       loop {
+         tick_slots += CHUNK_SLOTS;
          let (chunk_live, next_slot, capacity, removed) =
             store.cleanup_expired_shard(shard, slot, CHUNK_SLOTS);
          shard_removed += removed;
@@ -556,6 +567,7 @@ fn expiry_loop(store: &Arc<Store>) {
             shard += 1;
             if shard >= shards {
                shard = 0;
+               wrapped = true;
                if cycle_removed * 100 < cycle_seen {
                   rest = (rest * 2).clamp(Duration::from_secs(1), Duration::from_secs(8));
                   rest_until = Instant::now() + rest;
@@ -576,7 +588,11 @@ fn expiry_loop(store: &Arc<Store>) {
             rest = Duration::ZERO;
             rest_until = Instant::now();
          }
-         if !hot || started.elapsed() >= TICK_BUDGET || !store.has_ttl_keys() {
+         if wrapped
+            || (!hot && tick_slots >= TICK_SLOTS)
+            || started.elapsed() >= TICK_BUDGET
+            || !store.has_ttl_keys()
+         {
             break;
          }
       }

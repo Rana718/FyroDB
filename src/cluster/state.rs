@@ -16,6 +16,9 @@ pub struct ClusterState {
    failures: Arc<Mutex<FailureTracker>>,
    published: Arc<RwLock<PublishedTopology>>,
    version: Arc<AtomicU64>,
+   /// Epoch of the installed topology, readable without the lock: every
+   /// outbound bus frame is stamped with it.
+   epoch: Arc<AtomicU64>,
    migrations: Arc<ArcSwap<std::collections::HashMap<u16, String>>>,
    imports: Arc<ArcSwap<std::collections::HashMap<u16, String>>>,
    has_imports: Arc<AtomicBool>,
@@ -33,6 +36,7 @@ impl ClusterState {
 
    fn build(quorum: usize, retention: Duration, topology: super::Topology) -> Self {
       let routing = super::RoutingTable::build(&topology);
+      let epoch = topology.epoch;
       Self {
          failures: Arc::new(Mutex::new(FailureTracker::new(quorum, retention))),
          published: Arc::new(RwLock::new(PublishedTopology {
@@ -40,6 +44,7 @@ impl ClusterState {
             routing: Arc::new(routing),
          })),
          version: Arc::new(AtomicU64::new(1)),
+         epoch: Arc::new(AtomicU64::new(epoch)),
          migrations: Arc::new(ArcSwap::default()),
          imports: Arc::new(ArcSwap::default()),
          has_imports: Arc::new(AtomicBool::new(false)),
@@ -61,6 +66,12 @@ impl ClusterState {
          Arc::clone(&snapshot.topology),
          Arc::clone(&snapshot.routing),
       )
+   }
+
+   /// Epoch of the currently installed topology.
+   #[inline]
+   pub fn epoch(&self) -> u64 {
+      self.epoch.load(Ordering::Acquire)
    }
 
    /// Version of the currently installed topology.
@@ -88,6 +99,7 @@ impl ClusterState {
 
    fn install_topology(&self, snapshot: &mut PublishedTopology, topology: Arc<super::Topology>) {
       snapshot.routing = Arc::new(super::RoutingTable::build(&topology));
+      self.epoch.store(topology.epoch, Ordering::Release);
       snapshot.topology = topology;
       self.version.fetch_add(1, Ordering::Release);
    }
@@ -192,12 +204,29 @@ impl ClusterState {
       self.imports.load().get(&slot.value()).cloned()
    }
 
+   /// Installs a topology learned from a peer or from disk. A newer epoch
+   /// replaces ours; a different table at the same epoch means two nodes
+   /// changed it concurrently, so both versions are merged (see
+   /// `Topology::merge_concurrent`) instead of leaving the nodes split.
+   /// Returns whether the installed topology changed.
    pub fn replace_topology(&self, topology: super::Topology) -> bool {
-      let mut snapshot = self.published.write();
-      if topology.epoch <= snapshot.topology.epoch || !topology.is_valid() {
+      if !topology.is_valid() {
          return false;
       }
-      self.install_topology(&mut snapshot, Arc::new(topology));
+      let mut snapshot = self.published.write();
+      let current = snapshot.topology.as_ref();
+      let next = if topology.epoch > current.epoch {
+         topology
+      } else if topology.epoch == current.epoch && topology.nodes != current.nodes {
+         let merged = super::Topology::merge_concurrent(current, &topology);
+         if !merged.is_valid() {
+            return false;
+         }
+         merged
+      } else {
+         return false;
+      };
+      self.install_topology(&mut snapshot, Arc::new(next));
       true
    }
 
@@ -293,6 +322,9 @@ impl ClusterState {
          return None;
       }
       topology.epoch = topology.epoch.saturating_add(1);
+      let mut node = node;
+      // Stamped with the change's epoch, so a concurrent merge keeps it.
+      node.epoch = topology.epoch;
       topology.nodes.push(node);
       let new_topo = Arc::new(topology.clone());
       self.install_topology(&mut snapshot, new_topo);
@@ -354,10 +386,14 @@ impl ClusterState {
    pub fn reset_slots(&self, node_id: &str) -> super::Topology {
       let mut snapshot = self.published.write();
       let mut topology = snapshot.topology.as_ref().clone();
+      topology.epoch = topology.epoch.saturating_add(1);
+      let epoch = topology.epoch;
       if let Some(node) = topology.nodes.iter_mut().find(|n| n.id == node_id) {
          node.slots.clear();
+         // Stamped so a concurrent merge prefers this (empty) entry over an
+         // older one that still lists the released slots.
+         node.epoch = epoch;
       }
-      topology.epoch = topology.epoch.saturating_add(1);
       self.install_topology(&mut snapshot, Arc::new(topology.clone()));
       topology
    }
@@ -498,6 +534,153 @@ mod tests {
             [SlotRange::new(Slot(0), Slot(16383)).unwrap()]
          );
       }
+   }
+
+   #[test]
+   fn a_concurrent_change_at_the_same_epoch_is_merged_not_ignored() {
+      let node = |id: &str, ranges: &[(u16, u16)]| NodeInfo {
+         id: id.into(),
+         address: format!("{id}:8000"),
+         cluster_address: format!("{id}:18000"),
+         role: NodeRole::Primary,
+         replica_of: None,
+         epoch: 1,
+         slots: ranges
+            .iter()
+            .map(|&(start, end)| SlotRange::new(Slot(start), Slot(end)).unwrap())
+            .collect(),
+      };
+      let base = Topology::new(
+         1,
+         vec![node("p", &[(0, 16383)]), node("q", &[]), node("r", &[])],
+      );
+      let state = ClusterState::with_topology(2, Duration::from_secs(30), base.clone());
+      // This node hands slot 100 to q while another node hands slot 7 to r.
+      let local = state.assign_slot(Slot(100), "q").unwrap();
+      let remote = ClusterState::with_topology(2, Duration::from_secs(30), base)
+         .assign_slot(Slot(7), "r")
+         .unwrap();
+      assert_eq!(local.epoch, remote.epoch);
+
+      assert!(
+         state.replace_topology(remote.clone()),
+         "same epoch, different table"
+      );
+      let merged = state.topology();
+      assert_eq!(merged.epoch, local.epoch + 1);
+      assert_eq!(state.epoch(), merged.epoch);
+      assert_eq!(merged.owner(Slot(100)).unwrap().id, "q");
+      assert_eq!(merged.owner(Slot(7)).unwrap().id, "r");
+      assert_eq!(merged.owner(Slot(8)).unwrap().id, "p");
+      assert!(merged.is_complete());
+      assert!(
+         !state.replace_topology(merged.clone()),
+         "re-delivery is a no-op"
+      );
+
+      // The other node merges the same pair and lands on the same table.
+      let other = ClusterState::with_topology(2, Duration::from_secs(30), remote);
+      assert!(other.replace_topology(local));
+      assert_eq!(other.topology(), merged);
+   }
+
+   fn three_primaries() -> Topology {
+      let node = |id: &str, ranges: &[(u16, u16)]| NodeInfo {
+         id: id.into(),
+         address: format!("{id}:8000"),
+         cluster_address: format!("{id}:18000"),
+         role: NodeRole::Primary,
+         replica_of: None,
+         epoch: 1,
+         slots: ranges
+            .iter()
+            .map(|&(start, end)| SlotRange::new(Slot(start), Slot(end)).unwrap())
+            .collect(),
+      };
+      Topology::new(
+         1,
+         vec![
+            node("p", &[(0, 9999)]),
+            node("q", &[(10000, 16000)]),
+            node("x", &[]),
+         ],
+      )
+   }
+
+   /// Applies `left` on one node and `right` on another from the same start,
+   /// then lets the first node learn the second's version.
+   fn race(left: impl Fn(&ClusterState), right: impl Fn(&ClusterState)) -> Topology {
+      let a = ClusterState::with_topology(2, Duration::from_secs(30), three_primaries());
+      let b = ClusterState::with_topology(2, Duration::from_secs(30), three_primaries());
+      left(&a);
+      right(&b);
+      assert_eq!(
+         a.topology().epoch,
+         b.topology().epoch,
+         "a concurrent change"
+      );
+      assert!(a.replace_topology(b.topology()));
+      // Order independence: merging the other way gives the same table.
+      let c = ClusterState::with_topology(2, Duration::from_secs(30), three_primaries());
+      right(&c);
+      let mut left_view = three_primaries();
+      let d = ClusterState::with_topology(2, Duration::from_secs(30), left_view.clone());
+      left(&d);
+      left_view = d.topology();
+      assert!(c.replace_topology(left_view));
+      assert_eq!(a.topology(), c.topology());
+      a.topology()
+   }
+
+   #[test]
+   fn a_concurrent_merge_keeps_a_forget() {
+      let merged = race(
+         |s| assert!(s.forget_node("x").is_some()),
+         |s| assert!(s.add_slots("q", &[Slot(16001)]).is_some()),
+      );
+      assert!(
+         !merged.nodes.iter().any(|n| n.id == "x"),
+         "forgotten node came back"
+      );
+      assert_eq!(merged.owner(Slot(16001)).unwrap().id, "q");
+   }
+
+   #[test]
+   fn a_concurrent_merge_keeps_a_meet_and_a_delslots() {
+      let newcomer = NodeInfo {
+         id: "y".into(),
+         address: "y:8000".into(),
+         cluster_address: "y:18000".into(),
+         role: NodeRole::Primary,
+         replica_of: None,
+         epoch: 0,
+         slots: Vec::new(),
+      };
+      let merged = race(
+         |s| assert!(s.meet_node(newcomer.clone()).is_some()),
+         |s| assert!(s.del_slots("p", &[Slot(5)]).is_some()),
+      );
+      assert!(
+         merged.nodes.iter().any(|n| n.id == "y"),
+         "a node met concurrently is kept"
+      );
+      assert!(merged.owner(Slot(5)).is_none(), "released slot came back");
+      assert_eq!(merged.owner(Slot(6)).unwrap().id, "p");
+   }
+
+   #[test]
+   fn a_concurrent_merge_keeps_a_reset() {
+      let merged = race(
+         |s| {
+            s.reset_slots("q");
+         },
+         |s| assert!(s.add_slots("x", &[Slot(16100)]).is_some()),
+      );
+      assert!(
+         merged.owner(Slot(10000)).is_none(),
+         "reset node's slots came back"
+      );
+      assert_eq!(merged.owner(Slot(16100)).unwrap().id, "x");
    }
 
    #[test]

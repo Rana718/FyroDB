@@ -264,13 +264,17 @@ pub fn xpending(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
       resp::write_integer(out, n as i64);
       match bounds {
          Some((a, b)) => {
-            resp::write_bulk(out, &a.to_string());
-            resp::write_bulk(out, &b.to_string());
+            a.write_to_resp(out);
+            b.write_to_resp(out);
             resp::write_array_header(out, per.len());
             for (c, k) in per {
                resp::write_array_header(out, 2);
                resp::write_bulk(out, &c);
-               resp::write_bulk(out, &k.to_string());
+               let mut k_buf = [0u8; 20];
+               resp::write_bulk(
+                  out,
+                  crate::utils::int_format::write_u64_to(&mut k_buf, k as u64),
+               );
             }
          }
          None => {
@@ -312,7 +316,7 @@ pub fn xpending(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
    resp::write_array_header(out, rows.len());
    for p in rows {
       resp::write_array_header(out, 4);
-      resp::write_bulk(out, &p.id.to_string());
+      p.id.write_to_resp(out);
       resp::write_bulk(out, &p.consumer);
       resp::write_integer(out, p.idle as i64);
       resp::write_integer(out, p.deliveries as i64);
@@ -323,11 +327,11 @@ fn write_claimed(out: &mut Vec<u8>, items: &Claimed, justid: bool) {
    resp::write_array_header(out, items.len());
    for (id, fields) in items {
       if justid {
-         resp::write_bulk(out, &id.to_string());
+         id.write_to_resp(out);
          continue;
       }
       resp::write_array_header(out, 2);
-      resp::write_bulk(out, &id.to_string());
+      id.write_to_resp(out);
       match fields {
          Some(f) => write_fields(out, f),
          None => out.extend_from_slice(b"*-1\r\n"),
@@ -427,11 +431,11 @@ pub fn xautoclaim(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
       store.xautoclaim(key, group, consumer, min_idle, start, count, justid)
    );
    resp::write_array_header(out, 3);
-   resp::write_bulk(out, &next.to_string());
+   next.write_to_resp(out);
    write_claimed(out, &items, justid);
    resp::write_array_header(out, deleted.len());
    for id in deleted {
-      resp::write_bulk(out, &id.to_string());
+      id.write_to_resp(out);
    }
 }
 
@@ -465,16 +469,13 @@ pub fn xinfo(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
       resp::write_bulk(out, "radix-tree-nodes");
       resp::write_integer(out, i.nodes as i64);
       resp::write_bulk(out, "last-generated-id");
-      resp::write_bulk(out, &i.last_id.to_string());
+      i.last_id.write_to_resp(out);
       resp::write_bulk(out, "max-deleted-entry-id");
-      resp::write_bulk(out, &i.max_deleted.to_string());
+      i.max_deleted.write_to_resp(out);
       resp::write_bulk(out, "entries-added");
       resp::write_integer(out, i.entries_added as i64);
       resp::write_bulk(out, "recorded-first-entry-id");
-      resp::write_bulk(
-         out,
-         &i.first.as_ref().map_or("0-0".to_string(), |e| e.0.clone()),
-      );
+      resp::write_bulk(out, i.first.as_ref().map(|e| e.0.as_str()).unwrap_or("0-0"));
       resp::write_bulk(out, "groups");
       resp::write_integer(out, i.groups as i64);
       resp::write_bulk(out, "first-entry");
@@ -498,7 +499,7 @@ pub fn xinfo(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
          resp::write_bulk(out, "pending");
          resp::write_integer(out, g.pending as i64);
          resp::write_bulk(out, "last-delivered-id");
-         resp::write_bulk(out, &g.last_delivered.to_string());
+         g.last_delivered.write_to_resp(out);
          resp::write_bulk(out, "entries-read");
          match g.entries_read {
             Some(v) => resp::write_integer(out, v as i64),

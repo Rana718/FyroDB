@@ -118,12 +118,22 @@ fn medium_get_replies_reuse_output_without_increasing_the_buffer_budget() {
    }
 }
 
+/// Checks the reply stream a client receives: bytes a large batch already
+/// flushed to the socket, followed by what is still buffered.
 fn check_pipeline(store: Arc<Store>, wire: Vec<u8>, expected: &[u8]) -> usize {
-   with_connection(store, |conn| {
+   with_socket_pair(store, |conn, peer| {
+      use std::io::Read;
       conn.parser.filled = wire.len();
       conn.parser.rbuf = wire;
       assert!(conn.process_buffered());
       assert!(conn.parser.wbuf.len() <= conn.parser.wbuf.capacity());
+      let pending = conn.parser.wbuf.len() - conn.write_offset;
+      let flushed = expected.len().saturating_sub(pending);
+      let mut received = vec![0u8; flushed];
+      peer.read_exact(&mut received).unwrap();
+      received.extend_from_slice(&conn.parser.wbuf[conn.write_offset..]);
+      conn.parser.wbuf = received;
+      conn.write_offset = 0;
       if conn.parser.wbuf != expected {
          let mut d = 0;
          while d < expected.len()
@@ -287,7 +297,8 @@ fn concurrent_heap_overwrites_and_reply_encoding_do_not_tear_values() {
          let store = Arc::clone(&store);
          let barrier = Arc::clone(&barrier);
          scope.spawn(move || {
-            with_connection(Arc::clone(&store), |conn| {
+            with_socket_pair(Arc::clone(&store), |conn, peer| {
+               peer.set_nonblocking(true).unwrap();
                conn.worker = worker;
                barrier.wait();
                for iteration in 0..250 {
@@ -309,8 +320,23 @@ fn concurrent_heap_overwrites_and_reply_encoding_do_not_tear_values() {
                         conn.parser.pos = 0;
                         conn.parser.filled = conn.parser.rbuf.len();
                         conn.parser.wbuf.clear();
+                        conn.write_offset = 0;
                         assert!(conn.process_buffered());
-                        reply.extend_from_slice(&conn.parser.wbuf);
+                        // A large batch may flush part of its replies to the
+                        // socket mid-run; the client sees socket bytes first,
+                        // then what is still buffered.
+                        let mut chunk = [0u8; 64 * 1024];
+                        loop {
+                           match std::io::Read::read(peer, &mut chunk) {
+                              Ok(0) => break,
+                              Ok(n) => reply.extend_from_slice(&chunk[..n]),
+                              Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                              Err(e) => panic!("{e}"),
+                           }
+                        }
+                        reply.extend_from_slice(&conn.parser.wbuf[conn.write_offset..]);
+                        conn.parser.wbuf.clear();
+                        conn.write_offset = 0;
                      } else {
                         assert!(store.get_to_buf("shared", &mut reply));
                      }

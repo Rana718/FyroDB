@@ -84,6 +84,7 @@ fn parse_name(name: &str) -> Option<(u64, String)> {
    Some((epoch.parse().ok()?, id.to_string()))
 }
 
+#[cfg(test)]
 fn encode(buf: &mut Vec<u8>, seq: u64, key: &str, value: Option<&[u8]>) {
    encode_bytes(buf, seq, key.as_bytes(), value)
 }
@@ -425,40 +426,64 @@ impl Aof {
       }
    }
 
-   pub fn record(&self, key: &str, read: impl FnOnce() -> Option<Vec<u8>>) {
-      let encoded = read();
-      let w = self.local();
-      let mut w = w.lock();
-      let seq = self.seq.fetch_add(1, Ordering::AcqRel);
-      encode(&mut w.buf, seq, key, encoded.as_deref());
-      if w.buf.len() >= FLUSH_BYTES || self.fsync == Fsync::Always {
-         self.write_out(&mut w);
+   /// Run `f` on this thread's writer without cloning its `Arc`.
+   #[inline]
+   fn with_local<R>(&self, f: impl FnOnce(&mut Writer) -> R) -> R {
+      let cached = LOCAL.with(|l| l.borrow().as_ref().map(Arc::as_ptr));
+      match cached {
+         // SAFETY: the thread-local keeps its `Arc` alive for the thread's
+         // lifetime, and `writers` holds another strong reference.
+         Some(ptr) => f(&mut unsafe { &*ptr }.lock()),
+         None => f(&mut self.local().lock()),
       }
    }
 
-   /// `record` with an already-captured value: lets the caller reuse one
-   /// map lookup and one encoding for both the AOF and the replication log.
+   #[inline]
+   fn finish_record(&self, w: &mut Writer) {
+      if w.buf.len() >= FLUSH_BYTES || self.fsync == Fsync::Always {
+         self.write_out(w);
+      }
+   }
+
+   /// Record a captured value. The sequence number is taken here, so the
+   /// caller must hold whatever keeps `encoded` current (the entry read
+   /// guard) until this returns; see `Store::record_current_value_bytes`.
    pub fn record_encoded(&self, key: &str, encoded: Option<&[u8]>) {
       self.record_encoded_bytes(key.as_bytes(), encoded)
    }
 
    /// Bytes-key variant of `record_encoded`.
    pub fn record_encoded_bytes(&self, key: &[u8], encoded: Option<&[u8]>) {
-      let w = self.local();
-      let mut w = w.lock();
-      let seq = self.seq.fetch_add(1, Ordering::AcqRel);
-      encode_bytes(&mut w.buf, seq, key, encoded);
-      if w.buf.len() >= FLUSH_BYTES || self.fsync == Fsync::Always {
-         self.write_out(&mut w);
-      }
+      self.with_local(|w| {
+         let seq = self.seq.fetch_add(1, Ordering::AcqRel);
+         encode_bytes(&mut w.buf, seq, key, encoded);
+         self.finish_record(w);
+      });
+   }
+
+   /// Take a sequence number now and write its record later with
+   /// `record_reserved_bytes` on the same thread. Unused numbers leave gaps,
+   /// which replay tolerates (it merges by sequence).
+   #[inline]
+   pub fn reserve_seq(&self) -> u64 {
+      self.seq.fetch_add(1, Ordering::AcqRel)
+   }
+
+   /// Write a record under a number from `reserve_seq`. No other record may be
+   /// written on this thread in between, so each writer file stays sorted.
+   pub fn record_reserved_bytes(&self, seq: u64, key: &[u8], encoded: Option<&[u8]>) {
+      self.with_local(|w| {
+         encode_bytes(&mut w.buf, seq, key, encoded);
+         self.finish_record(w);
+      });
    }
 
    pub fn record_flush(&self) {
-      let w = self.local();
-      let mut w = w.lock();
-      let seq = self.seq.fetch_add(1, Ordering::AcqRel);
-      encode_kind(&mut w.buf, seq, KIND_FLUSH, b"", None);
-      self.write_out(&mut w);
+      self.with_local(|w| {
+         let seq = self.seq.fetch_add(1, Ordering::AcqRel);
+         encode_kind(&mut w.buf, seq, KIND_FLUSH, b"", None);
+         self.write_out(w);
+      });
    }
 
    /// True once an AOF open or write has failed since startup; surfaced

@@ -94,7 +94,7 @@ pub struct SearchState {
    registry: Mutex<IndexRegistry>,
    version: AtomicU64,
    cursors: Mutex<CursorTable>,
-   count_cache: Mutex<FxHashMap<String, (usize, u64)>>,
+   count_cache: parking_lot::RwLock<FxHashMap<String, (usize, u64)>>,
    graphs: parking_lot::RwLock<FxHashMap<(String, String), Arc<GraphEntry>>>,
    /// Per-index attribute postings, keyed by index name.
    filters: Mutex<FxHashMap<String, Arc<parking_lot::RwLock<FilterIndex>>>>,
@@ -157,7 +157,7 @@ impl SearchState {
          registry: Mutex::new(IndexRegistry::default()),
          version: AtomicU64::new(0),
          cursors: Mutex::new(CursorTable::default()),
-         count_cache: Mutex::default(),
+         count_cache: parking_lot::RwLock::default(),
          graphs: parking_lot::RwLock::default(),
          filters: Mutex::default(),
          filter_build: Mutex::default(),
@@ -193,7 +193,7 @@ impl SearchState {
       map_len: usize,
       recompute: impl FnOnce() -> u64,
    ) -> u64 {
-      if let Some(&(len, count)) = self.count_cache.lock().get(name)
+      if let Some(&(len, count)) = self.count_cache.read().get(name)
          && len == map_len
       {
          return count;
@@ -201,7 +201,7 @@ impl SearchState {
       let count = recompute();
       self
          .count_cache
-         .lock()
+         .write()
          .insert(name.to_string(), (map_len, count));
       count
    }
@@ -264,7 +264,7 @@ impl SearchState {
       reg.by_alias.retain(|_, v| *v != idx);
       drop(reg);
       self.hooks.unregister(&def.name);
-      self.count_cache.lock().remove(name);
+      self.count_cache.write().remove(name);
       self.drop_graphs(name);
       self.version.fetch_add(1, Ordering::Release);
       Ok(())

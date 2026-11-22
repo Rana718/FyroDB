@@ -33,13 +33,6 @@ pub struct Posting {
    tf: Vec<u16>,
 }
 
-impl Posting {
-   #[allow(dead_code)]
-   fn tf_of(&self, doc: u32) -> Option<u16> {
-      self.docs.binary_search(&doc).ok().map(|i| self.tf[i])
-   }
-}
-
 const BM25_K1: f32 = 1.2;
 const BM25_B: f32 = 0.75;
 

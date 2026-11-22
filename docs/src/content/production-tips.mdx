@@ -65,7 +65,7 @@ services:
       - FYRODB_WORKERS=0
       - FYRODB_MAX_KEYS=5000000
       - FYRODB_RDB_PATH=/data/fyrodb.rdb
-      - MIMALLOC_PURGE_DELAY=0
+      - FYRODB_MALLOC_PURGE_DELAY_MS=0
     volumes:
       - fyrodb-data:/data
     deploy:
@@ -74,7 +74,7 @@ services:
           memory: 2G
 ```
 
-Setting `MIMALLOC_PURGE_DELAY=0` ensures freed memory is returned to the OS immediately, keeping container RSS accurate.
+FyroDB sets its allocator options at startup, which overrides `MIMALLOC_PURGE_DELAY`. Use `FYRODB_MALLOC_PURGE_DELAY_MS=0` instead to return freed memory to the OS immediately; this keeps container RSS close to live data at the cost of more page faults when memory is reused. The default is 3,000 ms. Independently, a worker that has been idle for one second returns its freed allocator memory.
 
 ## Memory Behavior
 
@@ -151,12 +151,12 @@ Key metrics:
 
 ## DB Cache Proxy in Production
 
-### Proxy Workers
+### Proxy Connections
 
-Set `FYRODB_PROXY_WORKERS` to the number of physical CPU cores you want dedicated to proxy traffic. The default (num_cpus / 2) is a sensible split between the KV engine and the proxy. Each worker is a mio event loop thread that multiplexes thousands of connections — you rarely need more than 4 even under heavy load.
+Each proxy client connection is served by its own thread, separate from the KV engine's workers. `FYRODB_PROXY_MAX_CONNECTIONS` caps how many are accepted at once (default `4096`, `0` = unlimited); clients over the cap get PostgreSQL's `53300 sorry, too many clients already`. Size it to the sum of your applications' connection pools plus headroom.
 
 ```bash
-FYRODB_PROXY_WORKERS=4   # on an 8-core machine, leave 4 for the KV engine
+FYRODB_PROXY_MAX_CONNECTIONS=512   # e.g. 8 app instances x 32-connection pools, doubled
 ```
 
 ### TTL Tuning
@@ -214,9 +214,7 @@ FYRODB_PROXY_MODE=cache-only  # app controls what is cached; misses are errors
 #### High-throughput (8+ core server)
 
 ```bash
-FYRODB_PROXY_WORKERS=4
-FYRODB_PROXY_UPSTREAM_POOL=8
-FYRODB_PROXY_BLOCKING_POOL=32
+FYRODB_PROXY_UPSTREAM_POOL=32
 FYRODB_PROXY_CACHE_MAX_KEYS=500000
 FYRODB_PROXY_CACHE_TTL_MS=60000
 FYRODB_PROXY_TRUST_AUTH=true
@@ -225,7 +223,6 @@ FYRODB_PROXY_TRUST_AUTH=true
 #### Low-latency reads (small dataset, sub-ms response target)
 
 ```bash
-FYRODB_PROXY_WORKERS=2
 FYRODB_PROXY_CACHE_TTL_MS=5000
 FYRODB_PROXY_CACHE_TTL_JITTER=5
 FYRODB_PROXY_MODE=cache-only
@@ -235,8 +232,7 @@ FYRODB_PROXY_TRUST_AUTH=true
 #### Memory-constrained container
 
 ```bash
-FYRODB_PROXY_WORKERS=1
 FYRODB_PROXY_CACHE_MAX_KEYS=10000
 FYRODB_PROXY_UPSTREAM_POOL=2
-FYRODB_PROXY_BLOCKING_POOL=4
+FYRODB_PROXY_MAX_CONNECTIONS=256
 ```

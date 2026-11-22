@@ -309,6 +309,7 @@ pub fn mget(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
 
    let view = store.data.read_view();
    let now = crate::storage::value::approx_now_ms();
+   out.reserve((rest.len() + 1) * 16);
    for key in &parts[1..] {
       write_mget_value(view.get(key), now, out);
    }

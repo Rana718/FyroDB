@@ -11,228 +11,71 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+permissions:
+  pull-requests: write
+  contents: read
+
 jobs:
-  changes:
-    name: Detect changes and CI routing
+  lint:
+    name: Lint & Format
     runs-on: ubuntu-latest
-    outputs:
-      rust: ${{ steps.diff.outputs.rust }}
-      run_test: ${{ steps.evaluate.outputs.run_test }}
-      run_verus: ${{ steps.evaluate.outputs.run_verus }}
-      run_lint: ${{ steps.evaluate.outputs.run_lint }}
-      run_e2e: ${{ steps.evaluate.outputs.run_e2e }}
-      run_benchmark: ${{ steps.evaluate.outputs.run_benchmark }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
         with:
-          fetch-depth: 0
+          components: clippy, rustfmt
 
-      - id: diff
-        name: Detect Code & Infrastructure Changes
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: |
-          range="$BASE_SHA..$HEAD_SHA"
-          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
-            range="$BASE_SHA...$HEAD_SHA"
-          fi
-          if [[ -z "$BASE_SHA" || -z "$HEAD_SHA" || "$BASE_SHA" == "0000000000000000000000000000000000000000" ]]; then
-            echo 'rust=true' >> "$GITHUB_OUTPUT"
-          elif git diff --quiet --no-renames "$range" -- \
-            '*.rs' 'Cargo.toml' '*/Cargo.toml' 'Cargo.lock' '*/Cargo.lock' \
-            '.cargo/**' 'rust-toolchain*' 'Taskfile.yml' 'Dockerfile' 'docker-compose*' \
-            'proofs/**' 'bench/**' 'tests/**' 'scripts/**' '.github/workflows/ci.yml' \
-            ':(exclude)docs/**'; then
-            echo 'rust=false' >> "$GITHUB_OUTPUT"
-          else
-            echo 'rust=true' >> "$GITHUB_OUTPUT"
-          fi
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
 
-      - id: evaluate
-        name: Evaluate CI Run Conditions
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          EVENT_ACTION: ${{ github.event.action }}
-          LABEL_NAME: ${{ github.event.label.name }}
-          PR_LABELS_JSON: ${{ toJson(github.event.pull_request.labels) }}
-          RUST_CHANGED: ${{ steps.diff.outputs.rust }}
-        run: |
-          python3 - << 'EOF'
-          import os, json
+      - name: Check Formatting
+        run: cargo fmt --all -- --check
 
-          event_name = os.environ.get("EVENT_NAME", "")
-          action = os.environ.get("EVENT_ACTION", "")
-          label_name = os.environ.get("LABEL_NAME", "")
-          rust_changed = os.environ.get("RUST_CHANGED", "false").lower() == "true"
-
-          labels_raw = os.environ.get("PR_LABELS_JSON", "[]")
-          try:
-              labels_list = json.loads(labels_raw) if labels_raw else []
-              labels = [l.get("name", "") for l in labels_list if isinstance(l, dict)]
-          except Exception:
-              labels = []
-
-          has_test_label = any(l in ["test-case", "testcase"] for l in labels)
-          has_e2e_label = any(l in ["e2e-testcase", "e2e"] for l in labels)
-          has_bench_label = any(l in ["benchmark-validation", "benchmark", "bench"] for l in labels)
-
-          is_push = (event_name == "push")
-          is_pr_open = (event_name == "pull_request" and action in ["opened", "reopened"])
-          is_pr_sync = (event_name == "pull_request" and action == "synchronize")
-          is_pr_labeled = (event_name == "pull_request" and action == "labeled")
-
-          label_is_test = label_name in ["test-case", "testcase"]
-          label_is_e2e = label_name in ["e2e-testcase", "e2e"]
-          label_is_bench = label_name in ["benchmark-validation", "benchmark", "bench"]
-
-          if is_pr_labeled:
-              # Label added event: only trigger the job matching the newly added label
-              run_test = label_is_test
-              run_e2e = label_is_e2e
-              run_bench = label_is_bench
-              run_verus = False
-              run_lint = False
-          elif is_push:
-              # Push directly to main (post-merge): run full verification suite
-              run_test = rust_changed or has_test_label
-              run_verus = rust_changed
-              run_lint = rust_changed
-              run_bench = rust_changed or has_bench_label
-              run_e2e = rust_changed or has_e2e_label
-          elif is_pr_open:
-              # PR created / reopened for the first time: run the complete CI suite once
-              run_test = rust_changed or has_test_label
-              run_verus = rust_changed
-              run_lint = rust_changed
-              run_bench = rust_changed or has_bench_label
-              run_e2e = rust_changed or has_e2e_label
-          elif is_pr_sync:
-              # Subsequent pushes to PR (synchronize / push 2nd time+):
-              # Only run testcases, verus proofs, and lint on every push!
-              # Heavy E2E and Benchmarks run ONLY when their labels are attached!
-              run_test = rust_changed or has_test_label
-              run_verus = rust_changed
-              run_lint = rust_changed
-              run_bench = has_bench_label
-              run_e2e = has_e2e_label
-          else:
-              run_test = run_verus = run_lint = run_bench = run_e2e = False
-
-          print("=== CI Execution Routing Plan ===")
-          print(f"  Event: {event_name} (action: {action})")
-          print(f"  Rust Changed: {rust_changed}")
-          print(f"  Labels: {labels} (added label: {label_name})")
-          print(f"  -> test: {run_test}")
-          print(f"  -> verus: {run_verus}")
-          print(f"  -> lint: {run_lint}")
-          print(f"  -> e2e-integration: {run_e2e}")
-          print(f"  -> benchmark-validation: {run_bench}")
-          print("=================================")
-
-          output_file = os.environ.get("GITHUB_OUTPUT")
-          if output_file:
-              with open(output_file, "a") as f:
-                  f.write(f"run_test={str(run_test).lower()}\n")
-                  f.write(f"run_verus={str(run_verus).lower()}\n")
-                  f.write(f"run_lint={str(run_lint).lower()}\n")
-                  f.write(f"run_e2e={str(run_e2e).lower()}\n")
-                  f.write(f"run_benchmark={str(run_bench).lower()}\n")
-          EOF
+      - name: Run Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
   test:
-    needs: changes
-    if: ${{ !cancelled() && needs.changes.outputs.run_test == 'true' }}
-    name: Test
+    name: Test & Protocol Verification
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
 
-      - uses: Swatinem/rust-cache@v2
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
 
-      - name: Build
-        run: cargo build
-
-      - name: Test
-        run: cargo test --workspace
+      - name: Run Tests
+        run: cargo test --workspace --locked
         env:
-          RUST_TEST_THREADS: 2
+          CARGO_INCREMENTAL: "0"
 
-      - name: Protocol and isolation regression suites
+      - name: Run Protocol Regression Suites
         run: python3 tests/e2e/python/run.py target/debug/fyro_db
 
-  lint:
-    needs: changes
-    if: ${{ !cancelled() && needs.changes.outputs.run_lint == 'true' }}
-    name: Lint
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Auto-remove Trigger Label
+        if: always() && github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name
+        uses: actions/github-script@v7
         with:
-          components: clippy
-      - uses: Swatinem/rust-cache@v2
-      - name: Clippy
-        run: cargo clippy --workspace -- -D warnings
-
-  verus:
-    needs: changes
-    if: ${{ !cancelled() && needs.changes.outputs.run_verus == 'true' }}
-    name: Verus
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Install Task
-        run: sudo sh -c "$(curl --location https://taskfile.dev/install.sh)" -- -d -b /usr/local/bin
-      - name: Install Verus
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release download 'release/0.2026.11.02.8bf68ee' --repo verus-lang/verus --pattern '*-x86-linux.zip' --dir "$RUNNER_TEMP"
-          unzip -q "$RUNNER_TEMP"/*-x86-linux.zip -d "$RUNNER_TEMP"
-          mkdir -p "$HOME/tools"
-          mv "$RUNNER_TEMP/verus-x86-linux" "$HOME/tools/verus"
-          "$HOME/tools/verus/z3" --version
-          echo "VERUS_Z3_PATH=$HOME/tools/verus/z3" >> "$GITHUB_ENV"
-          rustup toolchain install 1.99.1 --profile minimal
-      - name: Run Verus
-        run: task verus
-
-  e2e-integration:
-    needs: changes
-    if: ${{ !cancelled() && needs.changes.outputs.run_e2e == 'true' }}
-    name: E2E Integration
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Build Docker Image
-        run: docker build -t fyrodb-test .
-      - name: Run Docker Container
-        run: docker run -d -p 8000:8000 --name fyrodb-container fyrodb-test
-      - name: Install dependencies
-        run: pip install redis
-      - name: Run E2E Stress Test
-        run: python3 scripts/e2e_stress_test.py
-      - name: Stop Container
-        run: docker stop fyrodb-container
-
-  benchmark-validation:
-    needs: changes
-    if: ${{ !cancelled() && needs.changes.outputs.run_benchmark == 'true' }}
-    name: Benchmark client validation
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: bench/go.mod
-          cache: false
-      - name: Validate benchmark counts and replies
-        working-directory: bench
-        run: go test -short -timeout 30s ./...
-      - name: Validate Docker benchmark harness
-        run: python3 scripts/test_bench_matrix.py
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const labelName = context.payload.label ? context.payload.label.name : null;
+            const issue_number = context.payload.pull_request ? context.payload.pull_request.number : null;
+            if (labelName && issue_number) {
+              try {
+                await github.rest.issues.removeLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issue_number,
+                  name: labelName,
+                });
+                console.log(`Successfully removed trigger label '${labelName}' from PR #${issue_number}`);
+              } catch (err) {
+                console.log(`Could not remove label '${labelName}': ${err.message}`);
+              }
+            }

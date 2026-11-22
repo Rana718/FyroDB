@@ -344,6 +344,14 @@ impl StoreValue {
    }
 
    #[inline]
+   pub fn set_inner(s: SetInner) -> Self {
+      Self {
+         value: FyroDB::Set(Box::new(s)),
+         expires_ms: 0,
+      }
+   }
+
+   #[inline]
    pub fn zset(z: ZSetData) -> Self {
       Self {
          value: FyroDB::ZSet(Box::new(z)),
@@ -417,4 +425,6 @@ impl StoreValue {
 const _: () = assert!(std::mem::size_of::<SmallStr>() == 24);
 const _: () = assert!(std::mem::size_of::<FyroDB>() == 24);
 const _: () = assert!(std::mem::size_of::<StoreValue>() == 32);
+// 24-byte key + 8-byte state + 32-byte value: exactly one cache line.
+const _: () = assert!(std::mem::size_of::<customhash::Entry<StoreValue>>() == 64);
 const _: () = assert!(customhash::entry_size::<StoreValue>() == 64);

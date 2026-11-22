@@ -25,6 +25,44 @@ pub(super) fn is_set_expire_pair(conn: &Conn<'_>, raw: &[(*const u8, usize)]) ->
       .starts_with(EXPIRE_PREFIX)
 }
 
+/// Plain `EXPIRE` seconds: ASCII digits only, without overflow. Anything else
+/// (sign, junk, overflow) goes to the generic command path, which owns the
+/// error replies.
+#[inline]
+fn parse_ttl_secs(bytes: &[u8]) -> Option<u64> {
+   if bytes.is_empty() {
+      return None;
+   }
+   let mut secs: u64 = 0;
+   for &b in bytes {
+      if !b.is_ascii_digit() {
+         return None;
+      }
+      secs = secs.checked_mul(10)?.checked_add((b - b'0') as u64)?;
+   }
+   Some(secs)
+}
+
+/// `SET key value` executed on its own (binary-safe).
+fn set_plain(conn: &mut Conn<'_>, key_part: (*const u8, usize), value_part: (*const u8, usize)) {
+   let (hint, entry) = conn.hint_for(key_part);
+   let key = unsafe { part_bytes(key_part) };
+   let value = unsafe { part_bytes(value_part) };
+   conn.store.set_string_auto_bytes(key, hint, entry, value, 0);
+   if conn.store.has_replication() {
+      conn.store.record_current_value_bytes(key);
+   }
+   conn.parser.wbuf.extend_from_slice(b"+OK\r\n");
+}
+
+/// Pairs applied per write epoch.
+const PAIR_BATCH: usize = 256;
+
+/// `SET k v` + `EXPIRE k secs` pairs, applied as one batch: the pairs are
+/// parsed first, their slots and entries prefetched, then applied under one
+/// write epoch. Keys and values are binary-safe; a pair the batch cannot
+/// express exactly (another command, another key, a non-digit or overflowing
+/// TTL) ends the batch and is handled by the generic path.
 pub(super) fn dispatch_set_expire_pair(
    conn: &mut Conn<'_>,
    set: &[(*const u8, usize)],
@@ -37,28 +75,16 @@ pub(super) fn dispatch_set_expire_pair(
    {
       return PairOutcome::FallThrough;
    }
-
-   let (key, value): (&str, &str);
-   {
-      let out = &mut conn.parser.wbuf;
-      let Some(k) = part_str(out, set[1]) else {
-         return PairOutcome::ConnError;
-      };
-      let Some(v) = part_str(out, set[2]) else {
-         return PairOutcome::ConnError;
-      };
-      key = k;
-      value = v;
-   }
+   // `set` borrows the parser's argument array, which parsing the EXPIRE
+   // overwrites; keep SET's (pointer, length) parts, which point into the
+   // read buffer and stay valid.
+   let (key_part, value_part) = (set[1], set[2]);
 
    match conn.parser.parse_one() {
       ParseResult::Complete => {}
       ParseResult::Incomplete => {
-         conn.store.set_string(key, value, 0);
-         if conn.store.has_replication() {
-            conn.store.record_current_value(key);
-         }
-         conn.parser.wbuf.extend_from_slice(b"+OK\r\n");
+         // The EXPIRE has not fully arrived; it runs on the next read.
+         set_plain(conn, key_part, value_part);
          return PairOutcome::Done;
       }
       ParseResult::Error => return PairOutcome::ConnError,
@@ -66,88 +92,73 @@ pub(super) fn dispatch_set_expire_pair(
    let raw_ptr = conn.parser.parts_raw.as_ptr();
    let raw_len = conn.parser.parts_raw.len();
    let expire = unsafe { std::slice::from_raw_parts(raw_ptr, raw_len) };
-   if expire.len() != 3 || cmd_id(unsafe { part_bytes(expire[0]) }) != CmdId::Expire {
-      conn.store.set_string(key, value, 0);
-      if conn.store.has_replication() {
-         conn.store.record_current_value(key);
-      }
-      conn.parser.wbuf.extend_from_slice(b"+OK\r\n");
-      dispatch_raw(conn, expire);
-      return PairOutcome::Done;
-   }
-   if unsafe { part_bytes(expire[1]) } != key.as_bytes() {
-      conn.store.set_string(key, value, 0);
-      if conn.store.has_replication() {
-         conn.store.record_current_value(key);
-      }
-      conn.parser.wbuf.extend_from_slice(b"+OK\r\n");
-      dispatch_raw(conn, expire);
-      return PairOutcome::Done;
-   }
-   let secs_str: &str;
+   let key = unsafe { part_bytes(key_part) };
+   let first_exp = if expire.len() == 3
+      && cmd_id(unsafe { part_bytes(expire[0]) }) == CmdId::Expire
+      && unsafe { part_bytes(expire[1]) } == key
    {
-      let out = &mut conn.parser.wbuf;
-      let Some(s) = part_str(out, expire[2]) else {
-         return PairOutcome::ConnError;
-      };
-      secs_str = s;
-   }
-   let exp = if secs_str == "60" {
-      crate::storage::value::expiry_from_secs(60)
-   } else {
-      secs_str
-         .parse::<u64>()
-         .ok()
+      parse_ttl_secs(unsafe { part_bytes(expire[2]) })
          .and_then(crate::storage::value::expiry_from_secs)
+   } else {
+      None
    };
-   let Some(exp) = exp else {
-      conn.store.set_string(key, value, 0);
-      if conn.store.has_replication() {
-         conn.store.record_current_value(key);
-      }
-      conn.parser.wbuf.extend_from_slice(b"+OK\r\n");
+   let Some(first_exp) = first_exp else {
+      set_plain(conn, key_part, value_part);
       dispatch_raw(conn, expire);
       return PairOutcome::Done;
    };
 
-   let store = conn.store;
-   let _write_epoch = store.data.write_epoch();
-
-   let (hint, entry) = conn.hint_for(set[1]);
-   conn.store.set_string_auto(key, hint, entry, value, exp);
-   if conn.store.has_replication() {
-      conn.store.record_current_value(key);
-   }
-   conn.parser.wbuf.extend_from_slice(b"+OK\r\n:1\r\n");
-
-   for _ in 0..128 {
+   let mut keys: [&[u8]; PAIR_BATCH] = [&[]; PAIR_BATCH];
+   let mut vals: [(*const u8, usize); PAIR_BATCH] = [(std::ptr::null(), 0); PAIR_BATCH];
+   let mut exps = [0u64; PAIR_BATCH];
+   keys[0] = key;
+   vals[0] = value_part;
+   exps[0] = first_exp;
+   let mut count = 1;
+   while count < PAIR_BATCH {
       let avail = conn.parser.filled - conn.parser.pos;
       if avail < 48 {
          break;
       }
-      let buf = unsafe { conn.parser.rbuf.as_ptr().add(conn.parser.pos) };
-      if let Some((k_slice, v_slice, ttl_secs)) =
-         conn.parser.try_fast_set_expire_pair_at(buf, avail)
-      {
-         let exp_ms = crate::storage::value::expiry_from_secs(ttl_secs).unwrap_or(0);
-         let (hint, entry) = conn.hint_for(k_slice);
-         let out = &mut conn.parser.wbuf;
-         let Some(k_str) = part_str(out, k_slice) else {
-            return PairOutcome::ConnError;
-         };
-         let Some(v_str) = part_str(out, v_slice) else {
-            return PairOutcome::ConnError;
-         };
-         conn
-            .store
-            .set_string_auto(k_str, hint, entry, v_str, exp_ms);
-         if conn.store.has_replication() {
-            conn.store.record_current_value(k_str);
-         }
-         conn.parser.wbuf.extend_from_slice(b"+OK\r\n:1\r\n");
-      } else {
+      let saved = conn.parser.pos;
+      let buf = unsafe { conn.parser.rbuf.as_ptr().add(saved) };
+      let Some((k, v, ttl)) = conn.parser.try_fast_set_expire_pair_at(buf, avail) else {
          break;
+      };
+      let Some(exp) = crate::storage::value::expiry_from_secs(ttl) else {
+         conn.parser.pos = saved;
+         break;
+      };
+      keys[count] = unsafe { part_bytes(k) };
+      vals[count] = v;
+      exps[count] = exp;
+      count += 1;
+   }
+
+   let store = conn.store;
+   let mut hashes = [0u64; PAIR_BATCH];
+   let mut tables = [std::ptr::null(); PAIR_BATCH];
+   let mut entries = [std::ptr::null(); PAIR_BATCH];
+   store.prefetch_slots_write(&keys[..count], &mut hashes[..count], &mut tables[..count]);
+   store.probe_and_prefetch_entries_write(
+      &tables[..count],
+      &hashes[..count],
+      &mut entries[..count],
+   );
+   let _write_epoch = store.data.write_epoch();
+   let replicate = store.has_replication();
+   for i in 0..count {
+      let value = unsafe { part_bytes(vals[i]) };
+      store.set_string_auto_bytes(keys[i], Some(hashes[i]), entries[i], value, exps[i]);
+      if replicate {
+         store.record_current_value_bytes(keys[i]);
       }
+   }
+   const PAIR_REPLY: &[u8] = b"+OK\r\n:1\r\n";
+   let out = &mut conn.parser.wbuf;
+   out.reserve(count * PAIR_REPLY.len());
+   for _ in 0..count {
+      out.extend_from_slice(PAIR_REPLY);
    }
    PairOutcome::Done
 }

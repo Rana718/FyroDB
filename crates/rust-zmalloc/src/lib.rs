@@ -1,5 +1,5 @@
 use std::alloc::{GlobalAlloc, Layout};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 #[cfg(not(any(feature = "jemalloc", feature = "system")))]
 const BACKEND: mimalloc::MiMalloc = mimalloc::MiMalloc;
@@ -162,25 +162,129 @@ static INIT_ALLOC: extern "C" fn() = {
 #[cfg(not(any(feature = "jemalloc", feature = "system")))]
 pub fn configure_allocator() {
    static INIT: std::sync::Once = std::sync::Once::new();
+   // `mi_option_e` positions. The enum is renumbered between major versions
+   // and libmimalloc-sys builds v3 unless its `v2` feature is on, so the
+   // positions are chosen from the version the linked library reports.
+   // Options the major version deprecated are skipped (None).
+   struct Positions {
+      eager_commit: Option<i32>,
+      arena_eager_commit: i32,
+      purge_decommits: i32,
+      abandoned_page_purge: Option<i32>,
+      purge_delay: i32,
+      arena_reserve: i32,
+   }
+   const V2: Positions = Positions {
+      eager_commit: Some(3),
+      arena_eager_commit: 4,
+      purge_decommits: 5,
+      abandoned_page_purge: Some(12),
+      purge_delay: 15,
+      arena_reserve: 23,
+   };
+   const V3: Positions = Positions {
+      eager_commit: None,
+      arena_eager_commit: 4,
+      purge_decommits: 5,
+      abandoned_page_purge: None,
+      purge_delay: 15,
+      arena_reserve: 23,
+   };
+
    INIT.call_once(|| {
       unsafe extern "C" {
          fn mi_option_set(option: i32, value: i64);
+         fn mi_version() -> i32;
       }
+      let version = unsafe { mi_version() };
+      // MI_MALLOC_VERSION is major * 10000 + minor * 100 + patch (3.3.2 = 30302).
+      let options = match version / 10_000 {
+         2 => V2,
+         3 => V3,
+         _ => {
+            eprintln!(
+               "rust-zmalloc: unknown mimalloc version {version}; leaving allocator options at defaults"
+            );
+            return;
+         }
+      };
       // 3,000ms decay avoids page-fault storms while returning memory on idle.
       let purge_delay_ms = std::env::var("FYRODB_MALLOC_PURGE_DELAY_MS")
          .ok()
          .and_then(|v| v.parse::<i64>().ok())
          .filter(|&v| v >= 0)
          .unwrap_or(3_000);
+      // 0 (default) maps each 64 KiB heap page separately: lowest peak RSS
+      // (measured ~35 MiB below any arena size at 10 M keys), but one mapping
+      // per page. `maybe_reserve_arenas` switches to arenas once the heap
+      // passes 1 GiB, long before the kernel's default vm.max_map_count
+      // (65,530 mappings, ~4 GiB of pages) is reached; a non-zero value here
+      // reserves arenas from the start instead.
+      let arena_reserve_kib = std::env::var("FYRODB_MALLOC_ARENA_RESERVE_MB")
+         .ok()
+         .and_then(|v| v.parse::<i64>().ok())
+         .filter(|&mb| mb >= 0)
+         .map_or(0, |mb| mb.saturating_mul(1024));
+      // These replace any MIMALLOC_* environment values for the same options.
+      // Letting the environment win was tried (2026-11-21) and measured worse:
+      // it left mimalloc in a layout with ~40 MiB higher peak RSS at 10 M keys
+      // even though the resulting option values were identical.
       unsafe {
-         mi_option_set(3, 0);
-         mi_option_set(4, 0);
-         mi_option_set(5, 1);
-         mi_option_set(12, 1);
-         mi_option_set(15, purge_delay_ms);
-         mi_option_set(23, 0);
+         if let Some(option) = options.eager_commit {
+            mi_option_set(option, 0);
+         }
+         mi_option_set(options.arena_eager_commit, 0);
+         mi_option_set(options.purge_decommits, 1);
+         if let Some(option) = options.abandoned_page_purge {
+            mi_option_set(option, 1);
+         }
+         mi_option_set(options.purge_delay, purge_delay_ms);
+         mi_option_set(options.arena_reserve, arena_reserve_kib);
       }
    });
+}
+
+/// Heap size (bytes allocated through this crate) at which the allocator
+/// switches to reserving arenas. Below it every heap page is its own OS
+/// mapping, which gives the lowest peak RSS; past ~4 GiB that would exceed
+/// the kernel's default `vm.max_map_count` (65,530) and allocations would
+/// fail. Switching at 1 GiB (about 16 K mappings) keeps a wide margin, and
+/// at that size an arena's purge delay costs well under 1% of the heap.
+const ARENA_SWITCH_DEFAULT: usize = 1 << 30;
+/// Arena reservation once switched (KiB); mimalloc grows later arenas
+/// geometrically, so the mapping count stays in the hundreds.
+const ARENA_RESERVE_KIB: i64 = 64 * 1024;
+
+static ARENA_SWITCH: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+static ARENA_SWITCHED: AtomicBool = AtomicBool::new(false);
+
+/// Call periodically (a background tick). Once the heap passes the switch
+/// size, new memory comes from reserved arenas instead of one mapping per
+/// page. Costs one relaxed counter read per call until then.
+pub fn maybe_reserve_arenas() {
+   #[cfg(not(any(feature = "jemalloc", feature = "system")))]
+   {
+      if ARENA_SWITCHED.load(Ordering::Relaxed) {
+         return;
+      }
+      let threshold = *ARENA_SWITCH.get_or_init(|| {
+         std::env::var("FYRODB_MALLOC_ARENA_SWITCH_MB")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .map_or(ARENA_SWITCH_DEFAULT, |mb| mb.saturating_mul(1 << 20))
+      });
+      if used_memory() < threshold || ARENA_SWITCHED.swap(true, Ordering::AcqRel) {
+         return;
+      }
+      unsafe extern "C" {
+         fn mi_option_set(option: i32, value: i64);
+         fn mi_version() -> i32;
+      }
+      // arena_reserve sits at position 23 in both v2 and v3.
+      if matches!(unsafe { mi_version() } / 10_000, 2 | 3) {
+         unsafe { mi_option_set(23, ARENA_RESERVE_KIB) };
+      }
+   }
 }
 
 #[cfg(any(feature = "jemalloc", feature = "system"))]
@@ -236,6 +340,60 @@ pub unsafe fn dealloc_raw(ptr: *mut u8, layout: Layout) {
       record(-(layout.size() as i64));
       backend_dealloc(ptr, layout);
    }
+}
+
+/// Smallest allocation `alloc_pages_zeroed` maps directly from the OS.
+pub const PAGE_ALLOC_MIN: usize = 64 * 1024;
+
+/// A zeroed allocation for large, long-lived buffers that are freed whole
+/// (hash-table slot arrays). At `PAGE_ALLOC_MIN` and above it is mapped
+/// straight from the OS, so freeing it returns the pages immediately: memory
+/// freed back to the allocator stays resident until the owning thread
+/// allocates again, which an idle worker may never do. Smaller requests, other
+/// platforms and a failed mapping use the allocator.
+///
+/// Returns the pointer and whether it is page-backed; pass both to
+/// `dealloc_pages`.
+///
+/// # Safety
+/// The caller must handle a null pointer and free with `dealloc_pages`.
+pub unsafe fn alloc_pages_zeroed(layout: Layout) -> (*mut u8, bool) {
+   #[cfg(target_os = "linux")]
+   if layout.size() >= PAGE_ALLOC_MIN && layout.align() <= page_size() {
+      let len = layout.size().next_multiple_of(page_size());
+      let ptr = unsafe {
+         libc::mmap(
+            std::ptr::null_mut(),
+            len,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+            -1,
+            0,
+         )
+      };
+      if ptr != libc::MAP_FAILED {
+         record(len as i64);
+         return (ptr.cast(), true);
+      }
+   }
+   (unsafe { alloc_raw_zeroed(layout) }, false)
+}
+
+/// # Safety
+/// `ptr`, `layout` and `paged` must come from one `alloc_pages_zeroed` call.
+pub unsafe fn dealloc_pages(ptr: *mut u8, layout: Layout, paged: bool) {
+   if ptr.is_null() {
+      return;
+   }
+   #[cfg(target_os = "linux")]
+   if paged {
+      let len = layout.size().next_multiple_of(page_size());
+      record(-(len as i64));
+      unsafe { libc::munmap(ptr.cast(), len) };
+      return;
+   }
+   debug_assert!(!paged);
+   unsafe { dealloc_raw(ptr, layout) };
 }
 
 fn rss_bytes_inner() -> usize {

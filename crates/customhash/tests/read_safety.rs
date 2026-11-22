@@ -30,10 +30,10 @@ fn hinted_and_slot_updates_capture_each_snapshot_value_once() {
       let (hash, shard) = map.locate_key(key);
       let entry = map.probe_entry_fast(key, hash, shard).unwrap();
       for generation in 0..2 {
-         let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
+         let captured = Arc::new(parking_lot::Mutex::new(Vec::new()));
          let sink = Arc::clone(&captured);
          assert!(map.begin_snapshot(Arc::new(move |key, value| {
-            sink.lock().unwrap().push((key.to_owned(), *value));
+            sink.lock().push((key.to_owned(), *value));
          })));
          for update in 1..=10 {
             let value = generation * 10 + update;
@@ -54,12 +54,12 @@ fn hinted_and_slot_updates_capture_each_snapshot_value_once() {
          }
          for shard in 0..map.shard_count() {
             map.snapshot_shard(shard, |key, value| {
-               captured.lock().unwrap().push((key.to_owned(), *value))
+               captured.lock().push((key.to_owned(), *value))
             });
          }
          map.end_snapshot();
          assert_eq!(
-            *captured.lock().unwrap(),
+            *captured.lock(),
             vec![(key.to_owned(), generation * 10)],
             "route={route}"
          );

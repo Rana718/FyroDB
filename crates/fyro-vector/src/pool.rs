@@ -1,3 +1,4 @@
+use arc_swap::ArcSwapOption;
 use crossbeam_queue::SegQueue;
 use parking_lot::{Condvar, Mutex};
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -20,13 +21,15 @@ pub struct Pool {
    sleepers: AtomicUsize,
 }
 
-static CONFIG: Mutex<Option<(usize, Option<Vec<usize>>)>> = Mutex::new(None);
+static CONFIG: ArcSwapOption<(usize, Option<Vec<usize>>)> = ArcSwapOption::const_empty();
 static GLOBAL: OnceLock<Arc<Pool>> = OnceLock::new();
 
 // Configures search thread pool size and CPU core affinity.
 pub fn configure(threads: usize, cores: Option<Vec<usize>>) {
-   let mut cfg = CONFIG.lock();
-   *cfg = Some((threads.max(1), cores.filter(|c| !c.is_empty())));
+   CONFIG.store(Some(Arc::new((
+      threads.max(1),
+      cores.filter(|c| !c.is_empty()),
+   ))));
 }
 
 // Queries process CPU affinity mask on Linux.
@@ -51,7 +54,7 @@ pub fn allowed_cores() -> Vec<usize> {
 
 pub fn global() -> &'static Pool {
    GLOBAL.get_or_init(|| {
-      let configured = CONFIG.lock().clone();
+      let configured = CONFIG.load().as_ref().map(|c| (**c).clone());
       let (threads, cores) = configured.unwrap_or_else(|| {
          let env_threads = std::env::var("FYRODB_SEARCH_THREADS")
             .or_else(|_| std::env::var("FYRODB_WORKERS"))

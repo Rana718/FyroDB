@@ -143,7 +143,7 @@ fn verus_rule_ebr_read_epoch_isolation_under_concurrent_writes() {
          let val = vec![iter; 64 * 1024];
          map_writer.insert_str(key, SmallStr::from_slice(&val));
          iter = iter.wrapping_add(1);
-         if iter % 10 == 0 {
+         if iter.is_multiple_of(10) {
             map_writer.remove(key);
          }
       }
@@ -415,7 +415,7 @@ fn verus_rule_block_registry_wait_signal_no_lost_wakeup() {
 
    let key = "channel_waiters".to_string();
    for w in &waiters {
-      registry.register(&[key.clone()], w);
+      registry.register(std::slice::from_ref(&key), w);
    }
    assert_eq!(registry.blocked_clients(), 100);
 
@@ -425,7 +425,7 @@ fn verus_rule_block_registry_wait_signal_no_lost_wakeup() {
 
    // Unregister 40 waiters
    for w in &waiters[0..40] {
-      registry.unregister(&[key.clone()], w.uid);
+      registry.unregister(std::slice::from_ref(&key), w.uid);
    }
    assert_eq!(registry.blocked_clients(), 60);
 
@@ -435,7 +435,7 @@ fn verus_rule_block_registry_wait_signal_no_lost_wakeup() {
 
    // Unregister remaining 60
    for w in &waiters[40..100] {
-      registry.unregister(&[key.clone()], w.uid);
+      registry.unregister(std::slice::from_ref(&key), w.uid);
    }
    assert_eq!(registry.blocked_clients(), 0);
 

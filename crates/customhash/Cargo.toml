@@ -1,6 +1,6 @@
 [package]
 name = "customhash"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
 
 [lib]
@@ -8,6 +8,7 @@ name = "customhash"
 path = "src/lib.rs"
 
 [dependencies]
+arc-swap = "1.9"
 crossbeam-epoch = "0.9"
 crossbeam-utils = "0.8"
 foldhash = "0.2"

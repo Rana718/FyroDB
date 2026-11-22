@@ -112,12 +112,21 @@ impl Write for SharedTransport {
    }
 }
 
+/// `Query("DISCARD ALL")`, pre-encoded: sent on every pooled check-in.
+const DISCARD_ALL: &[u8] = b"Q\0\0\0\x10DISCARD ALL\0";
+
 pub struct UpstreamConnection {
    writer: SharedTransport,
    reader: FrameReader<BufReader<SharedTransport>>,
    auth_ok: Vec<u8>,
    post_auth: Vec<u8>,
    required_password: bool,
+   /// A `DISCARD ALL` was sent at check-in and its reply not yet read.
+   reset_pending: bool,
+   /// Session-context hash probed while the session was in its startup
+   /// state. `DISCARD ALL` returns it to exactly that state, so a pooled
+   /// reuse can skip the probe round trip.
+   baseline_context: Option<u64>,
 }
 
 impl UpstreamConnection {
@@ -184,6 +193,8 @@ impl UpstreamConnection {
          auth_ok: Vec::new(),
          post_auth: Vec::new(),
          required_password: false,
+         reset_pending: false,
+         baseline_context: None,
       })
    }
 
@@ -318,11 +329,40 @@ impl UpstreamConnection {
 
    // Resets session state before returning a connection to the pool.
    pub fn reset_session(&mut self) -> io::Result<()> {
-      let outcome = self.forward_query("DISCARD ALL", &mut Vec::new(), false)?;
+      self.begin_reset()?;
+      self.finish_reset()
+   }
+
+   /// Sends `DISCARD ALL` without waiting for the reply, so the connection
+   /// can go back to the pool at once; `finish_reset` (run on the next
+   /// checkout, when the reply has normally arrived) checks the result.
+   /// Waiting here held the connection out of the pool for a round trip.
+   pub fn begin_reset(&mut self) -> io::Result<()> {
+      self.writer.write_all(DISCARD_ALL)?;
+      self.reset_pending = true;
+      Ok(())
+   }
+
+   /// Reads the reply to a pending `begin_reset`; an error means the
+   /// connection must not be reused.
+   pub fn finish_reset(&mut self) -> io::Result<()> {
+      if !self.reset_pending {
+         return Ok(());
+      }
+      self.reset_pending = false;
+      let outcome = self.relay_until(&mut io::sink(), ReplyStop::Sync, false)?;
       if outcome.error || outcome.status != b'I' {
          return Err(io::Error::other("upstream session reset failed"));
       }
       Ok(())
+   }
+
+   pub fn baseline_context(&self) -> Option<u64> {
+      self.baseline_context
+   }
+
+   pub fn set_baseline_context(&mut self, hash: Option<u64>) {
+      self.baseline_context = hash;
    }
 
    // Restores session settings that `DISCARD ALL` clears. Only settings the
@@ -718,4 +758,16 @@ pub fn parse_data_row(data: &[u8]) -> io::Result<DbRow> {
    }
 
    Ok(DbRow { values })
+}
+
+#[cfg(test)]
+mod discard_tests {
+   use super::*;
+
+   #[test]
+   fn discard_all_frame_matches_the_encoder() {
+      let mut frame = Vec::new();
+      protocol::put_message(&mut frame, b'Q', b"DISCARD ALL\0");
+      assert_eq!(frame, DISCARD_ALL);
+   }
 }

@@ -129,6 +129,7 @@ fn bench_resp(
          scope.spawn(move || {
             let mut w = resp_connect(port);
             let mut r = w.try_clone().unwrap();
+            r.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
             let expected = ops * reply_bytes;
             std::thread::scope(|inner| {
                inner.spawn(move || {
@@ -344,7 +345,10 @@ fn main() {
    let resp_port = probe.local_addr().unwrap().port();
    drop(probe);
 
-   let resp_store = Arc::new(Store::with_config(32, 2_000_000));
+   let resp_store = Arc::new(Store::with_config(
+      32,
+      (resp_c * resp_ops * 2).max(2_000_000),
+   ));
    let pubsub = Arc::new(fyro_db::pubsub::PubSub::new());
    for idx in 0..workers {
       let s = Arc::clone(&resp_store);

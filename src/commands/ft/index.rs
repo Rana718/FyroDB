@@ -91,9 +91,11 @@ pub(super) fn ft_info(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
    let num_docs = store
       .search_state()
       .cached_doc_count(&def.name, store.dbsize(), || count_docs(store, &def));
-   let doc_str = num_docs.to_string();
+   let mut doc_buf = [0u8; 20];
+   let doc_str = crate::utils::int_format::write_u64_to(&mut doc_buf, num_docs);
    let num_records = num_docs * def.fields.len() as u64;
-   let rec_str = num_records.to_string();
+   let mut rec_buf = [0u8; 20];
+   let rec_str = crate::utils::int_format::write_u64_to(&mut rec_buf, num_records);
    let doc_mb = format!("{:.3}", num_docs as f64 * 104.0 / (1024.0 * 1024.0));
    let (indexing, percent) = store.search_state().index_progress(&def, num_docs);
    let vec_bytes: usize = def
@@ -127,9 +129,9 @@ pub(super) fn ft_info(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
       write_field_info(out, f);
    }
    resp::write_bulk(out, "num_docs");
-   resp::write_bulk(out, &doc_str);
+   resp::write_bulk(out, doc_str);
    resp::write_bulk(out, "num_records");
-   resp::write_bulk(out, &rec_str);
+   resp::write_bulk(out, rec_str);
    resp::write_bulk(out, "inverted_sz_mb");
    resp::write_bulk(out, "0");
    resp::write_bulk(out, "total_indexing_time");
@@ -162,13 +164,25 @@ pub(super) fn write_field_info(out: &mut Vec<u8>, f: &FieldDef) {
       resp::write_bulk(out, "data_type");
       resp::write_bulk(out, v.dtype);
       resp::write_bulk(out, "dim");
-      resp::write_bulk(out, &v.dims.to_string());
+      let mut dim_buf = [0u8; 20];
+      resp::write_bulk(
+         out,
+         crate::utils::int_format::write_u64_to(&mut dim_buf, v.dims as u64),
+      );
       resp::write_bulk(out, "distance_metric");
       resp::write_bulk(out, v.metric.as_str());
       resp::write_bulk(out, "M");
-      resp::write_bulk(out, &v.m.to_string());
+      let mut m_buf = [0u8; 20];
+      resp::write_bulk(
+         out,
+         crate::utils::int_format::write_u64_to(&mut m_buf, v.m as u64),
+      );
       resp::write_bulk(out, "ef_construction");
-      resp::write_bulk(out, &v.ef_construction.to_string());
+      let mut ef_buf = [0u8; 20];
+      resp::write_bulk(
+         out,
+         crate::utils::int_format::write_u64_to(&mut ef_buf, v.ef_construction as u64),
+      );
       resp::write_bulk(out, "quantization");
       resp::write_bulk(out, v.quant.as_str());
       resp::write_bulk(out, "flags");

@@ -1,5 +1,5 @@
 mod access;
-pub use access::{ReadEpochGuard, ReadStamp, WriteEpochGuard};
+pub use access::{ReadEpochGuard, ReadStamp, WriteEpochGuard, bind_thread_stripe};
 mod ebr;
 mod key;
 mod ops;
@@ -318,6 +318,20 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
       let (slots, mask) = sf.layout();
       let base = unsafe { slots.add((hash as usize) & mask) };
       unsafe { TaggedSlot::probe_from_base(base, hash, 16) }
+   }
+
+   #[inline(always)]
+   pub fn probe_entry_matching_str(&self, hash: u64, idx: usize, key: &str) -> *mut Entry<V> {
+      let sf = unsafe { &*self.shard_fast.as_ptr().add(idx) };
+      let (slots, mask) = sf.layout();
+      unsafe { TaggedSlot::probe_entry_matching_str(slots, mask, hash, key) }
+   }
+
+   #[inline(always)]
+   pub fn probe_entry_matching_bytes(&self, hash: u64, idx: usize, key: &[u8]) -> *mut Entry<V> {
+      let sf = unsafe { &*self.shard_fast.as_ptr().add(idx) };
+      let (slots, mask) = sf.layout();
+      unsafe { TaggedSlot::probe_entry_matching_bytes(slots, mask, hash, key) }
    }
 
    #[inline(always)]
@@ -671,19 +685,12 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
 
    #[inline(always)]
    pub fn probe_entry_fast(&self, key: &str, hash: u64, idx: usize) -> Option<*const Entry<V>> {
-      let sf = unsafe { &*self.shard_fast.as_ptr().add(idx) };
-      let (slots, mask) = sf.layout();
-      let base = unsafe { slots.add((hash as usize) & mask) };
-      let p = unsafe { TaggedSlot::probe_from_base(base, hash, 16) };
+      let p = self.probe_entry_matching_str(hash, idx, key);
       if !p.is_null() {
-         let e = unsafe { &*p };
-         let state = e.state.load(Ordering::Relaxed);
-         let expected = ((hash as u32 as u64) << 32) | STATE_OCCUPIED;
-         if (state & (0xFFFF_FFFF_0000_0000 | STATE_OCCUPIED)) == expected && e.key.eq_str(key) {
-            return Some(p as *const Entry<V>);
-         }
+         Some(p as *const Entry<V>)
+      } else {
+         None
       }
-      None
    }
 
    /// Bytes-key twin of the probe chain (audit S-2): probes by tag and
@@ -695,19 +702,12 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
       hash: u64,
       idx: usize,
    ) -> Option<*const Entry<V>> {
-      let sf = unsafe { &*self.shard_fast.as_ptr().add(idx) };
-      let (slots, mask) = sf.layout();
-      let base = unsafe { slots.add((hash as usize) & mask) };
-      let p = unsafe { TaggedSlot::probe_from_base(base, hash, 16) };
+      let p = self.probe_entry_matching_bytes(hash, idx, key);
       if !p.is_null() {
-         let e = unsafe { &*p };
-         let state = e.state.load(Ordering::Relaxed);
-         let expected = ((hash as u32 as u64) << 32) | STATE_OCCUPIED;
-         if (state & (0xFFFF_FFFF_0000_0000 | STATE_OCCUPIED)) == expected && e.key.eq_bytes(key) {
-            return Some(p as *const Entry<V>);
-         }
+         Some(p as *const Entry<V>)
+      } else {
+         None
       }
-      None
    }
 
    /// Bytes-key pinned read: find by full byte comparison under an EBR pin.
@@ -1635,11 +1635,26 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
    #[inline(always)]
    fn bump(&self, idx: usize, up: bool) {
       let live = &unsafe { self.shards.get_unchecked(idx) }.live;
+      // `approx` is read only when a key limit is configured. Without one,
+      // skipping it avoids a process-wide contended line on every insert.
+      let limited = self.max_keys != usize::MAX;
       if up {
          live.fetch_add(1, Ordering::Relaxed);
-         self.approx.fetch_add(1, Ordering::Relaxed);
+         if limited {
+            self.approx.fetch_add(1, Ordering::Relaxed);
+         }
       } else {
          live.fetch_sub(1, Ordering::Relaxed);
+         if limited {
+            self.approx.fetch_sub(1, Ordering::Relaxed);
+         }
+      }
+   }
+
+   /// A scan removed one entry without going through `bump`.
+   #[inline(always)]
+   pub(crate) fn removed_one(&self) {
+      if self.max_keys != usize::MAX {
          self.approx.fetch_sub(1, Ordering::Relaxed);
       }
    }
@@ -1673,10 +1688,16 @@ impl<V: Clone + Send + Sync + 'static> Default for CustomMap<V> {
 
 pub const PREFETCH_BATCH: usize = 32;
 
+/// An `Entry` can span two cache lines unless it is line-aligned and at most
+/// one line long; only then is a second prefetch useful.
+const fn entry_spans_lines<V>() -> bool {
+   !(std::mem::align_of::<Entry<V>>() >= 64 && std::mem::size_of::<Entry<V>>() <= 64)
+}
+
 #[inline(always)]
 fn prefetch_entry<V>(p: *const Entry<V>) {
    prefetch_line(p);
-   if std::mem::size_of::<Entry<V>>() > 32 {
+   if entry_spans_lines::<V>() {
       prefetch_line(
          p.cast::<u8>()
             .wrapping_add(std::mem::size_of::<Entry<V>>() - 1),
@@ -1687,7 +1708,7 @@ fn prefetch_entry<V>(p: *const Entry<V>) {
 #[inline(always)]
 fn prefetch_entry_write<V>(p: *const Entry<V>) {
    prefetch_line_write(p);
-   if std::mem::size_of::<Entry<V>>() > 32 {
+   if entry_spans_lines::<V>() {
       prefetch_line_write(
          p.cast::<u8>()
             .wrapping_add(std::mem::size_of::<Entry<V>>() - 1),
@@ -1747,7 +1768,7 @@ mod tests {
 
    #[test]
    fn snapshot_is_point_in_time_under_concurrent_writes() {
-      use std::sync::Mutex;
+      use parking_lot::Mutex;
       for round in 0..3 {
          let map = Arc::new(CustomMap::<i64>::with_capacity(16, 1 << 20));
          for i in 0..20_000i64 {
@@ -1756,7 +1777,7 @@ mod tests {
          let side: Arc<Mutex<Vec<(String, i64)>>> = Arc::new(Mutex::new(Vec::new()));
          let s2 = Arc::clone(&side);
          assert!(map.begin_snapshot(Arc::new(move |k: &str, v: &i64| {
-            s2.lock().unwrap().push((k.to_string(), *v));
+            s2.lock().push((k.to_string(), *v));
          })));
          assert!(!map.begin_snapshot(Arc::new(|_: &str, _: &i64| {})));
          let writer = {
@@ -1779,7 +1800,7 @@ mod tests {
          }
          writer.join().unwrap();
          map.end_snapshot();
-         saved.extend(side.lock().unwrap().drain(..));
+         saved.extend(side.lock().drain(..));
          saved.sort();
          let mut want: Vec<(String, i64)> = (0..20_000i64).map(|i| (format!("k{i}"), i)).collect();
          want.sort();
@@ -1888,9 +1909,7 @@ mod tests {
 
    #[test]
    fn concurrent_clear_read_write_is_safe() {
-      let _serialize = crate::ebr::TEST_SERIALIZE
-         .lock()
-         .unwrap_or_else(|e| e.into_inner());
+      let _serialize = crate::ebr::TEST_SERIALIZE.lock();
       let map = Arc::new(CustomMap::with_capacity(8, 100_000));
       std::thread::scope(|scope| {
          for worker in 0..4 {
@@ -1944,9 +1963,7 @@ mod tests {
 
    #[test]
    fn cleared_tables_release_every_value_after_the_last_reader_leaves() {
-      let _serial = crate::ebr::TEST_SERIALIZE
-         .lock()
-         .unwrap_or_else(|e| e.into_inner());
+      let _serial = crate::ebr::TEST_SERIALIZE.lock();
       let map = CustomMap::with_capacity(8, 512);
       let mut retired = Vec::new();
       for n in 0..512 {

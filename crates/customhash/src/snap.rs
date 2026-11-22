@@ -1,15 +1,17 @@
 use crate::shard::{Entry, STATE_OCCUPIED, STATE_SNAP};
-use parking_lot::RwLock;
+use arc_swap::ArcSwapOption;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 pub type SnapSink<V> = Arc<dyn Fn(&str, &V) + Send + Sync>;
 
+pub(crate) struct SnapSinkWrapper<V>(pub SnapSink<V>);
+
 #[repr(align(128))]
 pub(crate) struct SnapCtl<V> {
    active: AtomicBool,
    parity: AtomicU64,
-   sink: RwLock<Option<SnapSink<V>>>,
+   sink: ArcSwapOption<SnapSinkWrapper<V>>,
 }
 
 impl<V> SnapCtl<V> {
@@ -17,7 +19,7 @@ impl<V> SnapCtl<V> {
       Self {
          active: AtomicBool::new(false),
          parity: AtomicU64::new(0),
-         sink: RwLock::new(None),
+         sink: ArcSwapOption::const_empty(),
       }
    }
 
@@ -47,9 +49,9 @@ impl<V> SnapCtl<V> {
          return;
       }
       if st & STATE_OCCUPIED != 0 {
-         let guard = self.sink.read();
-         if let Some(sink) = guard.as_ref() {
-            sink(e.key.as_str(), unsafe {
+         let guard = self.sink.load();
+         if let Some(wrapper) = guard.as_ref() {
+            (wrapper.0)(e.key.as_str(), unsafe {
                (*e.value.get()).assume_init_ref()
             });
          }
@@ -62,7 +64,7 @@ impl<V> SnapCtl<V> {
       if self.active.load(Ordering::Acquire) {
          return false;
       }
-      *self.sink.write() = Some(sink);
+      self.sink.store(Some(Arc::new(SnapSinkWrapper(sink))));
       self.parity.fetch_xor(STATE_SNAP, Ordering::AcqRel);
       self.active.store(true, Ordering::Release);
       true
@@ -70,6 +72,6 @@ impl<V> SnapCtl<V> {
 
    pub(crate) fn end(&self) {
       self.active.store(false, Ordering::Release);
-      *self.sink.write() = None;
+      self.sink.store(None);
    }
 }

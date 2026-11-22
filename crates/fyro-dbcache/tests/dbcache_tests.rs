@@ -1334,3 +1334,243 @@ fn make_one_row_result() -> DbResultSet {
       rows_affected: 1,
    }
 }
+
+// Storage that runs a hook right after a value is read, to land an
+// invalidation exactly between the read and the in-memory promotion.
+struct RacingStorage {
+   inner: MemoryStorage,
+   after_read: parking_lot::Mutex<Option<Box<dyn FnOnce() + Send>>>,
+   on_del: parking_lot::Mutex<Option<Box<dyn Fn() + Send>>>,
+}
+
+impl DbCacheStorage for RacingStorage {
+   fn get(&self, key: &str) -> Option<String> {
+      self.inner.get(key)
+   }
+   fn get_with_expiry(&self, key: &str) -> Option<(String, u64)> {
+      let value = self.inner.get_with_expiry(key);
+      if let Some(hook) = self.after_read.lock().take() {
+         hook();
+      }
+      value
+   }
+   fn set(&self, key: &str, value: &str, ttl_ms: u64) {
+      self.inner.set(key, value, ttl_ms)
+   }
+   fn del(&self, key: &str) -> bool {
+      if let Some(hook) = self.on_del.lock().as_ref() {
+         hook();
+      }
+      self.inner.del(key)
+   }
+   fn scan_prefix(&self, prefix: &str) -> Vec<(String, Option<String>)> {
+      self.inner.scan_prefix(prefix)
+   }
+   fn is_local(&self) -> bool {
+      true
+   }
+}
+
+fn one_row(text: &str) -> DbResultSet {
+   DbResultSet {
+      columns: vec![ColumnInfo {
+         name: "name".to_string(),
+         type_oid: 25,
+      }],
+      rows: vec![DbRow {
+         values: vec![DbValue::Text(text.to_string())],
+      }],
+      rows_affected: 1,
+   }
+}
+
+#[test]
+fn test_stored_result_invalidated_mid_promotion_is_not_resurrected() {
+   let storage = Arc::new(RacingStorage {
+      inner: MemoryStorage::default(),
+      after_read: parking_lot::Mutex::new(None),
+      on_del: parking_lot::Mutex::new(None),
+   });
+   let parsed = parse_sql("SELECT name FROM users WHERE id = 1");
+   let tables = vec!["users".to_string()];
+   {
+      // A previous process filled the cache; only the persisted JSON survives.
+      let before = DbCacheManager::new(storage.clone());
+      before.store_cached_query("db:", &tables, parsed.fingerprint, &one_row("old"), 60_000);
+   }
+   let manager = Arc::new(DbCacheManager::new(storage.clone()));
+   assert_eq!(manager.rebuild_tracker("db:"), 1);
+   assert!(
+      manager
+         .get_encoded("db:", "users", parsed.fingerprint)
+         .is_none()
+   );
+
+   // A write to users is invalidated right after the stored row was read.
+   let writer = Arc::clone(&manager);
+   *storage.after_read.lock() = Some(Box::new(move || {
+      writer.invalidate_tables(&["users".to_string()]);
+   }));
+   let served = manager.load_stored("db:", &parsed.tables, &tables, parsed.fingerprint);
+   assert!(
+      served.is_none(),
+      "a result invalidated during the read must be a miss"
+   );
+   assert!(
+      manager
+         .get_encoded("db:", "users", parsed.fingerprint)
+         .is_none(),
+      "the stale result must not come back into the in-memory cache"
+   );
+
+   // A later fill is cached normally and invalidated by the next write.
+   let versions = manager.table_versions(&tables);
+   assert!(manager.store_cached_query_versioned(
+      "db:",
+      &tables,
+      parsed.fingerprint,
+      &one_row("new"),
+      60_000,
+      &versions
+   ));
+   manager.invalidate_tables(&tables);
+   assert!(
+      manager
+         .get_encoded("db:", "users", parsed.fingerprint)
+         .is_none()
+   );
+}
+
+#[test]
+fn test_promoted_result_keeps_the_stored_deadline() {
+   let storage = Arc::new(MemoryStorage::default());
+   let parsed = parse_sql("SELECT name FROM users WHERE id = 2");
+   let tables = vec!["users".to_string()];
+   DbCacheManager::new(storage.clone()).store_cached_query(
+      "db:",
+      &tables,
+      parsed.fingerprint,
+      &one_row("x"),
+      2_000,
+   );
+   let key = make_cache_key("db:", "users", parsed.fingerprint);
+   let (_, stored_deadline) = storage.get_with_expiry(&key).unwrap();
+   std::thread::sleep(std::time::Duration::from_millis(300));
+
+   let manager = DbCacheManager::new(storage);
+   manager.rebuild_tracker("db:");
+   assert!(
+      manager
+         .load_stored("db:", &parsed.tables, &tables, parsed.fingerprint)
+         .is_some()
+   );
+   let encoded = manager
+      .get_encoded("db:", "users", parsed.fingerprint)
+      .unwrap();
+   assert_eq!(
+      encoded.expires_at_ms, stored_deadline,
+      "promotion must not grant a fresh full TTL"
+   );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_a_stuck_bus_peer_cannot_stall_other_processes() {
+   use std::sync::atomic::Ordering;
+   use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+   let nanos = SystemTime::now()
+      .duration_since(UNIX_EPOCH)
+      .unwrap()
+      .as_nanos();
+   let path = std::env::temp_dir().join(format!(
+      "fyrodb-bus-stuck-{}-{nanos}.sock",
+      std::process::id()
+   ));
+   let path = path.to_string_lossy().to_string();
+
+   let manager_a = Arc::new(DbCacheManager::new(Arc::new(MemoryStorage::default())));
+   let manager_b = Arc::new(DbCacheManager::new(Arc::new(MemoryStorage::default())));
+   let bus_a = fyro_dbcache::bus::start(&path, Arc::clone(&manager_a), "db:".to_string())
+      .expect("start bus a");
+   assert!(wait_until(Duration::from_secs(5), || {
+      manager_a.metrics().bus_connected.load(Ordering::Relaxed)
+   }));
+   let _bus_b = fyro_dbcache::bus::start(&path, Arc::clone(&manager_b), "db:".to_string())
+      .expect("start bus b");
+   assert!(wait_until(Duration::from_secs(5), || {
+      manager_b.metrics().bus_connected.load(Ordering::Relaxed)
+   }));
+   // A process that joined the bus and then froze: it never reads again.
+   let _stuck = std::os::unix::net::UnixStream::connect(&path).expect("stuck peer");
+   std::thread::sleep(Duration::from_millis(100));
+
+   // Far more invalidation traffic than the stuck peer's socket buffers hold.
+   let tables: Vec<String> = (0..4_000).map(|i| format!("table_{i:06}")).collect();
+   let (done_tx, done_rx) = std::sync::mpsc::channel();
+   let publisher = Arc::clone(&bus_a);
+   let publishing = tables.clone();
+   std::thread::spawn(move || {
+      let started = Instant::now();
+      for _ in 0..200 {
+         publisher.invalidate(&publishing);
+      }
+      let _ = done_tx.send(started.elapsed());
+   });
+   let elapsed = done_rx
+      .recv_timeout(Duration::from_secs(30))
+      .expect("publishing stalled behind a peer that stopped reading");
+   assert!(
+      elapsed < Duration::from_secs(15),
+      "publishing took {elapsed:?}"
+   );
+
+   // The healthy peer still receives new invalidations afterwards.
+   let parsed = parse_sql("SELECT id, name FROM users");
+   assert!(wait_until(Duration::from_secs(10), || {
+      manager_b.metrics().bus_connected.load(Ordering::Relaxed)
+   }));
+   manager_b.store_cached_query(
+      "db:",
+      &parsed.tables,
+      parsed.fingerprint,
+      &probe_result(),
+      60_000,
+   );
+   assert!(wait_until(Duration::from_secs(10), || {
+      bus_a.invalidate(&["users".to_string()]);
+      manager_b
+         .get_cached_query("db:", "users", parsed.fingerprint)
+         .is_none()
+   }));
+}
+
+#[test]
+fn test_invalidation_retires_connection_copies_before_deleting() {
+   let storage = Arc::new(RacingStorage {
+      inner: MemoryStorage::default(),
+      after_read: parking_lot::Mutex::new(None),
+      on_del: parking_lot::Mutex::new(None),
+   });
+   let manager = Arc::new(DbCacheManager::new(storage.clone()));
+   let tables = vec!["users".to_string()];
+   for id in 0..20 {
+      let parsed = parse_sql(&format!("SELECT name FROM users WHERE id = {id}"));
+      manager.store_cached_query("db:", &tables, parsed.fingerprint, &one_row("x"), 60_000);
+   }
+   // A connection-local copy is valid while the generation it saw holds.
+   let seen = manager.generation();
+   let observer = Arc::clone(&manager);
+   let stale_during_delete = Arc::new(std::sync::atomic::AtomicBool::new(false));
+   let flag = Arc::clone(&stale_during_delete);
+   *storage.on_del.lock() = Some(Box::new(move || {
+      if observer.generation() == seen {
+         flag.store(true, std::sync::atomic::Ordering::SeqCst);
+      }
+   }));
+   assert!(manager.invalidate_tables(&tables) > 0);
+   assert!(
+      !stale_during_delete.load(std::sync::atomic::Ordering::SeqCst),
+      "a copy taken before the invalidation still validated while entries were being deleted"
+   );
+}

@@ -28,8 +28,8 @@ assert_eq!(value.as_str(), "value");
 
 ## Layout and memory
 
-On the current 64-bit target CompactKey is 16 bytes, with fifteen inline key bytes and a special encoding for eligible sixteen-byte keys. FyroDB's SmallStr is separately 24 bytes with twenty-three inline value bytes; StoreValue is 32 bytes and Entry<StoreValue> is 56 bytes. These are asserted layouts, excluding allocator rounding and external payload storage.
+On the current 64-bit target CompactKey is 24 bytes, with twenty-three inline key bytes and a special encoding for eligible twenty-four-byte keys. FyroDB's SmallStr is separately 24 bytes with twenty-three inline value bytes; StoreValue is 32 bytes and Entry<StoreValue> is one 64-byte, line-aligned allocation. These are asserted layouts, excluding allocator rounding and external payload storage.
 
-Empty shards start with eight slots and grow at the configured load threshold. A 14-bit hash tag plus a marker occupies eligible pointer bits; addresses that use the reserved bits fall back to untagged storage.
+Empty shards start with 8,192 slots and grow at the configured load threshold. A 14-bit hash tag plus a marker occupies eligible pointer bits; addresses that use the reserved bits fall back to untagged storage.
 
 See [the architecture](../../ARCHITECTURE.md) for the protection layers and [benchmarks](../../BENCHMARKS.md) for TCP, engine, payload, memory and rejected-experiment evidence. The regression suite is `cargo test -p customhash`; admission tests include concurrent readers/writers, nested maps, out-of-order drops and unwinding.

@@ -111,6 +111,81 @@ impl HnswGraph {
       self.rerank_by_fn(cands, k, score)
    }
 
+   /// `rerank_by` that scores as few candidates as it can. Candidates are
+   /// visited in order of a lower bound on their exact distance, and scoring
+   /// stops once the next bound exceeds the k-th exact distance found: no
+   /// remaining candidate can enter the top-`k`. The result equals
+   /// `rerank_by` over every candidate (up to the order of equal distances).
+   /// Graphs without bounds (f32, RaBitQ) score every candidate.
+   pub fn rerank_bounded(
+      &self,
+      q: &[f32],
+      cands: Vec<(f32, usize)>,
+      k: usize,
+      score: &dyn Fn(usize) -> Option<f32>,
+   ) -> Vec<(f32, usize)> {
+      if self.quant != Quant::Int8 || cands.len() <= k {
+         return self.rerank_by(cands, k, score);
+      }
+      let mut bounded = self.lower_bounds(q, &cands);
+      bounded.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
+      // Max-heap of the k best exact distances so far.
+      let mut best: BinaryHeap<(Dist, usize)> = BinaryHeap::with_capacity(k + 1);
+      for (lower, id) in bounded {
+         if best.len() == k && best.peek().is_some_and(|top| lower > top.0.0) {
+            break;
+         }
+         let Some(d) = score(id) else { continue };
+         if best.len() < k {
+            best.push((Dist(d), id));
+         } else if best.peek().is_some_and(|top| d < top.0.0) {
+            best.pop();
+            best.push((Dist(d), id));
+         }
+      }
+      let mut out: Vec<(f32, usize)> = best.into_iter().map(|(Dist(d), id)| (d, id)).collect();
+      out.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
+      out
+   }
+
+   /// (lower bound, id) per candidate; −∞ where no bound exists (an id that is
+   /// gone, or non-finite values), so those are always scored.
+   fn lower_bounds(&self, q: &[f32], cands: &[(f32, usize)]) -> Vec<(f32, usize)> {
+      let g = self.inner.read();
+      let enc = self.encode_query(q);
+      if q.len() != g.dims {
+         return cands
+            .iter()
+            .map(|&(_, id)| (f32::NEG_INFINITY, id))
+            .collect();
+      }
+      self.lower_bounds_with(&g, &enc, cands)
+   }
+
+   isa_dispatch!(fn lower_bounds_with => lower_bounds_gen(g: &Inner, enc: &QEnc, cands: &[(f32, usize)]) -> Vec<(f32, usize)>);
+
+   #[inline(always)]
+   fn lower_bounds_gen<K: Kernel>(
+      &self,
+      kern: K,
+      g: &Inner,
+      enc: &QEnc,
+      cands: &[(f32, usize)],
+   ) -> Vec<(f32, usize)> {
+      cands
+         .iter()
+         .map(|&(_, id)| {
+            let lower = (id < g.len && g.flag(id as u32) & F_DELETED == 0)
+               .then(|| {
+                  quant::int8_lower_bound(kern, self.metric, enc, g.payload(id as u32), g.dims)
+               })
+               .flatten()
+               .unwrap_or(f32::NEG_INFINITY);
+            (lower, id)
+         })
+         .collect()
+   }
+
    /// Filtered graph search: traverses unfiltered graph while collecting only
    /// allowed candidates, widening `ef` for selective filters.
    pub fn search_filtered(
@@ -475,6 +550,9 @@ impl HnswGraph {
       } else {
          1
       };
+      if let Some(sketches) = self.sketch_queries(g, &queries, &valid, n) {
+         return self.exact_batch_sketched(g, &queries, &sketches, n, threads);
+      }
       let per = n.div_ceil(threads.max(1));
       type PartResults = Vec<Mutex<Vec<Vec<(f32, u32)>>>>;
       let parts: PartResults = (0..threads).map(|_| Mutex::new(Vec::new())).collect();
@@ -580,6 +658,14 @@ impl HnswGraph {
       } else {
          1
       };
+      if let Some(Some(sq)) = self
+         .sketch_queries(g, &[(query, k)], &[true], n)
+         .map(|mut s| s.pop().flatten())
+      {
+         let out = self.exact_sketched(g, query, &sq, k, n, ids, threads);
+         BRUTE_INFLIGHT.fetch_sub(1, Ordering::Relaxed);
+         return out;
+      }
       let mut out: Vec<(f32, u32)> = if threads <= 1 {
          self.scan(g, query, k, 0, n, ids)
       } else {
@@ -656,5 +742,217 @@ impl HnswGraph {
          .into_iter()
          .map(|(Dist(d), id)| (d, id))
          .collect()
+   }
+
+   /// Sketch encodings for a batch of queries, when the graph keeps a sketch
+   /// and every valid query selects few enough rows for pruning to pay
+   /// (`k` at most an eighth of the scan). `None` takes the plain scan.
+   fn sketch_queries(
+      &self,
+      g: &Inner,
+      queries: &[(Query, usize)],
+      valid: &[bool],
+      n: usize,
+   ) -> Option<Vec<Option<sketch::SketchQuery>>> {
+      if g.sketch_words == 0 || self.quant != Quant::None {
+         return None;
+      }
+      queries
+         .iter()
+         .zip(valid)
+         .map(|((q, k), &ok)| {
+            if !ok {
+               return Some(None);
+            }
+            if *k == 0 || k.saturating_mul(8) > n {
+               return None;
+            }
+            sketch::SketchQuery::new(self.metric, q.v, q.norm).map(Some)
+         })
+         .collect()
+   }
+
+   /// Exact top-`k` by pruned scan: bound every row from its sketch, then
+   /// score the survivors exactly. Same results as `scan`.
+   #[allow(clippy::too_many_arguments)]
+   fn exact_sketched(
+      &self,
+      g: &Inner,
+      query: Query,
+      sq: &sketch::SketchQuery,
+      k: usize,
+      n: usize,
+      ids: Option<&[usize]>,
+      threads: usize,
+   ) -> Vec<(f32, usize)> {
+      let parts: Vec<sketch::Partial> = if threads <= 1 {
+         vec![self.prune(g, sq, k, 0, n, ids)]
+      } else {
+         let per = n.div_ceil(threads);
+         let parts: Vec<Mutex<sketch::Partial>> = (0..threads)
+            .map(|_| Mutex::new(Default::default()))
+            .collect();
+         pool::global().parallel(threads, |t| {
+            let lo = (t * per).min(n);
+            let hi = ((t + 1) * per).min(n);
+            *parts[t].lock() = self.prune(g, sq, k, lo, hi, ids);
+         });
+         parts.into_iter().map(|p| p.into_inner()).collect()
+      };
+      let survivors = sketch::survivors(parts, k);
+      let mut out = self.refine_all(g, query, &survivors, threads);
+      out.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
+      out.truncate(k);
+      out.into_iter()
+         .map(|(d, id)| (self.report(d), id as usize))
+         .collect()
+   }
+
+   /// `exact_batch` by pruned scan: one pass over the sketch serves every
+   /// query in the batch.
+   fn exact_batch_sketched(
+      &self,
+      g: &Inner,
+      queries: &[(Query, usize)],
+      sketches: &[Option<sketch::SketchQuery>],
+      n: usize,
+      threads: usize,
+   ) -> Vec<Vec<(f32, usize)>> {
+      let ks: Vec<usize> = queries.iter().map(|(_, k)| *k).collect();
+      let threads = threads.max(1);
+      let per = n.div_ceil(threads);
+      let parts: Vec<Mutex<Vec<sketch::Partial>>> =
+         (0..threads).map(|_| Mutex::new(Vec::new())).collect();
+      pool::global().parallel(threads, |t| {
+         let lo = (t * per).min(n);
+         let hi = ((t + 1) * per).min(n);
+         *parts[t].lock() = self.prune_batch(g, sketches, &ks, lo, hi);
+      });
+      let mut per_query: Vec<Vec<sketch::Partial>> =
+         (0..queries.len()).map(|_| Vec::new()).collect();
+      for part in parts {
+         for (i, p) in part.into_inner().into_iter().enumerate() {
+            per_query[i].push(p);
+         }
+      }
+      per_query
+         .into_iter()
+         .zip(queries)
+         .zip(sketches)
+         .map(|((parts, (query, k)), sq)| {
+            if sq.is_none() {
+               return Vec::new();
+            }
+            let survivors = sketch::survivors(parts, *k);
+            let mut out = self.refine_all(g, *query, &survivors, threads);
+            out.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
+            out.truncate(*k);
+            out.into_iter()
+               .map(|(d, id)| (self.report(d), id as usize))
+               .collect()
+         })
+         .collect()
+   }
+
+   /// Exact distances of `ids`, split across the pool when there are many.
+   fn refine_all(&self, g: &Inner, query: Query, ids: &[u32], threads: usize) -> Vec<(f32, u32)> {
+      const PARALLEL_REFINE_MIN: usize = 4096;
+      if threads <= 1 || ids.len() < PARALLEL_REFINE_MIN {
+         return self.refine(g, query, ids);
+      }
+      let per = ids.len().div_ceil(threads);
+      let parts: Vec<Mutex<Vec<(f32, u32)>>> =
+         (0..threads).map(|_| Mutex::new(Vec::new())).collect();
+      pool::global().parallel(threads, |t| {
+         let lo = (t * per).min(ids.len());
+         let hi = ((t + 1) * per).min(ids.len());
+         *parts[t].lock() = self.refine(g, query, &ids[lo..hi]);
+      });
+      parts.into_iter().flat_map(|p| p.into_inner()).collect()
+   }
+
+   isa_dispatch!(fn refine => refine_gen(g: &Inner, q: Query, ids: &[u32]) -> Vec<(f32, u32)>);
+
+   #[inline(always)]
+   fn refine_gen<K: Kernel>(&self, kern: K, g: &Inner, q: Query, ids: &[u32]) -> Vec<(f32, u32)> {
+      ids.iter()
+         .enumerate()
+         .map(|(i, &id)| {
+            if let Some(&next) = ids.get(i + 2) {
+               g.prefetch(next);
+            }
+            (self.dist(kern, g, q, id), id)
+         })
+         .collect()
+   }
+
+   isa_dispatch!(fn prune => prune_gen(g: &Inner, sq: &sketch::SketchQuery, k: usize, lo: usize, hi: usize, ids: Option<&[usize]>) -> sketch::Partial);
+
+   #[allow(clippy::too_many_arguments)]
+   #[inline(always)]
+   fn prune_gen<K: Kernel>(
+      &self,
+      kern: K,
+      g: &Inner,
+      sq: &sketch::SketchQuery,
+      k: usize,
+      lo: usize,
+      hi: usize,
+      ids: Option<&[usize]>,
+   ) -> sketch::Partial {
+      let mut pruner = sketch::Pruner::new(k);
+      let mut offer = |id: u32| {
+         if g.flag(id) & F_DELETED == 0 {
+            pruner.offer(
+               id,
+               sketch::bounds(kern, self.metric, sq, g.sketch_of(id), g.dims),
+            );
+         }
+      };
+      match ids {
+         None => (lo..hi).for_each(|id| offer(id as u32)),
+         Some(ids) => {
+            for (i, &id) in ids[lo..hi].iter().enumerate() {
+               if let Some(&next) = ids.get(lo + i + 4)
+                  && next < g.len
+               {
+                  g.prefetch_sketch(next as u32);
+               }
+               if id < g.len {
+                  offer(id as u32);
+               }
+            }
+         }
+      }
+      pruner.finish()
+   }
+
+   isa_dispatch!(fn prune_batch => prune_batch_gen(g: &Inner, sketches: &[Option<sketch::SketchQuery>], ks: &[usize], lo: usize, hi: usize) -> Vec<sketch::Partial>);
+
+   #[inline(always)]
+   fn prune_batch_gen<K: Kernel>(
+      &self,
+      kern: K,
+      g: &Inner,
+      sketches: &[Option<sketch::SketchQuery>],
+      ks: &[usize],
+      lo: usize,
+      hi: usize,
+   ) -> Vec<sketch::Partial> {
+      let mut pruners: Vec<sketch::Pruner> = ks.iter().map(|&k| sketch::Pruner::new(k)).collect();
+      for id in lo..hi {
+         let id = id as u32;
+         if g.flag(id) & F_DELETED != 0 {
+            continue;
+         }
+         // The row stays in L1 while every query in the batch scores it.
+         let row = g.sketch_of(id);
+         for (pruner, sq) in pruners.iter_mut().zip(sketches) {
+            if let Some(sq) = sq {
+               pruner.offer(id, sketch::bounds(kern, self.metric, sq, row, g.dims));
+            }
+         }
+      }
+      pruners.into_iter().map(sketch::Pruner::finish).collect()
    }
 }

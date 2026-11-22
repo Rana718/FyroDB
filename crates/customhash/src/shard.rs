@@ -31,7 +31,9 @@ pub(crate) fn stored_hash(state: u64) -> u64 {
 
 pub(crate) const LOAD_NUM: usize = 2;
 pub(crate) const LOAD_DEN: usize = 3;
-// Keep idle shards tiny; tables grow lock-free as keys arrive.
+// Tables grow as keys arrive. Starting at 1,024 slots was measured (2026-11-21,
+// 10 M-key insert phase): ~10% slower inserts from extra growth pauses and
+// ~150 MiB higher peak RSS from retired tables, so shards start at 8,192.
 pub(crate) const INITIAL_SHARD_CAPACITY: usize = 8_192;
 pub(crate) const GROWING: usize = 1usize << (usize::BITS - 1);
 
@@ -177,8 +179,8 @@ impl<V> Entry<V> {
       }
    }
 
+   #[cfg(test)]
    #[inline(always)]
-   #[allow(dead_code)]
    pub(crate) fn new(key: CompactKey, state: u64, value: V) -> Self {
       Self {
          key,
@@ -314,6 +316,9 @@ pub(crate) struct SlotTable<V> {
    pub(crate) capacity: usize,
    pub(crate) mask: usize,
    pub(crate) threshold: usize,
+   /// The slot array is mapped from the OS (see `rust_zmalloc::alloc_pages_zeroed`),
+   /// so reclaiming a retired table returns its memory at once.
+   paged: bool,
 }
 
 /// Tag bits stored in upper pointer bits; bit 63 marks presence.
@@ -386,7 +391,7 @@ impl<V> TaggedSlot<V> {
       Ok(word as *mut Entry<V>)
    }
 
-   #[allow(dead_code)]
+   #[cfg(test)]
    #[inline(always)]
    pub(crate) fn store(&self, entry: *mut Entry<V>, hash: u64, order: Ordering) {
       self.0.store(Self::encode(entry, hash), order);
@@ -458,6 +463,78 @@ impl<V> TaggedSlot<V> {
       }
       ptr::null_mut()
    }
+
+   #[inline(always)]
+   pub(crate) unsafe fn probe_entry_matching_str(
+      slots: *const TaggedSlot<V>,
+      mask: usize,
+      hash: u64,
+      key: &str,
+   ) -> *mut Entry<V> {
+      let expected_hi = (hash_tag(hash) | (1 << TAG_BITS)) as u16;
+      let expected_hash = (hash as u32 as u64) << STATE_HASH_SHIFT;
+      let base_idx = (hash as usize) & mask;
+      for offset in 0..16 {
+         let slot = unsafe { &*slots.add((base_idx + offset) & mask) };
+         let word = slot.0.load(Ordering::Relaxed) as usize;
+         if word == 0 {
+            return ptr::null_mut();
+         }
+         if (word >> TAG_SHIFT) as u16 == expected_hi || (word & TAG_FLAG) == 0 {
+            std::sync::atomic::fence(Ordering::Acquire);
+            let p = if (word & TAG_FLAG) != 0 {
+               (word & PTR_MASK) as *mut Entry<V>
+            } else {
+               word as *mut Entry<V>
+            };
+            let e = unsafe { &*p };
+            let state = e.state.load(Ordering::Relaxed);
+            if (state & (0xFFFF_FFFF_0000_0000 | STATE_OCCUPIED))
+               == (expected_hash | STATE_OCCUPIED)
+               && e.key.eq_str(key)
+            {
+               return p;
+            }
+         }
+      }
+      ptr::null_mut()
+   }
+
+   #[inline(always)]
+   pub(crate) unsafe fn probe_entry_matching_bytes(
+      slots: *const TaggedSlot<V>,
+      mask: usize,
+      hash: u64,
+      key: &[u8],
+   ) -> *mut Entry<V> {
+      let expected_hi = (hash_tag(hash) | (1 << TAG_BITS)) as u16;
+      let expected_hash = (hash as u32 as u64) << STATE_HASH_SHIFT;
+      let base_idx = (hash as usize) & mask;
+      for offset in 0..16 {
+         let slot = unsafe { &*slots.add((base_idx + offset) & mask) };
+         let word = slot.0.load(Ordering::Relaxed) as usize;
+         if word == 0 {
+            return ptr::null_mut();
+         }
+         if (word >> TAG_SHIFT) as u16 == expected_hi || (word & TAG_FLAG) == 0 {
+            std::sync::atomic::fence(Ordering::Acquire);
+            let p = if (word & TAG_FLAG) != 0 {
+               (word & PTR_MASK) as *mut Entry<V>
+            } else {
+               word as *mut Entry<V>
+            };
+            let e = unsafe { &*p };
+            let state = e.state.load(Ordering::Relaxed);
+            if (state & (0xFFFF_FFFF_0000_0000 | STATE_OCCUPIED))
+               == (expected_hash | STATE_OCCUPIED)
+               && e.key.eq_bytes(key)
+            {
+               return p;
+            }
+         }
+      }
+      ptr::null_mut()
+   }
 }
 
 unsafe impl<V: Send> Send for SlotTable<V> {}
@@ -472,7 +549,7 @@ impl<V> Drop for SlotTable<V> {
          .and_then(|layout| layout.align_to(64))
          .expect("slot array layout overflow");
       unsafe {
-         rust_zmalloc::dealloc_raw(self.slots.cast(), layout);
+         rust_zmalloc::dealloc_pages(self.slots.cast(), layout, self.paged);
       }
    }
 }
@@ -556,7 +633,8 @@ impl<V> SlotTable<V> {
       let layout = Layout::array::<TaggedSlot<V>>(cap + 16)
          .and_then(|layout| layout.align_to(64))
          .expect("slot array layout overflow");
-      let slots = unsafe { rust_zmalloc::alloc_raw_zeroed(layout) }.cast::<TaggedSlot<V>>();
+      let (slots, paged) = unsafe { rust_zmalloc::alloc_pages_zeroed(layout) };
+      let slots = slots.cast::<TaggedSlot<V>>();
       if slots.is_null() {
          std::alloc::handle_alloc_error(layout);
       }
@@ -565,6 +643,7 @@ impl<V> SlotTable<V> {
          capacity: cap,
          mask: cap - 1,
          threshold: cap * LOAD_NUM / LOAD_DEN,
+         paged,
       }
    }
 
@@ -620,19 +699,37 @@ impl<V> ShardFast<V> {
    }
 }
 
-#[repr(align(128))]
+/// Read-mostly fields come first; the three counters every insert writes
+/// (`insert_gate`, `len`, `live`) share one separate line. They are written by
+/// the same inserting thread in the same operation, so splitting them across
+/// lines bought no false-sharing protection and cost three line transfers per
+/// insert instead of one.
+#[repr(C, align(128))]
 pub(crate) struct Shard<V> {
    pub(crate) table: AtomicPtr<SlotTable<V>>,
    pub(crate) slots: AtomicPtr<TaggedSlot<V>>,
    pub(crate) mask: AtomicUsize,
    pub(crate) threshold: AtomicUsize,
    pub(crate) fast: AtomicPtr<ShardFast<V>>,
-   pub(crate) len: CachePadded<AtomicUsize>,
-   pub(crate) live: CachePadded<AtomicUsize>,
-   pub(crate) insert_gate: CachePadded<AtomicUsize>,
-   pub(crate) grow_lock: parking_lot::Mutex<()>,
    pub(crate) snap: std::sync::Arc<crate::snap::SnapCtl<V>>,
    pub(crate) initial_capacity: usize,
+   pub(crate) grow_lock: parking_lot::Mutex<()>,
+   pub(crate) counters: CachePadded<ShardCounters>,
+}
+
+#[derive(Default)]
+pub(crate) struct ShardCounters {
+   pub(crate) insert_gate: AtomicUsize,
+   pub(crate) len: AtomicUsize,
+   pub(crate) live: AtomicUsize,
+}
+
+impl<V> std::ops::Deref for Shard<V> {
+   type Target = ShardCounters;
+   #[inline(always)]
+   fn deref(&self) -> &ShardCounters {
+      &self.counters
+   }
 }
 
 pub(crate) struct InsertGuard<'a> {
@@ -659,26 +756,16 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
          mask: AtomicUsize::new(mask),
          threshold: AtomicUsize::new(threshold),
          fast: AtomicPtr::new(ptr::null_mut()),
-         len: CachePadded::new(AtomicUsize::new(0)),
-         live: CachePadded::new(AtomicUsize::new(0)),
-         insert_gate: CachePadded::new(AtomicUsize::new(0)),
-         grow_lock: parking_lot::Mutex::new(()),
          snap,
          initial_capacity: cap,
+         grow_lock: parking_lot::Mutex::new(()),
+         counters: CachePadded::new(ShardCounters::default()),
       }
    }
 
    #[inline(always)]
    pub(crate) fn table(&self) -> &SlotTable<V> {
       unsafe { &*self.table.load(Ordering::Acquire) }
-   }
-
-   /// Like `table()` but Relaxed — safe only when the caller holds an EBR
-   /// Guard whose Acquire fence already synchronized the table pointer.
-   #[allow(dead_code)]
-   #[inline(always)]
-   pub(crate) fn table_relaxed(&self) -> &SlotTable<V> {
-      unsafe { &*self.table.load(Ordering::Relaxed) }
    }
 
    #[inline(always)]
@@ -872,22 +959,6 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
       None
    }
 
-   #[allow(dead_code)]
-   #[inline(always)]
-   pub(crate) fn get(&self, key: &str, hash: u64) -> Option<V> {
-      self.get_pinned(key, hash)
-   }
-
-   /// Like `get` with relaxed table load when caller holds an EBR Guard.
-   #[allow(dead_code)]
-   #[inline(always)]
-   pub(crate) fn get_pinned(&self, key: &str, hash: u64) -> Option<V> {
-      let table = self.table();
-      let slots = table.slots;
-      let mask = table.mask;
-      Self::get_pinned_fast(slots, mask, key, hash)
-   }
-
    #[inline(always)]
    pub(crate) fn get_pinned_fast(
       slots: *mut TaggedSlot<V>,
@@ -1069,7 +1140,7 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
       let expected_hi = (hash_tag(hash) | (1 << TAG_BITS)) as u16;
       for offset in 0..16 {
          let slot = unsafe { table.slot((base + offset) & table.mask) };
-         let word = slot.0.load(Ordering::Acquire) as usize;
+         let word = slot.0.load(Ordering::Relaxed) as usize;
          if word == 0 {
             let insert_guard = self.enter_insert();
             if self.table.load(Ordering::Acquire) != table_ptr
@@ -1097,59 +1168,60 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
             }
             return InsertFastResult::Fallback(value);
          }
-         let p = if (word >> TAG_SHIFT) as u16 == expected_hi {
-            (word & PTR_MASK) as *mut Entry<V>
-         } else if word & TAG_FLAG == 0 {
-            word as *mut Entry<V>
-         } else {
-            continue;
-         };
-         let entry = unsafe { &*p };
-         let state = entry.state.load(Ordering::Relaxed);
-         if stored_hash(state) != hash as u32 as u64 || !entry.key.eq_str(key) {
-            continue;
-         }
-         let mut current_state = state;
-         let mut backoff = 1u32;
-         for _ in 0..256 {
-            while current_state & STATE_LOCK != 0 {
-               for _ in 0..backoff {
-                  std::hint::spin_loop();
-               }
-               if backoff < 64 {
-                  backoff <<= 1;
-               }
-               current_state = entry.state.load(Ordering::Relaxed);
+         if (word >> TAG_SHIFT) as u16 == expected_hi || (word & TAG_FLAG) == 0 {
+            std::sync::atomic::fence(Ordering::Acquire);
+            let p = if (word & TAG_FLAG) != 0 {
+               (word & PTR_MASK) as *mut Entry<V>
+            } else {
+               word as *mut Entry<V>
+            };
+            let entry = unsafe { &*p };
+            let state = entry.state.load(Ordering::Relaxed);
+            if stored_hash(state) != hash as u32 as u64 || !entry.key.eq_str(key) {
+               continue;
             }
-            if current_state & STATE_OCCUPIED == 0 {
-               break;
-            }
-            let locked = bump_seq(current_state) | STATE_LOCK;
-            match entry.state.compare_exchange_weak(
-               current_state,
-               locked,
-               Ordering::Acquire,
-               Ordering::Relaxed,
-            ) {
-               Ok(_) => {
-                  self.snap.before_write(entry);
-                  unsafe { (*entry.value.get()).assume_init_drop() };
-                  unsafe { (*entry.value.get()).write(value) };
-                  unlock_write(&entry.state, locked, true);
-                  return InsertFastResult::Updated;
-               }
-               Err(observed) => {
-                  current_state = observed;
+            let mut current_state = state;
+            let mut backoff = 1u32;
+            for _ in 0..256 {
+               while current_state & STATE_LOCK != 0 {
                   for _ in 0..backoff {
                      std::hint::spin_loop();
                   }
                   if backoff < 64 {
                      backoff <<= 1;
                   }
+                  current_state = entry.state.load(Ordering::Relaxed);
+               }
+               if current_state & STATE_OCCUPIED == 0 {
+                  break;
+               }
+               let locked = bump_seq(current_state) | STATE_LOCK;
+               match entry.state.compare_exchange_weak(
+                  current_state,
+                  locked,
+                  Ordering::Acquire,
+                  Ordering::Relaxed,
+               ) {
+                  Ok(_) => {
+                     self.snap.before_write(entry);
+                     unsafe { (*entry.value.get()).assume_init_drop() };
+                     unsafe { (*entry.value.get()).write(value) };
+                     unlock_write(&entry.state, locked, true);
+                     return InsertFastResult::Updated;
+                  }
+                  Err(observed) => {
+                     current_state = observed;
+                     for _ in 0..backoff {
+                        std::hint::spin_loop();
+                     }
+                     if backoff < 64 {
+                        backoff <<= 1;
+                     }
+                  }
                }
             }
+            return InsertFastResult::Fallback(value);
          }
-         return InsertFastResult::Fallback(value);
       }
       InsertFastResult::Fallback(value)
    }
@@ -1172,7 +1244,7 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
       let expected_hi = (hash_tag(hash) | (1 << TAG_BITS)) as u16;
       for offset in 0..16 {
          let slot = unsafe { table.slot((base + offset) & table.mask) };
-         let word = slot.0.load(Ordering::Acquire) as usize;
+         let word = slot.0.load(Ordering::Relaxed) as usize;
          if word == 0 {
             let insert_guard = self.enter_insert();
             if self.table.load(Ordering::Acquire) != table_ptr
@@ -1200,59 +1272,60 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
             }
             return InsertFastResult::Fallback(value);
          }
-         let p = if (word >> TAG_SHIFT) as u16 == expected_hi {
-            (word & PTR_MASK) as *mut Entry<V>
-         } else if word & TAG_FLAG == 0 {
-            word as *mut Entry<V>
-         } else {
-            continue;
-         };
-         let entry = unsafe { &*p };
-         let state = entry.state.load(Ordering::Relaxed);
-         if stored_hash(state) != hash as u32 as u64 || !entry.key.eq_bytes(key) {
-            continue;
-         }
-         let mut current_state = state;
-         let mut backoff = 1u32;
-         for _ in 0..256 {
-            while current_state & STATE_LOCK != 0 {
-               for _ in 0..backoff {
-                  std::hint::spin_loop();
-               }
-               if backoff < 64 {
-                  backoff <<= 1;
-               }
-               current_state = entry.state.load(Ordering::Relaxed);
+         if (word >> TAG_SHIFT) as u16 == expected_hi || (word & TAG_FLAG) == 0 {
+            std::sync::atomic::fence(Ordering::Acquire);
+            let p = if (word & TAG_FLAG) != 0 {
+               (word & PTR_MASK) as *mut Entry<V>
+            } else {
+               word as *mut Entry<V>
+            };
+            let entry = unsafe { &*p };
+            let state = entry.state.load(Ordering::Relaxed);
+            if stored_hash(state) != hash as u32 as u64 || !entry.key.eq_bytes(key) {
+               continue;
             }
-            if current_state & STATE_OCCUPIED == 0 {
-               break;
-            }
-            let locked = bump_seq(current_state) | STATE_LOCK;
-            match entry.state.compare_exchange_weak(
-               current_state,
-               locked,
-               Ordering::Acquire,
-               Ordering::Relaxed,
-            ) {
-               Ok(_) => {
-                  self.snap.before_write(entry);
-                  unsafe { (*entry.value.get()).assume_init_drop() };
-                  unsafe { (*entry.value.get()).write(value) };
-                  unlock_write(&entry.state, locked, true);
-                  return InsertFastResult::Updated;
-               }
-               Err(observed) => {
-                  current_state = observed;
+            let mut current_state = state;
+            let mut backoff = 1u32;
+            for _ in 0..256 {
+               while current_state & STATE_LOCK != 0 {
                   for _ in 0..backoff {
                      std::hint::spin_loop();
                   }
                   if backoff < 64 {
                      backoff <<= 1;
                   }
+                  current_state = entry.state.load(Ordering::Relaxed);
+               }
+               if current_state & STATE_OCCUPIED == 0 {
+                  break;
+               }
+               let locked = bump_seq(current_state) | STATE_LOCK;
+               match entry.state.compare_exchange_weak(
+                  current_state,
+                  locked,
+                  Ordering::Acquire,
+                  Ordering::Relaxed,
+               ) {
+                  Ok(_) => {
+                     self.snap.before_write(entry);
+                     unsafe { (*entry.value.get()).assume_init_drop() };
+                     unsafe { (*entry.value.get()).write(value) };
+                     unlock_write(&entry.state, locked, true);
+                     return InsertFastResult::Updated;
+                  }
+                  Err(observed) => {
+                     current_state = observed;
+                     for _ in 0..backoff {
+                        std::hint::spin_loop();
+                     }
+                     if backoff < 64 {
+                        backoff <<= 1;
+                     }
+                  }
                }
             }
+            return InsertFastResult::Fallback(value);
          }
-         return InsertFastResult::Fallback(value);
       }
       InsertFastResult::Fallback(value)
    }
@@ -1741,23 +1814,6 @@ impl<V: Clone + Send + Sync + 'static> Shard<V> {
    pub(crate) fn insert_hashed_key(&self, key: CompactKey, value: V, hash: u64) -> bool {
       let _guard = ebr::pin();
       self.set_compact_key(key, hash, value, true)
-   }
-
-   #[allow(dead_code)]
-   pub(crate) fn insert_new(&self, key: String, value: V, hash: u64, overwrite: bool) -> bool {
-      self.insert_new_key(CompactKey::from_string(key), value, hash, overwrite)
-   }
-
-   #[allow(dead_code)]
-   pub(crate) fn insert_new_key(
-      &self,
-      key: CompactKey,
-      value: V,
-      hash: u64,
-      overwrite: bool,
-   ) -> bool {
-      let _guard = ebr::pin();
-      self.set_compact_key(key, hash, value, overwrite)
    }
 
    fn grow(&self) {

@@ -162,13 +162,11 @@ fn bench_dbcache_proxy_path_optimizations() {
       use std::collections::HashMap;
 
       struct Stmt {
-         #[allow(dead_code)]
-         sql: String,
+         _sql: String,
          fp: u64,
       }
       struct Portal {
-         #[allow(dead_code)]
-         stmt: String,
+         _stmt: String,
          fp: u64,
       }
 
@@ -183,7 +181,7 @@ fn bench_dbcache_proxy_path_optimizations() {
          stmts_map.insert(
             name.to_string(),
             Stmt {
-               sql: "SELECT 1".to_string(),
+               _sql: "SELECT 1".to_string(),
                fp: i as u64,
             },
          );
@@ -192,7 +190,7 @@ fn bench_dbcache_proxy_path_optimizations() {
          portals_map.insert(
             portal_name.to_string(),
             Portal {
-               stmt: name.to_string(),
+               _stmt: name.to_string(),
                fp: s.fp,
             },
          );
@@ -212,14 +210,14 @@ fn bench_dbcache_proxy_path_optimizations() {
          // Parse:
          if name.is_empty() {
             unnamed_stmt = Some(Stmt {
-               sql: "SELECT 1".to_string(),
+               _sql: "SELECT 1".to_string(),
                fp: i as u64,
             });
          } else {
             stmts_map.insert(
                name.to_string(),
                Stmt {
-                  sql: "SELECT 1".to_string(),
+                  _sql: "SELECT 1".to_string(),
                   fp: i as u64,
                },
             );
@@ -232,14 +230,14 @@ fn bench_dbcache_proxy_path_optimizations() {
          };
          if portal_name.is_empty() {
             unnamed_portal = Some(Portal {
-               stmt: name.to_string(),
+               _stmt: name.to_string(),
                fp: s.fp,
             });
          } else {
             portals_map.insert(
                portal_name.to_string(),
                Portal {
-                  stmt: name.to_string(),
+                  _stmt: name.to_string(),
                   fp: s.fp,
                },
             );

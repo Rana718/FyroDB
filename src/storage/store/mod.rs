@@ -1,7 +1,7 @@
 use super::value::StoreValue;
+use arc_swap::ArcSwapOption;
 use crossbeam_utils::CachePadded;
 use customhash::CustomMap;
-use parking_lot::Mutex;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -44,9 +44,9 @@ pub struct Store {
    pub cluster: Box<crate::cluster::ClusterConfig>,
    pub(crate) cluster_state: crate::cluster::ClusterState,
    cluster_write_fence: WriteFence,
-   replica_meta_path: Mutex<Option<String>>,
-   replica_identity: Mutex<Option<[u8; 16]>>,
-   cluster_meta_path: Mutex<Option<String>>,
+   replica_meta_path: ArcSwapOption<String>,
+   replica_identity: ArcSwapOption<[u8; 16]>,
+   cluster_meta_path: ArcSwapOption<String>,
    metrics: Box<ClusterMetrics>,
    dbcache_manager: OnceLock<std::sync::Arc<fyro_dbcache::DbCacheManager>>,
    pub(crate) script_cache: parking_lot::RwLock<foldhash::HashMap<Arc<str>, Arc<str>>>,
@@ -110,9 +110,9 @@ impl Store {
          connected_clients: AtomicUsize::new(0),
          ttl: TtlCounters::new(),
          replica_applied_offset: AtomicU64::new(0),
-         replica_meta_path: Mutex::new(None),
-         replica_identity: Mutex::new(None),
-         cluster_meta_path: Mutex::new(None),
+         replica_meta_path: ArcSwapOption::const_empty(),
+         replica_identity: ArcSwapOption::const_empty(),
+         cluster_meta_path: ArcSwapOption::const_empty(),
          cluster_state: crate::cluster::ClusterState::with_topology(
             failure_quorum,
             std::time::Duration::from_secs(30),
@@ -636,6 +636,46 @@ mod tests {
 
       assert_eq!(store.getex_ms("key", 0).as_deref(), Some("value"));
       assert!(!store.has_ttl_keys());
+   }
+
+   /// Writers log after releasing the entry lock, so two writers of one key
+   /// can reach the log in either order. The log must still end on each key's
+   /// live state, or a replica (and AOF replay) diverges.
+   #[test]
+   fn concurrent_same_key_writes_replicate_to_the_live_value() {
+      use std::sync::Arc;
+      const KEYS: usize = 32;
+      let mut base = Store::with_config(2, usize::MAX);
+      base.replication = Some(crate::cluster::ReplicationCoordinator::new(1 << 20));
+      let store = Arc::new(base);
+      std::thread::scope(|scope| {
+         for thread in 0..4 {
+            let store = &store;
+            scope.spawn(move || {
+               for i in 0..400 {
+                  let key = format!("k{}", i % KEYS);
+                  if (i + thread) % 9 == 0 {
+                     store.del(&key);
+                  } else {
+                     store.set_string(&key, &format!("{thread}-{i}"), 0);
+                     store.record_current_value(&key);
+                  }
+               }
+            });
+         }
+      });
+      let replica = Store::with_config(2, usize::MAX);
+      for record in store.replication.as_ref().unwrap().replay_from(0).unwrap() {
+         replica.apply_replica_mutation(&record).unwrap();
+      }
+      for i in 0..KEYS {
+         let key = format!("k{i}");
+         assert_eq!(
+            replica.get(&key),
+            store.get(&key),
+            "replica diverged on {key}"
+         );
+      }
    }
 
    /// Replaced a process-wide mutex while keeping what migration and

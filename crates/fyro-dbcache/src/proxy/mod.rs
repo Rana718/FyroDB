@@ -1,13 +1,15 @@
 pub(crate) mod mio_worker;
 mod session;
+mod threads;
 
 use crate::bus::InvalidationBus;
 use crate::cache::DbCacheManager;
 use crate::config::{DbCacheConfig, DbProxyMode};
 use crate::pool::{PoolLimits, UpstreamPool};
 use std::io;
-use std::net::TcpListener;
-use std::sync::{Arc, mpsc};
+use std::net::{TcpListener, TcpStream};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::Duration;
 
@@ -32,6 +34,90 @@ pub(crate) const CATALOG_VIEWS_SQL: &str = "SELECT v.relname, pg_get_viewdef(v.o
    JOIN pg_depend d ON d.objid = r.oid AND d.classid = 'pg_rewrite'::regclass \
       AND d.refclassid = 'pg_class'::regclass AND d.deptype = 'n' \
    WHERE r.rulename = '_RETURN'";
+
+/// One admitted client connection; releases its slot when the session ends.
+pub(crate) struct ConnectionPermit(Arc<AtomicUsize>);
+
+impl Drop for ConnectionPermit {
+   fn drop(&mut self) {
+      self.0.fetch_sub(1, Ordering::Release);
+   }
+}
+
+/// Admits a client under `max` concurrent connections (0 = unlimited). Every
+/// upstream session runs on its own thread, so without a cap a connection
+/// flood meant unbounded threads.
+pub(crate) fn try_admit(active: &Arc<AtomicUsize>, max: usize) -> Option<ConnectionPermit> {
+   let previous = active.fetch_add(1, Ordering::AcqRel);
+   if max != 0 && previous >= max {
+      active.fetch_sub(1, Ordering::Release);
+      return None;
+   }
+   Some(ConnectionPermit(Arc::clone(active)))
+}
+
+/// Answers an over-limit client with PostgreSQL's own "too many clients"
+/// error. Like PostgreSQL it first reads the startup packet (answering an SSL
+/// request with 'N'), since closing a socket with unread input resets it and
+/// the client would only see a broken connection. That wait happens on one
+/// small rejecter thread so neither accept loop ever blocks; if it falls
+/// behind during a flood, extra clients are just closed.
+pub(crate) fn reject_too_many(client: TcpStream) {
+   static REJECTER: std::sync::OnceLock<Option<std::sync::mpsc::SyncSender<TcpStream>>> =
+      std::sync::OnceLock::new();
+   let sender = REJECTER.get_or_init(|| {
+      let (tx, rx) = std::sync::mpsc::sync_channel::<TcpStream>(64);
+      thread::Builder::new()
+         .name("fyrodb-dbreject".into())
+         .stack_size(64 * 1024)
+         .spawn(move || {
+            for mut client in rx {
+               answer_too_many(&mut client);
+            }
+         })
+         .ok()
+         .map(|_| tx)
+   });
+   if let Some(sender) = sender {
+      let _ = sender.try_send(client);
+   }
+}
+
+fn answer_too_many(client: &mut TcpStream) {
+   use std::io::{Read, Write};
+   let limit = Some(Duration::from_millis(250));
+   if client.set_nonblocking(false).is_err()
+      || client.set_read_timeout(limit).is_err()
+      || client.set_write_timeout(limit).is_err()
+   {
+      return;
+   }
+   for _ in 0..2 {
+      let mut header = [0u8; 8];
+      if client.read_exact(&mut header).is_err() {
+         break;
+      }
+      let len = i32::from_be_bytes([header[0], header[1], header[2], header[3]]);
+      let code = i32::from_be_bytes([header[4], header[5], header[6], header[7]]);
+      if !(8..=10_000).contains(&len) {
+         break;
+      }
+      let mut rest = vec![0u8; len as usize - 8];
+      if client.read_exact(&mut rest).is_err() {
+         break;
+      }
+      if code == crate::protocol::SSL_REQUEST_CODE || code == crate::protocol::GSSENC_REQUEST_CODE {
+         if client.write_all(b"N").is_err() {
+            return;
+         }
+         continue;
+      }
+      break;
+   }
+   let _ =
+      crate::protocol::write_fatal_response(client, "53300", "sorry, too many clients already");
+   let _ = client.shutdown(std::net::Shutdown::Write);
+}
 
 // Spawns the background TCP listener for PostgreSQL wire proxy caching.
 pub fn start_proxy_listener(
@@ -89,6 +175,8 @@ pub fn start_proxy_listener(
          }
       });
 
+   let active = Arc::new(AtomicUsize::new(0));
+   let max_connections = config.max_connections;
    thread::Builder::new()
       .name("fyrodb-dbproxy".into())
       .stack_size(256 * 1024)
@@ -96,14 +184,17 @@ pub fn start_proxy_listener(
          for stream in listener.incoming() {
             match stream {
                Ok(client) => {
+                  let Some(permit) = try_admit(&active, max_connections) else {
+                     reject_too_many(client);
+                     continue;
+                  };
                   let cfg = config.clone();
                   let mgr = Arc::clone(&cache_mgr);
                   let pool = Arc::clone(&pool);
                   let bus = bus.clone();
-                  if let Err(e) = thread::Builder::new()
-                     .name("fyrodb-dbconn".into())
-                     .stack_size(session::CLIENT_STACK)
-                     .spawn(move || {
+                  if let Err(e) =
+                     threads::spawn_session("fyrodb-dbconn", session::CLIENT_STACK, move || {
+                        let _permit = permit;
                         if let Err(e) = session::handle_client(client, cfg, mgr, pool, bus)
                            && e.kind() != io::ErrorKind::UnexpectedEof
                         {
@@ -168,9 +259,9 @@ pub fn start_proxy_listener_mio(
       None
    };
 
-   // Shared blocking sub-pool for connections that need upstream access.
-   let blocking_threads = n_workers.max(2);
-   let blocking_pool = mio_worker::BlockingPool::start(blocking_threads);
+   // One connection count across every worker of this listener.
+   let active = Arc::new(AtomicUsize::new(0));
+   let config = Arc::new(config);
 
    let mut handles = Vec::with_capacity(n_workers);
    for i in 0..n_workers {
@@ -192,20 +283,18 @@ pub fn start_proxy_listener_mio(
 
       let std_listener: TcpListener = sock.into();
       let mio_listener = mio::net::TcpListener::from_std(std_listener);
-
-      let cfg = Arc::new(config.clone());
-      let mgr = Arc::clone(&cache_mgr);
-      let pool_c = Arc::clone(&pool);
-      let bus_c = bus.clone();
-      let bp = Arc::clone(&blocking_pool);
-      let (dtx, drx) = mpsc::sync_channel::<usize>(blocking_threads * 16);
+      let shared = mio_worker::WorkerShared {
+         mgr: Arc::clone(&cache_mgr),
+         config: Arc::clone(&config),
+         pool: Arc::clone(&pool),
+         bus: bus.clone(),
+         active: Arc::clone(&active),
+      };
 
       let handle = thread::Builder::new()
          .name(format!("fyrodb-mio-proxy-{i}"))
          .stack_size(256 * 1024)
-         .spawn(move || {
-            mio_worker::run_proxy_worker(mio_listener, mgr, cfg, pool_c, bus_c, bp, drx, dtx);
-         })?;
+         .spawn(move || mio_worker::run_proxy_worker(mio_listener, shared))?;
       handles.push(handle);
    }
    Ok(handles)

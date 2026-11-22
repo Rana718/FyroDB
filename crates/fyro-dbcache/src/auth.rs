@@ -337,14 +337,17 @@ fn xor32(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
 }
 
 fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
-   let max_len = left.len().max(right.len());
-   let mut diff = (left.len() ^ right.len()) as u8;
-   for i in 0..max_len {
-      let a = if i < left.len() { left[i] } else { 0 };
-      let b = if i < right.len() { right[i] } else { 0 };
-      diff |= a ^ b;
+   // The length difference is folded in at full width. It used to be cast
+   // to u8, so inputs whose lengths differed by a multiple of 256 passed the
+   // length check and compared equal when the longer one ended in zero bytes.
+   let mut diff = left.len() ^ right.len();
+   for i in 0..left.len().max(right.len()) {
+      let x = left.get(i).copied().unwrap_or(0);
+      let y = right.get(i).copied().unwrap_or(0);
+      diff |= usize::from(x ^ y);
    }
-   diff == 0
+   // Keeps the optimizer from turning the loop into an early exit.
+   std::hint::black_box(diff) == 0
 }
 
 fn md5_hex(data: &[u8]) -> String {
@@ -359,6 +362,15 @@ fn md5_hex(data: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
    use super::*;
+
+   #[test]
+   fn constant_time_eq_rejects_zero_padding_past_a_multiple_of_256() {
+      assert!(constant_time_eq(b"proof", b"proof"));
+      let mut padded = b"proof".to_vec();
+      padded.extend(std::iter::repeat_n(0u8, 256));
+      assert!(!constant_time_eq(b"proof", &padded));
+      assert!(!constant_time_eq(b"proof", b"proo"));
+   }
 
    // RFC 7677 test vector, which pins the whole SCRAM pipeline.
    #[test]

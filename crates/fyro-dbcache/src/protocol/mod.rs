@@ -1,6 +1,5 @@
 use crate::row::{ColumnInfo, DbValue};
 use std::io::{self, BufReader, Read, Write};
-use std::net::TcpStream;
 
 pub const SSL_REQUEST_CODE: i32 = 80877103;
 pub const SSL_REQUEST: [u8; 8] = [0, 0, 0, 8, 4, 210, 22, 47];
@@ -101,7 +100,7 @@ impl<R: Read> FrameReader<R> {
    }
 }
 
-impl FrameReader<BufReader<TcpStream>> {
+impl<R: Read> FrameReader<BufReader<R>> {
    // Returns true if unread bytes remain in the internal buffer.
    pub fn has_buffered_input(&self) -> bool {
       !self.inner.buffer().is_empty()

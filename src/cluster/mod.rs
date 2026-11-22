@@ -12,10 +12,11 @@ pub use config::{ClusterConfig, ClusterConfigError, load_nodes_conf, save_nodes_
 pub use failure::{FailureReport, FailureTracker, decode_failure_report, encode_failure_report};
 pub use hash::{HASH_SLOTS, Slot, SlotRange, hash_slot};
 pub use replication::{
-   ApplyError, LogError, MutationKind, MutationLog, MutationRecord, ReplicaApplier,
-   ReplicationCodecError, ReplicationCoordinator, ReplicationMessage, ReplicationStream, SpinMutex,
-   StreamError, decode_mutation, decode_mutation_batch, decode_replication_message,
-   encode_mutation, encode_mutation_batch, encode_replication_message, encode_snapshot,
+   ApplyError, FLAG_REPLICATION_BATCHES, LogError, MutationKind, MutationLog, MutationRecord,
+   ReplicaApplier, ReplicationCodecError, ReplicationCoordinator, ReplicationMessage,
+   ReplicationStream, SpinMutex, StreamError, decode_mutation, decode_mutation_batch,
+   decode_replication_message, encode_mutation, encode_mutation_batch, encode_replication_message,
+   encode_snapshot, mutation_wire_len,
 };
 pub use routing::{
    RouteDecision, RoutingScope, is_write_command, route_command, route_command_with_snapshot,

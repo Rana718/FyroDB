@@ -1,5 +1,6 @@
+use arc_swap::ArcSwapOption;
 use crossbeam_queue::SegQueue;
-use foldhash::fast::FixedState;
+use foldhash::fast::RandomState;
 use mio::Waker;
 use parking_lot::Mutex;
 use smallvec::SmallVec;
@@ -66,7 +67,12 @@ pub(crate) struct Subscriber {
 }
 
 type Members = SmallVec<[Subscriber; 1]>;
-type Subscriptions = HashMap<Arc<str>, Members, FixedState>;
+/// Channel names are client-chosen. A hasher seeded with a constant from the
+/// source lets anyone compute colliding names offline and degrade lookups to
+/// linear probing (hash flooding); `RandomState` seeds from the process's
+/// random seed instead.
+type Subscriptions = HashMap<Arc<str>, Members, RandomState>;
+#[derive(Clone)]
 pub(crate) struct LocalSubscriptions {
    pub channels: Subscriptions,
    pub patterns: Subscriptions,
@@ -74,8 +80,8 @@ pub(crate) struct LocalSubscriptions {
 impl LocalSubscriptions {
    fn new() -> Self {
       Self {
-         channels: HashMap::with_hasher(FixedState::with_seed(0)),
-         patterns: HashMap::with_hasher(FixedState::with_seed(0)),
+         channels: HashMap::with_hasher(RandomState::default()),
+         patterns: HashMap::with_hasher(RandomState::default()),
       }
    }
 }
@@ -85,7 +91,8 @@ pub struct WorkerNotifier {
    pub(crate) fanout: SegQueue<FanEntry>,
    pub completions: SegQueue<Completion>,
    completion_pending: AtomicBool,
-   local_subs: Mutex<Option<Box<LocalSubscriptions>>>,
+   local_subs: ArcSwapOption<LocalSubscriptions>,
+   sub_mu: Mutex<()>,
    pub waker: Arc<Waker>,
    worker_index: usize,
    wake_pending: AtomicBool,
@@ -101,7 +108,8 @@ impl WorkerNotifier {
          fanout: SegQueue::new(),
          completions: SegQueue::new(),
          completion_pending: AtomicBool::new(false),
-         local_subs: Mutex::new(None),
+         local_subs: ArcSwapOption::const_empty(),
+         sub_mu: Mutex::new(()),
          waker,
          worker_index,
          wake_pending: AtomicBool::new(false),
@@ -222,21 +230,26 @@ impl WorkerNotifier {
    }
 
    pub fn local_subscribers(&self, channel: &str) -> Option<Vec<usize>> {
-      self
-         .local_subs
-         .lock()
+      let guard = self.local_subs.load();
+      guard
          .as_ref()
          .and_then(|subs| subs.channels.get(channel))
          .map(|members| members.iter().map(|member| member.token).collect())
    }
 
    pub(crate) fn with_local_subs<R>(&self, f: impl FnOnce(Option<&LocalSubscriptions>) -> R) -> R {
-      f(self.local_subs.lock().as_deref())
+      let guard = self.local_subs.load();
+      f(guard.as_deref())
    }
 
    pub fn register_local(&self, channel: &str, token: usize) {
-      let mut local = self.local_subs.lock();
-      let subs = local.get_or_insert_with(|| Box::new(LocalSubscriptions::new()));
+      let _lock = self.sub_mu.lock();
+      let mut subs = self
+         .local_subs
+         .load()
+         .as_ref()
+         .map(|s| (**s).clone())
+         .unwrap_or_else(LocalSubscriptions::new);
       if let Some(members) = subs.channels.get_mut(channel) {
          if !members.iter().any(|m| m.token == token) {
             members.push(Subscriber {
@@ -253,6 +266,7 @@ impl WorkerNotifier {
             }],
          );
       }
+      self.local_subs.store(Some(Arc::new(subs)));
    }
 
    pub(crate) fn register_subscription(
@@ -262,8 +276,13 @@ impl WorkerNotifier {
       generation: u64,
       pattern: bool,
    ) {
-      let mut local = self.local_subs.lock();
-      let subs = local.get_or_insert_with(|| Box::new(LocalSubscriptions::new()));
+      let _lock = self.sub_mu.lock();
+      let mut subs = self
+         .local_subs
+         .load()
+         .as_ref()
+         .map(|s| (**s).clone())
+         .unwrap_or_else(LocalSubscriptions::new);
       let map = if pattern {
          &mut subs.patterns
       } else {
@@ -275,6 +294,7 @@ impl WorkerNotifier {
       } else {
          members.push(Subscriber { token, generation });
       }
+      self.local_subs.store(Some(Arc::new(subs)));
    }
 
    pub fn unregister_local(&self, channel: &str, token: usize) {
@@ -282,10 +302,11 @@ impl WorkerNotifier {
    }
 
    pub(crate) fn unregister_subscription(&self, name: &str, token: usize, pattern: bool) {
-      let mut local = self.local_subs.lock();
-      let Some(subs) = local.as_deref_mut() else {
+      let _lock = self.sub_mu.lock();
+      let Some(guard) = self.local_subs.load_full() else {
          return;
       };
+      let mut subs = (*guard).clone();
       let map = if pattern {
          &mut subs.patterns
       } else {
@@ -298,7 +319,9 @@ impl WorkerNotifier {
          }
       }
       if subs.channels.is_empty() && subs.patterns.is_empty() {
-         *local = None;
+         self.local_subs.store(None);
+      } else {
+         self.local_subs.store(Some(Arc::new(subs)));
       }
    }
 

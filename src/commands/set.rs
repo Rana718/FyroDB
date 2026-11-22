@@ -56,24 +56,18 @@ pub fn scard(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
 }
 
 pub fn spop(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
-   let (key, count) = match parts {
-      [_, key] => (*key, 1usize),
-      [_, key, cnt] => {
-         let c = parse_int!(out, cnt, usize);
-         (*key, c)
-      }
-      _ => return resp::write_wrong_args(out, "spop"),
-   };
-   let items = wt!(out, store.spop(key, count));
-   if parts.len() == 2 {
-      if items.is_empty() {
-         resp::write_nil(out);
-      } else {
-         resp::write_bulk(out, &items[0]);
-      }
-   } else {
-      resp::write_array(out, &items);
+   if let [_, key] = parts {
+      return match wt!(out, store.spop_one_to_buf(key, out)) {
+         true => {}
+         false => resp::write_nil(out),
+      };
    }
+   let [_, key, cnt] = parts else {
+      return resp::write_wrong_args(out, "spop");
+   };
+   let count = parse_int!(out, cnt, usize);
+   let items = wt!(out, store.spop(key, count));
+   resp::write_array(out, &items);
 }
 
 pub fn srandmember(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
@@ -95,29 +89,25 @@ pub fn smove(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
    }
 }
 
-#[inline]
-fn set_multi_op(
-   parts: &[&str],
-   out: &mut Vec<u8>,
-   cmd: &'static str,
-   op: impl FnOnce(&[&str]) -> Result<Vec<String>, &'static str>,
-) {
+pub fn sunion(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
    match parts {
-      [_, keys @ ..] if !keys.is_empty() => resp::write_array(out, &wt!(out, op(keys))),
-      _ => resp::write_wrong_args(out, cmd),
+      [_, keys @ ..] if !keys.is_empty() => wt!(out, store.sunion_to_buf(keys, out)),
+      _ => resp::write_wrong_args(out, "sunion"),
    }
 }
 
-pub fn sunion(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
-   set_multi_op(parts, out, "sunion", |k| store.sunion(k));
-}
-
 pub fn sinter(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
-   set_multi_op(parts, out, "sinter", |k| store.sinter(k));
+   match parts {
+      [_, keys @ ..] if !keys.is_empty() => wt!(out, store.sinter_to_buf(keys, out)),
+      _ => resp::write_wrong_args(out, "sinter"),
+   }
 }
 
 pub fn sdiff(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
-   set_multi_op(parts, out, "sdiff", |k| store.sdiff(k));
+   match parts {
+      [_, keys @ ..] if !keys.is_empty() => wt!(out, store.sdiff_to_buf(keys, out)),
+      _ => resp::write_wrong_args(out, "sdiff"),
+   }
 }
 
 #[inline]

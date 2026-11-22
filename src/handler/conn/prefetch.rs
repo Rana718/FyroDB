@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use super::*;
 
 const BATCH: usize = customhash::PREFETCH_BATCH;

@@ -517,6 +517,38 @@ impl Store {
       })
    }
 
+   #[allow(clippy::too_many_arguments)]
+   pub fn zrangebyscore_to_buf(
+      &self,
+      key: &str,
+      min: f64,
+      max: f64,
+      offset: usize,
+      count: usize,
+      withscores: bool,
+      out: &mut Vec<u8>,
+   ) -> Result<(), &'static str> {
+      self.with_zset_ref(key, (), |z| {
+         let total = z.range_by_score(min, max).len();
+         let n = if offset >= total {
+            0
+         } else {
+            let rem = total - offset;
+            if count == 0 { rem } else { rem.min(count) }
+         };
+         out.reserve(n * if withscores { 32 } else { 20 });
+         crate::utils::resp::write_array_header(out, if withscores { n * 2 } else { n });
+         if n > 0 {
+            for entry in z.range_by_score(min, max).skip(offset).take(n) {
+               entry.member.write_resp(out);
+               if withscores {
+                  crate::utils::resp::write_float(out, entry.score);
+               }
+            }
+         }
+      })
+   }
+
    pub fn zrevrangebyscore(
       &self,
       key: &str,
@@ -532,6 +564,38 @@ impl Store {
             .take(if count == 0 { usize::MAX } else { count })
             .map(|entry| (entry.member.to_string(), entry.score))
             .collect()
+      })
+   }
+
+   #[allow(clippy::too_many_arguments)]
+   pub fn zrevrangebyscore_to_buf(
+      &self,
+      key: &str,
+      max: f64,
+      min: f64,
+      offset: usize,
+      count: usize,
+      withscores: bool,
+      out: &mut Vec<u8>,
+   ) -> Result<(), &'static str> {
+      self.with_zset_ref(key, (), |z| {
+         let total = z.range_by_score(min, max).len();
+         let n = if offset >= total {
+            0
+         } else {
+            let rem = total - offset;
+            if count == 0 { rem } else { rem.min(count) }
+         };
+         out.reserve(n * if withscores { 32 } else { 20 });
+         crate::utils::resp::write_array_header(out, if withscores { n * 2 } else { n });
+         if n > 0 {
+            for entry in z.range_by_score(min, max).rev().skip(offset).take(n) {
+               entry.member.write_resp(out);
+               if withscores {
+                  crate::utils::resp::write_float(out, entry.score);
+               }
+            }
+         }
       })
    }
 
@@ -573,6 +637,61 @@ impl Store {
 
    pub fn zpopmax(&self, key: &str, count: usize) -> Result<Vec<(String, f64)>, &'static str> {
       self.zpop_extreme(key, count, |z| z.pop_max())
+   }
+
+   pub fn zpop_extreme_to_buf(
+      &self,
+      key: &str,
+      count: usize,
+      mut pop_fn: impl FnMut(&mut ZSetData) -> Option<crate::storage::value::ZEntry>,
+      out: &mut Vec<u8>,
+   ) -> Result<(), &'static str> {
+      let result = self.data.update_with(key, |val| {
+         if val.is_expired() {
+            crate::utils::resp::write_array_header(out, 0);
+            return Ok(());
+         }
+         match val.value.as_zset_mut() {
+            Some(z) => {
+               let n = count.min(z.len());
+               crate::utils::resp::write_array_header(out, n * 2);
+               for _ in 0..n {
+                  if let Some(entry) = pop_fn(z) {
+                     entry.member.write_resp(out);
+                     crate::utils::resp::write_float(out, entry.score);
+                  }
+               }
+               Ok(())
+            }
+            None => Err("WRONGTYPE"),
+         }
+      });
+
+      match result {
+         Some(r) => r,
+         None => {
+            crate::utils::resp::write_array_header(out, 0);
+            Ok(())
+         }
+      }
+   }
+
+   pub fn zpopmin_to_buf(
+      &self,
+      key: &str,
+      count: usize,
+      out: &mut Vec<u8>,
+   ) -> Result<(), &'static str> {
+      self.zpop_extreme_to_buf(key, count, |z| z.pop_min(), out)
+   }
+
+   pub fn zpopmax_to_buf(
+      &self,
+      key: &str,
+      count: usize,
+      out: &mut Vec<u8>,
+   ) -> Result<(), &'static str> {
+      self.zpop_extreme_to_buf(key, count, |z| z.pop_max(), out)
    }
 
    pub fn zunionstore(
@@ -711,6 +830,88 @@ impl Store {
          },
       }
    }
+
+   pub fn zrandmember_to_buf(
+      &self,
+      key: &str,
+      count: i64,
+      withscores: bool,
+      single: bool,
+      out: &mut Vec<u8>,
+   ) -> Result<(), &'static str> {
+      match self.data.get_ref(key) {
+         None => {
+            if single {
+               crate::utils::resp::write_nil(out);
+            } else {
+               crate::utils::resp::write_array_header(out, 0);
+            }
+            Ok(())
+         }
+         Some(e) if e.is_expired() => {
+            if single {
+               crate::utils::resp::write_nil(out);
+            } else {
+               crate::utils::resp::write_array_header(out, 0);
+            }
+            Ok(())
+         }
+         Some(e) => match e.value.as_zset() {
+            Some(z) => {
+               if z.is_empty() {
+                  if single {
+                     crate::utils::resp::write_nil(out);
+                  } else {
+                     crate::utils::resp::write_array_header(out, 0);
+                  }
+                  return Ok(());
+               }
+               if single {
+                  let entries = z.random_members(1, false);
+                  if let Some(entry) = entries.first() {
+                     entry.member.write_resp(out);
+                  } else {
+                     crate::utils::resp::write_nil(out);
+                  }
+               } else if count >= 0 {
+                  let entries = z.random_members(count as usize, false);
+                  crate::utils::resp::write_array_header(
+                     out,
+                     if withscores {
+                        entries.len() * 2
+                     } else {
+                        entries.len()
+                     },
+                  );
+                  for e in &entries {
+                     e.member.write_resp(out);
+                     if withscores {
+                        crate::utils::resp::write_float(out, e.score);
+                     }
+                  }
+               } else {
+                  let entries = z.random_members((-count) as usize, true);
+                  crate::utils::resp::write_array_header(
+                     out,
+                     if withscores {
+                        entries.len() * 2
+                     } else {
+                        entries.len()
+                     },
+                  );
+                  for e in &entries {
+                     e.member.write_resp(out);
+                     if withscores {
+                        crate::utils::resp::write_float(out, e.score);
+                     }
+                  }
+               }
+               Ok(())
+            }
+            None => Err("WRONGTYPE"),
+         },
+      }
+   }
 }
 
 #[derive(Clone, Copy)]
@@ -788,6 +989,50 @@ impl Store {
       }
    }
 
+   pub fn zrangebylex_to_buf(
+      &self,
+      key: &str,
+      min: &str,
+      max: &str,
+      offset: usize,
+      count: usize,
+      out: &mut Vec<u8>,
+   ) -> Result<(), &'static str> {
+      match self.data.get_ref(key) {
+         None => {
+            crate::utils::resp::write_array_header(out, 0);
+            Ok(())
+         }
+         Some(e) if e.is_expired() => {
+            crate::utils::resp::write_array_header(out, 0);
+            Ok(())
+         }
+         Some(e) => match e.value.as_zset() {
+            Some(z) => {
+               let (min_val, min_exc) = parse_lex_bound_min(min);
+               let (max_val, max_exc) = parse_lex_bound_max(max);
+               let entries = z.lex_range(min_val, max_val, min_exc, max_exc);
+               let slice = if offset >= entries.len() {
+                  &[]
+               } else {
+                  let rem = &entries[offset..];
+                  if count == 0 || count >= rem.len() {
+                     rem
+                  } else {
+                     &rem[..count]
+                  }
+               };
+               crate::utils::resp::write_array_header(out, slice.len());
+               for entry in slice {
+                  entry.member.write_resp(out);
+               }
+               Ok(())
+            }
+            None => Err("WRONGTYPE"),
+         },
+      }
+   }
+
    pub fn zdiff(&self, keys: &[&str]) -> Result<Vec<(String, f64)>, &'static str> {
       if keys.is_empty() {
          return Ok(vec![]);
@@ -808,13 +1053,13 @@ impl Store {
             Some(e) if e.is_expired() => {}
             Some(e) => match e.value.as_zset() {
                Some(z) => {
-                  let to_remove: Vec<String> = result
+                  let to_remove: Vec<crate::storage::value::SmallStr> = result
                      .members()
-                     .filter(|m| z.contains(m))
-                     .map(|m| m.to_string())
+                     .filter(|m| z.contains(m.as_str()))
+                     .cloned()
                      .collect();
-                  for m in to_remove {
-                     result.remove(&m);
+                  for m in &to_remove {
+                     result.remove(m.as_str());
                   }
                }
                None => return Err("WRONGTYPE"),

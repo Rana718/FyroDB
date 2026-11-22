@@ -1,5 +1,5 @@
 use super::small_str::SmallStr;
-use foldhash::{HashMap, HashMapExt, HashSet};
+use foldhash::{HashMap, HashSet};
 
 pub(crate) const COMPACT_THRESHOLD: usize = 128;
 
@@ -44,14 +44,15 @@ pub enum SetInner {
 
 #[inline]
 fn compact_find(v: &[SmallStr], field: &str) -> Result<usize, usize> {
+   let target = field.as_bytes();
    let n = v.len() / 2;
    if n <= 4 {
       for i in (0..n * 2).step_by(2) {
-         let f = unsafe { v.get_unchecked(i).as_str() };
-         if f == field {
+         let f = unsafe { v.get_unchecked(i).as_bytes() };
+         if f == target {
             return Ok(i / 2);
          }
-         if f > field {
+         if f > target {
             return Err(i / 2);
          }
       }
@@ -61,13 +62,50 @@ fn compact_find(v: &[SmallStr], field: &str) -> Result<usize, usize> {
    let mut hi = n;
    while lo < hi {
       let mid = lo + (hi - lo) / 2;
-      match unsafe { v.get_unchecked(mid * 2).as_str().cmp(field) } {
+      match unsafe { v.get_unchecked(mid * 2).as_bytes().cmp(target) } {
          std::cmp::Ordering::Less => lo = mid + 1,
          std::cmp::Ordering::Equal => return Ok(mid),
          std::cmp::Ordering::Greater => hi = mid,
       }
    }
    Err(lo)
+}
+
+#[inline]
+fn compact_insert_pair(v: &mut Vec<SmallStr>, pair_idx: usize, key: SmallStr, val: SmallStr) {
+   let idx = pair_idx * 2;
+   let old_len = v.len();
+   if idx >= old_len {
+      v.push(key);
+      v.push(val);
+      return;
+   }
+   v.reserve(2);
+   unsafe {
+      let p = v.as_mut_ptr();
+      std::ptr::copy(p.add(idx), p.add(idx + 2), old_len - idx);
+      std::ptr::write(p.add(idx), key);
+      std::ptr::write(p.add(idx + 1), val);
+      v.set_len(old_len + 2);
+   }
+}
+
+#[inline]
+fn compact_remove_pair(v: &mut Vec<SmallStr>, pair_idx: usize) -> SmallStr {
+   let idx = pair_idx * 2;
+   let old_len = v.len();
+   debug_assert!(idx + 1 < old_len);
+   unsafe {
+      let p = v.as_mut_ptr();
+      std::ptr::drop_in_place(p.add(idx));
+      let val = std::ptr::read(p.add(idx + 1));
+      let count = old_len - (idx + 2);
+      if count > 0 {
+         std::ptr::copy(p.add(idx + 2), p.add(idx), count);
+      }
+      v.set_len(old_len - 2);
+      val
+   }
 }
 
 impl Default for HashInner {
@@ -130,8 +168,7 @@ impl HashInner {
                false
             }
             Err(i) => {
-               v.insert(i * 2, SmallStr::new(field));
-               v.insert(i * 2 + 1, SmallStr::from_slice(value));
+               compact_insert_pair(v, i, SmallStr::new(field), SmallStr::from_slice(value));
                if v.len() / 2 > COMPACT_THRESHOLD {
                   self.promote_hash();
                }
@@ -159,9 +196,7 @@ impl HashInner {
                false
             }
             Err(pos) => {
-               let idx = pos * 2;
-               v.insert(idx, SmallStr::new(field));
-               v.insert(idx + 1, value);
+               compact_insert_pair(v, pos, SmallStr::new(field), value);
                if v.len() / 2 > COMPACT_THRESHOLD {
                   self.promote_hash();
                }
@@ -189,9 +224,7 @@ impl HashInner {
                false
             }
             Err(pos) => {
-               let idx = pos * 2;
-               v.insert(idx, field);
-               v.insert(idx + 1, value);
+               compact_insert_pair(v, pos, field, value);
                if v.len() / 2 > COMPACT_THRESHOLD {
                   self.promote_hash();
                }
@@ -211,9 +244,7 @@ impl HashInner {
       match self {
          Self::Compact(v) => match compact_find(v, field) {
             Ok(pair_idx) => {
-               let idx = pair_idx * 2;
-               v.remove(idx);
-               let val = v.remove(idx);
+               let val = compact_remove_pair(v, pair_idx);
                if v.capacity() / 2 > v.len().max(4) {
                   v.shrink_to_fit();
                }
@@ -272,10 +303,10 @@ impl HashInner {
 
    fn promote_hash(&mut self) {
       if let Self::Compact(v) = self {
-         let mut map = HashMap::with_capacity(v.len() / 2);
-         for i in (0..v.len()).step_by(2) {
-            let key = std::mem::take(&mut v[i]);
-            let val = std::mem::take(&mut v[i + 1]);
+         let mut map = HashMap::with_capacity_and_hasher(v.len() / 2, Default::default());
+         let old_v = std::mem::take(v);
+         let mut it = old_v.into_iter();
+         while let (Some(key), Some(val)) = (it.next(), it.next()) {
             map.insert(key, val);
          }
          *self = Self::Full(Box::new(map));
@@ -288,7 +319,7 @@ impl HashInner {
          return;
       }
       let mut pairs: Vec<(SmallStr, SmallStr)> = std::mem::take(m).into_iter().collect();
-      pairs.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
+      pairs.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
       let mut v = Vec::with_capacity(pairs.len() * 2);
       for (k, val) in pairs {
          v.push(k);
@@ -389,25 +420,27 @@ impl SetInner {
                let mut strings = Vec::with_capacity(v.len() + 1);
                strings.extend(v.drain(..).map(SmallStr::from_int));
                strings.push(member);
-               strings.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+               strings.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
                *self = Self::Compact(strings);
                true
             }
          }
          Self::Compact(v) => {
+            let m_bytes = member.as_bytes();
             if let Some(last) = v.last() {
-               if member.as_str() > last.as_str() {
+               let last_bytes = last.as_bytes();
+               if m_bytes > last_bytes {
                   v.push(member);
                   if v.len() > COMPACT_THRESHOLD {
                      self.promote_set();
                   }
                   return true;
                }
-               if member.as_str() == last.as_str() {
+               if m_bytes == last_bytes {
                   return false;
                }
             }
-            match v.binary_search_by(|m| m.as_str().cmp(member.as_str())) {
+            match v.binary_search_by(|m| m.as_bytes().cmp(m_bytes)) {
                Ok(_) => false,
                Err(pos) => {
                   v.insert(pos, member);
@@ -432,22 +465,41 @@ impl SetInner {
                true
             })
             .unwrap_or(false),
-         Self::Compact(v) => match v.binary_search_by(|m| m.as_str().cmp(member)) {
-            Ok(pos) => {
-               v.remove(pos);
-               if v.capacity() > v.len().saturating_mul(2).max(8) {
-                  v.shrink_to_fit();
+         Self::Compact(v) => {
+            let m_bytes = member.as_bytes();
+            match v.binary_search_by(|m| m.as_bytes().cmp(m_bytes)) {
+               Ok(pos) => {
+                  v.remove(pos);
+                  if v.capacity() > v.len().saturating_mul(2).max(8) {
+                     v.shrink_to_fit();
+                  }
+                  true
                }
-               true
+               Err(_) => false,
             }
-            Err(_) => false,
-         },
+         }
          Self::Full(s) => {
             let removed = s.remove(member);
             if s.len() <= COMPACT_THRESHOLD / 2 {
                self.demote_set();
             }
             removed
+         }
+      }
+   }
+
+   #[inline]
+   pub fn pop_small(&mut self) -> Option<SmallStr> {
+      match self {
+         Self::Integers(v) => v.pop().map(SmallStr::from_int),
+         Self::Compact(v) => v.pop(),
+         Self::Full(s) => {
+            let item = s.iter().next().cloned()?;
+            s.remove(&item);
+            if s.len() <= COMPACT_THRESHOLD / 2 {
+               self.demote_set();
+            }
+            Some(item)
          }
       }
    }
@@ -467,7 +519,7 @@ impl SetInner {
             if v.len() <= 8 {
                v.iter().any(|m| m.as_bytes() == m_bytes)
             } else {
-               v.binary_search_by(|m| m.as_str().cmp(member)).is_ok()
+               v.binary_search_by(|m| m.as_bytes().cmp(m_bytes)).is_ok()
             }
          }
          Self::Full(s) => s.contains(member),
@@ -513,7 +565,7 @@ impl SetInner {
          return;
       }
       let mut v: Vec<SmallStr> = std::mem::take(s).into_iter().collect();
-      v.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+      v.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
       *self = Self::Compact(v);
    }
 }
@@ -558,7 +610,15 @@ impl SetMemberRef<'_> {
    pub fn matches(self, value: &str) -> bool {
       match self {
          Self::Integer(n) => canonical_i64(value) == Some(n),
-         Self::String(s) => s.as_str() == value,
+         Self::String(s) => s.as_bytes() == value.as_bytes(),
+      }
+   }
+
+   #[inline]
+   pub fn to_small_str(self) -> SmallStr {
+      match self {
+         Self::Integer(n) => SmallStr::from_int(n),
+         Self::String(s) => (*s).clone(),
       }
    }
 

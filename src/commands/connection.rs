@@ -112,11 +112,13 @@ pub fn time(_parts: &[&str], out: &mut Vec<u8>) {
    let now = SystemTime::now()
       .duration_since(UNIX_EPOCH)
       .unwrap_or_default();
-   let secs = now.as_secs().to_string();
-   let micros = (now.subsec_micros()).to_string();
+   let mut buf1 = [0u8; 20];
+   let mut buf2 = [0u8; 20];
+   let secs = crate::utils::int_format::write_u64_to(&mut buf1, now.as_secs());
+   let micros = crate::utils::int_format::write_u64_to(&mut buf2, now.subsec_micros() as u64);
    resp::write_array_header(out, 2);
-   resp::write_bulk(out, &secs);
-   resp::write_bulk(out, &micros);
+   resp::write_bulk(out, secs);
+   resp::write_bulk(out, micros);
 }
 
 pub fn flushall(store: &Store, out: &mut Vec<u8>) {
@@ -281,12 +283,8 @@ pub fn cluster_cmd(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
          epoch: 1,
          slots: Vec::new(),
       };
-      if let Some(topology) = store.cluster_state_ref().meet_node(new_node) {
-         let _ = crate::cluster::save_nodes_conf(
-            &cluster.nodes_config_file,
-            &topology,
-            &cluster.local_id,
-         );
+      if store.cluster_state_ref().meet_node(new_node).is_some() {
+         store.persist_cluster_topology();
       }
       return resp::write_ok(out);
    }
@@ -309,12 +307,8 @@ pub fn cluster_cmd(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
          .cluster_state_ref()
          .add_slots(&cluster.local_id, &slots)
       {
-         Some(topology) => {
-            let _ = crate::cluster::save_nodes_conf(
-               &cluster.nodes_config_file,
-               &topology,
-               &cluster.local_id,
-            );
+         Some(_) => {
+            store.persist_cluster_topology();
             return resp::write_ok(out);
          }
          None => return resp::write_err(out, "Slot already assigned or node not found"),
@@ -348,12 +342,8 @@ pub fn cluster_cmd(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
          .cluster_state_ref()
          .add_slots(&cluster.local_id, &slots)
       {
-         Some(topology) => {
-            let _ = crate::cluster::save_nodes_conf(
-               &cluster.nodes_config_file,
-               &topology,
-               &cluster.local_id,
-            );
+         Some(_) => {
+            store.persist_cluster_topology();
             return resp::write_ok(out);
          }
          None => return resp::write_err(out, "Slot already assigned or node not found"),
@@ -374,15 +364,12 @@ pub fn cluster_cmd(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
             Err(_) => return resp::write_err(out, "Invalid slot number"),
          }
       }
-      if let Some(topology) = store
+      if store
          .cluster_state_ref()
          .del_slots(&cluster.local_id, &slots)
+         .is_some()
       {
-         let _ = crate::cluster::save_nodes_conf(
-            &cluster.nodes_config_file,
-            &topology,
-            &cluster.local_id,
-         );
+         store.persist_cluster_topology();
       }
       return resp::write_ok(out);
    }
@@ -409,15 +396,12 @@ pub fn cluster_cmd(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
          }
          i += 2;
       }
-      if let Some(topology) = store
+      if store
          .cluster_state_ref()
          .del_slots(&cluster.local_id, &slots)
+         .is_some()
       {
-         let _ = crate::cluster::save_nodes_conf(
-            &cluster.nodes_config_file,
-            &topology,
-            &cluster.local_id,
-         );
+         store.persist_cluster_topology();
       }
       return resp::write_ok(out);
    }
@@ -430,12 +414,8 @@ pub fn cluster_cmd(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
       if node_id == cluster.local_id {
          return resp::write_err(out, "Can't forget myself");
       }
-      if let Some(topology) = store.cluster_state_ref().forget_node(node_id) {
-         let _ = crate::cluster::save_nodes_conf(
-            &cluster.nodes_config_file,
-            &topology,
-            &cluster.local_id,
-         );
+      if store.cluster_state_ref().forget_node(node_id).is_some() {
+         store.persist_cluster_topology();
       }
       return resp::write_ok(out);
    }
@@ -445,9 +425,8 @@ pub fn cluster_cmd(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
       if hard {
          store.flush();
       }
-      let topology = store.cluster_state_ref().reset_slots(&cluster.local_id);
-      let _ =
-         crate::cluster::save_nodes_conf(&cluster.nodes_config_file, &topology, &cluster.local_id);
+      store.cluster_state_ref().reset_slots(&cluster.local_id);
+      store.persist_cluster_topology();
       return resp::write_ok(out);
    }
 
@@ -542,22 +521,19 @@ pub fn cluster_cmd(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
             Some(id) => *id,
             None => return resp::write_wrong_args(out, "cluster setslot"),
          };
-         if let Some(topology) = store.cluster_state_ref().commit_slot_migration(slot) {
-            let _ = crate::cluster::save_nodes_conf(
-               &cluster.nodes_config_file,
-               &topology,
-               &cluster.local_id,
-            );
-            let _ = store.install_cluster_topology(topology);
-         } else if let Some(topology) = store.cluster_state_ref().assign_slot(slot, target) {
-            // Non-source nodes still need to record the new owner,
-            // otherwise they keep redirecting the slot to the old one.
-            let _ = crate::cluster::save_nodes_conf(
-               &cluster.nodes_config_file,
-               &topology,
-               &cluster.local_id,
-            );
-            let _ = store.install_cluster_topology(topology);
+         // Non-source nodes still need to record the new owner, otherwise
+         // they keep redirecting the slot to the old one. Peers learn the
+         // change from the bus, which pushes every new topology.
+         if store
+            .cluster_state_ref()
+            .commit_slot_migration(slot)
+            .is_some()
+            || store
+               .cluster_state_ref()
+               .assign_slot(slot, target)
+               .is_some()
+         {
+            store.persist_cluster_topology();
          }
       }
       return resp::write_ok(out);
@@ -580,9 +556,8 @@ pub fn cluster_cmd(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
    }
 
    if sub.eq_ignore_ascii_case("FLUSHSLOTS") {
-      let topology = store.cluster_state_ref().reset_slots(&cluster.local_id);
-      let _ =
-         crate::cluster::save_nodes_conf(&cluster.nodes_config_file, &topology, &cluster.local_id);
+      store.cluster_state_ref().reset_slots(&cluster.local_id);
+      store.persist_cluster_topology();
       return resp::write_ok(out);
    }
 
@@ -870,13 +845,15 @@ pub fn sort_cmd(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
       i += 1;
    }
 
-   let mut items: Vec<String> = match store.data.get_ref(key) {
+   let mut items: Vec<crate::storage::value::SmallStr> = match store.data.get_ref(key) {
       None => vec![],
       Some(e) if e.is_expired() => vec![],
       Some(e) => match &e.value {
-         crate::storage::value::FyroDB::List(l) => l.iter().map(|v| v.to_string()).collect(),
-         crate::storage::value::FyroDB::Set(s) => s.iter().map(|m| m.to_string()).collect(),
-         crate::storage::value::FyroDB::ZSet(z) => z.members().map(|m| m.to_string()).collect(),
+         crate::storage::value::FyroDB::List(l) => {
+            l.iter().map(crate::storage::value::SmallStr::new).collect()
+         }
+         crate::storage::value::FyroDB::Set(s) => s.iter().map(|m| m.to_small_str()).collect(),
+         crate::storage::value::FyroDB::ZSet(z) => z.members().cloned().collect(),
          _ => {
             return resp::write_err(out, "WRONGTYPE");
          }
@@ -887,8 +864,8 @@ pub fn sort_cmd(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
       items.sort();
    } else {
       items.sort_by(|a, b| {
-         let fa = a.parse::<f64>().unwrap_or(0.0);
-         let fb = b.parse::<f64>().unwrap_or(0.0);
+         let fa = a.as_str().parse::<f64>().unwrap_or(0.0);
+         let fb = b.as_str().parse::<f64>().unwrap_or(0.0);
          fa.partial_cmp(&fb).unwrap_or(std::cmp::Ordering::Equal)
       });
    }
@@ -897,22 +874,31 @@ pub fn sort_cmd(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
       items.reverse();
    }
 
-   if limit_count > 0 {
-      items = items
-         .into_iter()
-         .skip(limit_offset)
-         .take(limit_count)
-         .collect();
+   if limit_offset > 0 || limit_count > 0 {
+      if limit_offset >= items.len() {
+         items.clear();
+      } else {
+         if limit_offset > 0 {
+            items.drain(..limit_offset);
+         }
+         if limit_count > 0 && items.len() > limit_count {
+            items.truncate(limit_count);
+         }
+      }
    }
 
    if let Some(dst) = store_dst {
       let len = items.len();
-      let l: std::collections::VecDeque<String> = items.into_iter().collect();
+      let l: std::collections::VecDeque<String> =
+         items.into_iter().map(|s| s.into_string()).collect();
       store
          .data
          .insert_str(dst, crate::storage::value::StoreValue::list(l));
       resp::write_integer(out, len as i64);
    } else {
-      resp::write_array(out, &items);
+      resp::write_array_header(out, items.len());
+      for item in &items {
+         item.write_resp(out);
+      }
    }
 }

@@ -202,8 +202,43 @@ def check_primary_loss(b, replica, stop_primary, timeout_ms):
     print("ok   sustained primary loss triggers quorum slot reassignment after the suspicion timeout")
 
 
+def wait_for(condition, message, seconds=15):
+    deadline = time.monotonic() + seconds
+    while not condition():
+        if time.monotonic() >= deadline:
+            raise AssertionError(message)
+        time.sleep(.05)
+
+
+def check_topology_change_keeps_the_cluster_alive(a, b, replica, ports):
+    # One change on ONE node: the bus must carry it to the others, and
+    # replication and heartbeats must survive the epoch it bumps.
+    slot = 100
+    assert a.call("CLUSTER", "SETSLOT", slot, "NODE", "b") == "OK"
+    wait_for(lambda: all(owner(c, slot) == b"b" for c in (a, b, replica)),
+             "a topology change made on one node did not reach the others")
+    print("ok   a topology change on one node propagates to every node")
+
+    assert a.call("SET", "after-change{bar}", "replicated") == "OK"
+    target = info_number(a, "cluster_replication_next_offset") - 1
+    wait_for(lambda: info_number(replica, "cluster_replica_applied_offset") >= target,
+             "replication stopped after the topology epoch changed")
+    wait_for(lambda: all(info_number(c, "cluster_peer_healthy") == 2 for c in (a, b, replica)),
+             "peer heartbeats stopped after the topology epoch changed")
+    print("ok   replication and heartbeats survive a topology epoch change")
+
+
+def check_returning_primary_learns_it_was_replaced(restart_primary, port, slot, new_owner):
+    with restart_primary() as revived:
+        wait_for(lambda: owner(revived, slot) == new_owner,
+                 "a primary that was down during failover kept its stale ownership")
+    print("ok   a returning primary learns the failover it missed")
+
+
 @contextmanager
-def cluster(binary, root, members, **settings):
+def cluster(binary, root, members, binaries=None, **settings):
+    # `binaries` optionally maps a node name to a different server binary,
+    # for mixed-version (rolling upgrade) checks.
     root.mkdir()
     with ExitStack() as stack:
         count = len(members)
@@ -215,6 +250,7 @@ def cluster(binary, root, members, **settings):
                          f"{role} 1 0 connected {slots}\n"
                          for i, (name, role, slots) in enumerate(members))
         stop = []
+        envs = []
         for i, (name, _, _) in enumerate(members):
             conf = root / f"{name}.conf"
             conf.write_text(config)
@@ -222,16 +258,25 @@ def cluster(binary, root, members, **settings):
             sockets[i+count].close()
             lifetime = stack.enter_context(ExitStack())
             stop.append(lifetime.close)
-            lifetime.enter_context(node(binary, root / name, ports[i], {
+            envs.append({
                 **settings,
                 "FYRODB_CLUSTER_ENABLED": "true", "FYRODB_NODE_ID": name,
                 "FYRODB_WORKERS": "2" if name == "a" else "1",
                 "FYRODB_CLUSTER_PORT": str(ports[i+count]), "FYRODB_CLUSTER_CONFIG_FILE": str(conf),
-            }))
+            })
+            lifetime.enter_context(node((binaries or {}).get(name, binary), root / name, ports[i], envs[i]))
         clients = [stack.enter_context(Client(port=p, binary=True, timeout=10))
                    for p in ports[:count]]
         for client, (name, _, _) in zip(clients, members):
             assert client.call("CLUSTER", "MYID") == name.encode()
+        @contextmanager
+        def restart(index):
+            name = members[index][0]
+            with node(binary, root / f"{name}-restarted", ports[index], envs[index]), \
+                    Client(port=ports[index], binary=True, timeout=10) as client:
+                yield client
+
+        cluster.restart = restart
         yield clients, ports[:count], stop
 
 
@@ -266,6 +311,19 @@ def main(binary):
                      FYRODB_CLUSTER_SUSPECT_MS=str(timeout_ms)) as (clients, _, stop):
             check_healthy_startup(*clients)
             check_primary_loss(clients[1], clients[2], stop[0], timeout_ms)
+
+        # Same scenario after a topology change: every bus frame used to carry
+        # the startup epoch, so the first change silently stopped replication,
+        # heartbeats and failover.
+        timeout_ms = 3000
+        with cluster(binary, root / "changed", [*primaries, ("r", "slave a", "")],
+                     FYRODB_CLUSTER_SUSPECT_MS=str(timeout_ms)) as (clients, ports, stop):
+            check_healthy_startup(*clients)
+            check_topology_change_keeps_the_cluster_alive(*clients, ports)
+            check_primary_loss(clients[1], clients[2], stop[0], timeout_ms)
+            slot = clients[1].call("CLUSTER", "KEYSLOT", "startup{bar}")
+            check_returning_primary_learns_it_was_replaced(
+                lambda: cluster.restart(0), ports[0], slot, b"r")
 
 
 if __name__ == "__main__":

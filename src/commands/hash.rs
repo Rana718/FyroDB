@@ -166,25 +166,25 @@ pub fn hrandfield(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
                }
                return;
             }
-            let fields: Vec<(
-               &crate::storage::value::SmallStr,
-               &crate::storage::value::SmallStr,
-            )> = h.iter().collect();
             if count >= 0 {
-               let n = (count as usize).min(fields.len());
+               let n = (count as usize).min(h.len());
                if withvalues {
                   resp::write_array_header(out, n * 2);
-                  for (f, v) in fields.iter().take(n) {
-                     resp::write_bulk(out, f);
-                     resp::write_bulk(out, v);
+                  for (f, v) in h.iter().take(n) {
+                     f.write_resp(out);
+                     v.write_resp(out);
                   }
                } else {
                   resp::write_array_header(out, n);
-                  for (f, _) in fields.iter().take(n) {
-                     resp::write_bulk(out, f);
+                  for (f, _) in h.iter().take(n) {
+                     f.write_resp(out);
                   }
                }
             } else {
+               let fields: Vec<(
+                  &crate::storage::value::SmallStr,
+                  &crate::storage::value::SmallStr,
+               )> = h.iter().collect();
                let n = (-count) as usize;
                let seed = crate::storage::value::now_ms();
                if withvalues {
@@ -193,8 +193,8 @@ pub fn hrandfield(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
                      let idx = ((seed.wrapping_add(i as u64)).wrapping_mul(0x9e3779b97f4a7c15))
                         as usize
                         % fields.len();
-                     resp::write_bulk(out, fields[idx].0);
-                     resp::write_bulk(out, fields[idx].1);
+                     fields[idx].0.write_resp(out);
+                     fields[idx].1.write_resp(out);
                   }
                } else {
                   resp::write_array_header(out, n);
@@ -202,7 +202,7 @@ pub fn hrandfield(parts: &[&str], store: &Store, out: &mut Vec<u8>) {
                      let idx = ((seed.wrapping_add(i as u64)).wrapping_mul(0x9e3779b97f4a7c15))
                         as usize
                         % fields.len();
-                     resp::write_bulk(out, fields[idx].0);
+                     fields[idx].0.write_resp(out);
                   }
                }
             }

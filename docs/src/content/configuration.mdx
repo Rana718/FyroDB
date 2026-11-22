@@ -21,6 +21,10 @@ All configuration is via environment variables. Every setting has a production-r
 | `FYRODB_RDB_INTERVAL` | `300`           | Auto-save interval in seconds; `0` disables automatic snapshots              |
 | `FYRODB_IO_URING`     | `false`         | Request batched socket sends at worker startup on Linux builds with the `io-uring` feature. |
 | `FYRODB_BUSY_POLL_US` | `0` (disabled)  | Spin-poll window in microseconds before sleeping in epoll — `0` = off      |
+| `FYRODB_SOCKET_BUFFER_BYTES` | `8388608` | SO_SNDBUF/SO_RCVBUF for client sockets — `0` = kernel autotuning |
+| `FYRODB_MALLOC_PURGE_DELAY_MS` | `3000` | Delay before freed allocator memory returns to the OS — `0` = immediately |
+| `FYRODB_MALLOC_ARENA_RESERVE_MB` | `0` | Allocator arena reservation from startup. `0` maps each heap page separately (lowest peak RSS) until the heap reaches `FYRODB_MALLOC_ARENA_SWITCH_MB`, then switches to arenas automatically so large heaps stay far below the kernel's `vm.max_map_count` |
+| `FYRODB_MALLOC_ARENA_SWITCH_MB` | `1024` | Heap size at which the allocator switches to arenas (see above). No tuning needed; raise `vm.max_map_count` only if you set this above ~3000 |
 
 ### KV Engine Examples
 
@@ -49,6 +53,7 @@ docker run -p 8000:8000 \
 - **`FYRODB_SHARDS`** — more shards = less lock contention between threads. Default (workers × 4) is optimal for most workloads.
 - **`FYRODB_MAX_KEYS`** — set to control memory use. When the limit is reached, writes that grow the keyspace return `-OOM`; reads, DEL, and expiry always work.
 - **`FYRODB_AUTH`** — set to require `AUTH password` from every client before any commands are accepted.
+- **`FYRODB_SOCKET_BUFFER_BYTES`** — the 8 MiB default favours deep pipelines. With many mostly-idle connections, set `0` so the kernel autotunes each socket's buffers and bounds kernel memory per connection.
 - **`FYRODB_BUSY_POLL_US`** — set to 50–200 on latency-sensitive workloads. Keeps the event loop spinning for a window instead of sleeping in epoll, trading CPU for lower tail latency.
 
 ---
@@ -60,20 +65,19 @@ The proxy engine speaks the full PostgreSQL wire protocol and caches SELECT resu
 | Variable                       | Default        | Description                                                                          |
 | ------------------------------ | -------------- | ------------------------------------------------------------------------------------ |
 | `FYRODB_PROXY_ENABLED`         | `false`        | Set `true` to enable the proxy                                                       |
-| `FYRODB_PROXY_PORT`            | `5432`         | PostgreSQL wire protocol listen port                                                 |
+| `FYRODB_PROXY_PORT`            | `5433`         | PostgreSQL wire protocol listen port (set `5432` to replace Postgres transparently)  |
 | `FYRODB_PROXY_BIND`            | `0.0.0.0`      | Proxy bind address                                                                   |
-| `FYRODB_PROXY_WORKERS`         | `0` (auto)     | mio event loop threads — `0` = num_cpus / 2, minimum 1                              |
+| `FYRODB_PROXY_MAX_CONNECTIONS` | `4096`         | Concurrent client connections (one thread each); `0` = unlimited                    |
 | `FYRODB_PROXY_UPSTREAM_URL`    | (none)         | `postgres://user:pass@host:5432/dbname` — omit for cache-only mode                  |
-| `FYRODB_PROXY_UPSTREAM_POOL`   | `4`            | Max idle upstream connections kept per worker thread                                 |
-| `FYRODB_PROXY_UPSTREAM_IDLE_MS`| `30000`        | Idle upstream connection lifetime in milliseconds                                    |
+| `FYRODB_PROXY_UPSTREAM_POOL`   | `10`           | Max idle authenticated upstream connections kept for reuse                           |
+| `FYRODB_PROXY_UPSTREAM_IDLE_MS`| `60000`        | Idle upstream connection lifetime in milliseconds                                    |
 | `FYRODB_PROXY_TRUST_AUTH`      | `false`        | Skip client password verification — safe on internal/container networks              |
 | `FYRODB_PROXY_USERS`           | (none)         | Per-user passwords: `alice:secret,bob:pass` — checked when `TRUST_AUTH` is false    |
 | `FYRODB_PROXY_CACHE_TTL_MS`    | `60000`        | Default cached result TTL in milliseconds                                            |
 | `FYRODB_PROXY_CACHE_MAX_KEYS`  | `100000`       | Maximum number of cached query results                                               |
 | `FYRODB_PROXY_CACHE_TTL_JITTER`| `10`           | TTL jitter percentage — spreads expiry to avoid thundering herd                      |
 | `FYRODB_PROXY_KEY_PREFIX`      | `db:`          | Internal cache key namespace prefix                                                  |
-| `FYRODB_PROXY_FLUSH_ON_START`  | `false`        | Flush all cached results when the proxy starts                                       |
-| `FYRODB_PROXY_BLOCKING_POOL`   | `16`           | Thread pool size for upstream connections and cache-miss forwarding                  |
+| `FYRODB_PROXY_FLUSH_ON_START`  | `true`         | Flush all cached results when the proxy starts (`false` keeps them across restarts)  |
 | `FYRODB_PROXY_MODE`            | `dual`         | `dual` = cache + upstream fallback on miss; `cache-only` = miss returns an error     |
 
 ### Proxy Examples
@@ -82,6 +86,7 @@ The proxy engine speaks the full PostgreSQL wire protocol and caches SELECT resu
 # Proxy in front of an existing Postgres database
 docker run -p 8000:8000 -p 5432:5432 \
   -e FYRODB_PROXY_ENABLED=true \
+  -e FYRODB_PROXY_PORT=5432 \
   -e FYRODB_PROXY_UPSTREAM_URL=postgres://app:pass@db-host:5432/mydb \
   -e FYRODB_PROXY_TRUST_AUTH=true \
   rana718/fyrodb:latest
@@ -89,6 +94,7 @@ docker run -p 8000:8000 -p 5432:5432 \
 # Cache-only mode (no upstream, app pre-warms cache via API)
 docker run -p 8000:8000 -p 5432:5432 \
   -e FYRODB_PROXY_ENABLED=true \
+  -e FYRODB_PROXY_PORT=5432 \
   -e FYRODB_PROXY_MODE=cache-only \
   -e FYRODB_PROXY_TRUST_AUTH=true \
   rana718/fyrodb:latest
@@ -96,6 +102,7 @@ docker run -p 8000:8000 -p 5432:5432 \
 # Locked-down proxy with per-user auth
 docker run -p 8000:8000 -p 5432:5432 \
   -e FYRODB_PROXY_ENABLED=true \
+  -e FYRODB_PROXY_PORT=5432 \
   -e FYRODB_PROXY_UPSTREAM_URL=postgres://admin:secret@db:5432/prod \
   -e FYRODB_PROXY_USERS=alice:pw1,bob:pw2 \
   -e FYRODB_PROXY_CACHE_TTL_MS=30000 \
@@ -104,9 +111,8 @@ docker run -p 8000:8000 -p 5432:5432 \
 
 ### Proxy Sizing Guide
 
-- **`FYRODB_PROXY_WORKERS`** — each worker is a mio event loop thread that multiplexes thousands of connections. Default (num_cpus/2) works well; increase to dedicate more cores to proxy throughput.
-- **`FYRODB_PROXY_UPSTREAM_POOL`** — cache hits never touch the upstream pool. Only misses and new connections use it. `4` is enough for most workloads; increase only if you see upstream connection wait times.
-- **`FYRODB_PROXY_BLOCKING_POOL`** — handles upstream I/O for cache misses and startup with auth. `16` threads is enough even under high miss rates; these threads are idle during cache-hit traffic.
+- **`FYRODB_PROXY_MAX_CONNECTIONS`** — each client connection gets its own thread. The default `4096` is far above typical application pool sizes; lower it to bound memory on small hosts.
+- **`FYRODB_PROXY_UPSTREAM_POOL`** — cache hits never touch the upstream pool. Only misses and new connections use it. The default `10` is enough for most workloads; increase only if you see upstream connection wait times.
 - **`FYRODB_PROXY_CACHE_TTL_MS`** — shorter TTL = fresher data but higher miss rate. Start with `30000` (30 s) and tune based on your acceptable staleness window.
 - **`FYRODB_PROXY_CACHE_TTL_JITTER`** — keeps cache entries from expiring simultaneously. Leave at `10` unless you have a specific reason.
 - **`FYRODB_PROXY_MODE=cache-only`** — use when your application pre-populates the cache at startup. Misses return an explicit error instead of falling back to the database, giving predictable latency at the cost of needing warm-up.

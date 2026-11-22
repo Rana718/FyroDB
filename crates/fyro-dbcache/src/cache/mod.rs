@@ -95,12 +95,14 @@ impl DbCacheManager {
    pub fn with_limits(storage: Arc<dyn DbCacheStorage>, limits: CacheLimits) -> Self {
       let mut encoded = Vec::with_capacity(ENCODED_SHARDS);
       for _ in 0..ENCODED_SHARDS {
-         encoded.push(RwLock::new(HashMap::with_hasher(FixedState::with_seed(0))));
+         encoded.push(RwLock::new(HashMap::with_hasher(FixedState::with_seed(
+            crate::keyed::table_seed(),
+         ))));
       }
       let mut inflight_shards: Vec<InflightShard> = Vec::with_capacity(INFLIGHT_SHARDS);
       for _ in 0..INFLIGHT_SHARDS {
          inflight_shards.push(parking_lot::Mutex::new(HashMap::with_hasher(
-            FixedState::with_seed(0),
+            FixedState::with_seed(crate::keyed::table_seed()),
          )));
       }
       Self {
@@ -284,7 +286,7 @@ impl DbCacheManager {
          return self.encoded_shard_from_fp(fp);
       }
       use std::hash::{BuildHasher, Hasher};
-      let mut hasher = FixedState::with_seed(0).build_hasher();
+      let mut hasher = FixedState::with_seed(crate::keyed::table_seed()).build_hasher();
       hasher.write(key.as_bytes());
       &self.encoded[(hasher.finish() as usize) & (ENCODED_SHARDS - 1)]
    }
@@ -473,18 +475,64 @@ impl DbCacheManager {
       true
    }
 
-   pub fn remember_encoded(
+   /// Serves a result persisted in storage that has no in-memory encoding
+   /// yet (typically right after a restart) and promotes it to the encoded
+   /// cache.
+   ///
+   /// The promotion is checked like a fill: table versions are captured
+   /// before the storage read and re-checked under the tracker lock, and the
+   /// key must still be registered. Without that, an invalidation landing
+   /// between the read and the insert brought the stale result back,
+   /// untracked, so later writes could not remove it either. The encoded copy
+   /// also keeps the stored deadline instead of a fresh full TTL.
+   pub fn load_stored(
       &self,
       prefix: &str,
-      table: &str,
+      tables: &[String],
+      dependencies: &[String],
       fingerprint: u64,
-      result: &crate::row::DbResultSet,
-      ttl_ms: u64,
-   ) {
-      let key = make_cache_key(prefix, table, fingerprint);
-      let encoded = Arc::new(EncodedResult::from_result_set(result, ttl_ms));
-      self.encoded_shard(&key).write().insert(key, encoded);
-      self.generation.fetch_add(1, Ordering::Release);
+   ) -> Option<Arc<crate::row::DbResultSet>> {
+      let versions = self.table_versions(dependencies);
+      for table in tables {
+         let key = make_cache_key(prefix, table, fingerprint);
+         let Some((raw, expires_at)) = self.storage.get_with_expiry(&key) else {
+            continue;
+         };
+         let Some(result) = crate::row::DbResultSet::from_json(&raw) else {
+            continue;
+         };
+         if expires_at != 0 && expires_at <= util::now_ms() {
+            continue;
+         }
+         let result = Arc::new(result);
+         let encoded = Arc::new(EncodedResult::from_shared(Arc::clone(&result), expires_at));
+         let tracker = self.tracker.read();
+         let current = tracker.contains_key(&key)
+            && dependencies
+               .iter()
+               .zip(&versions)
+               .all(|(table, version)| tracker.epoch(table) == *version);
+         if !current {
+            // Invalidated (or never tracked) since the read: what we read
+            // may be stale, so report a miss and let the caller go upstream.
+            drop(tracker);
+            self.metrics.fill_races.fetch_add(1, Ordering::Relaxed);
+            return None;
+         }
+         self.encoded_shard(&key).write().insert(key, encoded);
+         drop(tracker);
+         self.generation.fetch_add(1, Ordering::Release);
+         return Some(result);
+      }
+      None
+   }
+
+   /// Changes whenever any cached entry is added, replaced or removed. A
+   /// connection-local copy of an entry is only valid while this is equal to
+   /// the value read before the copy was looked up.
+   #[inline]
+   pub fn generation(&self) -> u64 {
+      self.generation.load(Ordering::Acquire)
    }
 
    pub fn invalidate_key(&self, key: &str) {
@@ -498,8 +546,12 @@ impl DbCacheManager {
       {
          let mut tracker = self.tracker.write();
          tracker.bump(tables);
+         // Retire connection-local copies (hot slots, portal entries) before
+         // the deletes below: they validate only against `generation`, so a
+         // bump at the end left them serving invalidated rows meanwhile.
+         self.generation.fetch_add(1, Ordering::Release);
          let mut matched: HashSet<String, FixedState> =
-            HashSet::with_hasher(FixedState::with_seed(0));
+            HashSet::with_hasher(FixedState::with_seed(crate::keyed::table_seed()));
          for table in tables {
             for name in tracker.matching_tables(table) {
                if matched.insert(name.clone()) {

@@ -38,9 +38,9 @@ FyroDB is not end-to-end lock-free. Atomic table probing avoids a table-wide loo
 
 ### Memory layout
 
-The current 64-bit build has a 16-byte CompactKey, 24-byte SmallStr, 24-byte FyroDB enum, 32-byte StoreValue and **56-byte Entry<StoreValue>**. Compile-time and regression assertions cover these layouts. Allocator rounding and payload allocations are additional memory; the entry is not a guaranteed cache-line-aligned 64-byte allocation.
+The current 64-bit build has a 24-byte CompactKey, 24-byte SmallStr, 24-byte FyroDB enum, 32-byte StoreValue and a **64-byte, cache-line-aligned Entry<StoreValue>** (`#[repr(C, align(64))]`). Compile-time and regression assertions cover these layouts. Payload allocations are additional memory.
 
-CompactKey stores up to fifteen bytes inline and has a special inline representation for eligible sixteen-byte keys. SmallStr stores up to twenty-three value bytes inline. Longer strings allocate payload storage. Empty shards begin with eight slots and grow as needed; the old fixed 32,768-slot starting-capacity description is obsolete.
+CompactKey stores up to twenty-three bytes inline and has a special inline representation for eligible twenty-four-byte keys; the key fills the space the entry's 64-byte alignment would otherwise leave as padding. SmallStr stores up to twenty-three value bytes inline. Longer strings allocate payload storage. Empty shards begin with 8,192 slots and grow as needed.
 
 CustomMap owns the map-level Access admission state, cache-padded shard metadata, published slot-table addresses, a write-observer hook and snapshot control. A shard has an insertion/growth gate and a growth mutex. Entries hold immutable keys, a packed atomic state and mutable values. The packed state carries occupied/lock bits, reader-count information, sequence/hash information and snapshot state.
 
@@ -85,7 +85,7 @@ Regression suites cover deep binary pipelines, malformed and partial packets, ne
 
 ### Dynamic Growth
 
-Every shard starts with eight slots and grows only as keys arrive. When a shard reaches 75% occupancy:
+Every shard starts with 8,192 slots and grows only as keys arrive. When a shard reaches two-thirds occupancy:
 
 1. Set GROWING flag in insert_gate (blocks new inserts)
 2. Wait for in-flight inserts to complete
@@ -103,7 +103,7 @@ EBR protects lifetime, not mutable value access. Writers still acquire entry pro
 
 ### Compact Values
 
-Static assertions pin SmallStr and FyroDB to 24 bytes, StoreValue to 32 and Entry<StoreValue> to 56. CompactKey is 16 bytes; its fifteen-byte inline key payload and special eligible sixteen-byte representation differ from SmallStr's twenty-three-byte inline value capacity.
+Static assertions pin SmallStr and FyroDB to 24 bytes, StoreValue to 32 and Entry<StoreValue> to 64. CompactKey is 24 bytes: twenty-three inline key bytes plus a tag, with a special eligible twenty-four-byte representation.
 
 - **Strings**: `SmallStr`, inline up to 23 bytes, one heap allocation beyond.
   JSON documents are boxed so the two string-carrying variants do not compete for
@@ -145,7 +145,8 @@ a write-only hot key is additionally bounded by write-lock handoff.
 ### Memory Maintenance
 
 - Active expiry runs 10 times per second with a 25 ms budget per tick: it scans
-  32K slots, and keeps scanning while more than 10% of the TTL keys it saw had
+  32K slots in 1K-slot chunks (each chunk holds the map write epoch only for
+  itself, so MGET is never blocked for a whole tick), and keeps scanning while more than 10% of the TTL keys it saw had
   expired (the Redis adaptive cycle, without a separate expires dictionary).
   Removal re-checks expiry under the entry lock, so a key that just received a
   new TTL is never deleted by a stale check
@@ -734,7 +735,7 @@ crates/customhash/src/
 ├── shard.rs                Entry/table layout, probing, growth
 ├── ops.rs                  Iteration, expiry sweep, compaction, defrag, snapshot walk
 ├── snap.rs                 Forkless snapshot control (parity bit, pre-image sink)
-├── key.rs                  16-byte CompactKey (15 inline bytes + eligible 16-byte encoding)
+├── key.rs                  24-byte CompactKey (23 inline bytes + eligible 24-byte encoding)
 └── ebr.rs                  Epoch-based reclamation
 
 crates/fyro-vector/src/
@@ -829,7 +830,7 @@ Benchmark rates are workload-specific. Record client settings, payload size, key
 | RESP parse                    | O(B)                                                                                                       | B = bytes, SIMD memchr for newlines                                                                                               |
 | Command dispatch (fast-path)  | O(1)                                                                                                       | First-byte + `cmd_eq` for 13 hot commands (GET/SET/HGET/HSET/LPUSH/LPOP/LRANGE/RPUSH/RPOP/EXPIRE/ZADD/JSON.GET/JSON.SET)          |
 | Command dispatch (all others) | O(1)                                                                                                       | Static `OnceLock<foldhash::HashMap>` — uppercase to 32-byte stack buf + one hash probe; built once, zero allocation per call      |
-| Hash probe (avg)              | O(1)                                                                                                       | Open addressing at 75% load factor; a slot's hash tag rejects non-matches without dereferencing the entry                         |
+| Hash probe (avg)              | O(1)                                                                                                       | Open addressing at a two-thirds load factor; a slot's hash tag rejects non-matches without dereferencing the entry                         |
 | Hash probe (worst)            | O(capacity per shard)                                                                                     | Linear probing may inspect every slot                                                                                                   |
 | Growth / Resize               | O(old capacity + new capacity)                                                                              | Per-shard rebuild copies live pointers and retires the old table                                                                                              |
 | EBR collect                   | O(G)                                                                                                       | G = garbage list length                                                                                                           |

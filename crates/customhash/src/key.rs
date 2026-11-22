@@ -1,4 +1,9 @@
-pub(crate) const INLINE_CAP: usize = 15;
+/// Inline key bytes. 23 bytes plus the tag make the key 24 bytes, which fills
+/// the 8 bytes `Entry`'s 64-byte alignment used to leave as padding, so keys of
+/// 16-23 bytes no longer need a separate heap allocation.
+pub(crate) const INLINE_CAP: usize = 23;
+/// Width of a full-width inline key (its last byte doubles as the tag).
+const FULL_WIDTH: usize = INLINE_CAP + 1;
 
 const HEAP: u8 = u8::MAX;
 
@@ -16,7 +21,7 @@ impl CompactKey {
 
    #[inline(always)]
    fn fits_full_width_bytes(key: &[u8]) -> bool {
-      key.len() == 16 && key[15] > INLINE_CAP as u8 && key[15] != HEAP
+      key.len() == FULL_WIDTH && key[INLINE_CAP] > INLINE_CAP as u8 && key[INLINE_CAP] != HEAP
    }
 
    #[inline(always)]
@@ -28,7 +33,10 @@ impl CompactKey {
    fn full_width_bytes(key: &[u8]) -> Self {
       let mut data = [0u8; INLINE_CAP];
       data.copy_from_slice(&key[..INLINE_CAP]);
-      Self { data, tag: key[15] }
+      Self {
+         data,
+         tag: key[INLINE_CAP],
+      }
    }
 
    #[inline]
@@ -42,7 +50,7 @@ impl CompactKey {
    #[inline(always)]
    fn read_heap_len(data: &[u8; INLINE_CAP]) -> usize {
       let mut bytes = [0u8; 8];
-      bytes[..7].copy_from_slice(&data[8..]);
+      bytes[..7].copy_from_slice(&data[8..15]);
       u64::from_le_bytes(bytes) as usize
    }
 
@@ -88,7 +96,9 @@ impl CompactKey {
          unsafe {
             let src = key.as_ptr();
             let dst = data.as_mut_ptr();
-            if len >= 8 {
+            if len > 16 {
+               std::ptr::copy_nonoverlapping(src, dst, len);
+            } else if len >= 8 {
                let w1 = std::ptr::read_unaligned(src.cast::<u64>());
                let w2 = std::ptr::read_unaligned(src.add(len - 8).cast::<u64>());
                std::ptr::write_unaligned(dst.cast::<u64>(), w1);
@@ -130,7 +140,7 @@ impl CompactKey {
          let length = if self.tag as usize <= INLINE_CAP {
             self.tag as usize
          } else {
-            16
+            FULL_WIDTH
          };
          let bytes =
             unsafe { std::slice::from_raw_parts((self as *const Self).cast::<u8>(), length) };
@@ -152,7 +162,15 @@ impl CompactKey {
          let a = self.data.as_ptr();
          let b = other.as_ptr();
          unsafe {
-            if other_len >= 8 {
+            if other_len > 16 {
+               let d1 = std::ptr::read_unaligned(a.cast::<u64>())
+                  ^ std::ptr::read_unaligned(b.cast::<u64>());
+               let d2 = std::ptr::read_unaligned(a.add(8).cast::<u64>())
+                  ^ std::ptr::read_unaligned(b.add(8).cast::<u64>());
+               let d3 = std::ptr::read_unaligned(a.add(other_len - 8).cast::<u64>())
+                  ^ std::ptr::read_unaligned(b.add(other_len - 8).cast::<u64>());
+               (d1 | d2 | d3) == 0
+            } else if other_len >= 8 {
                let d1 = std::ptr::read_unaligned(a.cast::<u64>())
                   ^ std::ptr::read_unaligned(b.cast::<u64>());
                let d2 = std::ptr::read_unaligned(a.add(other_len - 8).cast::<u64>())
@@ -201,14 +219,16 @@ impl CompactKey {
                std::slice::from_raw_parts(a, len_val) == other
             }
          }
-      } else if other_len == 16 && self.tag as usize > INLINE_CAP {
+      } else if other_len == FULL_WIDTH && self.tag as usize > INLINE_CAP {
          let a = (self as *const Self).cast::<u8>();
          let b = other.as_ptr();
          unsafe {
             let first = a.cast::<u64>().read_unaligned() ^ b.cast::<u64>().read_unaligned();
-            let last =
+            let middle =
                a.add(8).cast::<u64>().read_unaligned() ^ b.add(8).cast::<u64>().read_unaligned();
-            (first | last) == 0
+            let last =
+               a.add(16).cast::<u64>().read_unaligned() ^ b.add(16).cast::<u64>().read_unaligned();
+            (first | middle | last) == 0
          }
       } else {
          false
@@ -254,8 +274,8 @@ mod tests {
 
    #[test]
    fn all_length_tag_boundaries_and_ascii_endings_round_trip() {
-      assert_eq!(std::mem::size_of::<CompactKey>(), 16);
-      for length in [0, 1, 7, 8, 14, 15, 16, 17, 24, 31, 32, 33, 64] {
+      assert_eq!(std::mem::size_of::<CompactKey>(), 24);
+      for length in [0, 1, 7, 8, 14, 15, 16, 17, 22, 23, 24, 25, 31, 32, 33, 64] {
          for terminal in 0..128u8 {
             let mut bytes = vec![b'x'; length];
             if let Some(last) = bytes.last_mut() {
@@ -272,7 +292,8 @@ mod tests {
                if length > 0 {
                   assert!(!key.eq_bytes(&text.as_bytes()[..length - 1]));
                }
-               let inline = length <= INLINE_CAP || (length == 16 && terminal > INLINE_CAP as u8);
+               let inline =
+                  length <= INLINE_CAP || (length == FULL_WIDTH && terminal > INLINE_CAP as u8);
                assert_eq!(
                   key.as_str().as_ptr() == (&key as *const CompactKey).cast(),
                   inline
@@ -285,7 +306,10 @@ mod tests {
    #[test]
    fn full_width_unicode_keys_preserve_the_original_utf8_bytes() {
       for character in (0..=0x7ff).filter_map(char::from_u32).chain(['€', '😊']) {
-         let text = format!("{}{character}", "k".repeat(16 - character.len_utf8()));
+         let text = format!(
+            "{}{character}",
+            "k".repeat(FULL_WIDTH - character.len_utf8())
+         );
          for key in [
             CompactKey::from_str(&text),
             CompactKey::from_string(text.clone()),
@@ -293,9 +317,9 @@ mod tests {
             assert_eq!(key.as_str().as_bytes(), text.as_bytes());
             assert!(key.eq_str(&text));
             let mut other = text.as_bytes().to_vec();
-            other[15] ^= 0x80;
+            other[INLINE_CAP] ^= 0x80;
             assert!(!key.eq_bytes(&other));
-            assert!(!key.eq_bytes(&text.as_bytes()[..15]));
+            assert!(!key.eq_bytes(&text.as_bytes()[..INLINE_CAP]));
          }
       }
    }

@@ -1,6 +1,6 @@
 [package]
 name = "fyro_db"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
 license = "Apache-2.0"
 autobins = false
@@ -84,35 +84,43 @@ unix-socket = ["unix-sockets"]
 [[bench]]
 name = "core"
 harness = false
+test = false
 
 [[bench]]
 name = "cluster_perf"
 harness = false
+test = false
 
 [[bench]]
 name = "hashmap_bench"
 harness = false
+test = false
 
 [[bench]]
 name = "without_tcp"
 harness = false
+test = false
 
 [[bench]]
 name = "tcp_proto_bench"
 harness = false
 required-features = ["bench-tools"]
+test = false
 
 [[bench]]
 name = "pg_cache_bench"
 harness = false
+test = false
 
 [[bench]]
 name = "bench_all_v"
 harness = false
+test = false
 
 [[bench]]
 name = "script_bench"
 harness = false
+test = false
 
 [profile.bench]
 debug = "line-tables-only"

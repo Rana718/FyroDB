@@ -3,6 +3,8 @@ use super::*;
 impl<'a> Conn<'a> {
    /// Dispatch buffered pipelines at this size. Incomplete frames can grow past it.
    const MAX_READ_AHEAD: usize = 128 * 1024;
+   /// Dispatches per hold of the shared command guard.
+   const GUARD_DISPATCHES: u32 = 64;
 
    #[inline]
    fn recv_raw(&self, ptr: *mut u8, len: usize) -> io::Result<usize> {
@@ -83,7 +85,15 @@ impl<'a> Conn<'a> {
       let mut batch_guard = Some(store.command_guard(self.worker));
       let mut prefetched = 0usize;
       let mut read_only = true;
+      let mut dispatches = 0u32;
       loop {
+         // Re-take the shared guard every few dispatches: an exclusive command
+         // (EVAL/EXEC/WATCH) on another worker waits for this guard, and
+         // holding it for a whole read buffer made that wait unbounded.
+         dispatches += 1;
+         if dispatches.is_multiple_of(Self::GUARD_DISPATCHES) {
+            drop(batch_guard.take());
+         }
          if batch_guard.is_none() {
             batch_guard = Some(store.command_guard(self.worker));
          }
@@ -403,6 +413,94 @@ mod tests {
       assert!(store.data.try_read_epoch().is_none());
       drop(writer);
       assert!(store.data.try_read_epoch().is_some());
+   }
+
+   fn frame(parts: &[&[u8]]) -> Vec<u8> {
+      let mut out = format!("*{}\r\n", parts.len()).into_bytes();
+      for part in parts {
+         out.extend_from_slice(format!("${}\r\n", part.len()).as_bytes());
+         out.extend_from_slice(part);
+         out.extend_from_slice(b"\r\n");
+      }
+      out
+   }
+
+   fn run(store: &Arc<Store>, wire: Vec<u8>) -> (bool, Vec<u8>) {
+      let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+      let client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+      let (_peer, _) = listener.accept().unwrap();
+      client.set_nonblocking(true).unwrap();
+      let poll = mio::Poll::new().unwrap();
+      let waker = Arc::new(mio::Waker::new(poll.registry(), mio::Token(1)).unwrap());
+      let notifier = WorkerNotifier::new(waker, 0);
+      let pubsub = PubSub::new();
+      let mut conn = Conn::new(
+         Stream::Tcp(mio::net::TcpStream::from_std(client)),
+         store,
+         &pubsub,
+         1,
+         &notifier,
+         None,
+         0,
+      );
+      conn.parser.filled = wire.len();
+      conn.parser.rbuf = wire;
+      let ok = conn.process_buffered();
+      (ok, std::mem::take(&mut conn.parser.wbuf))
+   }
+
+   /// SET+EXPIRE pairs are binary-safe: a non-UTF-8 key or value used to
+   /// close the connection.
+   #[test]
+   fn binary_set_expire_pairs_keep_the_connection_and_apply_ttls() {
+      let store = Arc::new(Store::with_config_workers(2, usize::MAX, 2));
+      let mut wire = Vec::new();
+      let keys: Vec<Vec<u8>> = (0..300u32)
+         .map(|i| {
+            let mut key = vec![0xff, 0x00];
+            key.extend_from_slice(&i.to_le_bytes());
+            key
+         })
+         .collect();
+      for key in &keys {
+         wire.extend(frame(&[b"SET", key, &[0xfe, b'\r', b'\n', 0x80]]));
+         wire.extend(frame(&[b"EXPIRE", key, b"100"]));
+      }
+      // The first pair takes the entry path, the rest the batch loop.
+      wire.extend(frame(&[b"GET", &keys[0]]));
+      wire.extend(frame(&[b"GET", &keys[299]]));
+      let (ok, out) = run(&store, wire);
+      assert!(ok, "connection closed on binary SET+EXPIRE");
+      let mut expected = b"+OK\r\n:1\r\n".repeat(300);
+      expected.extend_from_slice(&b"$4\r\n\xfe\r\n\x80\r\n".repeat(2));
+      assert_eq!(out, expected);
+      for key in &keys {
+         let value = store.data.get_ref_bytes(key).expect("key stored");
+         assert!(value.expires_ms != 0, "TTL applied");
+      }
+   }
+
+   /// A TTL the pair path cannot express exactly (sign, overflow) is left to
+   /// the generic EXPIRE, which owns the error replies.
+   #[test]
+   fn unusual_expire_arguments_fall_back_to_the_generic_command() {
+      let store = Arc::new(Store::with_config_workers(2, usize::MAX, 2));
+      let mut wire = Vec::new();
+      wire.extend(frame(&[b"SET", b"a", b"1"]));
+      wire.extend(frame(&[b"EXPIRE", b"a", b"99999999999999999999"]));
+      wire.extend(frame(&[b"SET", b"b", b"2"]));
+      wire.extend(frame(&[b"EXPIRE", b"b", b"60"]));
+      let (ok, out) = run(&store, wire);
+      assert!(ok);
+      assert!(
+         out.starts_with(b"+OK\r\n-ERR"),
+         "{}",
+         String::from_utf8_lossy(&out)
+      );
+      assert!(out.ends_with(b"+OK\r\n:1\r\n"));
+      assert_eq!(store.get("a").as_deref(), Some("1"));
+      assert_eq!(store.get("b").as_deref(), Some("2"));
+      assert!(store.pttl("b").is_some());
    }
 
    #[test]

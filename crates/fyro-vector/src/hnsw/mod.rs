@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, AtomicUsize,
 
 mod quant;
 mod search;
+mod sketch;
 #[cfg(test)]
 mod tests;
 
@@ -157,7 +158,11 @@ pub(crate) struct Inner {
    /// Exact vectors for nodes being linked in quantized graphs;
    /// released once linked so only codes stay resident.
    raw: Vec<Option<Box<[f32]>>>,
-
+   /// u32 words per sketch row; 0 when the graph keeps no sketch (see
+   /// `sketch`). Only FLAT graphs keep one.
+   sketch_words: usize,
+   /// Int8 sketch rows, chunked like `blocks` (`nodes_per_chunk` rows each).
+   sketch: Vec<Box<[u32]>>,
 }
 
 impl Inner {
@@ -188,6 +193,47 @@ impl Inner {
             .blocks
             .push((0..chunk_lines).map(|_| Line::zero()).collect());
       }
+      while self.sketch_words != 0 && self.sketch.len() < needed {
+         self
+            .sketch
+            .push(vec![0u32; self.nodes_per_chunk * self.sketch_words].into_boxed_slice());
+      }
+   }
+
+   /// Sketch row of `id` (graphs with a sketch only).
+   #[inline(always)]
+   fn sketch_row(&self, id: u32) -> *mut u32 {
+      debug_assert!(self.sketch_words != 0 && (id as usize) < self.len);
+      let np = self.nodes_per_chunk;
+      // SAFETY: as `base`; sketch chunks are allocated with the blocks.
+      unsafe {
+         self.sketch[id as usize / np]
+            .as_ptr()
+            .add((id as usize % np) * self.sketch_words) as *mut u32
+      }
+   }
+
+   #[inline(always)]
+   fn sketch_of(&self, id: u32) -> &[u32] {
+      // SAFETY: rows are written only under the exclusive lock.
+      unsafe { std::slice::from_raw_parts(self.sketch_row(id), self.sketch_words) }
+   }
+
+   /// Writes `id`'s sketch row for `v` (no-op without a sketch). The caller
+   /// holds the exclusive lock or owns the row, as for its payload.
+   fn write_sketch(&self, metric: DistanceMetric, id: u32, v: &[f32]) {
+      if self.sketch_words == 0 {
+         return;
+      }
+      debug_assert_eq!(self.quant, Quant::None, "only f32 graphs keep a sketch");
+      let norm = match metric {
+         // The exact cosine distance divides by the payload's stored norm.
+         DistanceMetric::Cosine => self.norm(id),
+         _ => kernels::norm_sq_f32(v).sqrt(),
+      };
+      // SAFETY: as above.
+      let row = unsafe { std::slice::from_raw_parts_mut(self.sketch_row(id), self.sketch_words) };
+      sketch::encode(v, norm, row);
    }
 
    /// The f32 vector of `id` (unquantized graphs only).
@@ -259,6 +305,23 @@ impl Inner {
       }
    }
 
+   /// Hint the sketch row of `id` into L1 (rows of a sequential scan are
+   /// covered by the hardware prefetcher; this is for id subsets).
+   #[inline(always)]
+   fn prefetch_sketch(&self, id: u32) {
+      #[cfg(target_arch = "x86_64")]
+      unsafe {
+         use std::arch::x86_64::{_MM_HINT_T0, _mm_prefetch};
+         let p = self.sketch_row(id) as *const i8;
+         let bytes = (self.sketch_words * 4).min(1024);
+         let mut off = 0;
+         while off < bytes {
+            _mm_prefetch(p.add(off), _MM_HINT_T0);
+            off += 64;
+         }
+      }
+   }
+
    /// Hint the level-0 link line of `id` (the next node to expand).
    #[inline(always)]
    fn prefetch_links(&self, id: u32) {
@@ -268,8 +331,6 @@ impl Inner {
          _mm_prefetch(self.base(id).add(self.pay) as *const i8, _MM_HINT_T0);
       }
    }
-
-
 }
 
 /// Persisted link structure (see `HnswGraph::dump`).
@@ -474,6 +535,9 @@ impl HnswGraph {
       graph.ml = 0.0;
       let inner = graph.inner.get_mut();
       inner.stride = (inner.pay + 1).div_ceil(16) * 16;
+      if dims >= sketch::MIN_DIMS {
+         inner.sketch_words = sketch::words(dims);
+      }
       graph
    }
 
@@ -514,6 +578,8 @@ impl HnswGraph {
             upper: Vec::new(),
             free: Vec::new(),
             raw: Vec::new(),
+            sketch_words: 0,
+            sketch: Vec::new(),
          }),
          entry: AtomicU64::new(NO_ENTRY),
          entry_lock: Mutex::new(()),
@@ -591,6 +657,7 @@ impl HnswGraph {
          + g.free.capacity() * 4
          + g.raw.capacity() * std::mem::size_of::<Option<Box<[f32]>>>()
          + g.raw.iter().flatten().map(|r| r.len() * 4).sum::<usize>()
+         + g.sketch.iter().map(|c| c.len() * 4).sum::<usize>()
    }
 
    /// True when `v` encodes to exactly `id`'s stored payload (for f32
@@ -797,6 +864,7 @@ impl HnswGraph {
          vector,
          payload,
       );
+      g.write_sketch(self.metric, id, vector);
       if self.quant != Quant::None {
          if g.raw.len() <= key_id {
             g.raw.resize(key_id + 1, None);
@@ -907,6 +975,7 @@ impl HnswGraph {
                // SAFETY: each thread writes to a distinct node's payload.
                let payload = unsafe { std::slice::from_raw_parts_mut(g.base(key_id as u32), pay) };
                quant::encode(quant, rot, &book, metric, v, payload);
+               g.write_sketch(metric, key_id as u32, v);
             }
          });
       }
@@ -1097,6 +1166,14 @@ impl HnswGraph {
             // SAFETY: exclusive lock on `o`; blocks sized for `count`.
             unsafe {
                std::ptr::copy_nonoverlapping(g.base(old), o.base(new32), g.pay);
+               if o.sketch_words != 0 {
+                  debug_assert_eq!(o.sketch_words, g.sketch_words);
+                  std::ptr::copy_nonoverlapping(
+                     g.sketch_row(old),
+                     o.sketch_row(new32),
+                     o.sketch_words,
+                  );
+               }
             }
             o.levels[new] = lvl as u8;
             o.upper[new] = (0..lvl * (self.m + 1)).map(|_| AtomicU32::new(0)).collect();
@@ -1241,6 +1318,8 @@ impl HnswGraph {
             let keep_chunks = slack_target.div_ceil(g.nodes_per_chunk);
             if g.blocks.len() > keep_chunks {
                g.blocks.truncate(keep_chunks.max(1));
+               let kept = g.blocks.len();
+               g.sketch.truncate(kept);
             }
             if g.flags.capacity() > slack_target * 2 {
                g.flags.shrink_to(slack_target);
@@ -1252,7 +1331,6 @@ impl HnswGraph {
             if g.upper.capacity() > slack_target * 2 {
                g.upper.shrink_to(slack_target);
             }
-
          }
       }
    }

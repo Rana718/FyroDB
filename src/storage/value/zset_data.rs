@@ -33,7 +33,7 @@ pub struct ZEntry {
 
 #[inline(always)]
 fn before(e: &ZEntry, score: f64, member: &str) -> bool {
-   e.score < score || (e.score == score && e.member.as_str() < member)
+   e.score < score || (e.score == score && e.member.as_bytes() < member.as_bytes())
 }
 
 #[derive(Clone)]
@@ -261,7 +261,7 @@ impl ZSetData {
       let score = self.score_of(member)?;
       let (ci, ei) = self.bound(|e| before(e, score, member));
       let e = self.chunks.get(ci)?.get(ei)?;
-      (e.member.as_str() == member).then_some((ci, ei))
+      (e.member.as_bytes() == member.as_bytes()).then_some((ci, ei))
    }
 
    fn sync_index(&mut self) {

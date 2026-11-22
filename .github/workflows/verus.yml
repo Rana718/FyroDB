@@ -1,0 +1,98 @@
+name: Verus Formal Verification
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'proofs/**'
+      - 'src/**'
+      - 'Taskfile.yml'
+      - '.github/workflows/verus.yml'
+  pull_request:
+    branches: [main, dev]
+    types: [opened, synchronize, reopened, labeled]
+    paths:
+      - 'proofs/**'
+      - 'src/**'
+      - 'Taskfile.yml'
+      - '.github/workflows/verus.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: verus-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  pull-requests: write
+  contents: read
+
+jobs:
+  verus:
+    name: Verus Proofs & Invariants
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Cache Verus Toolchain
+        id: cache-verus
+        uses: actions/cache@v4
+        with:
+          path: /home/runner/tools/verus
+          key: verus-0.2026.11.02.8bf68ee-x86_64
+
+      - name: Download Verus
+        if: steps.cache-verus.outputs.cache-hit != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download 'release/0.2026.11.02.8bf68ee' --repo verus-lang/verus --pattern '*-x86-linux.zip' --dir "$RUNNER_TEMP"
+          unzip -q "$RUNNER_TEMP"/*-x86-linux.zip -d "$RUNNER_TEMP"
+          mkdir -p "$HOME/tools"
+          mv "$RUNNER_TEMP/verus-x86-linux" "$HOME/tools/verus"
+          chmod +x "$HOME/tools/verus/z3" "$HOME/tools/verus/verus"
+
+      - name: Configure Verus Environment
+        run: |
+          "$HOME/tools/verus/z3" --version
+          echo "VERUS_Z3_PATH=$HOME/tools/verus/z3" >> "$GITHUB_ENV"
+          rustup install 1.99.1-x86_64-unknown-linux-gnu
+
+      - name: Run Verus Safety Invariants Test
+        run: cargo test --test verus_safety_invariants -- --nocapture
+
+      - name: Verify Formal Concurrency Proofs
+        run: |
+          if [ -x "$HOME/tools/verus/verus" ]; then
+            for f in proofs/verus/*.rs; do
+              "$HOME/tools/verus/verus" --crate-type=lib "$f"
+            done
+          fi
+
+      - name: Auto-remove Trigger Label
+        if: always() && github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const labelName = context.payload.label ? context.payload.label.name : null;
+            const issue_number = context.payload.pull_request ? context.payload.pull_request.number : null;
+            if (labelName && issue_number) {
+              try {
+                await github.rest.issues.removeLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issue_number,
+                  name: labelName,
+                });
+                console.log(`Successfully removed trigger label '${labelName}' from PR #${issue_number}`);
+              } catch (err) {
+                console.log(`Could not remove label '${labelName}': ${err.message}`);
+              }
+            }

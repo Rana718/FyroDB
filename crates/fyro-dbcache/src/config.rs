@@ -252,6 +252,9 @@ pub struct DbCacheConfig {
    // Number of mio worker threads for start_proxy_listener_mio.
    // 0 = auto (num_cpus / 2, min 1).
    pub proxy_workers: usize,
+   // Concurrent client connections accepted; extra clients get PostgreSQL's
+   // "too many clients" error. Zero means unlimited.
+   pub max_connections: usize,
 }
 
 impl Default for DbCacheConfig {
@@ -273,6 +276,7 @@ impl Default for DbCacheConfig {
          trust_auth: false,
          bus_path: None,
          proxy_workers: 0,
+         max_connections: DEFAULT_MAX_CONNECTIONS,
       }
    }
 }
@@ -301,52 +305,61 @@ impl DbCacheConfig {
 
    // Builds configuration from environment variables.
    pub fn from_env() -> Self {
-      let upstream = env::var("FYRODB_DB_UPSTREAM")
-         .ok()
-         .filter(|s| !s.is_empty());
-      let enabled =
-         upstream.is_some() || env::var("FYRODB_DB_PROXY").is_ok_and(|v| v == "1" || v == "true");
-      let cache_only = env::var("FYRODB_CACHE_ONLY").is_ok_and(|v| v == "1" || v == "true");
+      Self::from_lookup(|name| env::var(name).ok())
+   }
 
+   /// Builds configuration from a variable lookup. Each setting accepts the
+   /// documented `FYRODB_PROXY_*` name first and the original `FYRODB_DB_*`
+   /// name second. The docs only ever listed the former while the code only
+   /// read the latter, so documented deployments silently ran without the
+   /// proxy (or with defaults); both now work, defaults are unchanged.
+   pub fn from_lookup(get: impl Fn(&str) -> Option<String>) -> Self {
+      let var = |names: &[&str]| -> Option<String> {
+         names
+            .iter()
+            .find_map(|name| get(name).filter(|value| !value.is_empty()))
+      };
+      let flag = |names: &[&str]| -> Option<bool> {
+         var(names).map(|v| v == "1" || v.eq_ignore_ascii_case("true") || v == "yes")
+      };
+      let number = |names: &[&str]| -> Option<u64> { var(names).and_then(|v| v.parse().ok()) };
+
+      let upstream = var(&["FYRODB_PROXY_UPSTREAM_URL", "FYRODB_DB_UPSTREAM"]);
+      let enabled =
+         upstream.is_some() || flag(&["FYRODB_PROXY_ENABLED", "FYRODB_DB_PROXY"]).unwrap_or(false);
+      let cache_only = match var(&["FYRODB_PROXY_MODE"]) {
+         Some(mode) => {
+            mode.eq_ignore_ascii_case("cache-only") || mode.eq_ignore_ascii_case("cache_only")
+         }
+         None => flag(&["FYRODB_CACHE_ONLY"]).unwrap_or(false),
+      };
       let mode = if cache_only {
          DbProxyMode::CacheOnly
       } else {
          DbProxyMode::Dual
       };
 
-      let port = env::var("FYRODB_DB_PORT")
-         .ok()
+      let port = var(&["FYRODB_PROXY_PORT", "FYRODB_DB_PORT"])
          .and_then(|p| p.parse::<u16>().ok())
          .unwrap_or(5433);
-
-      let bind = env::var("FYRODB_DB_BIND").unwrap_or_else(|_| "0.0.0.0".to_string());
-      let ttl = env::var("FYRODB_DB_TTL_MS")
-         .ok()
-         .and_then(|t| t.parse::<u64>().ok())
-         .unwrap_or(60_000);
-      let keep_cache =
-         env::var("FYRODB_DB_KEEP_CACHE").is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
-      let sync_interval = env::var("FYRODB_DB_SYNC_MS")
-         .ok()
-         .and_then(|v| v.parse::<u64>().ok())
-         .unwrap_or(5_000);
-      let max_keys = env::var("FYRODB_DB_MAX_KEYS")
-         .ok()
-         .and_then(|v| v.parse::<usize>().ok())
-         .unwrap_or(100_000);
-      let jitter = env::var("FYRODB_DB_TTL_JITTER_PCT")
-         .ok()
-         .and_then(|v| v.parse::<u64>().ok())
+      let bind =
+         var(&["FYRODB_PROXY_BIND", "FYRODB_DB_BIND"]).unwrap_or_else(|| "0.0.0.0".to_string());
+      let ttl = number(&["FYRODB_PROXY_CACHE_TTL_MS", "FYRODB_DB_TTL_MS"]).unwrap_or(60_000);
+      let flush_on_start = match flag(&["FYRODB_PROXY_FLUSH_ON_START"]) {
+         Some(flush) => flush,
+         None => !flag(&["FYRODB_DB_KEEP_CACHE"]).unwrap_or(false),
+      };
+      let sync_interval = number(&["FYRODB_PROXY_SYNC_MS", "FYRODB_DB_SYNC_MS"]).unwrap_or(5_000);
+      let max_keys =
+         number(&["FYRODB_PROXY_CACHE_MAX_KEYS", "FYRODB_DB_MAX_KEYS"]).unwrap_or(100_000) as usize;
+      let jitter = number(&["FYRODB_PROXY_CACHE_TTL_JITTER", "FYRODB_DB_TTL_JITTER_PCT"])
          .unwrap_or(10)
          .min(50);
-      let pool_max_idle = env::var("FYRODB_DB_POOL_MAX_IDLE")
-         .ok()
-         .and_then(|v| v.parse::<usize>().ok())
-         .unwrap_or(10);
-      let pool_idle_timeout_ms = env::var("FYRODB_DB_POOL_IDLE_MS")
-         .ok()
-         .and_then(|v| v.parse::<u64>().ok())
-         .unwrap_or(60_000);
+      let pool_max_idle =
+         number(&["FYRODB_PROXY_UPSTREAM_POOL", "FYRODB_DB_POOL_MAX_IDLE"]).unwrap_or(10) as usize;
+      let pool_idle_timeout_ms =
+         number(&["FYRODB_PROXY_UPSTREAM_IDLE_MS", "FYRODB_DB_POOL_IDLE_MS"]).unwrap_or(60_000);
+      let key_prefix = var(&["FYRODB_PROXY_KEY_PREFIX"]).unwrap_or_else(|| "db:".to_string());
 
       let mut auth_users = AuthUsers::default();
       if let Some(ref target_str) = upstream {
@@ -355,29 +368,24 @@ impl DbCacheConfig {
             auth_users.insert(u, p);
          }
       }
-      if let Ok(spec) = env::var("FYRODB_DB_AUTH_USERS")
-         && !spec.is_empty()
-      {
+      if let Some(spec) = var(&["FYRODB_PROXY_USERS", "FYRODB_DB_AUTH_USERS"]) {
          auth_users.parse_inline(&spec);
       }
-      if let Ok(path) = env::var("FYRODB_DB_AUTH_FILE")
-         && !path.is_empty()
-      {
+      if let Some(path) = var(&["FYRODB_PROXY_USERS_FILE", "FYRODB_DB_AUTH_FILE"]) {
          auth_users.parse_file(&path);
       }
-      let trust_auth =
-         env::var("FYRODB_DB_TRUST").is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
+      let trust_auth = flag(&["FYRODB_PROXY_TRUST_AUTH", "FYRODB_DB_TRUST"]).unwrap_or(false);
 
-      let bus_path = match env::var("FYRODB_DB_BUS") {
-         Ok(value)
+      let bus_path = match get("FYRODB_PROXY_BUS").or_else(|| get("FYRODB_DB_BUS")) {
+         Some(value)
             if value.is_empty()
                || value.eq_ignore_ascii_case("off")
                || value.eq_ignore_ascii_case("none") =>
          {
             None
          }
-         Ok(value) => Some(value),
-         Err(_) => default_bus_path(),
+         Some(value) => Some(value),
+         None => default_bus_path(),
       };
 
       Self {
@@ -386,8 +394,8 @@ impl DbCacheConfig {
          upstream_addr: upstream,
          listen_addr: format!("{bind}:{port}"),
          default_ttl_ms: ttl,
-         key_prefix: "db:".to_string(),
-         flush_on_start: !keep_cache,
+         key_prefix,
+         flush_on_start,
          sync_interval_ms: sync_interval,
          cache_max_keys: max_keys,
          ttl_jitter_pct: jitter,
@@ -396,13 +404,17 @@ impl DbCacheConfig {
          auth_users,
          trust_auth,
          bus_path,
-         proxy_workers: env::var("FYRODB_DB_PROXY_WORKERS")
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok())
-            .unwrap_or(0),
+         proxy_workers: number(&["FYRODB_PROXY_WORKERS", "FYRODB_DB_PROXY_WORKERS"]).unwrap_or(0)
+            as usize,
+         max_connections: number(&["FYRODB_PROXY_MAX_CONNECTIONS", "FYRODB_DB_MAX_CONNECTIONS"])
+            .unwrap_or(DEFAULT_MAX_CONNECTIONS as u64) as usize,
       }
    }
 }
+
+/// Default cap on concurrent proxy client connections; each one is served by
+/// its own thread, so an unbounded flood meant unbounded threads.
+pub const DEFAULT_MAX_CONNECTIONS: usize = 4_096;
 
 fn default_bus_path() -> Option<String> {
    #[cfg(unix)]
@@ -422,6 +434,81 @@ fn default_bus_path() -> Option<String> {
 #[cfg(test)]
 mod tests {
    use super::*;
+
+   fn config(vars: &[(&str, &str)]) -> DbCacheConfig {
+      let vars: HashMap<String, String> = vars
+         .iter()
+         .map(|(k, v)| (k.to_string(), v.to_string()))
+         .collect();
+      DbCacheConfig::from_lookup(|name| vars.get(name).cloned())
+   }
+
+   #[test]
+   fn documented_proxy_variables_configure_the_proxy() {
+      let c = config(&[
+         ("FYRODB_PROXY_ENABLED", "true"),
+         ("FYRODB_PROXY_PORT", "5432"),
+         ("FYRODB_PROXY_BIND", "127.0.0.1"),
+         ("FYRODB_PROXY_MODE", "cache-only"),
+         ("FYRODB_PROXY_CACHE_TTL_MS", "30000"),
+         ("FYRODB_PROXY_CACHE_MAX_KEYS", "7"),
+         ("FYRODB_PROXY_CACHE_TTL_JITTER", "5"),
+         ("FYRODB_PROXY_UPSTREAM_POOL", "3"),
+         ("FYRODB_PROXY_UPSTREAM_IDLE_MS", "1234"),
+         ("FYRODB_PROXY_TRUST_AUTH", "true"),
+         ("FYRODB_PROXY_USERS", "alice:pw1,bob:pw2"),
+         ("FYRODB_PROXY_KEY_PREFIX", "pg:"),
+         ("FYRODB_PROXY_FLUSH_ON_START", "false"),
+         ("FYRODB_PROXY_MAX_CONNECTIONS", "99"),
+         ("FYRODB_PROXY_BUS", "off"),
+      ]);
+      assert!(c.enabled);
+      assert_eq!(c.listen_addr, "127.0.0.1:5432");
+      assert_eq!(c.mode, DbProxyMode::CacheOnly);
+      assert_eq!(c.default_ttl_ms, 30_000);
+      assert_eq!(c.cache_max_keys, 7);
+      assert_eq!(c.ttl_jitter_pct, 5);
+      assert_eq!(c.pool_max_idle, 3);
+      assert_eq!(c.pool_idle_timeout_ms, 1234);
+      assert!(c.trust_auth);
+      assert_eq!(c.auth_users.password("bob"), Some("pw2"));
+      assert_eq!(c.key_prefix, "pg:");
+      assert!(!c.flush_on_start);
+      assert_eq!(c.max_connections, 99);
+      assert_eq!(c.bus_path, None);
+
+      let upstream = config(&[("FYRODB_PROXY_UPSTREAM_URL", "postgres://u:p@db:5432/app")]);
+      assert!(upstream.enabled, "an upstream URL enables the proxy");
+      assert_eq!(
+         upstream.upstream_addr.as_deref(),
+         Some("postgres://u:p@db:5432/app")
+      );
+      assert_eq!(upstream.mode, DbProxyMode::Dual);
+   }
+
+   #[test]
+   fn legacy_names_still_work_and_documented_names_win() {
+      let legacy = config(&[
+         ("FYRODB_DB_PROXY", "1"),
+         ("FYRODB_DB_PORT", "6000"),
+         ("FYRODB_DB_KEEP_CACHE", "true"),
+         ("FYRODB_CACHE_ONLY", "1"),
+      ]);
+      assert!(legacy.enabled);
+      assert_eq!(legacy.listen_addr, "0.0.0.0:6000");
+      assert!(!legacy.flush_on_start);
+      assert_eq!(legacy.mode, DbProxyMode::CacheOnly);
+
+      let both = config(&[("FYRODB_PROXY_PORT", "5432"), ("FYRODB_DB_PORT", "6000")]);
+      assert_eq!(both.listen_addr, "0.0.0.0:5432");
+
+      let defaults = config(&[]);
+      assert!(!defaults.enabled);
+      assert_eq!(defaults.listen_addr, "0.0.0.0:5433");
+      assert!(defaults.flush_on_start);
+      assert_eq!(defaults.pool_max_idle, 10);
+      assert_eq!(defaults.max_connections, DEFAULT_MAX_CONNECTIONS);
+   }
 
    #[test]
    fn test_upstream_target_parsing_neon_url() {
