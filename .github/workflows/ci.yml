@@ -5,11 +5,15 @@ on:
     branches: [main, dev]
   pull_request:
     branches: [main, dev]
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened, labeled]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
+
+permissions:
+  pull-requests: write
+  contents: read
 
 jobs:
   lint:
@@ -53,3 +57,25 @@ jobs:
 
       - name: Run Protocol Regression Suites
         run: python3 tests/e2e/python/run.py target/debug/fyro_db
+
+      - name: Auto-remove Trigger Label
+        if: always() && github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const labelName = context.payload.label ? context.payload.label.name : null;
+            const issue_number = context.payload.pull_request ? context.payload.pull_request.number : null;
+            if (labelName && issue_number) {
+              try {
+                await github.rest.issues.removeLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issue_number,
+                  name: labelName,
+                });
+                console.log(`Successfully removed trigger label '${labelName}' from PR #${issue_number}`);
+              } catch (err) {
+                console.log(`Could not remove label '${labelName}': ${err.message}`);
+              }
+            }

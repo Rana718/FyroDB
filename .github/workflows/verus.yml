@@ -22,6 +22,10 @@ concurrency:
   group: verus-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+permissions:
+  pull-requests: write
+  contents: read
+
 jobs:
   verus:
     name: Verus Proofs & Invariants
@@ -70,3 +74,25 @@ jobs:
               "$HOME/tools/verus/verus" --crate-type=lib "$f"
             done
           fi
+
+      - name: Auto-remove Trigger Label
+        if: always() && github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const labelName = context.payload.label ? context.payload.label.name : null;
+            const issue_number = context.payload.pull_request ? context.payload.pull_request.number : null;
+            if (labelName && issue_number) {
+              try {
+                await github.rest.issues.removeLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issue_number,
+                  name: labelName,
+                });
+                console.log(`Successfully removed trigger label '${labelName}' from PR #${issue_number}`);
+              } catch (err) {
+                console.log(`Could not remove label '${labelName}': ${err.message}`);
+              }
+            }
