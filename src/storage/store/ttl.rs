@@ -56,7 +56,7 @@ impl TtlCounters {
       self
          .adds
          .iter()
-         .map(|stripe| stripe.load(Ordering::Acquire))
+         .map(|stripe| stripe.load(Ordering::Relaxed))
          .fold(0u64, u64::wrapping_add)
    }
 
@@ -64,7 +64,7 @@ impl TtlCounters {
       self
          .removes
          .iter()
-         .map(|stripe| stripe.load(Ordering::Acquire))
+         .map(|stripe| stripe.load(Ordering::Relaxed))
          .fold(0u64, u64::wrapping_add)
    }
 
