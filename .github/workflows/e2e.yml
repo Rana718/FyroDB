@@ -3,6 +3,16 @@ name: E2E Container Integration
 on:
   push:
     branches: [main]
+    paths:
+      - 'src/**'
+      - 'crates/**'
+      - 'tests/**'
+      - 'benches/**'
+      - 'Dockerfile'
+      - 'docker-compose*'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/e2e.yml'
   pull_request:
     branches: [main, dev]
     types: [labeled]

@@ -6,7 +6,13 @@ on:
     paths:
       - 'proofs/**'
       - 'src/**'
+      - 'crates/**'
+      - 'tests/**'
+      - 'benches/**'
       - 'Taskfile.yml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.cargo/**'
       - '.github/workflows/verus.yml'
   pull_request:
     branches: [main, dev]
@@ -14,7 +20,13 @@ on:
     paths:
       - 'proofs/**'
       - 'src/**'
+      - 'crates/**'
+      - 'tests/**'
+      - 'benches/**'
       - 'Taskfile.yml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.cargo/**'
       - '.github/workflows/verus.yml'
   workflow_dispatch:
 
