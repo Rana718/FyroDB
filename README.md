@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/public/logo.png" width="220" alt="FyroDB Logo" />
+  <img src="docs/public/lon_i.png" alt="FyroDB Banner" width="100%" />
 </p>
 
 <h1 align="center">⚡ FyroDB</h1>
