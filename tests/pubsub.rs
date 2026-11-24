@@ -326,6 +326,65 @@ fn local_map_tracks_registered_subscribers() {
 }
 
 #[test]
+fn local_map_tracks_many_channels_through_removal_and_reinsert() {
+   let poll = Poll::new().unwrap();
+   let notifier = make_notifier(&poll, 0);
+   let channels: Vec<_> = (0..512).map(|i| format!("local:{i}")).collect();
+
+   for (token, channel) in channels.iter().enumerate() {
+      notifier.register_local(channel, token);
+   }
+   for (token, channel) in channels.iter().enumerate() {
+      assert_eq!(notifier.local_subscribers(channel), Some(vec![token]));
+   }
+
+   for (token, channel) in channels.iter().enumerate().step_by(2) {
+      notifier.unregister_local(channel, token);
+   }
+   for (token, channel) in channels.iter().enumerate() {
+      let expected = (token % 2 != 0).then_some(vec![token]);
+      assert_eq!(notifier.local_subscribers(channel), expected);
+   }
+
+   for (token, channel) in channels.iter().step_by(2).enumerate() {
+      let token = token * 2;
+      notifier.register_local(channel, token + channels.len());
+      assert_eq!(
+         notifier.local_subscribers(channel),
+         Some(vec![token + channels.len()])
+      );
+   }
+}
+
+#[test]
+fn concurrent_local_registrations_preserve_all_channels() {
+   const WORKERS: usize = 4;
+   const CHANNELS_PER_WORKER: usize = 128;
+   let poll = Poll::new().unwrap();
+   let notifier = make_notifier(&poll, 0);
+
+   std::thread::scope(|scope| {
+      for worker in 0..WORKERS {
+         let notifier = Arc::clone(&notifier);
+         scope.spawn(move || {
+            for index in 0..CHANNELS_PER_WORKER {
+               let channel = format!("concurrent:{worker}:{index}");
+               notifier.register_local(&channel, worker * CHANNELS_PER_WORKER + index);
+            }
+         });
+      }
+   });
+
+   for worker in 0..WORKERS {
+      for index in 0..CHANNELS_PER_WORKER {
+         let channel = format!("concurrent:{worker}:{index}");
+         let token = worker * CHANNELS_PER_WORKER + index;
+         assert_eq!(notifier.local_subscribers(&channel), Some(vec![token]));
+      }
+   }
+}
+
+#[test]
 fn concurrent_push_and_drain_never_wraps_queue_length() {
    let (_, slot) = make_sub(0, 1);
    let producers = 4;

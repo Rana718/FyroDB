@@ -122,6 +122,11 @@ name = "script_bench"
 harness = false
 test = false
 
+[[bench]]
+name = "pubsub"
+harness = false
+test = false
+
 [profile.bench]
 debug = "line-tables-only"
 strip = "none"
