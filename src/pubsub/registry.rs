@@ -418,9 +418,12 @@ impl PatternIndex {
    fn matching(&self, channel: &str) -> SmallVec<[&PatternEntry; 4]> {
       let first = channel.as_bytes().first().copied();
       let bucket = first.map_or(&[][..], |b| &self.buckets[b as usize]);
-      self.wildcard.iter().chain(bucket)
+      self
+         .wildcard
+         .iter()
+         .chain(bucket)
          .filter(|entry| glob_match_bytes(entry.pattern.as_bytes(), channel.as_bytes()))
-        .collect()
+         .collect()
    }
 }
 
@@ -565,12 +568,7 @@ impl PubSub {
    pub fn numsub<'a>(&self, channels: &[&'a str]) -> Vec<(&'a str, usize)> {
       channels
          .iter()
-         .map(|&channel| {
-            (
-               channel,
-               self.shard_for(channel).count_for(channel),
-            )
-         })
+         .map(|&channel| (channel, self.shard_for(channel).count_for(channel)))
          .collect()
    }
    pub fn numpat(&self) -> usize {
