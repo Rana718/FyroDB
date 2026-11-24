@@ -286,6 +286,23 @@ fn pipelined_json_get_large_values_and_fallbacks() {
    check_pipeline(store, wire, &expected);
 }
 
+/// Count complete `$<len>\r\n<payload>\r\n` frames at the start of `bytes`.
+fn complete_bulk_frames(mut bytes: &[u8]) -> usize {
+   let mut frames = 0;
+   while let Some(end) = bytes.windows(2).position(|w| w == b"\r\n") {
+      let size: usize = std::str::from_utf8(&bytes[1..end])
+         .unwrap()
+         .parse()
+         .unwrap();
+      let Some(rest) = bytes.get(end + 4 + size..) else {
+         break;
+      };
+      frames += 1;
+      bytes = rest;
+   }
+   frames
+}
+
 #[test]
 fn concurrent_heap_overwrites_and_reply_encoding_do_not_tear_values() {
    let store = Arc::new(Store::with_config_workers(2, usize::MAX, 8));
@@ -323,25 +340,38 @@ fn concurrent_heap_overwrites_and_reply_encoding_do_not_tear_values() {
                         conn.write_offset = 0;
                         assert!(conn.process_buffered());
                         // A large batch may flush part of its replies to the
-                        // socket mid-run; the client sees socket bytes first,
-                        // then what is still buffered.
+                        // socket mid-run. Drain everything through the socket
+                        // and read until all 32 replies arrived: a WouldBlock
+                        // on the peer does not mean the stream is drained
+                        // (macOS loopback hands queued send bytes over later).
+                        let deadline =
+                           std::time::Instant::now() + std::time::Duration::from_secs(10);
                         let mut chunk = [0u8; 64 * 1024];
-                        loop {
+                        while complete_bulk_frames(&reply) < 32 {
+                           assert!(
+                              std::time::Instant::now() < deadline,
+                              "timed out draining replies"
+                           );
+                           if conn.has_pending_write() {
+                              assert!(conn.do_write());
+                           }
                            match std::io::Read::read(peer, &mut chunk) {
-                              Ok(0) => break,
+                              Ok(0) => panic!("peer closed"),
                               Ok(n) => reply.extend_from_slice(&chunk[..n]),
-                              Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                              Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                                 std::thread::yield_now()
+                              }
                               Err(e) => panic!("{e}"),
                            }
                         }
-                        reply.extend_from_slice(&conn.parser.wbuf[conn.write_offset..]);
-                        conn.parser.wbuf.clear();
-                        conn.write_offset = 0;
+                        assert!(!conn.has_pending_write());
+                        assert_eq!(complete_bulk_frames(&reply), 32);
                      } else {
                         assert!(store.get_to_buf("shared", &mut reply));
                      }
                      let mut remaining = reply.as_slice();
                      while !remaining.is_empty() {
+                        assert_eq!(remaining[0], b'$');
                         let end = remaining.windows(2).position(|w| w == b"\r\n").unwrap();
                         let size: usize = std::str::from_utf8(&remaining[1..end])
                            .unwrap()
