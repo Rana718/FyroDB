@@ -253,7 +253,7 @@ fn parse_bf_type_and_offset(
    Some((signed, bits, offset))
 }
 
-fn bf_get(store: &Store, key: &str, offset: u64, bits: u32, signed: bool) -> i64 {
+pub fn bf_get(store: &Store, key: &str, offset: u64, bits: u32, signed: bool) -> i64 {
    let mut val: u64 = 0;
    for i in 0..bits {
       let bit = store.getbit(key, offset + i as u64).unwrap_or(0);
@@ -266,7 +266,7 @@ fn bf_get(store: &Store, key: &str, offset: u64, bits: u32, signed: bool) -> i64
    }
 }
 
-fn bf_set(store: &Store, key: &str, offset: u64, bits: u32, value: i64) {
+pub fn bf_set(store: &Store, key: &str, offset: u64, bits: u32, value: i64) {
    let val = value as u64;
    for i in 0..bits {
       let bit = (val >> (bits - 1 - i)) & 1 == 1;
