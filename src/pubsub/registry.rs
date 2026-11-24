@@ -575,3 +575,70 @@ impl PubSub {
       self.pattern_count.load(Ordering::Acquire)
    }
 }
+
+#[cfg(test)]
+mod tests {
+   use super::{ChannelShard, Refs};
+   use crate::pubsub::slot::{SubSlot, WorkerNotifier};
+   use std::sync::Arc;
+
+   fn refs_share<T>(left: &Refs<T>, right: &Refs<T>) -> bool {
+      match (left, right) {
+         (Refs::Many(left), Refs::Many(right)) => Arc::ptr_eq(left, right),
+         _ => false,
+      }
+   }
+
+   #[test]
+   fn snapshots_share_unchanged_subscription_lists() {
+      let poll = mio::Poll::new().unwrap();
+      let waker = Arc::new(mio::Waker::new(poll.registry(), mio::Token(0)).unwrap());
+      let first = Arc::new(SubSlot::new(1, WorkerNotifier::new(Arc::clone(&waker), 0)));
+      let second = Arc::new(SubSlot::new(2, WorkerNotifier::new(Arc::clone(&waker), 1)));
+      let third = Arc::new(SubSlot::new(3, WorkerNotifier::new(Arc::clone(&waker), 2)));
+      let shard = ChannelShard::new();
+
+      let name = shard.subscribe("shared", Arc::clone(&first));
+      let same_name = shard.subscribe("shared", Arc::clone(&second));
+      assert!(Arc::ptr_eq(&name, &same_name));
+      let before = shard.snapshot.load_full();
+      let before_shared = before.find("shared").unwrap();
+      assert!(matches!(&before_shared.slots, Refs::Many(_)));
+      assert!(matches!(&before_shared.workers, Refs::Many(_)));
+
+      let other_name = shard.subscribe("other", Arc::clone(&first));
+      let after = shard.snapshot.load_full();
+      let after_shared = after.find("shared").unwrap();
+      assert_eq!(before.channels.len(), 1);
+      assert_eq!(after.channels.len(), 2);
+      assert!(after.find(&other_name).is_some());
+      assert!(refs_share(&before_shared.slots, &after_shared.slots));
+      assert!(refs_share(&before_shared.workers, &after_shared.workers));
+
+      let _updated_name = shard.subscribe("shared", Arc::clone(&third));
+      let updated = shard.snapshot.load_full();
+      let updated_shared = updated.find("shared").unwrap();
+      assert!(!refs_share(&before_shared.slots, &updated_shared.slots));
+      assert!(!refs_share(&before_shared.workers, &updated_shared.workers));
+      assert_eq!(before_shared.slots.len(), 2);
+      assert_eq!(before_shared.workers.len(), 2);
+      assert_eq!(updated_shared.slots.len(), 3);
+      assert_eq!(updated_shared.workers.len(), 3);
+      assert_eq!(
+         before_shared
+            .slots
+            .iter()
+            .map(|slot| slot.token)
+            .collect::<Vec<_>>(),
+         [1, 2]
+      );
+      assert_eq!(
+         updated_shared
+            .slots
+            .iter()
+            .map(|slot| slot.token)
+            .collect::<Vec<_>>(),
+         [1, 2, 3]
+      );
+   }
+}
