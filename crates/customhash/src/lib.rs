@@ -85,8 +85,13 @@ impl<V: Clone + Send + Sync + 'static> ReadView<'_, V> {
 
 pub struct ValueRef<'a, V> {
    read: EntryReadGuard<'a, V>,
-   _guard: ebr::Guard,
+   _guard: ValueRefGuard<'a>,
    _map: PhantomData<&'a CustomMap<V>>,
+}
+
+enum ValueRefGuard<'a> {
+   Owned { _guard: ebr::Guard },
+   Borrowed { _guard: &'a ebr::Guard },
 }
 
 impl<V> Deref for ValueRef<'_, V> {
@@ -892,7 +897,7 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
       let read = e.read()?;
       Some(ValueRef {
          read,
-         _guard: ebr::pin(),
+         _guard: ValueRefGuard::Borrowed { _guard },
          _map: PhantomData,
       })
    }
@@ -900,14 +905,14 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
    #[inline]
    pub fn get_ref(&self, key: &str) -> Option<ValueRef<'_, V>> {
       let (h, idx) = self.locate(key);
-      let guard = ebr::pin();
+      let _guard = ebr::pin();
       let sf = unsafe { &*self.shard_fast.as_ptr().add(idx) };
       let (slots, mask) = sf.layout();
       let e = Shard::find_fast(slots, mask, key, h)?;
       let read = e.read()?;
       Some(ValueRef {
          read,
-         _guard: guard,
+         _guard: ValueRefGuard::Owned { _guard },
          _map: PhantomData,
       })
    }
@@ -927,14 +932,14 @@ impl<V: Clone + Send + Sync + 'static> CustomMap<V> {
    #[inline]
    pub fn get_ref_bytes(&self, key: &[u8]) -> Option<ValueRef<'_, V>> {
       let (h, idx) = self.locate_bytes(key);
-      let guard = ebr::pin();
+      let _guard = ebr::pin();
       let sf = unsafe { &*self.shard_fast.as_ptr().add(idx) };
       let (slots, mask) = sf.layout();
       let e = Shard::find_fast_bytes(slots, mask, key, h)?;
       let read = e.read()?;
       Some(ValueRef {
          read,
-         _guard: guard,
+         _guard: ValueRefGuard::Owned { _guard },
          _map: PhantomData,
       })
    }

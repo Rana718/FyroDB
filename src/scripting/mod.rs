@@ -424,9 +424,7 @@ fn execute_redis_call(lua: &Lua, args: LuaMultiValue, is_pcall: bool) -> LuaResu
                   scratch.num_strings.push(float_buf.format(*f).to_owned());
                }
                LuaValue::Boolean(b) => {
-                  scratch
-                     .num_strings
-                     .push(if *b { "1" } else { "0" }.into());
+                  scratch.num_strings.push(if *b { "1" } else { "0" }.into());
                }
                LuaValue::Nil => {
                   scratch.num_strings.push(String::new());

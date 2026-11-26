@@ -101,11 +101,7 @@ impl Store {
                let byte_idx = (offset / 8) as usize;
                let bit_idx = 7 - (offset % 8) as u8;
                let bytes = s.as_bytes();
-               if byte_idx >= bytes.len() {
-                  Ok(0)
-               } else {
-                  Ok((bytes[byte_idx] >> bit_idx) & 1)
-               }
+               Ok(bytes.get(byte_idx).map_or(0, |b| (b >> bit_idx) & 1))
             }
             None => Err("WRONGTYPE"),
          },
@@ -160,10 +156,7 @@ impl Store {
                   } else {
                      end.min(len - 1)
                   } as usize;
-                  if s_idx > e_idx {
-                     return Ok(0);
-                  }
-                  let count = count_ones_fast(&bytes[s_idx..=e_idx]);
+                  let count = bytes.get(s_idx..=e_idx).map_or(0, count_ones_fast);
                   Ok(count)
                }
             }
@@ -175,32 +168,20 @@ impl Store {
    pub fn bitpos(
       &self,
       key: &str,
-      bit: u8,
+      bit: bool,
       start: i64,
       end: i64,
       has_end: bool,
       use_bit: bool,
    ) -> Result<i64, &'static str> {
       match self.data.get_ref(key) {
-         None => {
-            if bit == 0 {
-               Ok(0)
-            } else {
-               Ok(-1)
-            }
-         }
-         Some(e) if e.is_expired() => {
-            if bit == 0 {
-               Ok(0)
-            } else {
-               Ok(-1)
-            }
-         }
+         None => Ok(if bit { -1 } else { 0 }),
+         Some(e) if e.is_expired() => Ok(if bit { -1 } else { 0 }),
          Some(e) => match e.value.as_string() {
             Some(s) => {
                let bytes = s.as_bytes();
                if bytes.is_empty() {
-                  return Ok(if bit == 0 { 0 } else { -1 });
+                  return Ok(if bit { -1 } else { 0 });
                }
                if use_bit {
                   let bit_len = bytes.len() * 8;
@@ -211,14 +192,14 @@ impl Store {
                   }
                   let s_byte = s_idx / 8;
                   let e_byte = e_idx / 8;
-                  for byte_i in s_byte..=e_byte {
-                     if byte_i >= bytes.len() {
-                        break;
+                  let mut lo_mask = 0xFF_u8 >> (s_idx % 8);
+                  let mut hi_mask = 0xFF_u8;
+                  for byte_i in s_byte..=e_byte.min(bytes.len() - 1) {
+                     if byte_i == e_byte {
+                        hi_mask = 0xFF_u8 >> (7 - (e_idx % 8));
                      }
-                     let lo = if byte_i == s_byte { s_idx % 8 } else { 0 };
-                     let hi = if byte_i == e_byte { e_idx % 8 } else { 7 };
-                     let mask = (0xFF_u8 >> lo) & (0xFF_u8 << (7 - hi));
-                     let target = if bit == 1 {
+                     let mask = lo_mask & hi_mask;
+                     let target = if bit {
                         bytes[byte_i] & mask
                      } else {
                         !bytes[byte_i] & mask
@@ -226,6 +207,7 @@ impl Store {
                      if target != 0 {
                         return Ok((byte_i * 8 + target.leading_zeros() as usize) as i64);
                      }
+                     lo_mask = 0xFF_u8;
                   }
                   Ok(-1)
                } else {
@@ -246,12 +228,12 @@ impl Store {
                      return Ok(-1);
                   }
                   for (byte_idx, &b) in bytes.iter().enumerate().take(e_idx + 1).skip(s_idx) {
-                     let target = if bit == 1 { b } else { !b };
+                     let target = if bit { b } else { !b };
                      if target != 0 {
                         return Ok((byte_idx * 8 + target.leading_zeros() as usize) as i64);
                      }
                   }
-                  if bit == 0 && !has_end {
+                  if !bit && !has_end {
                      Ok((bytes.len() * 8) as i64)
                   } else {
                      Ok(-1)
@@ -264,138 +246,174 @@ impl Store {
    }
 
    pub fn bitop(&self, op: BitOp, dest: &str, keys: &[&str]) -> Result<usize, &'static str> {
-      let mut max_len = 0usize;
       let _guard = customhash::pin();
-      let mut refs = Vec::with_capacity(keys.len());
-      for &k in keys {
-         let r = self.data.get_ref_pinned(k, &_guard);
-         if let Some(ref e) = r {
-            if e.is_expired() {
-               refs.push(None);
-            } else if e.value.as_string().is_none() {
-               return Err("WRONGTYPE");
-            } else {
-               refs.push(r);
-            }
-         } else {
-            refs.push(None);
-         }
-      }
-
-      let mut slices: Vec<&[u8]> = Vec::with_capacity(keys.len());
-      for r in &refs {
-         if let Some(e) = r {
-            let b = e.value.as_string().unwrap().as_bytes();
-            max_len = max_len.max(b.len());
-            slices.push(b);
-         } else {
-            slices.push(&[][..]);
-         }
-      }
-
-      if slices.is_empty() {
+      if keys.is_empty() {
          self.data.insert_str(dest, StoreValue::string_str(""));
          return Ok(0);
       }
 
-      let mut result = vec![0u8; max_len];
+      let refs: Vec<_> = keys
+         .iter()
+         .map(|&key| self.data.get_ref_pinned(key, &_guard))
+         .collect();
+      let mut max_len = 0;
+      let slices = refs
+         .iter()
+         .map(|entry| {
+            let bytes = match entry {
+               None => &[][..],
+               Some(e) if e.is_expired() => &[][..],
+               Some(e) => e.value.as_string().ok_or("WRONGTYPE")?.as_bytes(),
+            };
+            max_len = max_len.max(bytes.len());
+            Ok(bytes)
+         })
+         .collect::<Result<Vec<_>, &'static str>>()?;
 
+      let mut result = vec![0xFF * matches!(op, BitOp::And | BitOp::Not) as u8; max_len];
       match op {
          BitOp::And => {
-            result.fill(0xFF);
+            let mut min_processed = usize::MAX;
             for buf in &slices {
-               let common = buf.len().min(max_len);
-               let (r_words, r_tail) = result[..common].split_at_mut(common & !7);
-               let (b_words, b_tail) = buf[..common].split_at(common & !7);
-               for (r, b) in r_words
-                  .as_chunks_mut::<8>()
-                  .0
-                  .iter_mut()
-                  .zip(b_words.as_chunks::<8>().0.iter())
-               {
-                  let rw = u64::from_ne_bytes(*r);
-                  let bw = u64::from_ne_bytes(*b);
-                  r.copy_from_slice(&(rw & bw).to_ne_bytes());
-               }
-               for (r, b) in r_tail.iter_mut().zip(b_tail.iter()) {
-                  *r &= *b;
-               }
-               if common < max_len {
-                  result[common..].fill(0);
-               }
+               let common = combine::<BIT_AND>(&mut result, buf);
+               min_processed = min_processed.min(common);
             }
+            result[min_processed..].fill(0);
          }
          BitOp::Or => {
             for buf in &slices {
-               let common = buf.len().min(max_len);
-               let (r_words, r_tail) = result[..common].split_at_mut(common & !7);
-               let (b_words, b_tail) = buf[..common].split_at(common & !7);
-               for (r, b) in r_words
-                  .as_chunks_mut::<8>()
-                  .0
-                  .iter_mut()
-                  .zip(b_words.as_chunks::<8>().0.iter())
-               {
-                  let rw = u64::from_ne_bytes(*r);
-                  let bw = u64::from_ne_bytes(*b);
-                  r.copy_from_slice(&(rw | bw).to_ne_bytes());
-               }
-               for (r, b) in r_tail.iter_mut().zip(b_tail.iter()) {
-                  *r |= *b;
-               }
+               let _ = combine::<BIT_OR>(&mut result, buf);
             }
          }
          BitOp::Xor => {
             for buf in &slices {
-               let common = buf.len().min(max_len);
-               let (r_words, r_tail) = result[..common].split_at_mut(common & !7);
-               let (b_words, b_tail) = buf[..common].split_at(common & !7);
-               for (r, b) in r_words
-                  .as_chunks_mut::<8>()
-                  .0
-                  .iter_mut()
-                  .zip(b_words.as_chunks::<8>().0.iter())
-               {
-                  let rw = u64::from_ne_bytes(*r);
-                  let bw = u64::from_ne_bytes(*b);
-                  r.copy_from_slice(&(rw ^ bw).to_ne_bytes());
-               }
-               for (r, b) in r_tail.iter_mut().zip(b_tail.iter()) {
-                  *r ^= *b;
-               }
+               let _ = combine::<BIT_XOR>(&mut result, buf);
             }
          }
          BitOp::Not => {
-            if slices.len() != 1 {
+            if keys.len() != 1 {
                return Err("BITOP NOT requires one source key");
             }
-            let buf = slices[0];
-            let common = buf.len().min(max_len);
-            let (r_words, r_tail) = result[..common].split_at_mut(common & !7);
-            let (b_words, b_tail) = buf[..common].split_at(common & !7);
-            for (r, b) in r_words
-               .as_chunks_mut::<8>()
-               .0
-               .iter_mut()
-               .zip(b_words.as_chunks::<8>().0.iter())
-            {
-               let bw = u64::from_ne_bytes(*b);
-               r.copy_from_slice(&(!bw).to_ne_bytes());
-            }
-            for (r, b) in r_tail.iter_mut().zip(b_tail.iter()) {
-               *r = !*b;
-            }
-            if common < max_len {
-               result[common..].fill(0xFF);
-            }
+            let _ = combine::<BIT_NOT>(&mut result, slices[0]);
          }
       }
 
+      drop(refs);
       let len = result.len();
       self
          .data
          .insert_str(dest, StoreValue::string_small(SmallStr::from_bytes(result)));
       Ok(len)
+   }
+
+   pub fn bf_get(
+      &self,
+      key: &str,
+      offset: u64,
+      bits: u32,
+      signed: bool,
+   ) -> Result<i64, &'static str> {
+      if bits == 0 {
+         return Ok(0);
+      }
+      if bits > 64 {
+         return Err("invalid bitfield type");
+      }
+      match self.data.get_ref(key) {
+         None => Ok(0),
+         Some(e) if e.is_expired() => Ok(0),
+         Some(e) => match e.value.as_string() {
+            Some(s) => {
+               let bytes = s.as_bytes();
+               let start_bit = offset;
+               let end_bit = offset + bits as u64;
+               let start_byte = (start_bit / 8) as usize;
+               let end_byte = end_bit.div_ceil(8) as usize;
+               let mut val: u64 = 0;
+
+               for b_idx in start_byte..end_byte {
+                  let byte_val = if b_idx < bytes.len() { bytes[b_idx] } else { 0 };
+                  let b_start = start_bit.max(b_idx as u64 * 8);
+                  let b_end = end_bit.min(b_idx as u64 * 8 + 8);
+                  let num_bits = (b_end - b_start) as u32;
+                  let shift_right = (b_idx as u64 * 8 + 8 - b_end) as u32;
+                  let mask = ((1u16 << num_bits) - 1) as u8;
+                  let extracted_bits = ((byte_val >> shift_right) & mask) as u64;
+                  let shift_left = (end_bit - b_end) as u32;
+                  val |= extracted_bits << shift_left;
+               }
+
+               Ok(if signed && bits < 64 && (val >> (bits - 1)) & 1 == 1 {
+                  val | (!0u64 << bits)
+               } else {
+                  val
+               } as i64)
+            }
+            None => Err("WRONGTYPE"),
+         },
+      }
+   }
+
+   pub fn bf_set(&self, key: &str, offset: u64, bits: u32, value: i64) -> Result<(), &'static str> {
+      if bits == 0 {
+         return Ok(());
+      }
+      if bits > 64 {
+         return Err("invalid bitfield type");
+      }
+
+      let last_byte_idx = ((offset + bits as u64 - 1) / 8) as usize;
+      let val = value as u64;
+
+      let write_bits = |bytes: &mut [u8]| {
+         let start_bit = offset;
+         let end_bit = offset + bits as u64;
+         let start_byte = (start_bit / 8) as usize;
+         let end_byte = end_bit.div_ceil(8) as usize;
+
+         for (offset_idx, byte) in bytes[start_byte..end_byte].iter_mut().enumerate() {
+            let b_idx = start_byte + offset_idx;
+            let b_start = start_bit.max(b_idx as u64 * 8);
+            let b_end = end_bit.min(b_idx as u64 * 8 + 8);
+            let num_bits = (b_end - b_start) as u32;
+            let val_shift_right = (end_bit - b_end) as u32;
+            let bits_to_write =
+               ((val >> val_shift_right) & (((1u16 << num_bits) - 1) as u64)) as u8;
+            let byte_shift_left = (b_idx as u64 * 8 + 8 - b_end) as u32;
+            let shifted_bits = bits_to_write << byte_shift_left;
+            let mask = (((1u16 << num_bits) - 1) as u8) << byte_shift_left;
+            *byte = (*byte & !mask) | shifted_bits;
+         }
+      };
+
+      let result = self.data.update_with(key, |v| {
+         let is_expired = v.is_expired();
+         match v.value.as_string_mut() {
+            Some(s) => {
+               s.ensure_len(last_byte_idx + 1);
+               let bytes = s.as_bytes_mut();
+               if is_expired {
+                  bytes.fill(0);
+                  v.expires_ms = 0;
+               }
+               write_bits(bytes);
+               Ok(())
+            }
+            None => Err("WRONGTYPE"),
+         }
+      });
+
+      match result {
+         Some(r) => r,
+         None => {
+            let mut s = SmallStr::zeroed(last_byte_idx + 1);
+            write_bits(s.as_bytes_mut());
+            self
+               .data
+               .insert(key.to_string(), StoreValue::string_small(s));
+            Ok(())
+         }
+      }
    }
 }
 
@@ -407,11 +425,158 @@ pub enum BitOp {
    Not,
 }
 
+const BIT_AND: u8 = 0;
+const BIT_OR: u8 = 1;
+const BIT_XOR: u8 = 2;
+const BIT_NOT: u8 = 3;
+
+#[inline(always)]
+fn combine<const OP: u8>(result: &mut [u8], buf: &[u8]) -> usize {
+   let common = result.len().min(buf.len());
+   let result = &mut result[..common];
+   let buf = &buf[..common];
+   let mut processed = 0;
+
+   #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+   {
+      if common >= 64 && std::is_x86_feature_detected!("avx512f") {
+         // SAFETY: AVX-512F was detected and both slices have the same length.
+         processed = unsafe { combine_avx512f::<OP>(result, buf) };
+      }
+      if common - processed >= 32 && std::is_x86_feature_detected!("avx2") {
+         // SAFETY: AVX2 was detected and both remaining slices have the same length.
+         processed += unsafe { combine_avx2::<OP>(&mut result[processed..], &buf[processed..]) };
+      }
+   }
+   #[cfg(target_arch = "aarch64")]
+   if common >= 16 && std::arch::is_aarch64_feature_detected!("neon") {
+      // SAFETY: NEON was detected and both slices have the same length.
+      processed = unsafe { combine_neon::<OP>(result, buf) };
+   }
+
+   combine_scalar::<OP>(&mut result[processed..], &buf[processed..]);
+   common
+}
+
+#[inline(always)]
+fn combine_scalar<const OP: u8>(result: &mut [u8], buf: &[u8]) {
+   let (r_words, r_tail) = result.as_chunks_mut::<8>();
+   let (b_words, b_tail) = buf.as_chunks::<8>();
+   for i in 0..r_words.len().min(b_words.len()) {
+      let a = u64::from_ne_bytes(r_words[i]);
+      let b = u64::from_ne_bytes(b_words[i]);
+      r_words[i] = match OP {
+         BIT_AND => a & b,
+         BIT_OR => a | b,
+         BIT_XOR => a ^ b,
+         BIT_NOT => !b,
+         _ => unreachable!(),
+      }
+      .to_ne_bytes();
+   }
+   for i in 0..r_tail.len().min(b_tail.len()) {
+      r_tail[i] = match OP {
+         BIT_AND => r_tail[i] & b_tail[i],
+         BIT_OR => r_tail[i] | b_tail[i],
+         BIT_XOR => r_tail[i] ^ b_tail[i],
+         BIT_NOT => !b_tail[i],
+         _ => unreachable!(),
+      };
+   }
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[target_feature(enable = "avx512f")]
+unsafe fn combine_avx512f<const OP: u8>(result: &mut [u8], buf: &[u8]) -> usize {
+   #[cfg(target_arch = "x86")]
+   use std::arch::x86::*;
+   #[cfg(target_arch = "x86_64")]
+   use std::arch::x86_64::*;
+
+   let end = result.len().min(buf.len()) & !63;
+   for i in (0..end).step_by(64) {
+      // SAFETY: Each unaligned load/store accesses 64 bytes within both slices.
+      unsafe {
+         let b = _mm512_loadu_si512(buf.as_ptr().add(i).cast());
+         let value = if OP == BIT_NOT {
+            _mm512_xor_si512(b, _mm512_set1_epi32(-1))
+         } else {
+            let a = _mm512_loadu_si512(result.as_ptr().add(i).cast());
+            match OP {
+               BIT_AND => _mm512_and_si512(a, b),
+               BIT_OR => _mm512_or_si512(a, b),
+               BIT_XOR => _mm512_xor_si512(a, b),
+               _ => unreachable!(),
+            }
+         };
+         _mm512_storeu_si512(result.as_mut_ptr().add(i).cast(), value);
+      }
+   }
+   end
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[target_feature(enable = "avx2")]
+unsafe fn combine_avx2<const OP: u8>(result: &mut [u8], buf: &[u8]) -> usize {
+   #[cfg(target_arch = "x86")]
+   use std::arch::x86::*;
+   #[cfg(target_arch = "x86_64")]
+   use std::arch::x86_64::*;
+
+   let end = result.len().min(buf.len()) & !31;
+   for i in (0..end).step_by(32) {
+      // SAFETY: Each unaligned load/store accesses 32 bytes within both slices.
+      unsafe {
+         let b = _mm256_loadu_si256(buf.as_ptr().add(i).cast());
+         let value = if OP == BIT_NOT {
+            _mm256_xor_si256(b, _mm256_set1_epi8(-1))
+         } else {
+            let a = _mm256_loadu_si256(result.as_ptr().add(i).cast());
+            match OP {
+               BIT_AND => _mm256_and_si256(a, b),
+               BIT_OR => _mm256_or_si256(a, b),
+               BIT_XOR => _mm256_xor_si256(a, b),
+               _ => unreachable!(),
+            }
+         };
+         _mm256_storeu_si256(result.as_mut_ptr().add(i).cast(), value);
+      }
+   }
+   end
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn combine_neon<const OP: u8>(result: &mut [u8], buf: &[u8]) -> usize {
+   use std::arch::aarch64::*;
+
+   let end = result.len().min(buf.len()) & !15;
+   for i in (0..end).step_by(16) {
+      // SAFETY: Each unaligned load/store accesses 16 bytes within both slices.
+      unsafe {
+         let b = vld1q_u8(buf.as_ptr().add(i));
+         let value = if OP == BIT_NOT {
+            vmvnq_u8(b)
+         } else {
+            let a = vld1q_u8(result.as_ptr().add(i));
+            match OP {
+               BIT_AND => vandq_u8(a, b),
+               BIT_OR => vorrq_u8(a, b),
+               BIT_XOR => veorq_u8(a, b),
+               _ => unreachable!(),
+            }
+         };
+         vst1q_u8(result.as_mut_ptr().add(i), value);
+      }
+   }
+   end
+}
+
 #[inline]
 fn normalize_bit_index(idx: i64, bit_len: usize) -> usize {
    if idx < 0 {
       (bit_len as i64 + idx).max(0) as usize
    } else {
-      (idx as usize).min(bit_len.saturating_sub(1))
+      (idx as usize).min(bit_len - 1)
    }
 }

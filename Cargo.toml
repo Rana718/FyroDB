@@ -87,6 +87,11 @@ harness = false
 test = false
 
 [[bench]]
+name = "bitmap_bench"
+harness = false
+test = false
+
+[[bench]]
 name = "cluster_perf"
 harness = false
 test = false
