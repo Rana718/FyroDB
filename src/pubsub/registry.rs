@@ -79,6 +79,38 @@ fn extract_workers(slots: &[Arc<SubSlot>]) -> Refs<Arc<WorkerNotifier>> {
    Refs::from_vec(workers)
 }
 
+fn add_worker(
+   workers: &Refs<Arc<WorkerNotifier>>,
+   notifier: &Arc<WorkerNotifier>,
+) -> Option<Refs<Arc<WorkerNotifier>>> {
+   let worker_index = notifier.worker_index();
+   if worker_index < 64 {
+      let index = workers
+         .iter()
+         .position(|worker| worker.worker_index() >= worker_index)
+         .unwrap_or(workers.len());
+      if workers
+         .get(index)
+         .is_some_and(|worker| worker.worker_index() == worker_index)
+      {
+         return None;
+      }
+      let mut updated = Vec::with_capacity(workers.len() + 1);
+      updated.extend(workers[..index].iter().cloned());
+      updated.push(Arc::clone(notifier));
+      updated.extend(workers[index..].iter().cloned());
+      return Some(Refs::from_vec(updated));
+   }
+
+   if workers.iter().any(|worker| Arc::ptr_eq(worker, notifier)) {
+      return None;
+   }
+   let mut updated = Vec::with_capacity(workers.len() + 1);
+   updated.extend(workers.iter().cloned());
+   updated.push(Arc::clone(notifier));
+   Some(Refs::from_vec(updated))
+}
+
 fn fan_out(channel: &ChannelData, generation: u64, frame: Arc<[u8]>) {
    let workers = &*channel.workers;
    if let Some((last, earlier)) = workers.split_last() {
@@ -213,12 +245,8 @@ impl ChannelShard {
             let mut slots = Vec::with_capacity(ch.slots.len() + 1);
             slots.extend(ch.slots.iter().cloned());
             slots.push(Arc::clone(&slot));
-            if !ch
-               .workers
-               .iter()
-               .any(|worker| Arc::ptr_eq(worker, slot.notifier()))
-            {
-               ch.workers = extract_workers(&slots);
+            if let Some(workers) = add_worker(&ch.workers, slot.notifier()) {
+               ch.workers = workers;
             }
             ch.slots = Refs::from_vec(slots);
             name = Arc::clone(&ch.name);
@@ -386,16 +414,16 @@ impl PatternIndex {
          .notifier()
          .unregister_subscription(pattern, slot.token, true);
    }
-   fn matching<'a>(&'a self, channel: &str) -> SmallVec<[&'a PatternEntry; 4]> {
-      let mut matches = SmallVec::new();
+
+   fn matching(&self, channel: &str) -> SmallVec<[&PatternEntry; 4]> {
       let first = channel.as_bytes().first().copied();
       let bucket = first.map_or(&[][..], |b| &self.buckets[b as usize]);
-      for entry in self.wildcard.iter().chain(bucket) {
-         if glob_match_bytes(entry.pattern.as_bytes(), channel.as_bytes()) {
-            matches.push(entry);
-         }
-      }
-      matches
+      self
+         .wildcard
+         .iter()
+         .chain(bucket)
+         .filter(|entry| glob_match_bytes(entry.pattern.as_bytes(), channel.as_bytes()))
+         .collect()
    }
 }
 
@@ -537,18 +565,80 @@ impl PubSub {
          .flat_map(|shard| shard.active_channels(pattern))
          .collect()
    }
-   pub fn numsub(&self, channels: &[&str]) -> Vec<(String, usize)> {
+   pub fn numsub<'a>(&self, channels: &[&'a str]) -> Vec<(&'a str, usize)> {
       channels
          .iter()
-         .map(|channel| {
-            (
-               channel.to_string(),
-               self.shard_for(channel).count_for(channel),
-            )
-         })
+         .map(|&channel| (channel, self.shard_for(channel).count_for(channel)))
          .collect()
    }
    pub fn numpat(&self) -> usize {
       self.pattern_count.load(Ordering::Acquire)
+   }
+}
+
+#[cfg(test)]
+mod tests {
+   use super::{ChannelShard, Refs};
+   use crate::pubsub::slot::{SubSlot, WorkerNotifier};
+   use std::sync::Arc;
+
+   fn refs_share<T>(left: &Refs<T>, right: &Refs<T>) -> bool {
+      match (left, right) {
+         (Refs::Many(left), Refs::Many(right)) => Arc::ptr_eq(left, right),
+         _ => false,
+      }
+   }
+
+   #[test]
+   fn snapshots_share_unchanged_subscription_lists() {
+      let poll = mio::Poll::new().unwrap();
+      let waker = Arc::new(mio::Waker::new(poll.registry(), mio::Token(0)).unwrap());
+      let first = Arc::new(SubSlot::new(1, WorkerNotifier::new(Arc::clone(&waker), 0)));
+      let second = Arc::new(SubSlot::new(2, WorkerNotifier::new(Arc::clone(&waker), 1)));
+      let third = Arc::new(SubSlot::new(3, WorkerNotifier::new(Arc::clone(&waker), 2)));
+      let shard = ChannelShard::new();
+
+      let name = shard.subscribe("shared", Arc::clone(&first));
+      let same_name = shard.subscribe("shared", Arc::clone(&second));
+      assert!(Arc::ptr_eq(&name, &same_name));
+      let before = shard.snapshot.load_full();
+      let before_shared = before.find("shared").unwrap();
+      assert!(matches!(&before_shared.slots, Refs::Many(_)));
+      assert!(matches!(&before_shared.workers, Refs::Many(_)));
+
+      let other_name = shard.subscribe("other", Arc::clone(&first));
+      let after = shard.snapshot.load_full();
+      let after_shared = after.find("shared").unwrap();
+      assert_eq!(before.channels.len(), 1);
+      assert_eq!(after.channels.len(), 2);
+      assert!(after.find(&other_name).is_some());
+      assert!(refs_share(&before_shared.slots, &after_shared.slots));
+      assert!(refs_share(&before_shared.workers, &after_shared.workers));
+
+      let _updated_name = shard.subscribe("shared", Arc::clone(&third));
+      let updated = shard.snapshot.load_full();
+      let updated_shared = updated.find("shared").unwrap();
+      assert!(!refs_share(&before_shared.slots, &updated_shared.slots));
+      assert!(!refs_share(&before_shared.workers, &updated_shared.workers));
+      assert_eq!(before_shared.slots.len(), 2);
+      assert_eq!(before_shared.workers.len(), 2);
+      assert_eq!(updated_shared.slots.len(), 3);
+      assert_eq!(updated_shared.workers.len(), 3);
+      assert_eq!(
+         before_shared
+            .slots
+            .iter()
+            .map(|slot| slot.token)
+            .collect::<Vec<_>>(),
+         [1, 2]
+      );
+      assert_eq!(
+         updated_shared
+            .slots
+            .iter()
+            .map(|slot| slot.token)
+            .collect::<Vec<_>>(),
+         [1, 2, 3]
+      );
    }
 }

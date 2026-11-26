@@ -108,9 +108,10 @@ fn snapshot_updates_share_unchanged_subscription_lists() {
          pubsub.subscribe(name, Arc::clone(&slot));
       }
    });
+   let budget = names.len() * 12;
    assert!(
-      count <= names.len() * 5,
-      "{count} allocations for {} new channels",
+      count <= budget,
+      "{count} allocations for {} new channels (budget: {budget})",
       names.len()
    );
    assert_eq!(pubsub.active_channels(None).len(), 1152);

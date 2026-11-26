@@ -5,6 +5,7 @@ use mio::Waker;
 use parking_lot::Mutex;
 use smallvec::SmallVec;
 use std::collections::HashMap;
+use std::hash::BuildHasher;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
@@ -72,16 +73,78 @@ type Members = SmallVec<[Subscriber; 1]>;
 /// linear probing (hash flooding); `RandomState` seeds from the process's
 /// random seed instead.
 type Subscriptions = HashMap<Arc<str>, Members, RandomState>;
+const LOCAL_SUB_SHARDS: usize = 64;
+
+#[derive(Clone)]
+pub(crate) struct ShardedSubscriptions {
+   shards: [Arc<Subscriptions>; LOCAL_SUB_SHARDS],
+   hasher: RandomState,
+}
+impl ShardedSubscriptions {
+   fn new() -> Self {
+      let hasher = RandomState::default();
+      let empty = Arc::new(HashMap::with_hasher(hasher.clone()));
+      Self {
+         shards: std::array::from_fn(|_| Arc::clone(&empty)),
+         hasher,
+      }
+   }
+
+   fn shard_for(&self, name: &str) -> usize {
+      self.hasher.hash_one(name) as usize % LOCAL_SUB_SHARDS
+   }
+
+   pub(crate) fn get(&self, name: &str) -> Option<&Members> {
+      self.shards[self.shard_for(name)].get(name)
+   }
+
+   fn get_mut(&mut self, name: &str) -> Option<&mut Members> {
+      let index = self.shard_for(name);
+      Arc::make_mut(&mut self.shards[index]).get_mut(name)
+   }
+
+   fn insert(&mut self, name: Arc<str>, members: Members) {
+      let index = self.shard_for(name.as_ref());
+      Arc::make_mut(&mut self.shards[index]).insert(name, members);
+   }
+
+   pub(crate) fn entry(&mut self, name: Arc<str>) -> &mut Members {
+      let index = self.shard_for(name.as_ref());
+      Arc::make_mut(&mut self.shards[index])
+         .entry(name)
+         .or_default()
+   }
+
+   fn remove(&mut self, name: &str) {
+      let index = self.shard_for(name);
+      Arc::make_mut(&mut self.shards[index]).remove(name);
+   }
+
+   fn remove_member(&mut self, name: &str, token: usize) {
+      let remove = self.get_mut(name).is_some_and(|members| {
+         members.retain(|member| member.token != token);
+         members.is_empty()
+      });
+      if remove {
+         self.remove(name);
+      }
+   }
+
+   fn is_empty(&self) -> bool {
+      self.shards.iter().all(|shard| shard.is_empty())
+   }
+}
+
 #[derive(Clone)]
 pub(crate) struct LocalSubscriptions {
-   pub channels: Subscriptions,
-   pub patterns: Subscriptions,
+   pub channels: ShardedSubscriptions,
+   pub patterns: ShardedSubscriptions,
 }
 impl LocalSubscriptions {
    fn new() -> Self {
       Self {
-         channels: HashMap::with_hasher(RandomState::default()),
-         patterns: HashMap::with_hasher(RandomState::default()),
+         channels: ShardedSubscriptions::new(),
+         patterns: ShardedSubscriptions::new(),
       }
    }
 }
@@ -288,7 +351,7 @@ impl WorkerNotifier {
       } else {
          &mut subs.channels
       };
-      let members = map.entry(name).or_default();
+      let members = map.entry(name);
       if let Some(member) = members.iter_mut().find(|member| member.token == token) {
          member.generation = generation;
       } else {
@@ -312,12 +375,7 @@ impl WorkerNotifier {
       } else {
          &mut subs.channels
       };
-      if let Some(members) = map.get_mut(name) {
-         members.retain(|member| member.token != token);
-         if members.is_empty() {
-            map.remove(name);
-         }
-      }
+      map.remove_member(name, token);
       if subs.channels.is_empty() && subs.patterns.is_empty() {
          self.local_subs.store(None);
       } else {
