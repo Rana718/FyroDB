@@ -184,15 +184,6 @@ impl RespParser {
       }
    }
 
-   pub fn read_buf(&mut self) -> &mut [u8] {
-      self.make_room();
-      if self.rbuf.len() - self.filled < 16 * 1024 {
-         let grown = (self.rbuf.len() * 2).max(Self::IDLE_READ_BUFFER);
-         self.rbuf.resize(grown, 0);
-      }
-      &mut self.rbuf[self.filled..]
-   }
-
    /// Make room for another read, compacting consumed bytes first. Growth is
    /// left to `reserve` so the hot path never memsets the new region.
    #[inline]
@@ -1703,7 +1694,7 @@ impl RespParser {
       self.parts_raw.reserve(p.parts.len());
       for (off, len) in p.parts {
          // SAFETY: offsets come from live elements in rbuf[start..self.pos]
-         // that remain valid until the next read_buf.
+         // that remain valid until the next read.
          self.parts_raw.push((unsafe { base.add(off) }, len));
       }
       ParseResult::Complete
@@ -1808,14 +1799,19 @@ fn parse_usize(s: &[u8], max: usize) -> Option<usize> {
 mod tests {
    use super::{ParseResult, RespParser, parse_len_le4};
 
+   fn feed_chunk(parser: &mut RespParser, bytes: &[u8], max: usize) -> usize {
+      let (ptr, spare) = parser.read_spare();
+      let n = spare.min(bytes.len()).min(max);
+      // SAFETY: n is bounded by the source length and the parser's spare capacity.
+      unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr, n) };
+      parser.did_fill(n);
+      n
+   }
+
    fn feed(parser: &mut RespParser, bytes: &[u8]) {
       let mut offset = 0;
       while offset < bytes.len() {
-         let buf = parser.read_buf();
-         let n = buf.len().min(bytes.len() - offset);
-         buf[..n].copy_from_slice(&bytes[offset..offset + n]);
-         parser.did_fill(n);
-         offset += n;
+         offset += feed_chunk(parser, &bytes[offset..], usize::MAX);
       }
    }
 
@@ -1899,11 +1895,10 @@ mod tests {
    #[test]
    fn the_first_read_establishes_the_idle_buffer_size() {
       let mut parser = RespParser::new();
-      let buf = parser.read_buf();
+      let (_, spare) = parser.read_spare();
       assert!(
-         buf.len() >= 1024,
-         "first read_buf handed back only {} bytes",
-         buf.len()
+         spare >= 1024,
+         "first read had only {spare} bytes of spare capacity"
       );
       assert_eq!(parser.rbuf.capacity(), RespParser::IDLE_READ_BUFFER);
    }
@@ -1962,7 +1957,7 @@ mod tests {
    }
 
    /// Resumes multi-read commands from saved element index even when
-   /// read_buf compacts or reallocates.
+   /// read_spare compacts or reallocates.
    #[test]
    fn a_fragmented_large_command_resumes_across_reads() {
       let (mut wire, args) = big_hset(3000);
@@ -1974,11 +1969,7 @@ mod tests {
          if offset >= wire.len() {
             break;
          }
-         let buf = parser.read_buf();
-         let n = (*chunk).min(buf.len()).min(wire.len() - offset);
-         buf[..n].copy_from_slice(&wire[offset..offset + n]);
-         parser.did_fill(n);
-         offset += n;
+         offset += feed_chunk(&mut parser, &wire[offset..], *chunk);
          if !done {
             match parser.parse_one() {
                ParseResult::Complete => {
